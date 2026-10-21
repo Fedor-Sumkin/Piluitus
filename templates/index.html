@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PILUITUS V2.2 — Промышленный HFT Терминал</title>
+    <style>
+        :root {
+            --bg-base: #0a0e14;
+            --bg-surface: #141b24;
+            --border-color: #232d38;
+            --text-main: #e1e6eb;
+            --text-muted: #8a99a8;
+            --green: #00ff88;
+            --red: #ff3366;
+            --blue: #00bfff;
+            --purple: #bf55ec;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background-color: var(--bg-base);
+            color: var(--text-main);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            padding: 15px;
+        }
+        .grid-container {
+            display: grid;
+            grid-template-columns: 1.2fr 2fr 1.2fr;
+            grid-gap: 15px;
+            max-width: 100%;
+            margin: 0 auto;
+        }
+        .panel {
+            background-color: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        .panel-title {
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 6px;
+        }
+        .fin-summary-box {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            grid-gap: 15px;
+            margin-bottom: 15px;
+            background-color: var(--bg-surface);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 15px;
+        }
+        .fin-stat { display: flex; flex-direction: column; justify-content: center; }
+        .fin-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px; }
+        .fin-value { font-size: 20px; font-weight: bold; }
+        table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }
+        th, td { padding: 10px; border-bottom: 1px solid var(--border-color); }
+        th { color: var(--text-muted); font-weight: 500; }
+        .text-green { color: var(--green); }
+        .text-red { color: var(--red); }
+        .badge-buy { background: #00ff8822; color: var(--green); padding: 2px 6px; border-radius: 4px; font-weight: 600; }
+        .badge-sell { background: #ff336622; color: var(--red); padding: 2px 6px; border-radius: 4px; font-weight: 600; }
+        
+        .funnel-grid { display: grid; grid-template-columns: repeat(1, 1fr); grid-gap: 6px; max-height: 320px; overflow-y: auto; }
+        .funnel-item {
+            display: flex;
+            justify-content: space-between;
+            background: #1c2633;
+            border: 1px solid var(--border-color);
+            padding: 8px;
+            font-size: 11px;
+            font-weight: bold;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .funnel-item:hover, .funnel-item.active { background: #28374c; border-color: var(--blue); }
+        .verdict-item { padding: 10px; border-bottom: 1px solid var(--border-color); font-size: 12px; }
+        .verdict-header { display: flex; justify-content: space-between; margin-bottom: 4px; }
+        .news-box { font-size: 11px; line-height: 1.5; color: #b0c4de; max-height: 180px; overflow-y: auto; }
+        .blink-pnl { color: var(--blue); font-weight: bold; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
+        
+        /* Стили Canvas графиков */
+        .chart-container { width: 100%; height: 200px; margin-top: 10px; background: #0d131a; border-radius: 4px; border: 1px solid #1a2430; position: relative; }
+        canvas { width: 100%; height: 100%; display: block; }
+    </style>
+</head>
+<body>
+
+    <div class="fin-summary-box">
+        <div class="fin-stat">
+            <div class="fin-label">Текущий баланс (Equity)</div>
+            <div class="fin-value" id="balance-equity">0.00 ₽</div>
+        </div>
+        <div class="fin-stat">
+            <div class="fin-label">Сессионный PnL</div>
+            <div class="fin-value" id="balance-pnl">0.00%</div>
+        </div>
+        <div class="fin-stat">
+            <div class="fin-label">Стоимость активных лотов</div>
+            <div class="fin-value" id="assets-value" style="color: var(--blue);">0.00 ₽</div>
+        </div>
+    </div>
+
+    <div class="grid-container">
+        <!-- КОЛОНКА 1: ПУЛ АКЦИЙ ВОРОНКИ И СЕНТИМЕНТ -->
+        <div>
+            <div class="panel">
+                <div class="panel-title">📊 Воронка Топ-15 Метрик (ОЗУ)</div>
+                <div class="funnel-grid" id="funnel-container">
+                    <div style="color: var(--text-muted); font-size: 12px; text-align: center; padding: 10px;">
+                        Набивается буфер волатильности...
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-title">📰 Медиа-Сентимент Мосбиржи</div>
+                <div class="news-box" id="global-news-box">Сбор новостных RSS-лент...</div>
+            </div>
+        </div>
+
+        <!-- КОЛОНКА 2: ЦЕНТРАЛЬНЫЕ ТАБЛИЦЫ + КАНВАС ЧАРТ -->
+        <div>
+            <div class="panel">
+                <div class="panel-title" id="chart-title">📈 Живой график Order Flow: Ожидание выбора тикера...</div>
+                <div class="chart-container">
+                    <canvas id="hft-mini-chart"></canvas>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-title">🟢 Активные виртуальные позиции (ОЗУ)</div>
+                <table>
+                    <thead>
+                        <tr><th>Тикер</th><th>Тип</th><th>Объем</th><th>Вход</th><th>ATR Уровни</th><th>Статус</th></tr>
+                    </thead>
+                    <tbody id="active-positions-tbody">
+                        <tr><td colspan="6" style="color: var(--text-muted); text-align: center;">Нет активных позиций</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="panel">
+                <div class="panel-title">💾 Журнал закрытых сделок (trading_journal.json)</div>
+                <table>
+                    <thead>
+                        <tr><th>ID</th><th>Тикер</th><th>Тип</th><th>Диапазон цен</th><th>Финрез</th><th>Выход</th></tr>
+                    </thead>
+                    <tbody id="journal-tbody">
+                        <tr><td colspan="6" style="color: var(--text-muted); text-align: center;">История пуста</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+<!-- templates/index.html — ЧАСТЬ 2.1 -->
+        <!-- КОЛОНКА 3: ХРОНИКА ВЕРДИКТОВ ИИ -->
+        <div>
+            <div class="panel">
+                <div class="panel-title">🧠 Вердикты консилиума</div>
+                <div id="verdicts-log-container" style="max-height: 550px; overflow-y: auto;">
+                    <div style="color: var(--text-muted); text-align: center; padding: 15px; font-size: 13px;">
+                        Ожидание первого HFT_SPIKE сигнала...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Асинхронное подключение к торговому HFT-ядру
+        const ws = new WebSocket(`ws://${window.location.host}/ws/frontend`);
+        
+        // Внутреннее ОЗУ фронтенда для кэширования бегущих тиков
+        let activeSelectedTicker = null;
+        const chartHistory = {}; // Структура кэша: { TICKER: [ { price, vwap, atr }, ... ] }
+        const MAX_CHART_POINTS = 40; // Скользящее окно графика (40 точек)
+
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            
+            // Первичный асинхронный пуш данных при открытии вкладки браузера
+            if (data.type === "INIT_DATA") {
+                if (data.news) {
+                    document.getElementById("global-news-box").innerText = data.news;
+                }
+                if (data.portfolio) {
+                    updatePortfolioDOM(data.portfolio);
+                    updateActivePositionsTable(data.portfolio.positions);
+                    updateClosedJournalTable(data.portfolio.journal);
+                }
+                if (data.verdicts_history) {
+                    renderVerdictsHistory(data.verdicts_history);
+                }
+            }
+            
+            // РЕАКТИВНАЯ КОРРЕКТИРОВКА: Безопасный парсинг тиков воронки Топ-15
+            if (data.type === "FUNNEL_UPDATE") {
+                const funnelContainer = document.getElementById("funnel-container");
+                const sourceData = data.active_tickers_data || data.active_tickers;
+                
+                if (funnelContainer && sourceData && sourceData.length > 0) {
+                    funnelContainer.innerHTML = "";
+                    
+                    sourceData.forEach(item => {
+                        // Определяем тип пакета (обратная совместимость V2.1 и V2.2)
+                        const isEnriched = typeof item === 'object' && item !== null;
+                        const ticker = isEnriched ? item.ticker : item;
+                        const currentPrice = isEnriched ? item.price : 0;
+                        
+                        // Если бэкенд отдал ATR/VWAP, инжектируем их в ОЗУ-кэш чарта
+                        if (isEnriched) {
+                            if (!chartHistory[ticker]) {
+                                chartHistory[ticker] = [];
+                            }
+                            chartHistory[ticker].push({ 
+                                price: item.price, 
+                                vwap: item.vwap, 
+                                atr: item.atr 
+                            });
+                            // Удерживаем окно 40 точек, сбрасывая старые тики
+                            if (chartHistory[ticker].length > MAX_CHART_POINTS) {
+                                chartHistory[ticker].shift();
+                            }
+                        }
+                        
+                        if (!activeSelectedTicker) {
+                            activeSelectedTicker = ticker;
+                        }
+                        
+                        const activeClass = ticker === activeSelectedTicker ? "active" : "";
+                        const priceText = currentPrice > 0 ? `<span style="color: var(--blue);">${currentPrice.toFixed(2)} ₽</span>` : "";
+                        
+                        funnelContainer.innerHTML += `
+                            <div class="funnel-item ${activeClass}" onclick="selectChartTicker('${ticker}')">
+                                <span>${ticker}</span> ${priceText}
+                            </div>`;
+                    });
+                    
+                    // Вызов перерисовки холста Canvas силами GPU
+                    drawHFTChart();
+                }
+            }
+            
+            // Обработка живого апдейта сделок и баланса
+            if (data.type === "MARKET_UPDATE") {
+                if (data.portfolio) {
+                    updatePortfolioDOM(data.portfolio);
+                    updateActivePositionsTable(data.portfolio.positions);
+                    updateClosedJournalTable(data.portfolio.journal);
+                }
+                if (data.ai) {
+                    addNewVerdictToLog(data.timestamp || new Date().toLocaleTimeString(), data.ticker, data.price, data.ai);
+                }
+            }
+        };
+
+        function selectChartTicker(ticker) {
+            activeSelectedTicker = ticker;
+            document.querySelectorAll('.funnel-item').forEach(el => {
+                el.classList.remove('active');
+                if (el.innerText.includes(ticker)) el.classList.add('active');
+            });
+            drawHFTChart();
+        }
+<!-- templates/index.html — ЧАСТЬ 2.2 -->
+        // АППАРАТНЫЙ ДВИЖОК ОТРИСОВКИ ЧАРТА (HTML5 CANVAS)
+        function drawHFTChart() {
+            const canvas = document.getElementById("hft-mini-chart");
+            if (!canvas || !activeSelectedTicker) return;
+            
+            const ctx = canvas.getContext("2d");
+            const dpr = window.devicePixelRatio || 1;
+            const rect = canvas.getBoundingClientRect();
+            
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+            ctx.scale(dpr, dpr);
+            
+            const width = rect.width;
+            const height = rect.height;
+            ctx.clearRect(0, 0, width, height);
+            
+            document.getElementById("chart-title").innerText = `📈 Живой график Order Flow: ${activeSelectedTicker}`;
+            
+            const history = chartHistory[activeSelectedTicker];
+            if (!history || history.length < 2) {
+                ctx.fillStyle = "#8a99a8";
+                ctx.font = "12px sans-serif";
+                ctx.fillText("Накопление тиковой волатильности для графика...", 20, height / 2);
+                return;
+            }
+            
+            // Находим экстремумы окна для динамического масштабирования сетки
+            let maxVal = -Infinity, minVal = Infinity;
+            history.forEach(pt => {
+                const upperATR = pt.vwap + pt.atr;
+                const lowerATR = pt.vwap - pt.atr;
+                maxVal = Math.max(maxVal, pt.price, upperATR);
+                minVal = Math.min(minVal, pt.price, lowerATR);
+            });
+            
+            const padding = (maxVal - minVal) * 0.1 || 1;
+            maxVal += padding;
+            minVal -= padding;
+            
+            const getX = (index) => (index / (MAX_CHART_POINTS - 1)) * (width - 60) + 10;
+            const getY = (val) => height - ((val - minVal) / (maxVal - minVal)) * (height - 30) - 15;
+            
+            // 1. Рисуем ATR Полосы волатильности (Верхняя и Нижняя границы)
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]); // Пунктирные линии для границ волатильности
+            
+            // Верхняя полоса ATR (Пурпурная)
+            ctx.strokeStyle = "#bf55ec88";
+            ctx.beginPath();
+            history.forEach((pt, i) => { if (i === 0) ctx.moveTo(getX(i), getY(pt.vwap + pt.atr)); else ctx.lineTo(getX(i), getY(pt.vwap + pt.atr)); });
+            ctx.stroke();
+            
+            // Нижняя полоса ATR (Пурпурная)
+            ctx.beginPath();
+            history.forEach((pt, i) => { if (i === 0) ctx.moveTo(getX(i), getY(pt.vwap - pt.atr)); else ctx.lineTo(getX(i), getY(pt.vwap - pt.atr)); });
+            ctx.stroke();
+            
+            // 2. Рисуем ось средневзвешенной цены VWAP (Синяя)
+            ctx.setLineDash([2, 2]);
+            ctx.strokeStyle = "#00bfffcc";
+            ctx.beginPath();
+            history.forEach((pt, i) => { if (i === 0) ctx.moveTo(getX(i), getY(pt.vwap)); else ctx.lineTo(getX(i), getY(pt.vwap)); });
+            ctx.stroke();
+            
+            // 3. Рисуем бегущую линию цены (Зеленая импульсная)
+            ctx.setLineDash([]);
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = "#00ff88";
+            ctx.beginPath();
+            history.forEach((pt, i) => { if (i === 0) ctx.moveTo(getX(i), getY(pt.price)); else ctx.lineTo(getX(i), getY(pt.price)); });
+            ctx.stroke();
+            
+            // Печатаем текущую цифровую шкалу цен справа холста
+            ctx.fillStyle = "#8a99a8";
+            ctx.font = "10px monospace";
+            const lastPt = history[history.length - 1];
+            ctx.fillText(lastPt.price.toFixed(2), width - 55, getY(lastPt.price) + 4);
+        }
+
+        function updatePortfolioDOM(portfolio) {
+            document.getElementById("balance-equity").innerText = portfolio.equity.toFixed(2) + " ₽";
+            const pnlElem = document.getElementById("balance-pnl");
+            if (pnlElem) {
+                pnlElem.innerText = portfolio.pure_pnl_percent.toFixed(2) + "%";
+                pnlElem.className = portfolio.pure_pnl_percent >= 0 ? "fin-value text-green" : "fin-value text-red";
+            }
+            let totalAssetsValue = 0;
+            if (portfolio.positions && portfolio.positions.length > 0) {
+                portfolio.positions.forEach(pos => { totalAssetsValue += parseFloat(pos.balance || 0) * parseFloat(pos.averagePrice || 0); });
+            }
+            document.getElementById("assets-value").innerText = totalAssetsValue.toFixed(2) + " ₽";
+        }
+
+        function updateActivePositionsTable(positions) {
+            const tbody = document.getElementById("active-positions-tbody");
+            if (!tbody) return;
+            if (!positions || positions.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" style="color: var(--text-muted); text-align: center;">Нет активных позиций</td></tr>`;
+                return;
+            }
+            tbody.innerHTML = "";
+            positions.forEach(pos => {
+                tbody.innerHTML += `<tr>
+                    <td><b>${pos.securityCode}</b></td>
+                    <td><span class="badge-${pos.side.toLowerCase()}">${pos.side}</span></td>
+                    <td>${pos.balance} лотов</td>
+                    <td>${pos.averagePrice.toFixed(2)} ₽</td>
+                    <td><span class="text-red">${pos.sl}</span> / <span class="text-green">${pos.tp}</span></td>
+                    <td class="blink-pnl">IN_GAME</td>
+                </tr>`;
+            });
+        }
+
+        function updateClosedJournalTable(journal) {
+            const tbody = document.getElementById("journal-tbody");
+            if (!tbody) return;
+            if (!journal || journal.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" style="color: var(--text-muted); text-align: center;">История сделок пуста</td></tr>`;
+                return;
+            }
+            tbody.innerHTML = "";
+            journal.slice().reverse().forEach(deal => {
+                let pnlPercent = parseFloat(deal.pnl_percent || 0);
+                if (pnlPercent === 0) {
+                    const entry = parseFloat(deal.entry_price || 0);
+                    const exit = parseFloat(deal.exit_price || 0);
+                    if (entry > 0 && exit > 0) pnlPercent = deal.side === "BUY" ? ((exit - entry) / entry) * 100 : ((entry - exit) / entry) * 100;
+                }
+                const pnlClass = pnlPercent > 0 ? "text-green" : "text-red";
+                const sign = pnlPercent > 0 ? "+" : "";
+                tbody.innerHTML += `<tr>
+                    <td><code>${deal.id}</code></td>
+                    <td><b>${deal.ticker}</b></td>
+                    <td><span class="badge-${deal.side.toLowerCase()}">${deal.side}</span></td>
+                    <td>${deal.entry_price} ₽ → ${deal.exit_price} ₽</td>
+                    <td class="${pnlClass}"><b>${sign}${pnlPercent.toFixed(2)}%</b></td>
+                    <td><small>${deal.exit_reason || 'CLOSED'}</small></td>
+                </tr>`;
+            });
+        }
+
+        function renderVerdictsHistory(history) {
+            const container = document.getElementById("verdicts-log-container");
+            if (!container) return;
+            container.innerHTML = "";
+            history.slice().reverse().forEach(v => {
+                container.innerHTML += buildVerdictHTML(v.timestamp || "HFT", v.ticker, v.price, v.ai || v);
+            });
+        }
+
+        function addNewVerdictToLog(time, ticker, price, ai) {
+            const container = document.getElementById("verdicts-log-container");
+            if (!container) return;
+            if (container.innerText.includes("Ожидание первого")) container.innerHTML = "";
+            container.insertAdjacentHTML('afterbegin', buildVerdictHTML(time, ticker, price, ai));
+            if (container.children.length > 15) container.removeChild(container.lastChild);
+        }
+
+        function buildVerdictHTML(time, ticker, price, ai) {
+            const dec = ai.final_decision || "HOLD";
+            // Добавляем серый бэкграунд для нейтрального решения HOLD
+            const badgeClass = dec === "BUY" ? "badge-buy" : (dec === "SELL" ? "badge-sell" : "badge-hold");
+    
+            return `<div class="verdict-item">
+                <div class="verdict-header">
+                    <span><b>[${time}] ${ticker}</b> @ ${price} ₽</span>
+                    <span class="${badgeClass}" style="${dec === 'HOLD' ? 'background: #8a99a822; color: var(--text-muted); padding: 2px 6px; border-radius: 4px;' : ''}">${dec} (${ai.confidence_score}%)</span>
+                </div>
+                <div style="color: var(--text-muted); font-size: 11px; margin-top: 4px;">
+                    <b>Тактик:</b> ${ai.tactic_opinion || 'Нет данных'}
+                </div>
+                <div style="color: var(--text-muted); font-size: 11px; margin-top: 2px;">
+                    <b>Критик:</b> ${ai.critic_opinion || 'Нет данных'}
+                </div>
+            </div>`;
+        }
+
+    </script>
+</body>
+</html>
