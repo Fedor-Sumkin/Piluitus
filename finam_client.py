@@ -847,9 +847,8 @@ class FinamBrokerClient:
                                 # turn. A Top-15 rotation should not wait for the
                                 # periodic refresh timer before its BBO subscription
                                 # is requested (the timer is only a safety resync).
-                                # ORDER_BOOK is strictly the current Top-N set.
-                                # Open positions do not extend this subscription set:
-                                # QUOTES remain subscribed for the full universe.
+                                # Top-N remains the only screener/LLM candidate set.
+                                # ORDER_BOOK additionally retains every open position for exit monitoring.
                                 normalized_selected: list[str] = []
                                 seen_selected: set[str] = set()
                                 for raw_ticker in selected:
@@ -881,6 +880,7 @@ class FinamBrokerClient:
                                             "подписки Top-%d сохраняются: %s",
                                             order_book_limit, position_exc,
                                         )
+                                position_only_symbols = position_symbols - wanted
                                 wanted.update(position_symbols)
 
                                 sync_due = now_loop - last_order_book_sync >= order_book_refresh_sec
@@ -906,9 +906,9 @@ class FinamBrokerClient:
                                     if added or removed:
                                         logger.info(
                                             "📚 Finam ORDER_BOOK подписки синхронизированы: Top-%d=%d, "
-                                            "открытых_позиций=%d, всего=%d, добавлено=%d, снято=%d.",
+                                            "позиций_вне_Top=%d, всего=%d, добавлено=%d, снято=%d.",
                                             order_book_limit, len(normalized_selected),
-                                            len(position_symbols), len(order_book_subscribed),
+                                            len(position_only_symbols), len(order_book_subscribed),
                                             len(added), len(removed),
                                         )
                             except Exception as sub_exc:
