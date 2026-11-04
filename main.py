@@ -8,6 +8,7 @@ import sys
 import time as time_module
 import threading
 import shutil
+import unicodedata
 from itertools import count
 from contextlib import asynccontextmanager
 from typing import Any, List, Union, cast
@@ -112,10 +113,34 @@ class TerminalStatusLine:
         except OSError:
             return 120
 
+    @staticmethod
+    def _cell_width(value: str) -> int:
+        """Approximate terminal columns (not Python code points) for Unicode text."""
+        width = 0
+        for char in value:
+            if char == "\u200d" or "\ufe00" <= char <= "\ufe0f":
+                continue
+            if unicodedata.combining(char):
+                continue
+            width += 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+        return width
+
+    @classmethod
+    def _truncate_cells(cls, value: str, max_cells: int) -> str:
+        result: list[str] = []
+        used = 0
+        for char in value:
+            char_width = cls._cell_width(char)
+            if used + char_width > max_cells:
+                break
+            result.append(char)
+            used += char_width
+        return "".join(result)
+
     def _clear_locked(self) -> None:
         if self.enabled and self._visible:
-            # Spaces are more compatible with Windows terminals than ANSI clear-line codes.
-            self.stream.write("\r" + (" " * self._last_width) + "\r")
+            # Erase the whole terminal row: no stale suffix survives a shorter update.
+            self.stream.write("\r\x1b[2K")
             self.stream.flush()
         self._visible = False
         self._last_width = 0
@@ -128,13 +153,13 @@ class TerminalStatusLine:
             return
 
         self._clear_locked()
-        # Leave a few columns free to avoid terminal wrapping (emoji can be double-width).
-        max_chars = max(16, self._terminal_width() - 8)
-        text = self._text[:max_chars]
+        # Reserve columns to avoid wrapping; truncate by terminal cells, not code points.
+        max_cells = max(16, self._terminal_width() - 8)
+        text = self._truncate_cells(self._text, max_cells)
         self.stream.write(text)
         self.stream.flush()
         self._visible = True
-        self._last_width = len(text)
+        self._last_width = self._cell_width(text)
         self._last_draw = now
 
     def _compose_text_locked(self) -> None:
@@ -151,30 +176,30 @@ class TerminalStatusLine:
             self._impulse_text.strip(),
         ]
         segments = [segment for segment in segments if segment]
-        max_chars = max(32, self._terminal_width() - 8)
+        max_cells = max(32, self._terminal_width() - 8)
         if not segments:
             self._text = ""
             return
 
-        # Reserve space for all status sources. If the terminal is narrow, shorten
-        # the longest segments instead of letting later statuses disappear entirely.
+        # Reserve space for all status sources using rendered terminal-cell widths.
         separator = "  |  "
-        available = max_chars - len(separator) * (len(segments) - 1)
-        while sum(len(segment) for segment in segments) > available:
-            longest_index = max(range(len(segments)), key=lambda i: len(segments[i]))
+        available = max_cells - self._cell_width(separator) * (len(segments) - 1)
+        while sum(self._cell_width(segment) for segment in segments) > available:
+            longest_index = max(range(len(segments)), key=lambda i: self._cell_width(segments[i]))
             segment = segments[longest_index]
-            if len(segment) <= 12:
-                # If all remaining segments are short, drop the least critical last one.
+            segment_width = self._cell_width(segment)
+            if segment_width <= 12:
                 segments.pop()
                 if not segments:
                     self._text = ""
                     return
-                available = max_chars - len(separator) * (len(segments) - 1)
+                available = max_cells - self._cell_width(separator) * (len(segments) - 1)
                 continue
-            excess = sum(len(item) for item in segments) - available
-            target_length = max(12, len(segment) - max(1, excess))
-            segments[longest_index] = segment[:target_length - 1] + "…"
-        self._text = separator.join(segments)[:max_chars]
+            excess = sum(self._cell_width(item) for item in segments) - available
+            target_width = max(12, segment_width - max(1, excess))
+            shortened = self._truncate_cells(segment, target_width - 1)
+            segments[longest_index] = shortened + "…"
+        self._text = separator.join(segments)
 
     def update_funnel(self, text: str) -> None:
         """Update the local 88-to-top-N screener status in the persistent row."""
@@ -1018,10 +1043,11 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                     last_trade_price = execution_engine._latest_price(
                         book_ticker, execution_engine.paper_positions.get(book_ticker)
                     )
-                    if last_trade_price > 0.0:
-                        execution_engine.schedule_paper_position_monitor(
-                            book_ticker, last_trade_price, db_manager
-                        )
+                    execution_engine.schedule_paper_position_monitor(
+                        book_ticker,
+                        last_trade_price if last_trade_price > 0.0 else None,
+                        db_manager,
+                    )
             elif book_result.get("updated"):
                 _trade_flow_inc("orderbook_invalid")
                 logger.debug(
