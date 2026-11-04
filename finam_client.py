@@ -1081,7 +1081,7 @@ class FinamBrokerClient:
                                 )
                             if order_book_unattributed_sample:
                                 logger.warning(
-                                    "📚 [ORDER_BOOK UNATTRIBUTED SAMPLE] %s",
+                                    "📚 [ORDER_BOOK PARSER SAMPLE] %s",
                                     order_book_unattributed_sample,
                                 )
 
@@ -1191,6 +1191,7 @@ class FinamBrokerClient:
                                 if isinstance(item, dict) and item.get("ticker")
                             }
                             observed_tickers = symbol_hints | update_tickers
+                            parse_missing_tickers = symbol_hints - update_tickers
                             if not observed_tickers:
                                 order_book_unattributed_messages += 1
                                 if not order_book_unattributed_sample:
@@ -1198,6 +1199,12 @@ class FinamBrokerClient:
                                     order_book_unattributed_sample = json.dumps(
                                         safe_payload, ensure_ascii=False, default=str
                                     )[:1200]
+                            elif parse_missing_tickers and not order_book_unattributed_sample:
+                                safe_payload = self._redact_for_log(payload)
+                                order_book_unattributed_sample = (
+                                    f"symbols={','.join(sorted(parse_missing_tickers))}; payload="
+                                    + json.dumps(safe_payload, ensure_ascii=False, default=str)[:1000]
+                                )
                             for observed_ticker in observed_tickers:
                                 symbol_stats = _order_book_symbol_stats(observed_ticker)
                                 symbol_stats["window_wire"] += 1
