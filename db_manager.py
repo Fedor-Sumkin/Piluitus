@@ -482,6 +482,97 @@ class DBManager:
             log.warning("🧹 PAPER test session cleared: %s", result)
             return result
 
+    async def clear_unreconciled_paper_positions(self) -> dict:
+        """Delete only PAPER records explicitly quarantined as STALE_REVIEW.
+
+        Closed PAPER history, verdicts, risk snapshots, LIVE records and all other
+        storage keys are preserved. The corresponding active_orders references
+        are removed by ID so stale entries cannot be rediscovered as active.
+        """
+        async with self._paper_session_lock:
+            client = await self._get_client()
+            snapshot = await self.get_paper_session_snapshot()
+            stale_ids = {
+                str(row.get("id") or "").strip()
+                for row in snapshot.get("paper_trades", [])
+                if isinstance(row, dict)
+                and str(row.get("status", "")).upper() == "STALE_REVIEW"
+                and str(row.get("reconciliation_status", "")).upper() == "REVIEW_REQUIRED"
+                and str(row.get("id") or "").strip()
+            }
+            if not stale_ids:
+                return {
+                    "deleted_stale_positions": 0,
+                    "deleted_trade_keys": 0,
+                    "deleted_active_order_rows": 0,
+                    "position_ids": [],
+                    "preserved_paper_history_rows": snapshot["paper_history_count"],
+                    "preserved_verdict_history_rows": snapshot["verdict_history_count"],
+                    "preserved_verdict_execution_keys": snapshot["verdict_execution_count"],
+                    "preserved_live_trade_keys": snapshot["live_trade_count"],
+                    "preserved_live_history_rows": snapshot["live_history_count"],
+                    "preserved_live_active_order_rows": snapshot["live_active_order_count"],
+                    "storage_backend": snapshot["storage_backend"],
+                    "aof_compacted": False,
+                }
+
+            matching_trade_keys: list[str] = []
+            for key in await self._scan_matching_keys(client, "piluitus:trade:*"):
+                fallback_id = key.rsplit(":", 1)[-1]
+                if fallback_id not in stale_ids:
+                    continue
+                trade = self._decode_json_value(await client.get(key))
+                if (
+                    self.is_paper_trade(trade, fallback_id)
+                    and isinstance(trade, dict)
+                    and str(trade.get("status", "")).upper() == "STALE_REVIEW"
+                    and str(trade.get("reconciliation_status", "")).upper() == "REVIEW_REQUIRED"
+                ):
+                    matching_trade_keys.append(key)
+
+            deleted_trade_keys = (
+                await client.delete(*matching_trade_keys) if matching_trade_keys else 0
+            )
+
+            orders_raw = await self._read_list_raw(client, "piluitus:active_orders")
+            kept_orders: list[str] = []
+            removed_order_rows = 0
+            for raw in orders_raw:
+                item = self._decode_json_value(raw)
+                if not isinstance(item, dict):
+                    kept_orders.append(raw)
+                    continue
+                nested = item.get("data") if isinstance(item.get("data"), dict) else item
+                fallback_id = str(item.get("id") or nested.get("id") or "").strip()
+                if fallback_id in stale_ids and self.is_paper_trade(nested, fallback_id):
+                    removed_order_rows += 1
+                    continue
+                kept_orders.append(raw)
+            if removed_order_rows:
+                await self._replace_list_raw(client, "piluitus:active_orders", kept_orders)
+
+            aof_compacted = False
+            if isinstance(client, _InMemory):
+                await client.compact_aof()
+                aof_compacted = True
+
+            result = {
+                "deleted_stale_positions": len(matching_trade_keys),
+                "deleted_trade_keys": int(deleted_trade_keys),
+                "deleted_active_order_rows": removed_order_rows,
+                "position_ids": sorted(stale_ids),
+                "preserved_paper_history_rows": snapshot["paper_history_count"],
+                "preserved_verdict_history_rows": snapshot["verdict_history_count"],
+                "preserved_verdict_execution_keys": snapshot["verdict_execution_count"],
+                "preserved_live_trade_keys": snapshot["live_trade_count"],
+                "preserved_live_history_rows": snapshot["live_history_count"],
+                "preserved_live_active_order_rows": snapshot["live_active_order_count"],
+                "storage_backend": snapshot["storage_backend"],
+                "aof_compacted": aof_compacted,
+            }
+            log.warning("🧹 STALE_REVIEW PAPER positions removed; other PAPER history preserved: %s", result)
+            return result
+
     async def connect(self) -> None:
         """
         Открывает (или создаёт) соединение с Redis.
