@@ -87,7 +87,7 @@ class _RunIdFilter(logging.Filter):
         self.run_id = run_id
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.run_id = self.run_id
+        setattr(record, "run_id", self.run_id)
         return True
 
 
@@ -119,9 +119,9 @@ def _configure_run_file_logging() -> tuple[str, str | None]:
             "%(asctime)s,%(msecs)03d [%(levelname)s] [RUN=%(run_id)s] %(name)s: %(message)s"
         ))
         file_handler.addFilter(_RunIdFilter(run_id))
-        file_handler._piluitus_run_log = True
-        file_handler._piluitus_run_id = run_id
-        file_handler._piluitus_run_path = str(log_path)
+        setattr(file_handler, "_piluitus_run_log", True)
+        setattr(file_handler, "_piluitus_run_id", run_id)
+        setattr(file_handler, "_piluitus_run_path", str(log_path))
         root_logger.addHandler(file_handler)
         return run_id, str(log_path)
     except OSError as exc:
