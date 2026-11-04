@@ -1,8 +1,7 @@
 import asyncio
 import logging
 import math
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone, timedelta
 from urllib.parse import quote as url_quote
 from collections.abc import Callable, Iterable
 from typing import Any
@@ -15,6 +14,7 @@ import httpx
 
 logger = logging.getLogger("Piluitus.FinamGateway")
 JOURNAL_FILE = "trading_journal.json"
+_MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
 
 
 def _event_timestamp_to_monotonic(value: object, receive_monotonic: float) -> float:
@@ -141,7 +141,7 @@ class FinamBrokerClient:
         if not normalized_ticker:
             return None
         symbol = f"{normalized_ticker}@MISX"
-        moscow_day = datetime.now(ZoneInfo("Europe/Moscow")).date().isoformat()
+        moscow_day = datetime.now(_MOSCOW_TZ).date().isoformat()
         cache_key = f"{symbol}|{moscow_day}"
         try:
             cache_ttl = float(os.getenv("FINAM_ASSET_SCHEDULE_CACHE_SEC", "300"))
@@ -153,14 +153,14 @@ class FinamBrokerClient:
 
         now = time.monotonic()
         cached = self._asset_schedule_cache.get(cache_key)
-        if cached is not None and now - cached[0] < cache_ttl:
+        if cached is not None and now - cached[0] < (cache_ttl if cached[1] is not None else 20.0):
             return cached[1]
 
         lock = self._asset_schedule_locks.setdefault(cache_key, asyncio.Lock())
         async with lock:
             now = time.monotonic()
             cached = self._asset_schedule_cache.get(cache_key)
-            if cached is not None and now - cached[0] < cache_ttl:
+            if cached is not None and now - cached[0] < (cache_ttl if cached[1] is not None else 20.0):
                 return cached[1]
             url = f"{self.base_url}/v1/assets/{url_quote(symbol, safe='@')}/schedule"
             try:
