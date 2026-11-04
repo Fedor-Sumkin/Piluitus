@@ -127,13 +127,14 @@ class FinamBrokerClient:
     # ------------------------------------------------------------------
     @staticmethod
     def _decimal(value: Any, default: float = 0.0) -> float:
-        """Convert Finam decimal fields from either strings or {value: ...}."""
+        """Convert Finam decimal fields and reject NaN/Infinity."""
         if isinstance(value, dict):
             value = value.get("value", default)
         try:
-            return float(value)
-        except (TypeError, ValueError):
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
             return default
+        return number if math.isfinite(number) else default
 
     @staticmethod
     def _redact_for_log(value: Any) -> Any:
@@ -846,28 +847,20 @@ class FinamBrokerClient:
                                 # turn. A Top-15 rotation should not wait for the
                                 # periodic refresh timer before its BBO subscription
                                 # is requested (the timer is only a safety resync).
-                                required_tickers = list(selected[:order_book_limit])
-                                positions_read_ok = True
-                                provider = self.open_positions_provider
-                                if callable(provider):
-                                    try:
-                                        required_tickers.extend(provider())
-                                    except Exception as positions_exc:
-                                        positions_read_ok = False
-                                        logger.exception(
-                                            "Finam ORDER_BOOK: не удалось получить открытые позиции; "
-                                            "сохраняем текущие подписки: %s", positions_exc
-                                        )
-                                wanted = {
-                                    f"{str(ticker).strip().upper().split('@')[0]}@MISX"
-                                    for ticker in required_tickers
-                                    if str(ticker).strip()
-                                }
-                                if not positions_read_ok:
-                                    # Fail closed for removals when the live-position
-                                    # provider is unavailable; still allow newly
-                                    # selected Top-15 tickers to be added.
-                                    wanted.update(order_book_subscribed)
+                                # ORDER_BOOK is strictly the current Top-N set.
+                                # Open positions do not extend this subscription set:
+                                # QUOTES remain subscribed for the full universe.
+                                normalized_selected: list[str] = []
+                                seen_selected: set[str] = set()
+                                for raw_ticker in selected:
+                                    ticker = str(raw_ticker).strip().upper().split("@")[0]
+                                    if not ticker or ticker in seen_selected:
+                                        continue
+                                    seen_selected.add(ticker)
+                                    normalized_selected.append(f"{ticker}@MISX")
+                                    if len(normalized_selected) >= order_book_limit:
+                                        break
+                                wanted = set(normalized_selected)
 
                                 sync_due = now_loop - last_order_book_sync >= order_book_refresh_sec
                                 selection_changed = wanted != order_book_subscribed
