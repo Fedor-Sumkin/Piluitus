@@ -2,6 +2,8 @@ import asyncio
 import logging
 import math
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+from urllib.parse import quote as url_quote
 from collections.abc import Callable, Iterable
 from typing import Any
 import json
@@ -92,6 +94,9 @@ class FinamBrokerClient:
         # Optional synchronous callback supplied by main.py. It returns tickers
         # with live positions that must retain BBO even after leaving the screener.
         self.open_positions_provider: Callable[[], Iterable[str]] | None = None
+        # Finam publishes per-instrument session intervals; cache them by Moscow date.
+        self._asset_schedule_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+        self._asset_schedule_locks: dict[str, asyncio.Lock] = {}
 
     # ------------------------------------------------------------------
     # 1️⃣  CONNECT 
@@ -121,6 +126,80 @@ class FinamBrokerClient:
             "Content-Type": "application/json",
         }
         logger.info("Авторизация Finam Trade API подтверждена.")
+
+    async def get_asset_schedule(self, ticker: str) -> dict[str, Any] | None:
+        """Return the authenticated Finam schedule for one MOEX instrument.
+
+        The API returns explicit session intervals (including exceptional sessions).
+        Cache only for the current Moscow calendar date; a failed lookup is cached
+        briefly to avoid retrying the endpoint for every candidate tick.
+        """
+        if not self.jwt_token:
+            return None
+
+        normalized_ticker = str(ticker or "").strip().upper().split("@", 1)[0]
+        if not normalized_ticker:
+            return None
+        symbol = f"{normalized_ticker}@MISX"
+        moscow_day = datetime.now(ZoneInfo("Europe/Moscow")).date().isoformat()
+        cache_key = f"{symbol}|{moscow_day}"
+        try:
+            cache_ttl = float(os.getenv("FINAM_ASSET_SCHEDULE_CACHE_SEC", "300"))
+        except (TypeError, ValueError, OverflowError):
+            cache_ttl = 300.0
+        if not math.isfinite(cache_ttl):
+            cache_ttl = 300.0
+        cache_ttl = min(1800.0, max(30.0, cache_ttl))
+
+        now = time.monotonic()
+        cached = self._asset_schedule_cache.get(cache_key)
+        if cached is not None and now - cached[0] < cache_ttl:
+            return cached[1]
+
+        lock = self._asset_schedule_locks.setdefault(cache_key, asyncio.Lock())
+        async with lock:
+            now = time.monotonic()
+            cached = self._asset_schedule_cache.get(cache_key)
+            if cached is not None and now - cached[0] < cache_ttl:
+                return cached[1]
+            url = f"{self.base_url}/v1/assets/{url_quote(symbol, safe='@')}/schedule"
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    response = await client.get(
+                        url,
+                        headers={
+                            "Authorization": f"Bearer {self.jwt_token}",
+                            "Accept": "application/json",
+                        },
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                if not isinstance(payload, dict) or not isinstance(payload.get("sessions"), list):
+                    self._asset_schedule_cache[cache_key] = (time.monotonic(), None)
+                    logger.warning(
+                        "Finam вернул неизвестный формат расписания для %s; новые входы будут заблокированы.",
+                        normalized_ticker,
+                    )
+                    return None
+                self._asset_schedule_cache[cache_key] = (time.monotonic(), payload)
+                if len(self._asset_schedule_cache) > 256:
+                    self._asset_schedule_cache = {
+                        key: value for key, value in self._asset_schedule_cache.items()
+                        if key.endswith(f"|{moscow_day}")
+                    }
+                logger.info(
+                    "📅 Finam schedule загружено: %s, интервалов=%d, кэш=%.0fs.",
+                    normalized_ticker, len(payload["sessions"]), cache_ttl,
+                )
+                return payload
+            except Exception as exc:
+                # Do not include request headers, URL credentials or response bodies in logs.
+                self._asset_schedule_cache[cache_key] = (time.monotonic(), None)
+                logger.warning(
+                    "Не удалось получить расписание Finam для %s (%s); новые входы заблокированы.",
+                    normalized_ticker, type(exc).__name__,
+                )
+                return None
 
     # ------------------------------------------------------------------
     # 2️⃣  START_MARKET_DATA_STREAM (Адаптирован под асинхронный NumPy-скринер)
