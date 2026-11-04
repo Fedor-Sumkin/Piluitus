@@ -11,6 +11,30 @@ BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR / ".env"
 load_dotenv(dotenv_path=ENV_PATH)   # .env необязателен – если нет, просто читаем системные переменные
 
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Локальный корень проекта можно задать в .env. По умолчанию используется
+# папка config.py, поэтому настройка не обязательна и проект остаётся переносимым.
+_project_root_value = os.getenv("PILUITUS_PROJECT_ROOT", "").strip()
+PROJECT_ROOT = (
+    Path(_project_root_value).expanduser()
+    if _project_root_value else BASE_DIR
+)
+if not PROJECT_ROOT.is_absolute():
+    PROJECT_ROOT = BASE_DIR / PROJECT_ROOT
+PROJECT_ROOT = PROJECT_ROOT.resolve()
+
+# Приватные значения фильтруются непосредственно при форматировании логов.
+LOG_REDACT_TELEGRAM_ID = _env_flag("PILUITUS_LOG_REDACT_TELEGRAM_ID", True)
+LOG_REDACT_PROJECT_PATH = _env_flag("PILUITUS_LOG_REDACT_PROJECT_PATH", True)
+
+
 # --------------------------------------------------------------
 # 2️⃣  Класс‑контейнер с параметрами (все публичные атрибуты!)
 # --------------------------------------------------------------
