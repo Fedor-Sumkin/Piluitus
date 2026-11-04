@@ -121,6 +121,87 @@ def _parse_finite_float(value: object) -> float | None:
 logger.setLevel(logging.INFO)
 
 
+class _DurableFileHandler(logging.FileHandler):
+    """Flush every record and periodically force it from OS cache to storage.
+
+    Session/diagnostic logs are fsync'ed at a configurable interval to limit
+    disk I/O. The error log uses interval=0 and is fsync'ed on every record.
+    """
+
+    def __init__(
+        self,
+        filename,
+        mode: str = "a",
+        encoding: str | None = None,
+        delay: bool = False,
+        errors: str | None = None,
+        *,
+        sync_interval_seconds: float = 1.0,
+    ) -> None:
+        super().__init__(
+            filename,
+            mode=mode,
+            encoding=encoding,
+            delay=delay,
+            errors=errors,
+        )
+        self.sync_interval_seconds = max(0.0, float(sync_interval_seconds))
+        self._last_fsync_at = 0.0
+        self._last_fsync_warning_at = 0.0
+        self._closing = False
+
+    def flush(self) -> None:
+        # StreamHandler.emit() calls flush after every formatted log record.
+        # This first drains Python's text buffer into the OS.
+        super().flush()
+        stream = self.stream
+        if stream is None:
+            return
+
+        now = time_module.monotonic()
+        if (
+            not self._closing
+            and self.sync_interval_seconds > 0
+            and now - self._last_fsync_at < self.sync_interval_seconds
+        ):
+            return
+
+        try:
+            # Ask the operating system to commit the file data to the device.
+            os.fsync(stream.fileno())
+            self._last_fsync_at = now
+        except (OSError, ValueError) as exc:
+            # Do not recursively log from a handler that may itself be failing.
+            # Report at most once per minute directly to stderr.
+            if now - self._last_fsync_warning_at >= 60.0:
+                try:
+                    sys.stderr.write(
+                        "[PILUITUS LOG WARNING] Не удалось синхронизировать лог с диском: "
+                        f"{type(exc).__name__}\\n"
+                    )
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+                self._last_fsync_warning_at = now
+
+    def close(self) -> None:
+        # Force one final fsync before FileHandler closes the stream.
+        self._closing = True
+        try:
+            super().close()
+        finally:
+            self._closing = False
+
+
+def _log_fsync_interval_seconds() -> float:
+    raw_value = os.getenv("PILUITUS_LOG_FSYNC_INTERVAL_SECONDS", "1.0").strip()
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError, OverflowError):
+        return 1.0
+    return value if math.isfinite(value) and value >= 0.0 else 1.0
+
+
 class _RunIdFilter(logging.Filter):
     """Attach the current process run ID to every record written to a file."""
 
@@ -230,7 +311,14 @@ def _configure_run_file_logging() -> tuple[str, dict[str, str]]:
         log_dir.mkdir(parents=True, exist_ok=True)
         for kind in ("session", "diagnostic", "errors"):
             path = candidate_paths[kind]
-            handler = logging.FileHandler(path, mode="x", encoding="utf-8")
+            handler = _DurableFileHandler(
+                path,
+                mode="x",
+                encoding="utf-8",
+                sync_interval_seconds=(
+                    0.0 if kind == "errors" else _log_fsync_interval_seconds()
+                ),
+            )
             created_handlers.append(handler)
             handler.setLevel(logging.ERROR if kind == "errors" else logging.INFO)
             handler.setFormatter(_PrivacyFormatter(
@@ -263,6 +351,10 @@ logger.info(
     Path(RUN_LOG_PATHS["session"]).name if RUN_LOG_PATHS.get("session") else "unavailable",
     Path(RUN_LOG_PATHS["diagnostic"]).name if RUN_LOG_PATHS.get("diagnostic") else "unavailable",
     Path(RUN_LOG_PATHS["errors"]).name if RUN_LOG_PATHS.get("errors") else "unavailable",
+)
+logger.info(
+    "🛡️ [LOG DURABILITY] session/diagnostic fsync interval=%.2fs; errors=fsync per record",
+    _log_fsync_interval_seconds(),
 )
 
 class TerminalStatusLine:
