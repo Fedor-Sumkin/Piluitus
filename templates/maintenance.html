@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PILUITUS — Сверка и обслуживание PAPER</title>
+  <style>
+    :root{--bg:#0b0f19;--panel:#131a26;--panel2:#1a2333;--text:#e2e8f0;--muted:#94a3b8;--line:#293548;--blue:#60a5fa;--green:#34d399;--red:#f87171;--amber:#fbbf24}
+    *{box-sizing:border-box}body{margin:0;padding:24px;background:var(--bg);color:var(--text);font:14px/1.5 Segoe UI,Arial,sans-serif}
+    .wrap{max-width:1400px;margin:auto}.top{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:18px}
+    h1{font-size:23px;margin:0 0 4px}.subtitle{color:var(--muted)}a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}
+    .nav-home{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 15px;border:1px solid #3b82f6;border-radius:8px;background:#1d4ed8;color:#fff;font-weight:700;white-space:nowrap;box-shadow:0 2px 8px rgba(29,78,216,.22)}
+    .nav-home:hover{background:#2563eb;color:#fff;text-decoration:none;filter:brightness(1.08)}
+    .nav-home:focus-visible{outline:3px solid #93c5fd;outline-offset:2px}
+    .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin:16px 0}.panel h2{font-size:17px;margin:0 0 12px}
+    .stats{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px}.stat{background:var(--panel2);padding:12px;border-radius:8px;min-height:72px}.stat small{display:block;color:var(--muted)}.stat b{display:block;font-size:21px;margin-top:4px}
+    .status{padding:7px 11px;border-radius:20px;background:#263449;color:#bfdbfe;font-weight:700}.status.paused{background:#422006;color:#fcd34d}.status.running{background:#064e3b;color:#a7f3d0}
+    .notice{border-left:4px solid var(--amber);background:#2a2415;padding:12px 14px;border-radius:6px;color:#fde68a;margin:12px 0}.danger{border-left-color:var(--red);background:#2b171c;color:#fecaca}
+    .muted{color:var(--muted)}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse;min-width:900px}th,td{padding:10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}th{color:var(--muted);font-weight:600}
+    input,select{background:#0f1724;color:var(--text);border:1px solid #3a4a61;border-radius:6px;padding:8px;max-width:100%}input[type=number]{width:140px}input[type=text]{width:min(340px,100%)}
+    button{border:0;border-radius:7px;padding:9px 12px;font-weight:700;cursor:pointer;margin:3px 4px 3px 0;background:#334155;color:#f8fafc}button:hover{filter:brightness(1.15)}button:disabled{opacity:.45;cursor:not-allowed}.primary{background:#1d4ed8}.good{background:#047857}.warn{background:#92400e}.bad{background:#991b1b}
+    .row-actions{display:flex;flex-wrap:wrap;gap:4px}.field{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}.result{white-space:pre-wrap;background:#0a1220;padding:12px;border-radius:7px;margin-top:10px;overflow-wrap:anywhere}.hidden{display:none}
+    @media(max-width:850px){body{padding:12px}.stats{grid-template-columns:repeat(2,minmax(120px,1fr))}.panel{padding:13px}}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div><h1>Сверка и обслуживание PAPER-сессии</h1><div class="subtitle">Ручная проверка старых виртуальных позиций и безопасная очистка тестового состояния.</div></div>
+    <div class="field"><span id="engine-status" class="status">Загрузка статуса…</span><a class="nav-home" href="/" aria-label="Вернуться на главный дашборд">← На главный дашборд</a><button id="refresh-btn" class="primary">Обновить данные</button></div>
+  </div>
+
+  <section class="panel">
+    <h2>Состояние постоянного хранилища</h2>
+    <div class="stats" id="stats-grid"><div class="stat"><small>Загрузка…</small><b>—</b></div></div>
+    <div id="storage-note" class="notice">Загрузка информации о хранилище…</div>
+  </section>
+
+  <section class="panel">
+    <h2>Позиции, требующие сверки — STALE_REVIEW</h2>
+    <p class="muted">Эти записи остались в постоянном журнале после перезапуска PAPER-симулятора. Они не считаются активными позициями в ОЗУ, но резервируют себестоимость и блокируют новые входы до решения оператора.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Позиция</th><th>Вход / объём</th><th>SL / TP</th><th>Причина / время</th><th>Ручное действие</th></tr></thead>
+        <tbody id="stale-body"><tr><td colspan="5" class="muted">Загрузка…</td></tr></tbody>
+      </table>
+    </div>
+    <div id="stale-empty" class="muted hidden">Нет позиций, ожидающих сверки.</div>
+  </section>
+
+  <section class="panel">
+    <h2>Полная очистка PAPER-сессии</h2>
+    <div class="notice danger"><b>Внимание.</b> Операция удалит PAPER-журнал позиций (включая STALE_REVIEW), историю закрытых PAPER-сделок, историю вердиктов, статусы исполнения и сохранённый риск-срез. Открытые виртуальные позиции будут отброшены без расчёта фиктивного PnL. База знаний RAG, новости, настройки, конфигурация и текстовые диагностические журналы trading_logs сохраняются. Эта операция предназначена только для начала новой тестовой сессии.</div>
+    <p>Будут сохранены: база знаний RAG, новости, настройки, `.env`, а также любые LIVE-записи. При обнаружении LIVE-сделок/истории очистка будет заблокирована.</p>
+    <p class="muted">После очистки конвейер останется на паузе. Чтобы исключить исполнение старого сигнала, продолжение PAPER нужно включить отдельной кнопкой ниже. При Redis/Memurai ключи удаляются штатными Redis-командами; физическая компактизация серверного AOF регулируется самим сервером. Локальный fallback AOF компактизируется приложением.</p>
+    <div class="field"><label for="clear-confirm">Для подтверждения введите: <b>ОЧИСТИТЬ PAPER-СЕССИЮ</b></label></div>
+    <div class="field"><input id="clear-confirm" type="text" autocomplete="off" placeholder="ОЧИСТИТЬ PAPER-СЕССИЮ"><button id="clear-btn" class="bad">Очистить PAPER-сессию</button></div>
+    <div id="clear-result" class="result hidden"></div>
+    <div class="field"><button id="resume-btn" class="good hidden">Возобновить PAPER-торговлю</button></div>
+  </section>
+  <div class="muted">Страница работает с локальным API PILUITUS. Ручные решения сохраняются в журнале и остаются доступны для аудита.</div>
+</div>
+<script>
+(() => {
+  const CONFIRMATION = "ОЧИСТИТЬ PAPER-СЕССИЮ";
+  const $ = (id) => document.getElementById(id);
+  const money = (value) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? `${n.toLocaleString("ru-RU", {maximumFractionDigits:2})} ₽` : "—";
+  };
+  const number = (value) => {
+    const n = Number(value);
+    return Number.isFinite(n) ? n.toLocaleString("ru-RU", {maximumFractionDigits:4}) : "—";
+  };
+  async function api(url, options = {}) {
+    const response = await fetch(url, {headers:{"Content-Type":"application/json"}, ...options});
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || data.message || `HTTP ${response.status}`);
+    return data;
+  }
+  function stat(label, value) {
+    const node = document.createElement("div"); node.className="stat";
+    const small=document.createElement("small"); small.textContent=label;
+    const bold=document.createElement("b"); bold.textContent=value;
+    node.append(small,bold); return node;
+  }
+  function renderStats(summary) {
+    const grid=$("stats-grid"); grid.replaceChildren();
+    grid.append(
+      stat("PAPER-записей", number(summary.paper_trade_count)),
+      stat("Открытых в журнале", number(summary.paper_open_count)),
+      stat("STALE_REVIEW", number(summary.paper_stale_count)),
+      stat("Закрытых PAPER", number(summary.paper_closed_count)),
+      stat("История сделок PAPER", number(summary.paper_history_count)),
+      stat("PAPER active_orders", number(summary.paper_active_order_count)),
+      stat("История вердиктов", number(summary.verdict_history_count)),
+      stat("Статусов исполнения", number(summary.verdict_execution_count)),
+      stat("PAPER в памяти", number(summary.memory_open_count || 0)),
+      stat("LIVE-записей", number(summary.live_trade_count)),
+      stat("LIVE в истории", number(summary.live_history_count)),
+      stat("LIVE active_orders", number(summary.live_active_order_count)),
+      stat("Других записей", number(summary.other_trade_count))
+    );
+    const note=$("storage-note");
+    const backend=summary.storage_backend === "fallback_aof" ? `Fallback AOF-файл: ${summary.aof_path || "путь не указан"}` : "Подключено Redis/Memurai-хранилище";
+    note.className = summary.live_trade_count || summary.live_history_count || summary.live_active_order_count ? "notice danger" : "notice";
+    note.textContent = `${backend}. Сохранено неизвестных/не-PAPER записей: ${summary.other_trade_count || 0}. ${summary.live_trade_count || summary.live_history_count || summary.live_active_order_count ? "Найдены LIVE-данные: полная очистка будет запрещена." : "LIVE-записи не обнаружены."}`;
+  }
+  function renderStale(rows) {
+    const body=$("stale-body"); body.replaceChildren();
+    $("stale-empty").classList.toggle("hidden", rows.length !== 0);
+    if (!rows.length) {
+      const tr=document.createElement("tr"), td=document.createElement("td"); td.colSpan=5; td.className="muted"; td.textContent="Нет STALE_REVIEW-позиций."; tr.append(td); body.append(tr); return;
+    }
+    rows.forEach((pos) => {
+      const tr=document.createElement("tr");
+      const cell=(value) => {const td=document.createElement("td"); td.textContent=value; return td;};
+      const identity=cell(`${pos.ticker || "—"} · ${pos.side || "—"}\nID: ${pos.id || "—"}`);
+      const entry=cell(`Вход: ${money(pos.entry_price)}\nЛоты: ${number(pos.lots)} · Акции: ${number(pos.volume)}\nСебестоимость: ${money(pos.notional_entry_rub)}`);
+      const levels=cell(`SL: ${number(pos.stop_loss)}\nTP: ${number(pos.take_profit)}`);
+      const reason=cell(`${pos.stale_reason || "Требуется ручная проверка"}\nОбнаружена: ${pos.stale_detected_at || "—"}`);
+      const actions=document.createElement("td");
+      const exit=document.createElement("input"); exit.type="number"; exit.step="any"; exit.min="0.0001"; exit.placeholder="Цена выхода"; exit.setAttribute("aria-label",`Цена выхода ${pos.ticker}`);
+      const note=document.createElement("input"); note.type="text"; note.placeholder="Пояснение к сверке"; note.maxLength=240; note.style.width="100%";
+      const restore=document.createElement("button"); restore.className="good"; restore.textContent="Подтвердить открытой";
+      const close=document.createElement("button"); close.className="warn"; close.textContent="Зафиксировать закрытие";
+      const voidBtn=document.createElement("button"); voidBtn.className="bad"; voidBtn.textContent="Запись ошибочная";
+      restore.addEventListener("click",()=>resolve(pos.id,{action:"restore_open",note:note.value}));
+      close.addEventListener("click",()=>resolve(pos.id,{action:"close",exit_price:exit.value,note:note.value}));
+      voidBtn.addEventListener("click",()=>resolve(pos.id,{action:"void",note:note.value}));
+      const controls=document.createElement("div"); controls.className="row-actions"; controls.append(restore,close,voidBtn);
+      actions.append(exit,note,controls);
+      tr.append(identity,entry,levels,reason,actions); body.append(tr);
+    });
+  }
+  async function resolve(id, payload) {
+    try {
+      if (payload.action === "close" && (!payload.exit_price || Number(payload.exit_price)<=0)) throw new Error("Для закрытия укажите положительную цену выхода.");
+      if (payload.action !== "restore_open" && String(payload.note || "").trim().length<3) throw new Error("Добавьте пояснение (не менее 3 символов).");
+      if (payload.action === "void" && !confirm("Пометить запись ошибочной? Она останется в журнале со статусом VOIDED.")) return;
+      const result=await api(`/api/v1/paper/reconciliation/${encodeURIComponent(id)}`,{method:"POST",body:JSON.stringify(payload)});
+      alert(result.message || "Сверка сохранена."); await refresh();
+    } catch (err) { alert(err.message); }
+  }
+  async function refresh() {
+    try {
+      const data=await api("/api/v1/paper/reconciliation");
+      const summary={...data.summary,memory_open_count:(data.memory_open_positions||[]).length};
+      renderStats(summary); renderStale(data.stale_positions || []);
+      const status=$("engine-status");
+      status.textContent=data.maintenance_active ? "PAPER НА ПАУЗЕ" : "PAPER АКТИВЕН";
+      status.className=`status ${data.maintenance_active ? "paused" : "running"}`;
+      $("resume-btn").classList.toggle("hidden", !data.maintenance_active);
+      $("clear-btn").disabled=!!(summary.live_trade_count || summary.live_history_count || summary.live_active_order_count);
+    } catch(err) {
+      $("storage-note").textContent=err.message; $("storage-note").className="notice danger";
+      $("stale-body").innerHTML="<tr><td colspan='5'>Не удалось загрузить журнал.</td></tr>";
+    }
+  }
+  $("refresh-btn").addEventListener("click",refresh);
+  $("clear-btn").addEventListener("click",async()=>{
+    if ($("clear-confirm").value.trim() !== CONFIRMATION) { alert(`Введите точную фразу: ${CONFIRMATION}`); return; }
+    if (!confirm("Будут безвозвратно удалены тестовые PAPER-позиции, PAPER-история и вердикты. Продолжить?")) return;
+    const button=$("clear-btn"); button.disabled=true;
+    try {
+      const result=await api("/api/v1/paper/session/clear",{method:"POST",body:JSON.stringify({confirmation:$("clear-confirm").value.trim()})});
+      $("clear-result").classList.remove("hidden");
+      $("clear-result").textContent=JSON.stringify(result,null,2);
+      $("clear-confirm").value=""; await refresh();
+      alert(result.message || "PAPER-сессия очищена.");
+    } catch(err) { alert(err.message); await refresh(); }
+    finally { button.disabled=false; }
+  });
+  $("resume-btn").addEventListener("click",async()=>{
+    if (!confirm("Возобновить PAPER-конвейер? Новые сигналы снова смогут отправляться на исполнение.")) return;
+    try { const result=await api("/api/v1/paper/session/resume",{method:"POST",body:"{}"}); alert(result.message || "PAPER возобновлён."); await refresh(); }
+    catch(err){alert(err.message);}
+  });
+  refresh();
+})();
+</script>
+</body>
+</html>

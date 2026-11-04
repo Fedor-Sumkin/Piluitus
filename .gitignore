@@ -1,1 +1,7 @@
 .env
+venv/
+.venv/
+__pycache__/
+trading_logs/
+import_knowledge/
+historical_ticks/

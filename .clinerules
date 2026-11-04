@@ -1,0 +1,34 @@
+
+# Project: Autopilot — MOEX order-book scalping
+
+## General workflow
+- Work with the existing codebase; do not recreate the project.
+- Inspect the architecture, dependencies, configuration, and tests before changing code.
+- Implement requested changes directly in the existing project directory.
+- Preserve existing behavior and public interfaces unless explicitly asked to change them.
+- Make small, focused changes instead of unnecessary rewrites.
+- Explain which files changed and why.
+- Run relevant tests and report their actual results.
+- Never claim a test passed unless it was executed successfully.
+
+## Trading safety
+- Never submit real exchange orders or enable live trading autonomously.
+- Never connect to a live brokerage account or use real trading credentials.
+- Never expose API keys, tokens, passwords, or account identifiers.
+- Do not change live-trading, risk-limit, or order-execution behavior without explicit approval.
+- Prefer mocked exchange interfaces, historical data, and paper trading for tests.
+- Never remove risk controls to make a test pass.
+- Preserve order-book sequencing, timestamps, and price/quantity precision.
+- Explicitly handle stale market data, disconnects, and rejected orders.
+
+## File and command safety
+- Work only inside the selected project directory unless authorized otherwise.
+- Ask before deleting files, changing dependencies, running migrations, or modifying infrastructure.
+- Ask before running any command that can connect to a live exchange or execute trades.
+- Do not overwrite unrelated user changes.
+- Never commit or push changes without permission.
+
+## Before finishing
+- Summarize changed files and behavior.
+- Report tests run, failures, and unresolved risks.
+- Identify any changes that still require manual verification.

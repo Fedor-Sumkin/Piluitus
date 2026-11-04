@@ -1,49 +1,895 @@
 import asyncio
 import json
+import math
 import logging
+import re
 import os
-import time
+import sys
+import time as time_module
+import threading
+import shutil
+from itertools import count
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import HTMLResponse
+from typing import Any, List, Union, cast
+from aiogram import Bot 
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, HTTPException
+from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from dotenv import load_dotenv
-from datetime import datetime
+from datetime import datetime, time
+from uuid import uuid4
+from types import SimpleNamespace
+from fastapi.templating import Jinja2Templates
+from config import Settings
+from risk_limits import validate_daily_loss_limit
 
-# Нативные модули экосистемы PILUITUS V2
-from news_parser import MarketNewsParser
-from ai_engine import analyze_stock_signal, get_historical_rag_context
+# --- PILUITUS‑V3 modules ------------------------------------------------
+from ai_engine import AIEngine
+from db_manager import DBManager
 from finam_client import FinamBrokerClient
-from screener import MarketScreener
+from screener_funnel import HFTMemoryScreener
 from execution_layer import BaseExecutionEngine
-from risk_manager import RiskManager
+from risk_manager import RiskManager, LOT_SIZES
+from signal_guard import validate_signal_evidence, infer_candidate_direction, validate_atr_readiness
+from candidate_recovery import refresh_candidate_bbo_metrics
+from dashboard_verdicts import (
+    build_verdict_explanation,
+    finite_float,
+    nonnegative_int,
+    normalise_execution_status,
+)
 import tg_bot
-from screener_funnel import VolumeVolatilityFunnel
+from news_parser import MarketNewsParser
 
+# --------------------------------------------------------------
+#  ENVIRONMENT & INITIALIZATION
+# --------------------------------------------------------------
 load_dotenv()
 
-FINAM_TOKEN = os.getenv("FINAM_TOKEN", "default_demo_token")
-CLIENT_ID = os.getenv("FINAM_CLIENT_ID", "UNKNOWN_ACCOUNT")
-DEPOSIT = float(os.getenv("TRADING_DEPOSIT", 100000.0))
+FINAM_TOKEN = os.getenv("FINAM_TOKEN", "")
+CLIENT_ID   = os.getenv("FINAM_CLIENT_ID", "UNKNOWN_ACCOUNT")
+DEPOSIT      = float(os.getenv("TRADING_DEPOSIT", 100000.0))
 
-# --- СИСТЕМНОЕ КУПИРОВАНИЕ СЕТЕВОГО ШУМА (ОПТИМИЗАЦИЯ ЛОГОВ) ---
-logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(levelname)s - %(message)s')
+# --------------------------------------------------------------
+#  LOGGING REGIME
+# --------------------------------------------------------------
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("FinamCore").setLevel(logging.WARNING)
-logging.getLogger("finam").setLevel(logging.WARNING)
+logging.getLogger("websockets").setLevel(logging.WARNING)
 
-# Оставляем активными только промышленные логи PILUITUS
-logger = logging.getLogger("FinamCore.Main")
+logger = logging.getLogger("Piluitus.Main")
+
+
+def _parse_finite_float(value: object) -> float | None:
+    """Convert an untrusted JSON scalar to a finite float."""
+    if not isinstance(value, (int, float, str)):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
 logger.setLevel(logging.INFO)
-logging.getLogger("FinamCore.AI").setLevel(logging.INFO)
-logging.getLogger("FinamCore.ExecutionLayer").setLevel(logging.INFO)
-logging.getLogger("FinamCore.Telegram").setLevel(logging.INFO)
 
-# Глобальные кэш-структуры
-last_ai_verdicts_cache = []
+
+class TerminalStatusLine:
+    """One in-place terminal status line that is redrawn after log messages.
+
+    Uses stderr, the same stream as logging.StreamHandler. Updates are throttled
+    to reduce console I/O during high-frequency market data bursts. If output is
+    redirected rather than attached to an interactive terminal, it stays silent
+    instead of injecting carriage-return control characters into log files.
+    """
+
+    def __init__(self, stream=None, refresh_interval: float = 0.20):
+        self.stream = stream if stream is not None else sys.stderr
+        try:
+            self.enabled = bool(self.stream.isatty())
+        except (AttributeError, OSError):
+            self.enabled = False
+        self.refresh_interval = max(0.05, float(refresh_interval))
+        self._lock = threading.RLock()
+        self._text = ""
+        self._market_text = ""
+        self._funnel_text = ""
+        self._finam_text = ""
+        self._subscription_text = ""
+        self._latency_text = ""
+        self._impulse_text = ""
+        self._visible = False
+        self._last_draw = 0.0
+        self._last_width = 0
+
+    def _terminal_width(self) -> int:
+        try:
+            return max(20, shutil.get_terminal_size(fallback=(120, 24)).columns)
+        except OSError:
+            return 120
+
+    def _clear_locked(self) -> None:
+        if self.enabled and self._visible:
+            # Spaces are more compatible with Windows terminals than ANSI clear-line codes.
+            self.stream.write("\r" + (" " * self._last_width) + "\r")
+            self.stream.flush()
+        self._visible = False
+        self._last_width = 0
+
+    def _draw_locked(self, force: bool = False) -> None:
+        if not self.enabled or not self._text:
+            return
+        now = time_module.monotonic()
+        if not force and now - self._last_draw < self.refresh_interval:
+            return
+
+        self._clear_locked()
+        # Leave a few columns free to avoid terminal wrapping (emoji can be double-width).
+        max_chars = max(16, self._terminal_width() - 8)
+        text = self._text[:max_chars]
+        self.stream.write(text)
+        self.stream.flush()
+        self._visible = True
+        self._last_width = len(text)
+        self._last_draw = now
+
+    def _compose_text_locked(self) -> None:
+        """Compose market, Finam, vLLM latency and NumPy status in one row."""
+        market_text = self._market_text.strip()
+        # Keep the live tick counter, but remove the repeated long label to save columns.
+        market_text = market_text.replace("[WS ПОТОК ФИНАМ]", "Finam ticks")
+        segments = [
+            market_text,
+            self._funnel_text.strip(),
+            self._finam_text.strip(),
+            self._subscription_text.strip(),
+            self._latency_text.strip(),
+            self._impulse_text.strip(),
+        ]
+        segments = [segment for segment in segments if segment]
+        max_chars = max(32, self._terminal_width() - 8)
+        if not segments:
+            self._text = ""
+            return
+
+        # Reserve space for all status sources. If the terminal is narrow, shorten
+        # the longest segments instead of letting later statuses disappear entirely.
+        separator = "  |  "
+        available = max_chars - len(separator) * (len(segments) - 1)
+        while sum(len(segment) for segment in segments) > available:
+            longest_index = max(range(len(segments)), key=lambda i: len(segments[i]))
+            segment = segments[longest_index]
+            if len(segment) <= 12:
+                # If all remaining segments are short, drop the least critical last one.
+                segments.pop()
+                if not segments:
+                    self._text = ""
+                    return
+                available = max_chars - len(separator) * (len(segments) - 1)
+                continue
+            excess = sum(len(item) for item in segments) - available
+            target_length = max(12, len(segment) - max(1, excess))
+            segments[longest_index] = segment[:target_length - 1] + "…"
+        self._text = separator.join(segments)[:max_chars]
+
+    def update_funnel(self, text: str) -> None:
+        """Update the local 88-to-top-N screener status in the persistent row."""
+        with self._lock:
+            self._funnel_text = str(text)
+            self._compose_text_locked()
+            self._draw_locked()
+
+    def update_finam(self, text: str) -> None:
+        """Update latest Finam stream counters without emitting a new log line."""
+        with self._lock:
+            self._finam_text = str(text)
+            self._compose_text_locked()
+            self._draw_locked()
+
+    def update_subscription(self, text: str) -> None:
+        """Update the latest QUOTES subscription batch in the persistent status row."""
+        with self._lock:
+            self._subscription_text = str(text)
+            self._compose_text_locked()
+            self._draw_locked()
+
+    def update_latency(self, text: str) -> None:
+        """Update the latest vLLM inference latency in the persistent status row."""
+        with self._lock:
+            self._latency_text = str(text)
+            self._compose_text_locked()
+            self._draw_locked()
+
+    def update(self, text: str) -> None:
+        """Update the live market part without clearing the latest impulse."""
+        with self._lock:
+            self._market_text = str(text)
+            self._compose_text_locked()
+            self._draw_locked()
+
+    def update_impulse(self, text: str) -> None:
+        """Update the NumPy impulse segment in-place instead of logging each tick."""
+        with self._lock:
+            self._impulse_text = str(text)
+            self._compose_text_locked()
+            # Respect the same redraw throttle as the market-tick status.
+            self._draw_locked()
+
+    def before_log(self) -> None:
+        # Keep the lock held through log emission so a tick update cannot overwrite it.
+        self._lock.acquire()
+        self._clear_locked()
+
+    def after_log(self) -> None:
+        try:
+            self._draw_locked(force=True)
+        finally:
+            self._lock.release()
+
+
+terminal_status = TerminalStatusLine()
+_last_numpy_impulse_fallback_log_at = 0.0
+
+
+def update_numpy_impulse_status(ticker: str) -> None:
+    """Show the latest impulse in the status row; rate-limit logs without a TTY."""
+    global _last_numpy_impulse_fallback_log_at
+    message = f"🚨 [NUMPY ИМПУЛЬС] {ticker} → сигнал в очереди"
+    terminal_status.update_impulse(message)
+
+    # Preserve visibility in redirected/non-interactive logs without flooding them.
+    if not terminal_status.enabled:
+        now = time_module.monotonic()
+        if now - _last_numpy_impulse_fallback_log_at >= 5.0:
+            logger.warning("%s (повторные сообщения подавляются на 5 сек.)", message)
+            _last_numpy_impulse_fallback_log_at = now
+
+
+class StatusAwareStreamHandler(logging.StreamHandler):
+    """Console handler that folds high-frequency status messages into one row.
+
+    This avoids assigning a function to ``handler.emit`` at runtime, which is
+    incompatible with the method's descriptor type under Pylance.
+    """
+
+    def __init__(self, stream, status_line: TerminalStatusLine) -> None:
+        super().__init__(stream)
+        self.status_line = status_line
+
+    def _capture_status_message(self, record: logging.LogRecord) -> bool:
+        """Update the status row and return True when the log line is consumed."""
+        if not self.status_line.enabled:
+            return False
+
+        try:
+            message = record.getMessage()
+        except Exception:
+            message = ""
+
+        if "Поток Finam активен:" in message:
+            compact = message.split("Поток Finam активен:", 1)[1].strip()
+            compact = compact.replace("котировок в очередь=", "Q=")
+            compact = compact.replace("последний тик ", "")
+            compact = compact.replace("; ", " ")
+            self.status_line.update_finam("📡 Finam " + compact)
+            return True
+
+        if "Подписка QUOTES отправлена:" in message:
+            batch_match = re.search(
+                r"пакет\s+(\d+)/(\d+),\s*символов\s+(\d+)\s*\((.*?)\)\.?$",
+                message,
+            )
+            if batch_match:
+                batch_no, batch_total, symbols_count, symbols = batch_match.groups()
+                symbols = symbols.strip().rstrip(".")
+                self.status_line.update_subscription(
+                    f"📨 QUOTES {batch_no}/{batch_total} {symbols_count} sym {symbols}"
+                )
+            else:
+                self.status_line.update_subscription("📨 QUOTES подписка отправлена")
+            return True
+
+        if "[vLLM RAW LATENCY]" in message:
+            latency_match = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*сек", message)
+            latency = latency_match.group(1) if latency_match else "?"
+            self.status_line.update_latency(f"⏱ vLLM {latency}s")
+            return True
+
+        return False
+
+    def _colorize_control_record(self, record: logging.LogRecord) -> logging.LogRecord:
+        """Return a colored copy for selected console diagnostics only."""
+        # Do not inject ANSI escape sequences into redirected output or log files.
+        if not self.status_line.enabled:
+            return record
+
+        try:
+            message = record.getMessage()
+        except Exception:
+            return record
+
+        upper = message.upper()
+        color = ""
+        reset = "\x1b[0m"
+
+        if "[PAPER BBO ENTRY RETRY]" in upper:
+            color = "\x1b[96m"  # bright cyan
+        elif "[PAPER BBO ENTRY BLOCK]" in upper:
+            color = "\x1b[91m"  # bright red
+        elif "[DASHBOARD EXECUTION]" in upper:
+            failure_tokens = ("BLOCKED", "FAILED", "ERROR", "SKIPPED", "ОТКЛОН", "ОШИБК", "БЛОК")
+            success_tokens = ("EXECUTED", "FILLED", "OPENED", "SUCCESS", "ИСПОЛНЕН", "ОТКРЫТ", "УСПЕШ")
+            if any(token in upper for token in failure_tokens):
+                color = "\x1b[91m"  # bright red
+            elif any(token in upper for token in success_tokens):
+                color = "\x1b[92m"  # bright green
+            else:
+                color = "\x1b[93m"  # bright yellow
+        elif "TRADE FLOW 60S" in upper:
+            color = "\x1b[95m"  # bright magenta
+
+        if not color:
+            return record
+
+        # Clone the LogRecord: another handler (especially a file handler)
+        # must receive the original, uncolored message.
+        colored = logging.makeLogRecord(record.__dict__.copy())
+        colored.msg = f"{color}{message}{reset}"
+        colored.args = ()
+        return colored
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Emit ordinary logs around the persistent status line."""
+        if self._capture_status_message(record):
+            return
+
+        self.status_line.before_log()
+        try:
+            console_record = self._colorize_control_record(record)
+            super().emit(console_record)
+        finally:
+            self.status_line.after_log()
+
+
+def _install_status_aware_logging_handlers() -> None:
+    """Replace console handlers with typed handlers that preserve live status."""
+    loggers: list[logging.Logger] = [cast(logging.Logger, logging.root)]
+    for candidate in logging.Logger.manager.loggerDict.values():
+        if isinstance(candidate, logging.Logger):
+            loggers.append(candidate)
+
+    replacements: dict[int, StatusAwareStreamHandler] = {}
+    for current_logger in loggers:
+        # Iterate over a snapshot because handlers are replaced in-place.
+        for index, handler in enumerate(list(current_logger.handlers)):
+            if not isinstance(handler, logging.StreamHandler):
+                continue
+            if getattr(handler, "stream", None) not in (sys.stderr, sys.stdout):
+                continue
+            if isinstance(handler, StatusAwareStreamHandler):
+                continue
+
+            replacement = replacements.get(id(handler))
+            if replacement is None:
+                replacement = StatusAwareStreamHandler(handler.stream, terminal_status)
+                replacement.setLevel(handler.level)
+                replacement.setFormatter(handler.formatter)
+                replacement.terminator = handler.terminator
+                for current_filter in handler.filters:
+                    replacement.addFilter(current_filter)
+                replacements[id(handler)] = replacement
+            current_logger.handlers[index] = replacement
+
+_install_status_aware_logging_handlers()
+
+# --------------------------------------------------------------
+#  1️⃣  GLOBAL OBJECTS & PRIORITIZED CONTOUR
+# --------------------------------------------------------------
+db_manager = DBManager()
+ai_engine = AIEngine()
+broker = FinamBrokerClient(token=FINAM_TOKEN, is_demo=Settings.FINAM_DEMO)
+screener = HFTMemoryScreener(window_size=30)
+execution_engine = BaseExecutionEngine(
+    finam_broker_client=broker,
+    screener=screener,
+    initial_capital=DEPOSIT,
+)
+# Keep Finam ORDER_BOOK subscriptions for every active PAPER position, even
+# when its ticker rotates out of the screener's Top-N list.
+broker.open_positions_provider = execution_engine.get_open_position_tickers
+risk_manager = RiskManager(
+    max_risk_per_trade=Settings.MAX_RISK_PCT,
+    daily_loss_limit=Settings.DAILY_LOSS_LIMIT_PCT,
+    initial_deposit=DEPOSIT,
+)
+
+
+def _current_paper_open_pnl() -> float:
+    """PnL of in-memory PAPER positions, updated on every monitored market tick."""
+    if not getattr(execution_engine, "paper_mode", True):
+        return 0.0
+    total = 0.0
+    for position in getattr(execution_engine, "paper_positions", {}).values():
+        if not isinstance(position, dict) or str(position.get("status", "OPEN")).upper() != "OPEN":
+            continue
+        try:
+            value = float(position.get("pnl", 0.0) or 0.0)
+            if value == value and abs(value) != float("inf"):
+                total += value
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _current_paper_assets_cost() -> float:
+    """Cost basis of active and quarantined PAPER positions, never mark-to-market."""
+    if not getattr(execution_engine, "paper_mode", True):
+        return 0.0
+    from portfolio_metrics import calculate_assets_used
+
+    positions = list(getattr(execution_engine, "paper_positions", {}).values())
+    unresolved = getattr(execution_engine, "_unreconciled_paper_positions", {})
+    if isinstance(unresolved, dict):
+        positions.extend(unresolved.values())
+    return calculate_assets_used(positions, lot_sizes=LOT_SIZES)
+
+
+# In PAPER, in-memory positions are the live source of floating PnL and book cost.
+# Avoid adding the same OPEN journal rows a second time from Redis.
+if execution_engine.paper_mode:
+    risk_manager.open_pnl_provider = _current_paper_open_pnl
+    risk_manager.open_assets_cost_provider = _current_paper_assets_cost
+
+# Глобальные кэши и лимиты ОЗУ под High-Load тики
+last_ai_verdicts_cache: list[dict[str, Any]] = []
+MAX_CACHE_SIZE = 100  # Защита ОЗУ от утечек памяти
 tick_counter = 0
 spinner_frames = ["|", "/", "-", "\\"]
-AI_SEMAPHORE = asyncio.Semaphore(1)
+
+# Асинхронная очередь с приоритетами. Второй элемент — уникальный sequence ID:
+# PriorityQueue сравнивает tuple поэлементно; без уникального ID при совпадении
+# priority/timestamp/event_type Python пытался сравнивать payload-словари и падал
+# с TypeError: '<' not supported between instances of 'dict' and 'dict'.
+PriorityItem = tuple[int, int, float, str, dict[str, Any]]
+anomaly_queue: asyncio.PriorityQueue[PriorityItem] = asyncio.PriorityQueue(maxsize=1000)
+_priority_sequence = count()
+# Serializes order publication with PAPER maintenance; generation invalidates old queued/in-flight AI events.
+_paper_session_lock = asyncio.Lock()
+_paper_session_generation = 0
+bg_market_task = None
+_last_funnel_log_at = 0.0
+_last_funnel_log_key: tuple[str, ...] | None = None
+_last_funnel_ready = False
+
+# Счётчики диагностируют, на каком этапе останавливаются сигналы. Окно — 60 секунд.
+_trade_flow_lock = threading.Lock()
+_trade_flow_counts: dict[str, int] = {}
+_trade_flow_last_log_at = time_module.monotonic()
+
+# One outstanding AI event per ticker prevents repeated nearly identical
+# anomaly events from filling the queue while inference is still running.
+_ai_ticker_pending: set[str] = set()
+_ai_ticker_last_enqueued_at: dict[str, float] = {}
+_ai_ticker_pending_lock = threading.Lock()
+try:
+    _AI_TICKER_COOLDOWN_SEC = max(0.5, float(os.getenv("PILUITUS_AI_TICKER_COOLDOWN_SEC", "2.0")))
+except (TypeError, ValueError):
+    _AI_TICKER_COOLDOWN_SEC = 2.0
+_prefilter_last_logged: dict[tuple[str, str], float] = {}
+_prefilter_log_lock = threading.Lock()
+_pending_bbo_candidates: dict[str, dict[str, Any]] = {}
+_pending_bbo_lock = threading.Lock()
+try:
+    _PENDING_BBO_CANDIDATE_TTL_SEC = min(5.0, max(0.25, float(os.getenv("PILUITUS_PENDING_BBO_TTL_SEC", "1.5"))))
+except (TypeError, ValueError):
+    _PENDING_BBO_CANDIDATE_TTL_SEC = 1.5
+
+
+def _trade_flow_inc(key: str, amount: int = 1) -> None:
+    with _trade_flow_lock:
+        _trade_flow_counts[key] = _trade_flow_counts.get(key, 0) + amount
+    _trade_flow_maybe_log()
+
+
+def _trade_flow_maybe_log(force: bool = False) -> None:
+    global _trade_flow_last_log_at, _trade_flow_counts
+    now = time_module.monotonic()
+    with _trade_flow_lock:
+        if not force and now - _trade_flow_last_log_at < 60.0:
+            return
+        counts = dict(_trade_flow_counts)
+        _trade_flow_counts = {}
+        _trade_flow_last_log_at = now
+
+    names = (
+        "quotes_received", "selected_quotes", "selected_anomalies", "anomalies_queued",
+        "queue_dropped", "direction_prefilter_skipped", "prefilter_blocked", "candidate_deduplicated",
+        "bbo_deferred", "bbo_resumed", "bbo_expired",
+        "llm_calls", "llm_directional", "llm_hold", "guard_blocked",
+        "guard_quotes", "guard_spread", "guard_volume", "guard_direction", "guard_size",
+        "guard_text", "guard_other", "confidence_blocked", "risk_blocked", "zero_lot",
+        "orders_scheduled", "orderbook_updates", "orderbook_unusable",
+        "orderbook_side_touches", "orderbook_heartbeats", "orderbook_invalid",
+        "orderbook_out_of_order", "active_position_skipped", "atr_history_prefilter_skipped",
+        "execution_bbo_blocked",
+    )
+    values = {key: counts.get(key, 0) for key in names}
+    logger.info(
+        "📊 [TRADE FLOW 60s] котировки=%(quotes_received)d, котировки_top15=%(selected_quotes)d, "
+        "аномалии_top15=%(selected_anomalies)d, в_очереди=%(anomalies_queued)d, очередь_потери=%(queue_dropped)d; "
+        "направление_не_совпало=%(direction_prefilter_skipped)d, prefilter_block=%(prefilter_blocked)d, "
+        "duplicate=%(candidate_deduplicated)d; LLM=%(llm_calls)d, BUY_SELL=%(llm_directional)d, HOLD=%(llm_hold)d; "
+        "Guard=%(guard_blocked)d (BBO=%(guard_quotes)d, спред=%(guard_spread)d, объём=%(guard_volume)d, "
+        "направление=%(guard_direction)d, размер=%(guard_size)d, текст=%(guard_text)d, прочее=%(guard_other)d); "
+        "ORDER_BOOK: принятых_состояний=%(orderbook_updates)d, затронуто_сторон_BBO=%(orderbook_side_touches)d, "
+        "heartbeat_без_движения_BBO=%(orderbook_heartbeats)d, некорректных_состояний=%(orderbook_invalid)d, "
+        "событий_не_по_порядку=%(orderbook_out_of_order)d, ошибок_обработки=%(orderbook_unusable)d; "
+        "повторные кандидаты по открытым позициям=%(active_position_skipped)d; "
+        "ATR без истории до LLM=%(atr_history_prefilter_skipped)d; "
+        "BBO wait=%(bbo_deferred)d, resumed=%(bbo_resumed)d, expired=%(bbo_expired)d; "
+        "confidence=%(confidence_blocked)d, risk=%(risk_blocked)d, lots=0:%(zero_lot)d, "
+        "BBO_exec_block=%(execution_bbo_blocked)d, ордеров_принято/открыто=%(orders_scheduled)d",
+        values,
+    )
+
+
+def _trade_flow_guard_block(reason: str) -> None:
+    _trade_flow_inc("guard_blocked")
+    lowered = str(reason or "").lower()
+    if "bid/ask" in lowered or "котировк" in lowered or "актуальн" in lowered:
+        bucket = "guard_quotes"
+    elif "спред" in lowered:
+        bucket = "guard_spread"
+    elif "размер лучшей заявки" in lowered or "сокращение" in lowered or "истории размера" in lowered:
+        bucket = "guard_size"
+    elif "всплеск" in lowered or "объём" in lowered or "объем" in lowered:
+        bucket = "guard_volume"
+    elif "импульс" in lowered or "vwap" in lowered or "цена не" in lowered:
+        bucket = "guard_direction"
+    elif "объяснение" in lowered or "текст" in lowered or "поврежд" in lowered or "неподтверждён" in lowered:
+        bucket = "guard_text"
+    else:
+        bucket = "guard_other"
+    _trade_flow_inc(bucket)
+
+
+def _guard_reason_bucket(reason: str) -> str:
+    lowered = str(reason or "").lower()
+    if "bid/ask" in lowered or "котировк" in lowered or "актуальн" in lowered:
+        return "quotes"
+    if "спред" in lowered:
+        return "spread"
+    if "atr" in lowered or "m1-диапазон" in lowered or "m1-истори" in lowered:
+        return "atr"
+    if "размер лучшей заявки" in lowered or "сокращение" in lowered or "истории размера" in lowered:
+        return "size"
+    if "всплеск" in lowered or "объём" in lowered or "объем" in lowered:
+        return "volume"
+    if "импульс" in lowered or "vwap" in lowered or "цена не" in lowered:
+        return "direction"
+    return "other"
+
+
+def _log_prefilter_blocked(ticker: str, reason: str, *, interval_sec: float = 15.0) -> None:
+    """Rate-limit identical prefilter warnings per ticker and reason category."""
+    bucket = _guard_reason_bucket(reason)
+    key = (str(ticker).upper(), bucket)
+    now = time_module.monotonic()
+    with _prefilter_log_lock:
+        last = _prefilter_last_logged.get(key, 0.0)
+        if now - last < interval_sec:
+            return
+        _prefilter_last_logged[key] = now
+    logger.warning(
+        "⏭️ [PRE-LLM FILTER] %s пропущен до запроса LLM (%s): %s",
+        ticker, bucket, reason,
+    )
+
+
+def _reserve_ai_ticker(ticker: str) -> bool:
+    now = time_module.monotonic()
+    with _ai_ticker_pending_lock:
+        if ticker in _ai_ticker_pending:
+            return False
+        last = _ai_ticker_last_enqueued_at.get(ticker, 0.0)
+        if now - last < _AI_TICKER_COOLDOWN_SEC:
+            return False
+        _ai_ticker_pending.add(ticker)
+        _ai_ticker_last_enqueued_at[ticker] = now
+        # Keep the per-ticker cooldown map bounded during long sessions.
+        if len(_ai_ticker_last_enqueued_at) > 500:
+            cutoff = now - 300.0
+            for old_ticker, stamp in list(_ai_ticker_last_enqueued_at.items()):
+                if stamp < cutoff and old_ticker not in _ai_ticker_pending:
+                    _ai_ticker_last_enqueued_at.pop(old_ticker, None)
+        return True
+
+
+def _release_ai_ticker(ticker: str) -> None:
+    if not ticker:
+        return
+    with _ai_ticker_pending_lock:
+        _ai_ticker_pending.discard(str(ticker).upper())
+
+
+def _drop_pending_bbo_candidate(ticker: str, expected: dict[str, Any] | None = None) -> None:
+    key = str(ticker or "").strip().upper()
+    with _pending_bbo_lock:
+        current = _pending_bbo_candidates.get(key)
+        if current is not None and (expected is None or current is expected):
+            _pending_bbo_candidates.pop(key, None)
+
+
+def _expire_pending_bbo_candidates(now: float | None = None) -> None:
+    current_time = time_module.monotonic() if now is None else now
+    expired: list[str] = []
+    with _pending_bbo_lock:
+        for ticker, item in list(_pending_bbo_candidates.items()):
+            created_at = float(item.get("created_at", 0.0) or 0.0)
+            if created_at <= 0.0 or current_time - created_at > _PENDING_BBO_CANDIDATE_TTL_SEC:
+                _pending_bbo_candidates.pop(ticker, None)
+                expired.append(ticker)
+    for ticker in expired:
+        _trade_flow_inc("bbo_expired")
+        logger.debug("⌛ Отложенный кандидат %s истёк: свежий BBO не поступил за %.2f сек.", ticker, _PENDING_BBO_CANDIDATE_TTL_SEC)
+
+
+def _store_pending_bbo_candidate(
+    ticker: str,
+    payload: dict[str, Any],
+    received_monotonic: object | None = None,
+) -> None:
+    now = time_module.monotonic()
+    try:
+        received_at = float(received_monotonic) if received_monotonic is not None else now
+        if not math.isfinite(received_at) or received_at <= 0.0 or received_at > now + 0.05:
+            received_at = now
+        received_at = min(now, received_at)
+    except (TypeError, ValueError, OverflowError):
+        received_at = now
+    entry = {"created_at": received_at, "payload": payload}
+    with _pending_bbo_lock:
+        _pending_bbo_candidates[str(ticker).upper()] = entry
+    _trade_flow_inc("bbo_deferred")
+    logger.info(
+        "⏳ [PRE-LLM WAIT] %s: кандидат временно ожидает целостный свежий ORDER_BOOK (TTL=%.2fs).",
+        ticker, _PENDING_BBO_CANDIDATE_TTL_SEC,
+    )
+
+
+async def _resume_pending_bbo_candidate(ticker: str) -> None:
+    """Revalidate a short-lived candidate after a coherent ORDER_BOOK update."""
+    key = str(ticker or "").strip().upper().split("@")[0]
+    with _pending_bbo_lock:
+        pending = _pending_bbo_candidates.get(key)
+    if pending is None:
+        return
+
+    now = time_module.monotonic()
+    created_at = float(pending.get("created_at", 0.0) or 0.0)
+    if created_at <= 0.0 or now - created_at > _PENDING_BBO_CANDIDATE_TTL_SEC:
+        _drop_pending_bbo_candidate(key, pending)
+        _trade_flow_inc("bbo_expired")
+        return
+
+    payload = pending.get("payload")
+    if not isinstance(payload, dict):
+        _drop_pending_bbo_candidate(key, pending)
+        return
+    if (
+        getattr(execution_engine, "_maintenance_active", False)
+        or payload.get("paper_session_generation") != _paper_session_generation
+    ):
+        _drop_pending_bbo_candidate(key, pending)
+        return
+
+    funnel_status = screener.get_status()
+    if not funnel_status.get("ready") or key not in set(funnel_status.get("selected_tickers", [])):
+        _drop_pending_bbo_candidate(key, pending)
+        return
+    active_tickers = execution_engine.get_open_position_tickers()
+    if key in active_tickers or key in getattr(execution_engine, "_opening_tickers", set()):
+        _drop_pending_bbo_candidate(key, pending)
+        _trade_flow_inc("active_position_skipped")
+        return
+
+    metrics = payload.get("metrics")
+    if not isinstance(metrics, dict):
+        _drop_pending_bbo_candidate(key, pending)
+        return
+    book_ready, book_reason = refresh_candidate_bbo_metrics(screener, key, metrics, now=now)
+    if not book_ready:
+        # A valid but old/partial book may be followed by a coherent heartbeat.
+        # Keep the candidate only until its original short TTL expires.
+        logger.debug("[PRE-LLM WAIT] %s: %s", key, book_reason)
+        return
+
+    direction = infer_candidate_direction(metrics)
+    original_direction = str(payload.get("candidate_direction", "")).upper()
+    if direction not in {"BUY", "SELL"} or direction != original_direction:
+        _drop_pending_bbo_candidate(key, pending)
+        _trade_flow_inc("direction_prefilter_skipped")
+        return
+
+    evidence_ok, evidence_reason = validate_signal_evidence(direction, metrics)
+    if not evidence_ok:
+        if _guard_reason_bucket(evidence_reason) == "quotes":
+            return
+        _drop_pending_bbo_candidate(key, pending)
+        _trade_flow_inc("prefilter_blocked")
+        _trade_flow_guard_block(evidence_reason)
+        _log_prefilter_blocked(key, evidence_reason)
+        return
+
+    atr_ready, atr_reason = validate_atr_readiness(metrics)
+    if not atr_ready:
+        _drop_pending_bbo_candidate(key, pending)
+        _trade_flow_inc("atr_history_prefilter_skipped")
+        _log_prefilter_blocked(key, atr_reason)
+        return
+
+    if not _reserve_ai_ticker(key):
+        _drop_pending_bbo_candidate(key, pending)
+        _trade_flow_inc("candidate_deduplicated")
+        return
+
+    payload["bid"] = metrics.get("bid", 0.0)
+    payload["ask"] = metrics.get("ask", 0.0)
+    payload["bid_size"] = metrics.get("bid_size", 0.0)
+    payload["ask_size"] = metrics.get("ask_size", 0.0)
+    try:
+        anomaly_queue.put_nowait(_make_priority_item(1, "MARKET_TICK", payload))
+        _drop_pending_bbo_candidate(key, pending)
+        _trade_flow_inc("bbo_resumed")
+        _trade_flow_inc("anomalies_queued")
+        logger.info("✅ [PRE-LLM RESUME] %s: свежий BBO подтверждён, кандидат передан в LLM-очередь.", key)
+        update_numpy_impulse_status(key)
+    except asyncio.QueueFull:
+        _release_ai_ticker(key)
+        _drop_pending_bbo_candidate(key, pending)
+        _trade_flow_inc("queue_dropped")
+        logger.error("Очередь AI-сигналов заполнена; восстановленный кандидат %s отброшен.", key)
+
+
+# Последний рассчитанный срез баланса для UI. Не изменяет внутреннюю риск-модель.
+_dashboard_balance_snapshot = {
+    "equity": round(DEPOSIT, 2),
+    "initial_deposit": round(DEPOSIT, 2),
+    "free_margin": round(DEPOSIT, 2),
+    "margin_used": 0.0,
+    "exposure_cap": round(DEPOSIT * 0.15, 2),
+    "exposure_cap_pct": 0.15,
+    "single_position_cap": round(DEPOSIT * 0.05, 2),
+    "unreconciled_positions_count": 0,
+    "pnl": 0.0,
+    "active_positions_count": 0,
+}
+_balance_guard_last_signature: tuple[int, bool] | None = None
+
+def _latest_screener_prices() -> dict[str, float]:
+    """Последние известные цены по инструментам из локального рыночного скринера."""
+    prices: dict[str, float] = {}
+    for ticker, data in getattr(screener, "history", {}).items():
+        try:
+            count = int(data.get("count", 0))
+            values = data.get("prices")
+            if count > 0 and values is not None:
+                price = float(values[min(count, len(values)) - 1])
+                if price > 0 and price == price and price != float("inf"):
+                    prices[str(ticker).strip().upper().split("@")[0]] = price
+        except (TypeError, ValueError, IndexError, AttributeError):
+            continue
+    return prices
+
+async def _get_dashboard_open_positions() -> list[dict]:
+    """Read open positions from the authoritative source for the current execution mode."""
+    if getattr(execution_engine, "paper_mode", True):
+        raw = getattr(execution_engine, "paper_positions", getattr(execution_engine, "_paper_positions", {}))
+        values = list(raw.values()) if isinstance(raw, dict) else []
+    else:
+        # In LIVE mode, execute_order persists accepted orders in the trade journal.
+        # Read this low-frequency snapshot here (one-second sync), not for every market tick.
+        try:
+            active = await db_manager.get_active_positions()
+            values = list(active.values()) if isinstance(active, dict) else []
+        except Exception as exc:
+            logger.debug("Не удалось получить LIVE-позиции для расчёта капитала: %s", exc)
+            values = []
+    return [dict(item) for item in values if isinstance(item, dict) and str(item.get("status", "OPEN")).upper() == "OPEN"]
+
+async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = None) -> dict:
+    """Build a non-mark-to-market dashboard snapshot.
+
+    The user's requested accounting is explicit: free balance = configured initial
+    deposit minus acquisition cost of currently open assets. The assets field uses
+    entry_price * quantity and therefore stays unchanged when market quotes move.
+    PnL remains a separate performance metric; open PnL is not added to these two
+    fields. ``equity`` is kept as an API compatibility alias for initial deposit.
+    """
+    global _dashboard_balance_snapshot
+    from portfolio_metrics import calculate_assets_used, calculate_free_balance
+
+    if positions is None:
+        positions = await _get_dashboard_open_positions()
+
+    try:
+        initial_deposit = float(DEPOSIT)
+        if not math.isfinite(initial_deposit) or initial_deposit < 0:
+            raise ValueError("invalid configured deposit")
+    except (TypeError, ValueError, OverflowError):
+        initial_deposit = float(getattr(risk_manager, "initial_deposit", 0.0) or 0.0)
+
+    try:
+        pnl = float(getattr(risk_manager, "total_session_pnl", getattr(risk_manager, "session_pnl", 0.0)))
+        if not math.isfinite(pnl):
+            pnl = 0.0
+    except (TypeError, ValueError, OverflowError):
+        pnl = 0.0
+
+    # Old PAPER positions are not restored as live simulated positions after a
+    # restart. Until an operator reviews them, their saved acquisition cost stays
+    # reserved and all new entries are blocked by ExecutionLayer.
+    unresolved_map = (
+        getattr(execution_engine, "_unreconciled_paper_positions", {})
+        if getattr(execution_engine, "paper_mode", True) else {}
+    )
+    unresolved_positions = list(unresolved_map.values()) if isinstance(unresolved_map, dict) else []
+    capital_positions = list(positions)
+    seen_ids = {str(p.get("id", "")) for p in capital_positions if isinstance(p, dict)}
+    for unresolved in unresolved_positions:
+        if isinstance(unresolved, dict) and str(unresolved.get("id", "")) not in seen_ids:
+            capital_positions.append(unresolved)
+
+    assets_used = calculate_assets_used(
+        positions=capital_positions,
+        # The helper intentionally ignores live prices and uses purchase price.
+        latest_prices=None,
+        lot_sizes=LOT_SIZES,
+    )
+    free_balance = calculate_free_balance(initial_deposit, assets_used)
+    max_gross_pct = min(max(0.0, float(getattr(execution_engine, "max_gross_exposure_pct", 0.15))), 0.15)
+    max_single_pct = min(max(0.0, float(getattr(execution_engine, "max_single_position_pct", 0.05))), 0.05)
+    exposure_cap = round(initial_deposit * max_gross_pct, 2)
+    single_position_cap = round(initial_deposit * max_single_pct, 2)
+    _dashboard_balance_snapshot = {
+        "equity": round(initial_deposit, 2),
+        "initial_deposit": round(initial_deposit, 2),
+        "free_margin": free_balance,
+        "margin_used": round(assets_used, 2),
+        "exposure_cap": exposure_cap,
+        "exposure_cap_pct": max_gross_pct,
+        "single_position_cap": single_position_cap,
+        "unreconciled_positions_count": len(unresolved_positions),
+        "pnl": round(pnl, 2),
+        "active_positions_count": len(positions),
+    }
+
+    global _balance_guard_last_signature
+    over_cap = assets_used > exposure_cap
+    signature = (len(unresolved_positions), over_cap)
+    if signature != _balance_guard_last_signature:
+        if unresolved_positions:
+            logger.critical(
+                "🛑 [PAPER RECONCILIATION GUARD] %d старых PAPER-позиций на сверке; их себестоимость %.2f ₽ учтена в активах. Новые входы заблокированы.",
+                len(unresolved_positions), calculate_assets_used(unresolved_positions, lot_sizes=LOT_SIZES),
+            )
+        if over_cap:
+            logger.error(
+                "🚨 [BALANCE GUARD] Себестоимость активов %.2f ₽ превышает лимит задействования %.2f ₽ (%.0f%% депозита). Новые входы будут заблокированы.",
+                assets_used, exposure_cap, max_gross_pct * 100,
+            )
+        _balance_guard_last_signature = signature
+    return dict(_dashboard_balance_snapshot)
+
+
+def _make_priority_item(priority: int, event_type: str, payload: dict[str, Any]) -> PriorityItem:
+    """Создаёт единый формат элемента PriorityQueue со стабильным tie-breaker."""
+    loop = asyncio.get_running_loop()
+    return (int(priority), next(_priority_sequence), loop.time(), event_type, payload)
 
 TICKERS_TO_TRADE = [
     "SBER", "SBERP", "GAZP", "LKOH", "NVTK", "YDEX", "ROSN", "VTBR", "AFLT", "MAGN",
@@ -57,260 +903,1494 @@ TICKERS_TO_TRADE = [
     "NKNC", "NKNCP", "TGKA", "TGKB", "TGKBP", "TTLK", "VJGZ", "VJGZP"
 ]
 
+# Все 88 инструментов остаются подписанными для сбора сравнимой статистики.
+# В LLM разрешается передавать только события от выбранного локальным рейтингом top-N.
+screener.set_universe(TICKERS_TO_TRADE)
+
+# --------------------------------------------------------------
+#  2️⃣  НЕБЛОКИРУЮЩИЙ ДИСКОВЫЙ БОРТОВОЙ ЖУРНАЛ ТЕСТОВ
+# --------------------------------------------------------------
+def _sync_write_trading_log(filename: str, log_line: str):
+    """Синхронная запись блока лога на диск, изолированная в пуле потоков ОС."""
+    try:
+        with open(filename, "a", encoding="utf-8") as f:
+            f.write(log_line + "\n")
+    except Exception as e:
+        logger.error(f"❌ Ошибка записи в текстовый лог: {e}")
+
+async def log_trading_event_to_file(ticker: str, price: float, decision: str, confidence: float, tactic: str, critic: str):
+    """Асинхронный неблокирующий регистратор торговых сессий."""
+    os.makedirs("trading_logs", exist_ok=True)
+    
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    filename = f"trading_logs/piluitus_session_{date_str}.txt"
+    
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    log_line = (
+        f"========================================================================\n"
+        f"⏰ ВРЕМЯ: {timestamp} | АКТИВ: {ticker} | ЦЕНА: {price} ₽\n"
+        f"🎯 РЕШЕНИЕ ИИ: {decision} (Уверенность: {confidence:.1f}%)\n"
+        f"------------------------------------------------------------------------\n"
+        f"📝 ТАКТИКА: {tactic}\n"
+        f"🧐 КРИТИКА: {critic}\n"
+        f"========================================================================\n"
+    )
+    
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _sync_write_trading_log, filename, log_line)
+# --------------------------------------------------------------
+#  3️⃣  CONNECTION MANAGER (WebSocket)
+# --------------------------------------------------------------
 class ConnectionManager:
-    """Асинхронный диспетчер WebSocket-соединений фронтенд-терминала"""
     def __init__(self):
-        self.active_connections: list[WebSocket] = []
+        self.active_connections: List[WebSocket] = []
+
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
+
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
+            logger.info("🔌 WS‑клиент отключён")
+        
     async def broadcast(self, message: str):
-        for connection in self.active_connections:
-            try: 
-                await connection.send_text(message)
-            except Exception: 
+        for conn in self.active_connections:
+            try:
+                await conn.send_text(message)
+            except Exception:
                 pass
 
 manager = ConnectionManager()
-broker = FinamBrokerClient(token=FINAM_TOKEN, is_demo=True)
-screener = MarketScreener(window_size=30)
-execution_engine = BaseExecutionEngine(finam_broker_client=broker)
-risk_manager = RiskManager(max_risk_per_trade=0.005, daily_loss_limit=0.015)
-funnel = VolumeVolatilityFunnel(target_count=15)
-last_funnel_update = 0.0
-active_trading_locks = {ticker: False for ticker in TICKERS_TO_TRADE}
 
-async def process_market_event(event):
-    global tick_counter, last_funnel_update
+# --------------------------------------------------------------
+#  4️⃣  ПОЛИМОРФНЫЙ ТИКЕРНЫЙ ОБРАБОТЧИК С АВТО-ЗАВЕРШЕНИЕМ ПОЗИЦИЙ
+# --------------------------------------------------------------
+async def process_market_event(event: Union[SimpleNamespace, dict]):
+    """Обновляет локальную воронку по каждой котировке и направляет в LLM только top-N."""
+    global tick_counter, _last_funnel_log_at, _last_funnel_log_key, _last_funnel_ready
+    event_session_generation = _paper_session_generation
+    if getattr(execution_engine, "_maintenance_active", False):
+        return
+    _expire_pending_bbo_candidates()
     try:
-        ticker = getattr(event, 'security_code', 'SBER')
-        price = float(getattr(event, 'price', 0.0))
-        volume = int(getattr(event, 'volume', 0))
+        # ORDER_BOOK events have no last-trade price. Route them before the QUOTES
+        # normalizer, otherwise price<=0 would silently discard every book update.
+        if isinstance(event, dict) and str(event.get("event_type", "")).upper() == "ORDER_BOOK":
+            book_ticker = str(event.get("ticker") or event.get("security_code") or "").strip().upper().split("@")[0]
+            if not book_ticker:
+                _trade_flow_inc("orderbook_unusable")
+                return
+            try:
+                book_result = await screener.push_order_book(
+                    ticker=book_ticker,
+                    bid=float(event.get("bid", 0.0) or 0.0),
+                    ask=float(event.get("ask", 0.0) or 0.0),
+                    bid_size=float(event.get("bid_size", 0.0) or 0.0),
+                    ask_size=float(event.get("ask_size", 0.0) or 0.0),
+                    bid_present=bool(event.get("bid_present", True)),
+                    ask_present=bool(event.get("ask_present", True)),
+                    bid_size_present=bool(event.get("bid_size_present", True)),
+                    ask_size_present=bool(event.get("ask_size_present", True)),
+                    bid_timestamp=event.get("bid_timestamp") or event.get("order_book_timestamp"),
+                    ask_timestamp=event.get("ask_timestamp") or event.get("order_book_timestamp"),
+                    order_book_timestamp=event.get("order_book_timestamp"),
+                    received_monotonic=event.get("received_monotonic"),
+                    book_valid=bool(event.get("book_valid", True)),
+                    book_reason=str(event.get("book_reason") or ""),
+                    bid_levels=event.get("bid_levels") if isinstance(event.get("bid_levels"), list) else None,
+                    ask_levels=event.get("ask_levels") if isinstance(event.get("ask_levels"), list) else None,
+                    bid_levels_present=bool(event.get("bid_levels_present", False)),
+                    ask_levels_present=bool(event.get("ask_levels_present", False)),
+                )
+            except (TypeError, ValueError, KeyError):
+                _trade_flow_inc("orderbook_unusable")
+                return
+            if book_result.get("updated") and book_result.get("valid", True):
+                _trade_flow_inc("orderbook_updates")
+                _trade_flow_inc("orderbook_side_touches", int(book_result.get("bbo_side_touch_count", 0) or 0))
+                if book_result.get("heartbeat_only"):
+                    _trade_flow_inc("orderbook_heartbeats")
+                await _resume_pending_bbo_candidate(book_ticker)
+                # ORDER_BOOK can refresh BBO independently of QUOTES. Re-run the
+                # PAPER exit monitor only after a coherent book confirmation.
+                if execution_engine.paper_mode and book_ticker in execution_engine.paper_positions:
+                    last_trade_price = execution_engine._latest_price(
+                        book_ticker, execution_engine.paper_positions.get(book_ticker)
+                    )
+                    if last_trade_price > 0.0:
+                        execution_engine.schedule_paper_position_monitor(
+                            book_ticker, last_trade_price, db_manager
+                        )
+            elif book_result.get("updated"):
+                _trade_flow_inc("orderbook_invalid")
+                logger.debug(
+                    "ORDER_BOOK %s заблокирован: %s",
+                    book_ticker, book_result.get("reason", book_result.get("book_reason", "invalid")),
+                )
+            elif book_result.get("out_of_order"):
+                _trade_flow_inc("orderbook_out_of_order")
+            else:
+                _trade_flow_inc("orderbook_unusable")
+                if book_result.get("reason"):
+                    logger.debug("ORDER_BOOK %s не принят: %s", book_ticker, book_result["reason"])
+            return
 
-        if price == 0.0: return
+        if isinstance(event, dict):
+            ticker = event.get("security_code") or event.get("ticker", "SBER")
+            price = float(event.get("price", 0.0) or 0.0)
+            volume = float(event.get("volume", 0.0) or 0.0)
+            bid = float(event.get("bid", 0.0) or 0.0)
+            ask = float(event.get("ask", 0.0) or 0.0)
+            bid_size = float(event.get("bid_size", event.get("bidSize", 0.0)) or 0.0)
+            ask_size = float(event.get("ask_size", event.get("askSize", 0.0)) or 0.0)
+            bid_present = bool(event.get("bid_present", bid > 0.0))
+            ask_present = bool(event.get("ask_present", ask > 0.0))
+            bid_size_present = bool(event.get("bid_size_present", bid_size > 0.0))
+            ask_size_present = bool(event.get("ask_size_present", ask_size > 0.0))
+            day_volume = float(event.get("day_volume", 0.0) or 0.0)
+            supplied_metrics = event.get("metrics", {})
+            event_timestamp = event.get("timestamp") or event.get("datetime") or event.get("time")
+            received_monotonic = event.get("received_monotonic")
+        else:
+            ticker = getattr(event, "security_code", getattr(event, "ticker", "SBER"))
+            price = float(getattr(event, "price", 0.0) or 0.0)
+            volume = float(getattr(event, "volume", 0.0) or 0.0)
+            bid = float(getattr(event, "bid", 0.0) or 0.0)
+            ask = float(getattr(event, "ask", 0.0) or 0.0)
+            bid_size = float(getattr(event, "bid_size", getattr(event, "bidSize", 0.0)) or 0.0)
+            ask_size = float(getattr(event, "ask_size", getattr(event, "askSize", 0.0)) or 0.0)
+            bid_present = bool(getattr(event, "bid_present", bid > 0.0))
+            ask_present = bool(getattr(event, "ask_present", ask > 0.0))
+            bid_size_present = bool(getattr(event, "bid_size_present", bid_size > 0.0))
+            ask_size_present = bool(getattr(event, "ask_size_present", ask_size > 0.0))
+            day_volume = float(getattr(event, "day_volume", 0.0) or 0.0)
+            supplied_metrics = getattr(event, "metrics", {})
+            event_timestamp = (
+                getattr(event, "timestamp", None)
+                or getattr(event, "datetime", None)
+                or getattr(event, "time", None)
+            )
+            received_monotonic = getattr(event, "received_monotonic", None)
+
+        ticker = str(ticker or "").strip().upper().split("@")[0]
+        if price <= 0.0 or not ticker or volume < 0.0:
+            return
+        # A newer trade supersedes any older deferred impulse for this ticker.
+        _drop_pending_bbo_candidate(ticker)
 
         tick_counter += 1
         current_frame = spinner_frames[tick_counter % len(spinner_frames)]
-        print(f"\r⚡ [ПОТОК ФИНАМ] {current_frame} Обработано тиков: {tick_counter:,} | Последний: {ticker} ({price}₽)   ", end="", flush=True)
+        terminal_status.update(
+            f"⚡ [WS ПОТОК ФИНАМ] {current_frame} "
+            f"Тиков: {tick_counter:,} | {ticker} {price}₽"
+        )
 
-        funnel.update_ticker_price(ticker, price)
-        execution_engine.monitor_paper_positions(ticker, price)
-        
-# main.py — Модификация HFT-пакета FUNNEL_UPDATE для передачи графических метрик
+        # Учитываем каждый инструмент в рейтинге, а не только аномальные тики.
+        analysis = await screener.push_tick(
+            ticker=ticker,
+            price=price,
+            volume=volume,
+            bid=bid,
+            ask=ask,
+            bid_size=bid_size,
+            ask_size=ask_size,
+            day_volume=day_volume,
+            bid_present=bid_present,
+            ask_present=ask_present,
+            bid_size_present=bid_size_present,
+            ask_size_present=ask_size_present,
+            event_timestamp=event_timestamp,
+            received_monotonic=received_monotonic,
+        )
 
-        # ОПТИМИЗАЦИЯ HFT: Считаем воронку и шлем на фронт строго раз в 2 секунды
-        current_time = time.time()
-        if current_time - last_funnel_update >= 2.0:
-            active_top_15 = funnel.select_top_volatile_tickers()
-            last_funnel_update = current_time
-            
-            # Собираем обогащенный массив данных по Топ-15 для графиков фронтенда
-            enriched_top_15_data = []
-            for t in active_top_15:
-                # Извлекаем VWAP и ATR налету из ОЗУ без нагрузки на процессор
-                vwap_val = funnel.get_ticker_vwap(t) or price
-                
-                # Расчет ATR по скользящему окну воронки
-                t_queue = funnel.prices_history.get(t)
-                atr_val = (max(t_queue) - min(t_queue)) if t_queue and len(t_queue) > 1 else (price * 0.002)
-                if atr_val <= 0: atr_val = price * 0.002
+        _trade_flow_inc("quotes_received")
+        funnel_status = screener.get_status()
+        terminal_status.update_funnel(screener.get_status_text())
+        if analysis.get("selected") and analysis.get("selection_ready"):
+            _trade_flow_inc("selected_quotes")
+        now_mono = time_module.monotonic()
+        selected_snapshot = tuple(funnel_status.get("selected_tickers", []))
+        if not funnel_status["ready"]:
+            _last_funnel_ready = False
+            if _last_funnel_log_at == 0.0 or now_mono - _last_funnel_log_at >= 30.0:
+                logger.info(
+                    "🎯 Воронка прогревается: котировки получены по %d/%d инструментам; пригодны для рейтинга %d; цель top-%d.",
+                    funnel_status["observed_count"], funnel_status["universe_count"], funnel_status["eligible_count"], funnel_status["top_n"],
+                )
+                _last_funnel_log_at = now_mono
+        elif selected_snapshot:
+            first_ready = not _last_funnel_ready
+            selection_changed = _last_funnel_log_key is None or selected_snapshot != _last_funnel_log_key
+            cooldown_elapsed = _last_funnel_log_at == 0.0 or now_mono - _last_funnel_log_at >= 30.0
+            if first_ready or (selection_changed and cooldown_elapsed):
+                logger.info(
+                    "🎯 ВОРОНКА ГОТОВА: %d → %d тикеров для LLM: %s",
+                    funnel_status["universe_count"], len(selected_snapshot), ", ".join(selected_snapshot),
+                )
+                _last_funnel_log_at = now_mono
+                _last_funnel_log_key = selected_snapshot
+            _last_funnel_ready = True
 
-                enriched_top_15_data.append({
-                    "ticker": t,
-                    "price": float(funnel.prices_history[t][-1]) if funnel.prices_history.get(t) else price,
-                    "vwap": vwap_val,
-                    "atr": round(atr_val, 2)
-                })
+        logger.debug(
+            "📥 [ВХОДЯЩИЙ ТИК] %s price=%s anomaly=%s selected=%s rank=%s score=%s",
+            ticker, price, analysis["is_anomaly"], analysis.get("selected", False),
+            analysis.get("metrics", {}).get("funnel_rank", 0),
+            analysis.get("metrics", {}).get("funnel_score", 0.0),
+        )
 
-            asyncio.create_task(manager.broadcast(json.dumps({
-                "type": "FUNNEL_UPDATE", 
-                "active_tickers_data": enriched_top_15_data
-            }, ensure_ascii=False)))
+        # Аномалия сама по себе не запускает LLM. Сначала локально определяем
+        # направление, затем проверяем измеряемые условия входа. Модель вызывается
+        # только для кандидата, который не был заранее отклонён численным guard.
+        if analysis["is_anomaly"] and analysis.get("selection_ready") and analysis.get("selected"):
+            _trade_flow_inc("selected_anomalies")
+            metrics_payload = analysis.get("metrics", supplied_metrics if isinstance(supplied_metrics, dict) else {})
+            if not isinstance(metrics_payload, dict):
+                metrics_payload = {}
 
-        else:
-            active_top_15 = funnel.last_cached_top_15 
+            # Existing positions are monitored independently on every market event.
+            # Do not spend another LLM call proposing a second entry in the same ticker.
+            active_tickers = execution_engine.get_open_position_tickers()
+            ticker_opening = ticker in getattr(execution_engine, "_opening_tickers", set())
+            if ticker in active_tickers or ticker_opening:
+                _trade_flow_inc("active_position_skipped")
+            else:
+                candidate_direction = infer_candidate_direction(metrics_payload)
+                if candidate_direction is None:
+                    _trade_flow_inc("direction_prefilter_skipped")
+                    _log_prefilter_blocked(
+                        ticker,
+                        "Направление не подтверждено: краткосрочное изменение цены и отклонение от VWAP не совпадают по знаку.",
+                    )
+                else:
+                    evidence_ok, evidence_reason = validate_signal_evidence(candidate_direction, metrics_payload)
+                    if not evidence_ok:
+                        if _guard_reason_bucket(evidence_reason) == "quotes":
+                            pending_payload = {
+                                "ticker": ticker,
+                                "price": price,
+                                "volume": volume,
+                                "bid": bid,
+                                "ask": ask,
+                                "bid_size": bid_size,
+                                "ask_size": ask_size,
+                                "day_volume": day_volume,
+                                "candidate_direction": candidate_direction,
+                                "paper_session_generation": event_session_generation,
+                                "metrics": {
+                                    key: value
+                                    for key, value in metrics_payload.items()
+                                    if key not in {"selected_for_ai", "funnel_ready"}
+                                },
+                            }
+                            _store_pending_bbo_candidate(ticker, pending_payload, received_monotonic)
+                        else:
+                            _trade_flow_inc("prefilter_blocked")
+                            _trade_flow_guard_block(evidence_reason)
+                            _log_prefilter_blocked(ticker, evidence_reason)
+                    else:
+                        atr_ready, atr_reason = validate_atr_readiness(metrics_payload)
+                        if not atr_ready:
+                            _trade_flow_inc("atr_history_prefilter_skipped")
+                            _log_prefilter_blocked(ticker, atr_reason)
+                        elif not _reserve_ai_ticker(ticker):
+                            _trade_flow_inc("candidate_deduplicated")
+                        else:
+                            event_payload = {
+                                "ticker": ticker,
+                                "price": price,
+                                "volume": volume,
+                                "bid": bid,
+                                "ask": ask,
+                                "bid_size": bid_size,
+                                "ask_size": ask_size,
+                                "day_volume": day_volume,
+                                "candidate_direction": candidate_direction,
+                                "paper_session_generation": event_session_generation,
+                                "metrics": {
+                                    key: value
+                                    for key, value in metrics_payload.items()
+                                    if key not in {"selected_for_ai", "funnel_ready"}
+                                },
+                            }
+                            try:
+                                anomaly_queue.put_nowait(_make_priority_item(1, "MARKET_TICK", event_payload))
+                                _trade_flow_inc("anomalies_queued")
+                                update_numpy_impulse_status(ticker)
+                            except asyncio.QueueFull:
+                                _release_ai_ticker(ticker)
+                                _trade_flow_inc("queue_dropped")
+                                logger.error("Очередь AI-сигналов заполнена; аномалия %s отброшена.", ticker)
 
-        if not active_top_15 or ticker not in active_top_15: return
+        # Обновление позиции продолжается по всем 88 котировкам, а не только по top-N.
+        execution_engine.schedule_paper_position_monitor(ticker, price, db_manager)
 
-        is_anomaly, stats = screener.update_and_check(ticker, price, volume)
-        
-        if is_anomaly and stats:
-            if active_trading_locks.get(ticker, False): return
-            active_trading_locks[ticker] = True
-            
-            print("\n" + "-"*80)
-            asyncio.create_task(execute_ai_and_paper_flow(ticker, price, stats))
     except Exception as e:
-        print(f"\n💥 Критическая ошибка в обработчике тиков: {e}")
-# main.py — ЧАСТЬ 2 из 2. Главный управляющий HFT/ИИ-контур PILUITUS V2.2
+        logger.error("💥 Ошибка в обработчике тиков: %s", e, exc_info=True)
+# --------------------------------------------------------------
+#  5️⃣  MARKET WORKER С ПРИОРИТЕТНЫМ ПЕРЕХВАТОМ И КОНТУРОМ RAG
+# --------------------------------------------------------------
+class MarketWorker:
+    def __init__(self, db: DBManager, ai: AIEngine, broker_client):
+        self.db = db
+        self.ai = ai
+        self.broker = broker_client
+        self.client_id = CLIENT_ID
+        self._last_risk_block_verdict_at = 0.0
 
-async def execute_ai_and_paper_flow(ticker: str, price: float, stats: dict):
-    """ Параллельный ИИ-конвейер PILUITUS V2.2 с жестким Bias Gate. """
-    global last_ai_verdicts_cache
-    
-    if AI_SEMAPHORE.locked():
-        return
-
-    async with AI_SEMAPHORE:
-        try:
-            if not risk_manager.is_trading_allowed(): 
+    async def _execute_and_publish(
+        self,
+        *,
+        verdict_id: str,
+        ticker: str,
+        lots: int,
+        side: str,
+        price: float,
+        ai_analysis: dict,
+        session_generation: int,
+    ) -> None:
+        """Serialize order execution with PAPER reset and reject pre-reset signals."""
+        async with _paper_session_lock:
+            if (
+                getattr(execution_engine, "_maintenance_active", False)
+                or session_generation != _paper_session_generation
+            ):
+                logger.info("⏭️ Старый сигнал %s по %s отброшен: PAPER-сессия изменилась/на обслуживании.", verdict_id, ticker)
                 return
-
-            # 1. АКТИВАЦИЯ ПАТТЕРНА BIAS-CORRECTION
-            dynamic_confidence_gate = await execution_engine.bias_tracker.get_dynamic_threshold()
-
-            hybrid_rag_context = get_historical_rag_context(ticker)
-            news_context = MarketNewsParser.get_global_sentiment_context()
-            
-            order_book_task = asyncio.create_task(broker.get_ticker_order_book(ticker))
-            portfolio_state = await execution_engine.fetch_portfolio(CLIENT_ID)
-            ticker_history = [d for d in portfolio_state.get("journal", []) if d.get("ticker") == ticker][-2:]
-
-            order_book = await order_book_task
-
-            # 2. ИНФЕРЕНС МУЛЬТИ-АГЕНТСКОГО КОНСИЛИУМА (7B -> 7B)
-            ai_analysis = await analyze_stock_signal(
-                ticker=ticker,
-                price=price,
-                volume_spike=stats["volume_spike"],
-                technical_reason=stats["reason"] + f"\n[МЕДИА-СЕНТИМЕНТ]: {news_context}",
-                order_book=order_book,
-                ticker_history=ticker_history
+            await self._execute_and_publish_locked(
+                verdict_id=verdict_id, ticker=ticker, lots=lots, side=side,
+                price=price, ai_analysis=ai_analysis,
             )
 
-            decision = ai_analysis.get("final_decision", "HOLD")
-            confidence = float(ai_analysis.get("confidence_score", 0))
+    async def _execute_and_publish_locked(
+        self,
+        *,
+        verdict_id: str,
+        ticker: str,
+        lots: int,
+        side: str,
+        price: float,
+        ai_analysis: dict,
+    ) -> None:
+        """Execute asynchronously, then publish and persist the actual result."""
+        try:
+            result = await execution_engine.execute_order(
+                ticker=ticker,
+                lots=lots,
+                side=side,
+                price=price,
+                client_id=self.client_id,
+                db=self.db,
+                ai_analysis=ai_analysis,
+            )
+            if not isinstance(result, dict):
+                result = {"status": "FAILED", "message": "Исполнитель вернул некорректный ответ."}
+        except Exception as exc:
+            logger.error("Ошибка исполнения %s %s: %s", side, ticker, exc, exc_info=True)
+            result = {"status": "FAILED", "message": str(exc)}
 
-            # 3. ЖЕСТКАЯ ФИЛЬТРАЦИЯ ПО ДИНАМИЧЕСКОМУ ПОРОГУ BIAS TRACKER
-            if decision in ["BUY", "SELL"]:
-                if confidence >= dynamic_confidence_gate:
-                    logger.warning(f"🎯 [BIAS GATE PASSED] Сигнал {ticker} утвержден! {confidence}% >= {dynamic_confidence_gate:.1f}%")
-                    
-                    await execution_engine.execute_order(
-                        ticker=ticker,
-                        lots=1,  # Внутри пересчитается под риск 0.5% по ATR
-                        side=decision,
-                        price=price,
-                        client_id=CLIENT_ID,
-                        ai_analysis=ai_analysis
-                    )
-                    asyncio.create_task(tg_bot.send_ai_signal_to_tg(ticker, price, stats["volume_spike"], stats["reason"], ai_analysis))
-                else:
-                    logger.info(f"🛡️ [BIAS GATE BLOCKED] Сигнал {ticker} отклонен. Confidence: {confidence}% < Порог: {dynamic_confidence_gate:.1f}%")
+        raw_status = str(result.get("status", "FAILED")).upper()
+        result_mode = str(result.get("mode") or ("PAPER" if getattr(execution_engine, "paper_mode", True) else "LIVE")).upper()
+        execution_status = normalise_execution_status(raw_status, result_mode)
+        if "BBO_ENTRY_BLOCK" in str(result.get("message", "")):
+            _trade_flow_inc("execution_bbo_blocked")
+        if execution_status in {"OPENED", "ACCEPTED"}:
+            # Count actual executor outcomes, not merely queued AI decisions.
+            _trade_flow_inc("orders_scheduled")
+        order_id = str(result.get("orderId") or result.get("order_id") or "")
+        raw_actual_lots = result.get("lots")
+        raw_actual_shares = result.get("shares")
+        raw_actual_notional = result.get("notional_entry_rub")
+        actual_lots = nonnegative_int(raw_actual_lots)
+        actual_shares = nonnegative_int(raw_actual_shares)
+        actual_notional = finite_float(raw_actual_notional)
+        if execution_status in {"OPENED", "ACCEPTED"} and raw_actual_lots is None:
+            actual_lots = int(lots)
+        if (
+            execution_status in {"OPENED", "ACCEPTED"}
+            and raw_actual_shares is None
+            and actual_lots is not None
+        ):
+            actual_shares = actual_lots * max(int(LOT_SIZES.get(ticker, 1)), 1)
+        if (
+            execution_status in {"OPENED", "ACCEPTED"}
+            and raw_actual_notional is None
+            and actual_shares is not None
+        ):
+            actual_notional = round(actual_shares * price, 2)
 
-            # Обновление локального циклического кэша вердиктов (15 записей)
-            verdict_data = {
-                "timestamp": datetime.now().strftime("%H:%M:%S"),
-                "ticker": ticker, 
-                "price": price, 
-                "decision": decision, 
-                "confidence_score": confidence,
-                "tactic_opinion": ai_analysis.get("tactic_opinion", ""),
-                "critic_opinion": ai_analysis.get("critic_opinion", "")
-            }
-            
-            last_ai_verdicts_cache.append(verdict_data)
-            last_ai_verdicts_cache = last_ai_verdicts_cache[-15:] 
-            
-            # Вещание на фронтенд-терминал
+        update = {
+            "verdict_id": verdict_id,
+            "ticker": ticker,
+            "execution_status": execution_status,
+            "execution_message": str(result.get("message") or (
+                "PAPER-позиция зарегистрирована." if execution_status == "OPENED"
+                else "Брокер принял заявку; факт исполнения должен быть подтверждён отдельно." if execution_status == "ACCEPTED"
+                else "Заявка не открыта."
+            )),
+            "order_id": order_id or None,
+            "executed_lots": actual_lots,
+            "executed_shares": actual_shares,
+            "actual_notional_rub": actual_notional,
+            "execution_timestamp": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+        }
+
+        # Update in-memory history so a browser refresh shows the final outcome.
+        for cached in last_ai_verdicts_cache:
+            if isinstance(cached, dict) and cached.get("verdict_id") == verdict_id:
+                cached.update(update)
+                break
+
+        # Persist execution outcome separately. This avoids list-index races when
+        # several asynchronous orders finish while newer verdicts are LPUSH'ed.
+        try:
+            redis_inst = getattr(self.db, "redis", getattr(self.db, "_redis", None))
+            if redis_inst is not None:
+                await redis_inst.set(
+                    f"piluitus:verdict:execution:{verdict_id}",
+                    json.dumps(update, ensure_ascii=False),
+                    ex=7 * 24 * 60 * 60,
+                )
+        except Exception as persist_exc:
+            logger.warning("Не удалось сохранить статус исполнения вердикта %s: %s", verdict_id, persist_exc)
+
+        try:
+            positions = await _get_dashboard_open_positions()
+            balance = await _refresh_dashboard_balance_snapshot(positions)
+            update["active_positions"] = positions
+            update["balance"] = balance
+            await manager.broadcast(json.dumps({"type": "EXECUTION_UPDATE", **update}, ensure_ascii=False))
             await manager.broadcast(json.dumps({
-                "type": "MARKET_UPDATE", 
-                "ticker": ticker, 
-                "price": price, 
-                "decision": decision, 
-                "stats": stats, 
-                "ai": ai_analysis, 
-                "portfolio": await execution_engine.fetch_portfolio(CLIENT_ID)
+                "type": "TABLES_UPDATE",
+                "active_positions": positions,
+                "closed_trades": getattr(execution_engine, "closed_trades", [])[-30:],
+                "balance": balance,
             }, ensure_ascii=False))
+        except Exception as broadcast_exc:
+            logger.error("Не удалось отправить статус исполнения в веб-интерфейс: %s", broadcast_exc, exc_info=True)
+
+        if execution_status in {"OPENED", "ACCEPTED"}:
+            logger.info(
+                "📡 [DASHBOARD EXECUTION] %s %s %s: %s лот(а), %s ₽, order=%s",
+                side, ticker, execution_status, actual_lots, actual_notional, order_id or "N/A",
+            )
+        else:
+            logger.warning(
+                "📡 [DASHBOARD EXECUTION] %s %s: %s — %s",
+                side, ticker, execution_status, update["execution_message"],
+            )
+
+    async def _publish_pre_llm_risk_block(self, event_payload: dict, session_generation: int) -> None:
+        """Publish a local candidate rejected by RiskManager if its PAPER session is still current."""
+        async with _paper_session_lock:
+            if (
+                getattr(execution_engine, "_maintenance_active", False)
+                or session_generation != _paper_session_generation
+            ):
+                return
+            await self._publish_pre_llm_risk_block_locked(event_payload)
+
+    async def _publish_pre_llm_risk_block_locked(self, event_payload: dict) -> None:
+        """Persist and broadcast the pre-LLM risk block."""
+        now_mono = time_module.monotonic()
+        # RiskManager is a global gate. Avoid filling the verdict panel with one
+        # identical card per ticker while the same global stop remains active.
+        if now_mono - self._last_risk_block_verdict_at < 10.0:
+            return
+        self._last_risk_block_verdict_at = now_mono
+        ticker = str(event_payload.get("ticker", "UNKNOWN")).strip().upper()
+        price = event_payload.get("price", 0.0)
+        metrics = event_payload.get("metrics", {})
+        if not isinstance(metrics, dict):
+            metrics = {}
+        candidate = str(event_payload.get("candidate_direction", "HOLD")).upper()
+        reason = "RiskManager остановил торговлю до запроса к ИИ; исполнитель не вызывался."
+        tactic, critic = build_verdict_explanation("HOLD", candidate, metrics, reason)
+        now_local = datetime.now().astimezone()
+        verdict_id = uuid4().hex
+        verdict = {
+            "verdict_id": verdict_id,
+            "timestamp": now_local.strftime("%H:%M:%S"),
+            "timestamp_iso": now_local.isoformat(timespec="milliseconds"),
+            "ticker": ticker,
+            "price": price,
+            "decision": "HOLD",
+            "candidate_decision": candidate,
+            "confidence": None,
+            "decision_source": "RISK_MANAGER",
+            "signal_status": "BLOCKED" if candidate in {"BUY", "SELL"} else "NO_ENTRY",
+            "signal_reason": reason,
+            "execution_status": "NOT_REQUESTED",
+            "execution_message": "Не запрашивалось: торговля остановлена RiskManager.",
+            "tactic_opinion": tactic,
+            "critic_opinion": critic,
+        }
+        last_ai_verdicts_cache.append(verdict)
+        if len(last_ai_verdicts_cache) > MAX_CACHE_SIZE:
+            last_ai_verdicts_cache.pop(0)
+        try:
+            redis_inst = getattr(self.db, "redis", getattr(self.db, "_redis", None))
+            if redis_inst is not None:
+                await redis_inst.lpush("piluitus:verdicts:history", json.dumps(verdict, ensure_ascii=False))
+                await redis_inst.ltrim("piluitus:verdicts:history", 0, MAX_CACHE_SIZE - 1)
+        except Exception as persist_exc:
+            logger.warning("Не удалось сохранить RiskManager-вердикт %s: %s", ticker, persist_exc)
+        try:
+            payload = {"type": "MARKET_UPDATE", **verdict, "balance": dict(_dashboard_balance_snapshot)}
+            await manager.broadcast(json.dumps(payload, ensure_ascii=False))
+        except Exception as broadcast_exc:
+            logger.error("Не удалось отправить RiskManager-вердикт в веб-интерфейс: %s", broadcast_exc)
+
+    async def start_processing(self):
+        global last_ai_verdicts_cache
+        logger.info("🤖 ИИ‑конвейер воркеров Piluitus v35.2 успешно запущен.")
+
+        while True:
+            queue_item_acquired = False
+            pending_ticker = ""
+            try:
+                priority, _sequence_id, _timestamp_id, event_type, event_payload = await anomaly_queue.get()
+                queue_item_acquired = True
+                if event_type == "MARKET_TICK" and isinstance(event_payload, dict):
+                    pending_ticker = str(event_payload.get("ticker", "")).strip().upper()
+                    if (
+                        getattr(execution_engine, "_maintenance_active", False)
+                        or event_payload.get("paper_session_generation") != _paper_session_generation
+                    ):
+                        continue
+                
+                if priority == 0:
+                    logger.warning(f"🚨 [ПРИОРИТЕТНЫЙ ПЕРЕХВАТ] Выполнение экстренной команды: {event_type}")
+                    if event_type == "CMD_CLOSE_ALL":
+                        await execution_engine.close_all_positions(db=self.db) 
+                    elif event_type == "CMD_SET_RISK_LIMIT":
+                        try:
+                            risk_manager.daily_loss_limit = validate_daily_loss_limit(
+                                event_payload.get("value", Settings.DAILY_LOSS_LIMIT_PCT)
+                            )
+                        except ValueError as exc:
+                            logger.error("[RISK LIMIT] Некорректное значение в очереди: %s", exc)
+                    continue
+
+                ticker   = event_payload.get("ticker") or event_payload.get("security_code") or "UNKNOWN"
+                price    = event_payload.get("price") or 0.0
+                metrics  = event_payload.get("metrics", {})
+                
+                asyncio.create_task(
+                    log_trading_event_to_file(
+                        ticker=ticker,
+                        price=price,
+                        decision="В ОЧЕРЕДИ (ПРОВЕРКА РИСКОВ)",
+                        confidence=0.0,
+                        tactic=f"Всплеск объема: {metrics.get('volume_spike', 'Н/Д')}",
+                        critic=f"Волатильность: {metrics.get('volatility_pct', 'Н/Д')}%"
+                    )
+                )
+
+                trading_allowed = await risk_manager.is_trading_allowed(self.db)
+                if (
+                    getattr(execution_engine, "_maintenance_active", False)
+                    or event_payload.get("paper_session_generation") != _paper_session_generation
+                ):
+                    continue
+                if not trading_allowed:
+                    _trade_flow_inc("risk_blocked")
+                    asyncio.create_task(
+                        log_trading_event_to_file(
+                            ticker, price, "RISK_BLOCK", 0.0,
+                            "Торговля заблокирована.", "RiskManager запретил торговлю до запроса к ИИ."
+                        )
+                    )
+                    await self._publish_pre_llm_risk_block(
+                        event_payload, int(event_payload.get("paper_session_generation", -1))
+                    )
+                    continue
+
+                try:
+                    from knowledge_parser import TechnicalKnowledgeParser
+
+                    rag_context_str = await TechnicalKnowledgeParser.get_knowledge_context(
+                        db=self.db,
+                        category="ScalpingRules",
+                        market_evidence=metrics if isinstance(metrics, dict) else {},
+                    )
+                    event_payload["rag_context"] = [rag_context_str]
+                except Exception as exc:
+                    logger.error("⚠️ Ошибка сборки RAG-контекста в main.py: %s", exc, exc_info=True)
+                    event_payload["rag_context"] = [
+                        "Нет проверенного контекста правил; направленный вход должен быть HOLD."
+                    ]
+
+                try:
+                    _trade_flow_inc("llm_calls")
+                    ai_response = await asyncio.wait_for(
+                        self.ai.analyze_market_state(event_payload),
+                        timeout=float(Settings.VLLM_TIMEOUT),
+                    )
+                except Exception as exc:
+                    ai_response = {
+                        "final_decision": "HOLD",
+                        "confidence_score": 0.0,
+                        "confidence_valid": False,
+                        "tactic_opinion": "Превышено время ожидания ИИ / Сбой инференса сервера vLLM.",
+                        "critic_opinion": str(exc),
+                    }
+
+                if (
+                    getattr(execution_engine, "_maintenance_active", False)
+                    or event_payload.get("paper_session_generation") != _paper_session_generation
+                ):
+                    continue
+
+                ai_analysis = {"final_decision": "HOLD", "confidence_score": 0.0, "confidence_valid": False, "tactic_opinion": "", "critic_opinion": ""}
+                if isinstance(ai_response, list) and len(ai_response) > 0:
+                    first_item = next(iter(ai_response), None)
+                    if isinstance(first_item, dict):
+                        ai_analysis = first_item
+                elif isinstance(ai_response, dict):
+                    ai_analysis = ai_response
+
+                decision = str(ai_analysis.get("final_decision", "HOLD")).upper()
+                candidate_decision = decision if decision in {"BUY", "SELL", "HOLD"} else "HOLD"
+                confidence_valid = bool(ai_analysis.get("confidence_valid", "confidence_score" in ai_analysis))
+                try:
+                    confidence = float(ai_analysis.get("confidence_score", 0.0)) * 100.0
+                    if not math.isfinite(confidence) or not 0.0 <= confidence <= 100.0:
+                        confidence_valid = False
+                        confidence = 0.0
+                except (TypeError, ValueError):
+                    confidence_valid = False
+                    confidence = 0.0
+                latency_val = float(ai_analysis.get("latency", 0.0) or 0.0)
+                if decision not in {"BUY", "SELL", "HOLD"}:
+                    decision = "HOLD"
+                    confidence = 0.0
+                candidate_confidence = confidence if confidence_valid else None
+                if decision in {"BUY", "SELL"}:
+                    _trade_flow_inc("llm_directional")
+                else:
+                    _trade_flow_inc("llm_hold")
+                # Независимый численный фильтр: свободный текст и confidence LLM
+                # не заменяют обязательную проверку измеряемых условий входа.
+                evidence = metrics if isinstance(metrics, dict) else {}
+                valid_evidence = True
+                block_reason = ""
+                candidate_direction = str(event_payload.get("candidate_direction", "")).upper()
+                if decision in {"BUY", "SELL"} and candidate_direction in {"BUY", "SELL"} and decision != candidate_direction:
+                    valid_evidence = False
+                    block_reason = (
+                        f"Противоположное направление запрещено: локально подтверждён {candidate_direction}, "
+                        f"модель предложила {decision}."
+                    )
+                elif decision in {"BUY", "SELL"}:
+                    valid_evidence, block_reason = validate_signal_evidence(decision, evidence)
+                signal_reason = ""
+                if decision in {"BUY", "SELL"} and not valid_evidence:
+                    requested_decision = decision
+                    signal_reason = block_reason or "Измеряемые условия входа не пройдены."
+                    _trade_flow_guard_block(signal_reason)
+                    logger.warning(
+                        "🛑 [SIGNAL GUARD] Заблокирован кандидат %s по %s: %s",
+                        requested_decision, ticker, signal_reason,
+                    )
+                    decision = "HOLD"
+                    confidence = 0.0
+                    ai_analysis["final_decision"] = decision
+                    ai_analysis["confidence_score"] = 0.0
+
+                if decision in {"BUY", "SELL"} and (not confidence_valid or confidence < 75.0):
+                    _trade_flow_inc("confidence_blocked")
+                    requested_decision = decision
+                    if not confidence_valid:
+                        reason = "Модель не вернула корректную числовую confidence_score; вход заблокирован."
+                    else:
+                        reason = f"Оценка модели {confidence:.0f}% ниже порога входа 75%; новая позиция не открыта."
+                    signal_reason = reason
+                    decision = "HOLD"
+                    # Keep the model's original candidate score visible; the critic
+                    # text explains that the candidate fell below the entry threshold.
+                    ai_analysis["final_decision"] = decision
+                    ai_analysis["confidence_score"] = confidence / 100.0
+
+                execution_status = "NOT_REQUESTED"
+                execution_message = "Новая позиция не запрашивалась."
+                requested_lots = 0
+                requested_notional = 0.0
+                lot_multiplier = max(int(LOT_SIZES.get(ticker, 1)), 1)
+                verdict_id = uuid4().hex
+
+                if decision in ("BUY", "SELL") and confidence >= 75.0:
+                    logger.warning(f"🎯 СИГНАЛ УТВЕРЖДЁН ИИ: {ticker} → {decision} ({confidence:.1f}%)")
+                    atr_value = finite_float(metrics.get("bar_atr")) or 0.0
+                    atr_periods = nonnegative_int(metrics.get("bar_atr_periods")) or 0
+                    entry_bbo_available = (finite_float(metrics.get("spread_available")) or 0.0) >= 0.5
+                    entry_bid = (finite_float(metrics.get("bid")) or 0.0) if entry_bbo_available else 0.0
+                    entry_ask = (finite_float(metrics.get("ask")) or 0.0) if entry_bbo_available else 0.0
+                    entry_spread_pct = (finite_float(metrics.get("spread_pct")) or 0.0) if entry_bbo_available else 0.0
+                    entry_bbo_age_sec = (finite_float(metrics.get("bbo_age_sec")) or 0.0) if entry_bbo_available else 0.0
+                    stop_loss, take_profit = execution_engine.calculate_atr_stop(
+                        ticker,
+                        price,
+                        decision,
+                        atr_value=atr_value,
+                        atr_periods=atr_periods,
+                        bid=entry_bid,
+                        ask=entry_ask,
+                    )
+                    if stop_loss <= 0.0 or take_profit <= 0.0:
+                        try:
+                            min_atr_periods = min(14, max(2, int(os.getenv("PILUITUS_ATR_MIN_PERIODS", "5"))))
+                        except (TypeError, ValueError):
+                            min_atr_periods = 5
+                        execution_status = "BLOCKED"
+                        execution_message = (
+                            f"Недостаточно закрытых M1-диапазонов для ATR: {atr_periods}/{min_atr_periods}; "
+                            "новая позиция не открыта."
+                        )
+                        _trade_flow_inc("atr_history_blocked")
+                        logger.warning("Сигнал %s по %s заблокирован: %s", decision, ticker, execution_message)
+                    else:
+                        ai_analysis["stop_loss"] = stop_loss
+                        ai_analysis["take_profit"] = take_profit
+                        ai_analysis["atr_at_entry"] = atr_value
+                        ai_analysis["atr_periods_at_entry"] = atr_periods
+                        ai_analysis["atr_multiplier"] = finite_float(os.getenv("ATR_MULTIPLIER", "1.5")) or 1.5
+                        ai_analysis["entry_bid"] = entry_bid
+                        ai_analysis["entry_ask"] = entry_ask
+                        ai_analysis["entry_spread_pct"] = entry_spread_pct
+                        ai_analysis["entry_bbo_age_sec"] = entry_bbo_age_sec
+                        requested_lots = risk_manager.calculate_lot_size(ticker, price, stop_loss)
+                        if requested_lots <= 0:
+                            _trade_flow_inc("zero_lot")
+                            execution_status = "BLOCKED"
+                            execution_message = "Риск на минимальный лот превышает установленный лимит."
+                            logger.warning("Сигнал %s по %s пропущен: риск на минимальный лот превышает лимит.", decision, ticker)
+                        else:
+                            requested_notional = requested_lots * lot_multiplier * price
+                            logger.info(
+                                "🧮 [POSITION SIZE] %s %s: lots=%d shares=%d price=%.4f notional=%.2f ₽ planned_risk=%.2f ₽ ATR=%.6f (%d M1 ranges) stop=%.4f%%",
+                                decision, ticker, requested_lots, requested_lots * lot_multiplier, price, requested_notional,
+                                abs(price - stop_loss) * requested_lots * lot_multiplier,
+                                atr_value, atr_periods, abs(price - stop_loss) / price * 100.0,
+                            )
+                            execution_status = "PENDING"
+                            execution_message = "Заявка передана в контур исполнения; ожидается результат."
+
+                # Do not expose free-form LLM reasoning as evidence. User-facing text
+                # is generated only from locally measured values and guard outcomes.
+                if decision == "HOLD" and not signal_reason:
+                    if not confidence_valid:
+                        signal_reason = "Ответ модели не содержит корректной числовой оценки; вход запрещён."
+                    elif candidate_decision in {"BUY", "SELL"}:
+                        signal_reason = "Кандидат ИИ не прошёл локальные проверки входа."
+                    else:
+                        signal_reason = "Модель не предложила направленный вход."
+                tactic_text, critic_text = build_verdict_explanation(
+                    decision, candidate_decision, evidence, signal_reason
+                )
+
+                signal_status = (
+                    "APPROVED" if decision in {"BUY", "SELL"}
+                    else "BLOCKED" if candidate_decision in {"BUY", "SELL"}
+                    else "NO_ENTRY"
+                )
+                now_local = datetime.now().astimezone()
+                verdict_data = {
+                    "verdict_id": verdict_id,
+                    "timestamp": now_local.strftime("%H:%M:%S"),
+                    "timestamp_iso": now_local.isoformat(timespec="milliseconds"),
+                    "ticker": ticker,
+                    "price": price,
+                    "decision": decision,
+                    "candidate_decision": candidate_decision,
+                    "confidence": round(candidate_confidence, 1) if candidate_confidence is not None else None,
+                    "signal_status": signal_status,
+                    "signal_reason": signal_reason,
+                    "execution_status": execution_status,
+                    "execution_message": execution_message,
+                    "requested_lots": requested_lots or None,
+                    "requested_notional_rub": round(requested_notional, 2) if requested_notional else None,
+                    "executed_lots": None,
+                    "executed_shares": None,
+                    "actual_notional_rub": None,
+                    "order_id": None,
+                    "tactic_opinion": tactic_text,
+                    "critic_opinion": critic_text,
+                }
+
+                ai_analysis["final_decision"] = decision
+                ai_analysis["confidence_score"] = (confidence / 100.0) if confidence_valid else 0.0
+                ai_analysis["tactic_opinion"] = tactic_text
+                ai_analysis["critic_opinion"] = critic_text
+
+                asyncio.create_task(
+                    log_trading_event_to_file(
+                        ticker=ticker,
+                        price=price,
+                        decision=f"ВЕРДИКТ ИИ: {decision} (кандидат={candidate_decision}, исполнение={execution_status})",
+                        confidence=round(confidence, 1) if confidence_valid else 0.0,
+                        tactic=tactic_text,
+                        critic=critic_text,
+                    )
+                )
+
+                async with _paper_session_lock:
+                    if (
+                        getattr(execution_engine, "_maintenance_active", False)
+                        or event_payload.get("paper_session_generation") != _paper_session_generation
+                    ):
+                        continue
+                    last_ai_verdicts_cache.append(verdict_data)
+                    if len(last_ai_verdicts_cache) > MAX_CACHE_SIZE:
+                        last_ai_verdicts_cache.pop(0)
+
+                    try:
+                        redis_inst = getattr(self.db, "redis", getattr(self.db, "_redis", None))
+                        if redis_inst is not None:
+                            await redis_inst.lpush("piluitus:verdicts:history", json.dumps(verdict_data, ensure_ascii=False))
+                            await redis_inst.ltrim("piluitus:verdicts:history", 0, MAX_CACHE_SIZE - 1)
+                    except Exception as redis_err:
+                        logger.error(f"❌ Ошибка буферизации вердикта в Redis: {redis_err}")
+
+                    current_balance = dict(_dashboard_balance_snapshot)
+                    payload_for_ws = {
+                        "type": "MARKET_UPDATE",
+                        **verdict_data,
+                        "balance": current_balance,
+                    }
+
+                    async def _safe_broadcast(payload: dict):
+                        try:
+                            json_str = json.dumps(payload, ensure_ascii=False)
+                            await manager.broadcast(json_str)
+                        except Exception as broadcast_err:
+                            logger.error(f"Ошибка WebSocket бродкаста: {broadcast_err}")
+
+                    await _safe_broadcast(payload_for_ws)
+
+                    if execution_status == "PENDING":
+                        asyncio.create_task(
+                            self._execute_and_publish(
+                                verdict_id=verdict_id,
+                                ticker=ticker,
+                                lots=requested_lots,
+                                side=decision,
+                                price=price,
+                                ai_analysis=dict(ai_analysis),
+                                session_generation=int(event_payload.get("paper_session_generation", -1)),
+                            )
+                        )
+
+            except Exception as outer_exc:
+                logger.error("[MarketWorker] КРИТИЧЕСКИЙ СБОЙ КОНВЕЙЕРА: %r", outer_exc, exc_info=True)
+
+            finally:
+                # Подтверждаем только элемент, который worker действительно извлёк.
+                # ACK выполняется ровно один раз на всех путях (включая continue).
+                if queue_item_acquired:
+                    anomaly_queue.task_done()
+                if pending_ticker:
+                    _release_ai_ticker(pending_ticker)
+                await asyncio.sleep(0.001)
+# --------------------------------------------------------------
+#  6️⃣  ФОНОВЫЕ ЦИКЛЫ ОБНОВЛЕНИЯ И СИНХРОНИЗАЦИИ ТАБЛИЦ
+# --------------------------------------------------------------
+async def background_broker_init():
+    """
+    Промышленный контур проверки торговых сессий Мосбиржи.
+    Связывает нативный gRPC-стрим котировок Финам с обработчиком ядра.
+    """
+    logger.info("🔌 Проверка брокерского соединения Финам...")
+    current_time = datetime.now()
+    day_of_week = current_time.weekday()
+    
+    # 0 = Понедельник, 4 = Пятница. Строго рабочие дни Мосбиржи.
+    if 0 <= day_of_week <= 4:
+        logger.info(f"📅 Инициализация LIVE-контура. Обнаружен рабочий день сессии: {current_time.strftime('%A')}.")
+        try:
+            # Нативно инициализируем JWT-токены и соединение SDK Финам
+            await broker.connect()
+            
+            # Адаптируем под PriorityQueue. Создаем мостовую очередь,
+            # выгребаем из нее данные и перенаправляем в полиморфный обработчик process_market_event.
+            bridge_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=10000)
+            
+            # Запускаем бесконечный бинарный WebSocket котировок из finam_client.py
+            asyncio.create_task(
+                broker.start_market_data_stream(
+                    tickers=TICKERS_TO_TRADE,
+                    queue=bridge_queue,
+                    screener=screener
+                )
+            )
+            
+            # Внутренний воркер-перенаправлятор из bridge_queue в асинхронный конвейер
+            async def _bridge_worker():
+                while True:
+                    try:
+                        raw_event = await bridge_queue.get()
+                        try:
+                            await process_market_event(raw_event)
+                        finally:
+                            bridge_queue.task_done()
+                    except Exception as bridge_err:
+                        logger.error(f"❌ Ошибка моста WebSocket-котировок: {bridge_err}")
+                        await asyncio.sleep(0.1)
+
+            asyncio.create_task(_bridge_worker())
+            logger.info("⏳ Задача подключения к Finam WebSocket запущена; подтверждение появится после HANDSHAKE_SUCCESS.")
 
         except Exception as e:
-            logger.error(f"Сбой ИИ-конвейера V2.2 по {ticker}: {e}")
-        finally:
-            active_trading_locks[ticker] = False
+            logger.error(f"❌ Ошибка инициализации API Finam: {e}")
+    else:
+        logger.warning("📅 Переход в стабильный Mock/Sandbox Mode для тестов на выходных.")
+        
+    while True:
+        await asyncio.sleep(3600)
 
+# --------------------------------------------------------------
+#  6️⃣.5️⃣ ВСПОМОГАТЕЛЬНЫЕ ФОНОВЫЕ ИНИЦИАЛИЗАТОРЫ (Перемещены вверх для линтера)
+# --------------------------------------------------------------
+async def _start_news_updater() -> None:
+    async def _broadcast(message: str) -> None:
+        await manager.broadcast(message)
+    await MarketNewsParser.update_news_cycle(db_manager, broadcast_callback=_broadcast)
+
+async def _start_tables_sync_loop():
+    """Периодически обновляет позиции и фактическую оценку задействованного капитала."""
+    logger.info("📊 Воркер синхронизации таблиц и капитала запущен.")
+    while True:
+        try:
+            await asyncio.sleep(1.0)
+
+            active_positions = await _get_dashboard_open_positions()
+            balance = await _refresh_dashboard_balance_snapshot(active_positions)
+            raw_closed = getattr(execution_engine, "closed_trades", getattr(execution_engine, "_closed_trades", []))
+
+            payload = {
+                "type": "TABLES_UPDATE",
+                "active_positions": active_positions,
+                "closed_trades": raw_closed[-30:] if isinstance(raw_closed, list) else [],
+                "balance": balance,
+            }
+            await manager.broadcast(json.dumps(payload, ensure_ascii=False))
+        except Exception as e:
+            logger.error("❌ Ошибка воркера синхронизации таблиц/капитала: %s", e, exc_info=True)
+# --------------------------------------------------------------
+#  7️⃣  FastAPI LIFESPAN
+# --------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Управление фоновыми сервисами"""
-    tg_bot.global_broker_ref = broker 
-    bg_news_task = asyncio.create_task(MarketNewsParser.update_news_cycle(manager.broadcast))
-    
-    async def safe_telegram_polling():
-        if not tg_bot.bot or not tg_bot.dp:
-            logger.error("🛑 [ТГ-БОТ] Ошибка инициализации bot/dp. Запуск отменен.")
-            return
-            
-        logger.info("🔌 [ТГ-БОТ] Активация промышленного контура Telegram V2.2...")
-        
-        # Запускаем бесконечный цикл авто-восстановления сессии при таймаутах
+    global bg_market_task, last_ai_verdicts_cache
+    logger.info("🚀 Запуск PILUITUS v35.2 | депозит=%.2f ₽ | общий лимит активов=15%% (%.2f ₽), одна позиция=5%% (%.2f ₽).", DEPOSIT, DEPOSIT * 0.15, DEPOSIT * 0.05)
+
+    try:
+        await db_manager.connect()
+        maintenance_state = await db_manager.get_json("piluitus:paper:maintenance")
+        if isinstance(maintenance_state, dict) and bool(maintenance_state.get("active")):
+            execution_engine._maintenance_active = True
+            execution_engine._maintenance_reason = str(maintenance_state.get("reason") or "PAPER-сессия приостановлена для обслуживания.")
+            logger.warning("⏸️ Восстановлена сохранённая пауза PAPER-сессии. Нажмите «Возобновить PAPER» на странице обслуживания.")
+    except Exception as exc:
+        logger.critical(f"❌ Критическая ошибка старта БД в Lifespan: {exc}")
+
+    # В v17 функция существовала, но не вызывалась при запуске: JSON мог не попасть в Redis.
+    try:
+        from knowledge_parser import TechnicalKnowledgeParser
+        await TechnicalKnowledgeParser.warm_up_rag_cache(db_manager)
+    except Exception as rag_start_err:
+        logger.error("⚠️ Не удалось загрузить базу ai_market_knowledge.json в RAG: %s", rag_start_err, exc_info=True)
+
+    try:
+        # PAPER-позиции из прежних запусков не восстанавливаются как активные автоматически:
+        # они переводятся в STALE_REVIEW без фиктивной цены выхода/PnL.
+        quarantined = await execution_engine.quarantine_unreconciled_paper_positions(db_manager)
+        if quarantined:
+            logger.warning("В старом PAPER-журнале найдено позиций для ручной проверки: %d", quarantined)
+    except Exception as stale_paper_err:
+        logger.error("Не удалось проверить старые PAPER-позиции: %s", stale_paper_err, exc_info=True)
+
+    try:
+        redis_inst = getattr(db_manager, "redis", getattr(db_manager, "_redis", None))
+        if redis_inst is not None:
+            cached_verdicts = await redis_inst.lrange("piluitus:verdicts:history", 0, MAX_CACHE_SIZE - 1)
+            if cached_verdicts:
+                last_ai_verdicts_cache = [json.loads(v) for v in cached_verdicts][::-1]
+                logger.info(f"📚 Из Redis успешно восстановлено {len(last_ai_verdicts_cache)} вердиктов.")
+    except Exception as redis_restore_err:
+        logger.error(f"⚠️ Не удалось восстановить историю вердиктов из Redis: {redis_restore_err}")
+
+    from risk_manager import RiskManager
+    await RiskManager.update_finam_lot_sizes(finam_broker_client=broker)
+
+    worker = MarketWorker(db=db_manager, ai=ai_engine, broker_client=broker)
+    async def _run_worker_safely():
+        try:
+            await worker.start_processing()
+        except Exception as e:
+            logger.critical(f"❌ КРИТИЧЕСКОЕ ПАДЕНИЕ MarketWorker В ЦИКЛЕ ТОРГОВЛИ: {e}", exc_info=True)
+
+    # Запускаем строго по одной асинхронной задаче на каждый воркер (дублирование удалено)
+    asyncio.create_task(_run_worker_safely())
+    asyncio.create_task(_start_news_updater())
+    asyncio.create_task(_start_tables_sync_loop())
+
+    import tg_bot as tb
+    tb.global_broker_ref = broker
+    tb.global_execution_engine_ref = execution_engine
+
+    if tg_bot.bot and tg_bot.dp:
+        logger.info("🤖 Подключаем Telegram‑бот к API...")
+        bot: Bot = cast(Bot, tg_bot.bot)          
+        dp = tg_bot.dp                             
+
+        async def _start_bot_safely() -> None:
+            try:
+                await dp.start_polling(bot, skip_updates=True)
+            except Exception as exc:
+                logger.error(f"❌ Telegram‑бот не смог запуститься: {exc}")
+
+        asyncio.create_task(_start_bot_safely())
+        logger.info("🟢 Telegram‑бот успешно инициализирован.")
+    else:
+        logger.warning("⚠️ Токен Telegram не найден – режим управления отключён.")
+
+    bg_market_task = asyncio.create_task(background_broker_init())
+
+    yield
+
+    if bg_market_task and not bg_market_task.done():
+        bg_market_task.cancel()
+    await ai_engine.close()
+    logger.info("🛑 ОЗУ‑контур робота PILUITUS полностью обесточен.")
+
+
+app = FastAPI(title="PILUITUS v35.2 — AI Trading Core", lifespan=lifespan)
+
+# 🔥 HTTP-ЭНДПОИНТ ДЛЯ ПЕРЕХВАТА ИНТЕРАКТИВНЫХ КОМАНД С ВЫСШИМ ПРИОРИТЕТОМ (Priority 0)
+@app.post("/api/v1/control/close_all")
+async def http_emergency_close_all():
+    """Экстренное принудительное закрытие всех открытых позиций фронтендом с обходом HFT-очереди."""
+    await anomaly_queue.put(_make_priority_item(0, "CMD_CLOSE_ALL", {}))
+    return {"status": "queued", "priority": "high_emergency"}
+
+@app.post("/api/v1/control/risk_limit")
+async def http_update_risk_limit(payload: dict = Body(...)):
+    """Динамическое изменение лимитов просадки робота с высшим приоритетом обработки."""
+    try:
+        new_limit = validate_daily_loss_limit(payload.get("value", Settings.DAILY_LOSS_LIMIT_PCT))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await anomaly_queue.put(_make_priority_item(0, "CMD_SET_RISK_LIMIT", {"value": new_limit}))
+    return {"status": "queued", "priority": "high_emergency", "new_target_limit": new_limit}
+
+# --------------------------------------------------------------
+#  8️⃣  FastAPI ROUTING & WEBSOCKET ENDPOINT
+# --------------------------------------------------------------
+BASE_DIR = Path(__file__).parent                
+templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+PAPER_CLEAR_CONFIRMATION = "ОЧИСТИТЬ PAPER-СЕССИЮ"
+
+
+def _require_paper_mode() -> None:
+    if not getattr(execution_engine, "paper_mode", True):
+        raise HTTPException(status_code=403, detail="Операция доступна только в PAPER_TRADING=True.")
+
+
+def _paper_trade_rows(snapshot: dict) -> list[dict]:
+    rows = snapshot.get("paper_trades", [])
+    return [dict(row) for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
+
+async def _broadcast_paper_tables() -> None:
+    positions = await _get_dashboard_open_positions()
+    balance = await _refresh_dashboard_balance_snapshot(positions)
+    raw_closed = getattr(execution_engine, "closed_trades", [])
+    await manager.broadcast(json.dumps({
+        "type": "TABLES_UPDATE",
+        "active_positions": positions,
+        "closed_trades": raw_closed[-30:] if isinstance(raw_closed, list) else [],
+        "balance": balance,
+    }, ensure_ascii=False))
+
+
+@app.get("/maintenance", response_class=HTMLResponse)
+async def read_maintenance_page():
+    page_path = BASE_DIR / "templates" / "maintenance.html"
+    if not page_path.is_file():
+        return HTMLResponse("<h1>maintenance.html не найден</h1>", status_code=404)
+    return FileResponse(page_path)
+
+
+@app.get("/api/v1/paper/reconciliation")
+async def get_paper_reconciliation():
+    _require_paper_mode()
+    snapshot = await db_manager.get_paper_session_snapshot()
+    paper_rows = _paper_trade_rows(snapshot)
+    stale_rows = [
+        row for row in paper_rows
+        if str(row.get("status", "")).upper() == "STALE_REVIEW"
+        and str(row.get("reconciliation_status", "")).upper() == "REVIEW_REQUIRED"
+    ]
+    stale_rows.sort(key=lambda row: str(row.get("entry_timestamp") or row.get("entry_time") or ""))
+    summary = {key: value for key, value in snapshot.items() if key != "paper_trades"}
+    return {
+        "paper_mode": True,
+        "maintenance_active": bool(getattr(execution_engine, "_maintenance_active", False)),
+        "summary": summary,
+        "stale_positions": stale_rows,
+        "memory_open_positions": [
+            dict(row) for row in getattr(execution_engine, "paper_positions", {}).values()
+            if isinstance(row, dict)
+        ],
+    }
+
+
+@app.post("/api/v1/paper/reconciliation/{order_id}")
+async def reconcile_paper_position(order_id: str, payload: dict[str, object] = Body(...)):
+    _require_paper_mode()
+    action = str(payload.get("action", "")).strip().lower()
+    if action not in {"restore_open", "close", "void"}:
+        raise HTTPException(status_code=400, detail="Неизвестное действие сверки.")
+
+    async with _paper_session_lock:
+        if execution_engine._opening_tickers or execution_engine._lock_closing:
+            raise HTTPException(status_code=409, detail="Есть незавершённая операция исполнения. Повторите сверку после её завершения.")
+
+        all_trades = await db_manager.get_all_daily_trades()
+        trade = all_trades.get(order_id)
+        if not isinstance(trade, dict) or not DBManager.is_paper_trade(trade, order_id):
+            raise HTTPException(status_code=404, detail="PAPER-запись не найдена в постоянном журнале.")
+        trade = dict(trade)
+        if str(trade.get("status", "")).upper() != "STALE_REVIEW" or str(trade.get("reconciliation_status", "")).upper() != "REVIEW_REQUIRED":
+            raise HTTPException(status_code=409, detail="Запись уже не находится в статусе STALE_REVIEW.")
+
+        ticker = str(trade.get("ticker", "")).strip().upper().split("@")[0]
+        side = str(trade.get("side", "")).strip().upper()
+        try:
+            entry_price = float(trade.get("entry_price", 0.0))
+            volume = int(float(trade.get("volume") or 0))
+            if volume <= 0:
+                lots = int(float(trade.get("lots") or 0))
+                lot_size = int(float(trade.get("lot_size") or LOT_SIZES.get(ticker, 1) or 1))
+                volume = lots * lot_size
+        except (TypeError, ValueError, OverflowError):
+            entry_price = 0.0
+            volume = 0
+        if not ticker or side not in {"BUY", "SELL"} or not math.isfinite(entry_price) or entry_price <= 0 or volume <= 0:
+            raise HTTPException(status_code=422, detail="В журнале недостаточно корректных данных для безопасной сверки.")
+
+        now = datetime.now().astimezone()
+        note = str(payload.get("note", "")).strip()
+        if action in {"close", "void"} and len(note) < 3:
+            raise HTTPException(status_code=422, detail="Добавьте короткое пояснение к ручной операции.")
+
+        if action == "restore_open":
+            if ticker in execution_engine.paper_positions:
+                raise HTTPException(status_code=409, detail=f"По {ticker} уже есть активная PAPER-позиция.")
+            trade.update({
+                "status": "OPEN",
+                "mode": "PAPER",
+                "current_price": float(trade.get("current_price") or entry_price),
+                "volume": volume,
+                "reconciliation_status": "CONFIRMED_OPEN",
+                "reconciled_at": now.isoformat(timespec="seconds"),
+                "reconciliation_note": note or "Оператор подтвердил, что PAPER-позиция остаётся открытой.",
+            })
+            await db_manager.set_json(f"piluitus:trade:{order_id}", trade)
+            execution_engine.paper_positions[ticker] = trade
+            execution_engine._unreconciled_paper_positions.pop(order_id, None)
+            message = f"Позиция {ticker} возвращена в активный PAPER-мониторинг. После следующего перезапуска потребуется повторная сверка."
+
+        elif action == "close":
+            raw_exit_price: object = payload.get("exit_price")
+            exit_price = _parse_finite_float(raw_exit_price)
+            if exit_price is None or exit_price <= 0.0:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Укажите корректную положительную цену выхода.",
+                )
+            sign = 1 if side == "BUY" else -1
+            pnl = (exit_price - entry_price) * volume * sign
+            pnl_pct = ((exit_price - entry_price) / entry_price) * 100.0 * sign
+            trade.update({
+                "status": "CLOSED",
+                "mode": "PAPER",
+                "volume": volume,
+                "current_price": exit_price,
+                "exit_price": exit_price,
+                "exit_time": now.strftime("%H:%M:%S"),
+                "exit_timestamp": now.isoformat(timespec="milliseconds"),
+                "exit_reason": "MANUAL_RECONCILIATION",
+                "pnl": round(pnl, 2),
+                "pnl_percent": round(pnl_pct, 4),
+                "final_outcome": "MANUALLY_RECONCILED",
+                "reconciliation_status": "CLOSED_CONFIRMED",
+                "reconciled_at": now.isoformat(timespec="seconds"),
+                "reconciliation_note": note,
+            })
+            await db_manager.set_json(f"piluitus:trade:{order_id}", trade)
+            await db_manager.push_to_list("piluitus:trade_history", trade, max_len=100)
+            execution_engine._unreconciled_paper_positions.pop(order_id, None)
+            execution_engine.closed_trades.append(dict(trade))
+            message = f"Закрытие {ticker} зафиксировано по {exit_price:.4f} ₽; расчётный PnL {pnl:+.2f} ₽."
+
+        else:  # void
+            trade.update({
+                "status": "VOIDED",
+                "mode": "PAPER",
+                "final_outcome": "VOIDED",
+                "reconciliation_status": "VOIDED_CONFIRMED",
+                "reconciled_at": now.isoformat(timespec="seconds"),
+                "reconciliation_note": note,
+            })
+            await db_manager.set_json(f"piluitus:trade:{order_id}", trade)
+            execution_engine._unreconciled_paper_positions.pop(order_id, None)
+            message = f"Запись {order_id} помечена VOIDED. Она сохранена в журнале для аудита, но больше не блокирует торговлю и капитал."
+
+    await _broadcast_paper_tables()
+    return {"status": "ok", "message": message, "trade": trade}
+
+
+@app.post("/api/v1/paper/session/clear")
+async def clear_paper_session(payload: dict[str, object] = Body(...)):
+    global _paper_session_generation, last_ai_verdicts_cache, _balance_guard_last_signature
+    _require_paper_mode()
+    if str(payload.get("confirmation", "")).strip() != PAPER_CLEAR_CONFIRMATION:
+        raise HTTPException(status_code=400, detail=f"Для подтверждения введите точную фразу: {PAPER_CLEAR_CONFIRMATION}")
+
+    async with _paper_session_lock:
+        execution_engine._maintenance_active = True
+        execution_engine._maintenance_reason = "PAPER-сессия приостановлена для полной очистки. Проверьте результат и вручную возобновите PAPER."
+        _paper_session_generation += 1
+        # Persist the pause first. Any later failure must leave the bot paused
+        # across process restarts rather than silently resuming a partial reset.
+        await db_manager.set_json("piluitus:paper:maintenance", {
+            "active": True,
+            "reason": execution_engine._maintenance_reason,
+            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        })
+
+        # Purge queued market events but retain emergency priority-zero commands.
+        emergency_items = []
         while True:
             try:
-                logger.info("🧹 [ТГ-БОТ] Сброс накопленной ночной очереди спама...")
-                await tg_bot.bot.delete_webhook(drop_pending_updates=True)
-                
-                logger.info("🚀 [ТГ-БОТ] Сеть очищена. Бот успешно переведен в режим живого HFT-мониторинга.")
-                # Запускаем поллинг (skip_updates защищает от лавины старых сообщений)
-                await tg_bot.dp.start_polling(tg_bot.bot, skip_updates=True)
-                
-            except Exception as telegram_error:
-                # Паттерн Orallexa: перехватываем Request timeout error, не давая упасть главному процессу
-                logger.error(
-                    f"💥 [ТГ-БОТ ВНИМАНИЕ] Сетевой сбой или таймаут HTTP Client: {telegram_error}. "
-                    f"Автоматический перезапуск сессии через 5 секунд..."
-                )
-                # Даем Event Loop передохнуть и очистить сетевые сокеты
-                await asyncio.sleep(5.0)
+                queued_item = anomaly_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            try:
+                if isinstance(queued_item, tuple) and queued_item and queued_item[0] == 0:
+                    emergency_items.append(queued_item)
+            finally:
+                anomaly_queue.task_done()
+        for item in emergency_items:
+            anomaly_queue.put_nowait(item)
 
-    bg_tg_task = asyncio.create_task(safe_telegram_polling())
-    
-    async def background_broker_init():
-        asyncio.create_task(broker.connect())
-        global bg_market_task
-        bg_market_task = asyncio.create_task(broker.start_market_data_stream(TICKERS_TO_TRADE, process_market_event))
+        with _ai_ticker_pending_lock:
+            _ai_ticker_pending.clear()
+            _ai_ticker_last_enqueued_at.clear()
 
-    broker_init_task = asyncio.create_task(background_broker_init())
-    logger.info("🚀 [LIFESPAN] Контур PILUITUS запущен.")
-    yield
-    bg_news_task.cancel()
-    if bg_tg_task: bg_tg_task.cancel()
-    broker_init_task.cancel()
-    if 'bg_market_task' in globals(): bg_market_task.cancel()
+        if execution_engine._opening_tickers or execution_engine._lock_closing:
+            raise HTTPException(
+                status_code=409,
+                detail="PAPER-операция ещё выполняется. Торговля оставлена на паузе; обновите страницу и повторите очистку.",
+            )
 
-app = FastAPI(title="Piluitus AI Trading Core", lifespan=lifespan)
+        monitor_task = execution_engine._monitor_worker_task
+        if monitor_task is not None and not monitor_task.done():
+            monitor_task.cancel()
+            await asyncio.gather(monitor_task, return_exceptions=True)
+        execution_engine._monitor_worker_task = None
+        execution_engine._pending_monitor_prices.clear()
+
+        try:
+            storage_result = await db_manager.clear_paper_session()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        removed_memory_positions = len(execution_engine.paper_positions)
+        removed_memory_closed = len(execution_engine.closed_trades)
+        removed_memory_stale = len(execution_engine._unreconciled_paper_positions)
+        execution_engine.paper_positions.clear()
+        execution_engine.closed_trades.clear()
+        execution_engine._unreconciled_paper_positions.clear()
+        execution_engine._ticker_cooldowns.clear()
+        execution_engine._reserved_notional.clear()
+
+        risk_manager._balance_initialized = False
+        risk_manager.block_trading = False
+        risk_manager._blocked_date = None
+        risk_manager.total_session_pnl = 0.0
+        risk_manager.current_equity = DEPOSIT
+        risk_manager.free_margin = DEPOSIT
+
+        last_ai_verdicts_cache.clear()
+        with _trade_flow_lock:
+            _trade_flow_counts.clear()
+        _balance_guard_last_signature = None
+        balance = await _refresh_dashboard_balance_snapshot([])
+
+        await manager.broadcast(json.dumps({
+            "type": "PAPER_SESSION_RESET",
+            "balance": balance,
+            "active_positions": [],
+            "closed_trades": [],
+        }, ensure_ascii=False))
+
+        result = {
+            "status": "ok",
+            "maintenance_active": True,
+            "message": "PAPER-сессия очищена. Для защиты от старых сигналов торговый конвейер оставлен на паузе.",
+            "storage": storage_result,
+            "memory": {
+                "removed_open_positions": removed_memory_positions,
+                "removed_closed_trades": removed_memory_closed,
+                "removed_stale_positions": removed_memory_stale,
+            },
+            "balance": balance,
+        }
+        logger.warning("🧹 Полная очистка PAPER-сессии завершена; торговля приостановлена до ручного возобновления.")
+        return result
+
+
+@app.post("/api/v1/paper/session/resume")
+async def resume_paper_session():
+    _require_paper_mode()
+    async with _paper_session_lock:
+        if execution_engine._opening_tickers or execution_engine._lock_closing:
+            raise HTTPException(status_code=409, detail="Выполняется операция исполнения; PAPER пока нельзя возобновить.")
+        snapshot = await db_manager.get_paper_session_snapshot()
+        if snapshot.get("paper_stale_count", 0) > 0:
+            raise HTTPException(status_code=409, detail="Сначала завершите сверку всех STALE_REVIEW-позиций.")
+        if snapshot.get("live_trade_count", 0) or snapshot.get("live_history_count", 0) or snapshot.get("live_active_order_count", 0):
+            raise HTTPException(status_code=409, detail="В хранилище есть LIVE-записи. Возобновление PAPER заблокировано до проверки хранилища.")
+        execution_engine._maintenance_active = False
+        execution_engine._maintenance_reason = ""
+        await db_manager.set_json("piluitus:paper:maintenance", {
+            "active": False,
+            "reason": "",
+            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        })
+        logger.warning("▶️ PAPER-сессия вручную возобновлена оператором.")
+        await _broadcast_paper_tables()
+        return {"status": "ok", "maintenance_active": False, "message": "PAPER-торговля возобновлена. Новые сигналы будут приниматься."}
+
 
 @app.get("/", response_class=HTMLResponse)
-async def get_index():
-    with open("templates/index.html", "r", encoding="utf-8") as f: 
-        return f.read()
+async def read_root():
+    index_path = BASE_DIR / "templates" / "index.html"          
+    if not index_path.is_file():
+        return HTMLResponse(
+            content="<h1>404 – index.html не найден</h1><p>Поместите файл в папку templates.</p>",
+            status_code=404,
+        )
+    return FileResponse(index_path)
+
+STATIC_DIR = BASE_DIR / "static"
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
 
 @app.websocket("/ws/frontend")
 async def websocket_frontend_endpoint(websocket: WebSocket):
-    """ ИСПРАВЛЕННЫЙ ЭНДПОИНТ: Сначала пушит ВСЕ исторические данные, затем слушает команды """
-    global last_ai_verdicts_cache
     await manager.connect(websocket)
     try:
-        news_context = MarketNewsParser.get_global_sentiment_context()
-        portfolio_state = await execution_engine.fetch_portfolio(CLIENT_ID)
+        logger.info("🔌 К WS‑шлюзу подключился веб-интерфейс. Отправка стартового пакета...")
         
-        # 1. МГНОВЕННЫЙ ЕДИНЫЙ ПУШ ИСТОРИИ И СОСТОЯНИЯ (Решает проблемы №1, №4, №5)
+        initial_positions = await _get_dashboard_open_positions()
+        initial_balance = await _refresh_dashboard_balance_snapshot(initial_positions)
+        
+        cached_news = []
+        try:
+            redis_inst = getattr(db_manager, "redis", getattr(db_manager, "_redis", None))
+            if redis_inst is not None:
+                news_raw = await redis_inst.get("piluitus:news:latest")
+                if news_raw:
+                    cached_news = json.loads(news_raw)
+        except Exception:
+            pass
+
+        raw_closed = getattr(execution_engine, "closed_trades", getattr(execution_engine, "_closed_trades", []))
+        verdicts_for_client = [dict(item) for item in last_ai_verdicts_cache if isinstance(item, dict)]
+        try:
+            redis_inst = getattr(db_manager, "redis", getattr(db_manager, "_redis", None))
+            if redis_inst is not None:
+                for verdict in verdicts_for_client:
+                    verdict_id = verdict.get("verdict_id")
+                    if not verdict_id:
+                        continue
+                    execution_raw = await redis_inst.get(f"piluitus:verdict:execution:{verdict_id}")
+                    if execution_raw:
+                        execution_update = json.loads(execution_raw)
+                        if isinstance(execution_update, dict):
+                            verdict.update(execution_update)
+        except Exception as history_exc:
+            logger.debug("Не удалось обогатить историю статусами исполнения: %s", history_exc)
+
         await websocket.send_json({
             "type": "INIT_DATA",
-            "news": news_context,
-            "portfolio": portfolio_state,
-            "verdicts_history": last_ai_verdicts_cache
+            "portfolio": {},
+            "balance": initial_balance,
+            "news": cached_news,
+            "verdicts_history": verdicts_for_client,
+            "active_positions": initial_positions,
+            "closed_trades": raw_closed[-30:] if isinstance(raw_closed, list) else []
         })
-        
-        # 2. АСИНХРОННЫЙ ЦИКЛ ОЖИДАНИЯ СИСТЕМНЫХ КОМАНД (Кнопка паники)
+
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
-            if message.get("command") == "PANIC_BUTTON":
-                if execution_engine.paper_mode:
-                    execution_engine.active_virtual_positions.clear()
-                else:
-                    await broker.market_close_all_positions(client_id=CLIENT_ID)
-                await manager.broadcast(json.dumps({"type": "PANIC_STATUS", "status": "CLOSED"}))
+
+            if isinstance(message, list):
+                for single_message in message:
+                    if isinstance(single_message, dict):
+                        target_ticker = single_message.get("security_code") or single_message.get("ticker")
+                        price_val     = single_message.get("price") or single_message.get("last_price")
+
+                        if target_ticker and price_val is not None:
+                            mock_event = SimpleNamespace(
+                                security_code=str(target_ticker),
+                                price=float(price_val),
+                                volume=int(single_message.get("volume", 1000)),
+                            )
+                            asyncio.create_task(process_market_event(mock_event))
+                await asyncio.sleep(0.0001)
+            
+            elif isinstance(message, dict):
+                # ПЕРЕХВАТ ИНТЕРАКТИВНЫХ WS-КОМАНД ИЗ ИНТЕРФЕЙСА (Мгновенный перевод на Priority 0)
+                msg_type = message.get("type")
+                if msg_type == "USER_COMMAND_CLOSE_ALL":
+                    await anomaly_queue.put(_make_priority_item(0, "CMD_CLOSE_ALL", {}))
+                    continue
+                elif msg_type == "USER_COMMAND_SET_RISK":
+                    await anomaly_queue.put(_make_priority_item(0, "CMD_SET_RISK_LIMIT", {"value": message.get("value", 0.10)}))
+                    continue
+
+                target_ticker = message.get("security_code") or message.get("ticker")
+                price_val     = message.get("price") or message.get("last_price")
+
+                if target_ticker and price_val is not None:
+                    mock_event = SimpleNamespace(
+                        security_code=str(target_ticker),
+                        price=float(price_val),
+                        volume=int(message.get("volume", 1000)),
+                    )
+                    asyncio.create_task(process_market_event(mock_event))
+            else:
+                logger.error(f"❌ Получено вебсокет-сообщение неизвестного типа: {type(message)}")
+
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+    except Exception as ws_err:
+        logger.error(f"⚠️ Ошибка WebSocket: {ws_err}")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(
+        "main:app",
+        host="127.0.0.1",
+        port=8080,
+        reload=False,
+        workers=1,
+    )
