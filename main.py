@@ -2661,6 +2661,10 @@ async def cleanup_stale_and_resume_paper_session():
         removed_ids = {
             str(order_id) for order_id in storage_result.get("position_ids", [])
         }
+        removed_memory_stale = sum(
+            1 for order_id in removed_ids
+            if order_id in execution_engine._unreconciled_paper_positions
+        )
         for order_id in removed_ids:
             execution_engine._unreconciled_paper_positions.pop(order_id, None)
 
@@ -2686,7 +2690,7 @@ async def cleanup_stale_and_resume_paper_session():
         # No unresolved PAPER records remain in persistent storage. Clear any
         # matching in-memory quarantine remnants but preserve current open positions,
         # closed history, verdicts and risk state.
-        removed_memory_stale = len(execution_engine._unreconciled_paper_positions)
+        removed_memory_stale += len(execution_engine._unreconciled_paper_positions)
         execution_engine._unreconciled_paper_positions.clear()
         # Persist the resume before lifting the in-memory maintenance lock.
         # If storage fails, this process must remain paused.
