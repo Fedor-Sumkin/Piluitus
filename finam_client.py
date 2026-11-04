@@ -243,18 +243,17 @@ class FinamBrokerClient:
             if price <= 0:
                 continue
 
-            # QUOTES has both lastSize (size of the last trade) and volume
-            # (cumulative session volume). Prefer lastSize for the screener's
-            # per-event `volume`; retain cumulative volume separately.
+            # The screener's per-event `volume` must be the size of this
+            # trade, never cumulative session volume. Falling back to `volume`
+            # fabricates a trade-size spike when lastSize is absent and can
+            # distort both anomaly detection and VWAP weighting.
             last_size_raw = item.get("lastSize")
             if last_size_raw is None:
                 last_size_raw = item.get("last_size")
             if last_size_raw is None:
                 last_size_raw = item.get("size")
             session_volume_raw = item.get("volume")
-            last_size = cls._decimal(
-                last_size_raw if last_size_raw is not None else session_volume_raw
-            )
+            last_size = cls._decimal(last_size_raw)
             session_volume = cls._decimal(session_volume_raw)
 
             ticker = symbol.split("@")[0]
