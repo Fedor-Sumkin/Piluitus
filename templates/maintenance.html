@@ -49,6 +49,14 @@
   </section>
 
   <section class="panel">
+    <h2>Быстрая очистка сверки и запуск PAPER</h2>
+    <div class="notice danger"><b>Только для тестовых PAPER-сессий.</b> Кнопка удаляет исключительно записи со статусом STALE_REVIEW / REVIEW_REQUIRED и связанные с ними строки active_orders. Закрытая история PAPER, история вердиктов, риск-состояние, текущие открытые позиции в памяти, база знаний RAG, новости и LIVE-данные сохраняются. Цена выхода и фиктивный PnL не создаются.</div>
+    <p class="muted">После удаления записей автоматическая сверка хранилища выполняется повторно, затем PAPER-конвейер возобновляется. Если обнаружена незавершённая операция, LIVE-записи или оставшиеся STALE_REVIEW, запуск не выполняется, а сессия остаётся на паузе.</p>
+    <div class="field"><button id="cleanup-stale-resume-btn" class="warn" disabled>Удалить STALE_REVIEW и запустить PAPER</button></div>
+    <div id="cleanup-stale-result" class="result hidden"></div>
+  </section>
+
+  <section class="panel">
     <h2>Полная очистка PAPER-сессии</h2>
     <div class="notice danger"><b>Внимание.</b> Операция удалит PAPER-журнал позиций (включая STALE_REVIEW), историю закрытых PAPER-сделок, историю вердиктов, статусы исполнения и сохранённый риск-срез. Открытые виртуальные позиции будут отброшены без расчёта фиктивного PnL. База знаний RAG, новости, настройки, конфигурация и текстовые диагностические журналы trading_logs сохраняются. Эта операция предназначена только для начала новой тестовой сессии.</div>
     <p>Будут сохранены: база знаний RAG, новости, настройки, `.env`, а также любые LIVE-записи. При обнаружении LIVE-сделок/истории очистка будет заблокирована.</p>
@@ -152,12 +160,39 @@
       status.className=`status ${data.maintenance_active ? "paused" : "running"}`;
       $("resume-btn").classList.toggle("hidden", !data.maintenance_active);
       $("clear-btn").disabled=!!(summary.live_trade_count || summary.live_history_count || summary.live_active_order_count);
+      const cleanupBtn=$("cleanup-stale-resume-btn");
+      const hasLive=!!(summary.live_trade_count || summary.live_history_count || summary.live_active_order_count);
+      cleanupBtn.disabled=hasLive || (!(Number(summary.paper_stale_count)>0) && !data.maintenance_active);
+      cleanupBtn.textContent=Number(summary.paper_stale_count)>0
+        ? "Удалить STALE_REVIEW и запустить PAPER"
+        : "Возобновить PAPER";
     } catch(err) {
       $("storage-note").textContent=err.message; $("storage-note").className="notice danger";
       $("stale-body").innerHTML="<tr><td colspan='5'>Не удалось загрузить журнал.</td></tr>";
     }
   }
   $("refresh-btn").addEventListener("click",refresh);
+  $("cleanup-stale-resume-btn").addEventListener("click",async()=>{
+    const data=await api("/api/v1/paper/reconciliation");
+    const staleCount=(data.stale_positions||[]).length;
+    const actionText=staleCount
+      ? `Удалить только ${staleCount} записей STALE_REVIEW и автоматически возобновить PAPER? Закрытая история, вердикты, риск-состояние и текущие открытые позиции в памяти будут сохранены.`
+      : "STALE_REVIEW нет. Возобновить PAPER-сессию?";
+    if (!confirm(actionText)) return;
+    const button=$("cleanup-stale-resume-btn"); button.disabled=true;
+    try {
+      const result=await api("/api/v1/paper/session/cleanup-stale-and-resume",{method:"POST",body:"{}"});
+      $("cleanup-stale-result").classList.remove("hidden");
+      $("cleanup-stale-result").textContent=JSON.stringify(result,null,2);
+      alert(result.message || "Очистка завершена, PAPER возобновлён.");
+      await refresh();
+    } catch(err) {
+      alert(err.message);
+      await refresh();
+    } finally {
+      button.disabled=false;
+    }
+  });
   $("clear-btn").addEventListener("click",async()=>{
     if ($("clear-confirm").value.trim() !== CONFIRMATION) { alert(`Введите точную фразу: ${CONFIRMATION}`); return; }
     if (!confirm("Будут безвозвратно удалены тестовые PAPER-позиции, PAPER-история и вердикты. Продолжить?")) return;
