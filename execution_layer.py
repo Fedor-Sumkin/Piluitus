@@ -7,8 +7,7 @@ from typing import Any, Protocol, TypedDict, cast
 import math
 import time
 import numpy as np
-from datetime import datetime, timezone, time as datetime_time
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone, timedelta, time as datetime_time
 from db_manager import DBManager
 import asyncio
 from uuid import uuid4
@@ -56,7 +55,7 @@ class BBOExitQuote(TypedDict):
 
 
 TradeRecord = dict[str, Any]
-_MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+_MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
 
 
 def _parse_schedule_datetime(value: object, session_date) -> datetime | None:
