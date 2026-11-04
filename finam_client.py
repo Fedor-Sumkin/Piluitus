@@ -1081,11 +1081,12 @@ class FinamBrokerClient:
                                     order_book_invalid_states += 1
                                     invalid_reason = str(book_update.get("book_reason") or "UNKNOWN").upper()
                                     invalid_ticker = str(book_update.get("ticker") or "UNKNOWN").upper()
+                                    invalid_ticker_reason = f"{invalid_ticker}/{invalid_reason}"
                                     order_book_invalid_reasons[invalid_reason] = (
                                         order_book_invalid_reasons.get(invalid_reason, 0) + 1
                                     )
-                                    order_book_invalid_by_ticker[invalid_ticker] = (
-                                        order_book_invalid_by_ticker.get(invalid_ticker, 0) + 1
+                                    order_book_invalid_by_ticker[invalid_ticker_reason] = (
+                                        order_book_invalid_by_ticker.get(invalid_ticker_reason, 0) + 1
                                     )
                                 elif not has_bbo_side_update:
                                     order_book_valid_no_bbo_delta += 1
