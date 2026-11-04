@@ -322,7 +322,8 @@ def _configure_run_file_logging() -> tuple[str, dict[str, str]]:
             created_handlers.append(handler)
             handler.setLevel(logging.ERROR if kind == "errors" else logging.INFO)
             handler.setFormatter(_PrivacyFormatter(
-                "%(asctime)s,%(msecs)03d [%(levelname)s] [RUN=%(run_id)s] %(name)s: %(message)s"
+                "%(asctime)s,%(msecs)03d [%(levelname)s] [RUN=%(run_id)s] %(name)s: %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
             ))
             handler.addFilter(_RunIdFilter(run_id))
             handler.addFilter(filters[kind])
@@ -2227,54 +2228,40 @@ class MarketWorker:
 # --------------------------------------------------------------
 async def background_broker_init():
     """
-    Промышленный контур проверки торговых сессий Мосбиржи.
-    Связывает нативный gRPC-стрим котировок Финам с обработчиком ядра.
+    Поддерживает Finam market-data stream независимо от дня недели.
+    Торговые интервалы каждого инструмента проверяются отдельно через Finam schedule API;
+    это также позволяет получать данные в предусмотренные MOEX сессии выходного дня.
     """
-    logger.info("🔌 Проверка брокерского соединения Финам...")
-    current_time = datetime.now()
-    day_of_week = current_time.weekday()
-    
-    # 0 = Понедельник, 4 = Пятница. Строго рабочие дни Мосбиржи.
-    if 0 <= day_of_week <= 4:
-        logger.info(f"📅 Инициализация LIVE-контура. Обнаружен рабочий день сессии: {current_time.strftime('%A')}.")
-        try:
-            # Нативно инициализируем JWT-токены и соединение SDK Финам
-            await broker.connect()
-            
-            # Адаптируем под PriorityQueue. Создаем мостовую очередь,
-            # выгребаем из нее данные и перенаправляем в полиморфный обработчик process_market_event.
-            bridge_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=10000)
-            
-            # Запускаем бесконечный бинарный WebSocket котировок из finam_client.py
-            asyncio.create_task(
-                broker.start_market_data_stream(
-                    tickers=TICKERS_TO_TRADE,
-                    queue=bridge_queue,
-                    screener=screener
-                )
+    logger.info("🔌 Проверка брокерского соединения Finam; календарь сессий будет проверяться по каждому инструменту...")
+    try:
+        await broker.connect()
+
+        bridge_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=10000)
+        asyncio.create_task(
+            broker.start_market_data_stream(
+                tickers=TICKERS_TO_TRADE,
+                queue=bridge_queue,
+                screener=screener,
             )
-            
-            # Внутренний воркер-перенаправлятор из bridge_queue в асинхронный конвейер
-            async def _bridge_worker():
-                while True:
+        )
+
+        async def _bridge_worker():
+            while True:
+                try:
+                    raw_event = await bridge_queue.get()
                     try:
-                        raw_event = await bridge_queue.get()
-                        try:
-                            await process_market_event(raw_event)
-                        finally:
-                            bridge_queue.task_done()
-                    except Exception as bridge_err:
-                        logger.error(f"❌ Ошибка моста WebSocket-котировок: {bridge_err}")
-                        await asyncio.sleep(0.1)
+                        await process_market_event(raw_event)
+                    finally:
+                        bridge_queue.task_done()
+                except Exception as bridge_err:
+                    logger.error("❌ Ошибка моста WebSocket-котировок: %s", bridge_err, exc_info=True)
+                    await asyncio.sleep(0.1)
 
-            asyncio.create_task(_bridge_worker())
-            logger.info("⏳ Задача подключения к Finam WebSocket запущена; подтверждение появится после HANDSHAKE_SUCCESS.")
+        asyncio.create_task(_bridge_worker())
+        logger.info("⏳ Задача Finam WebSocket запущена; ожидаем HANDSHAKE_SUCCESS.")
+    except Exception as exc:
+        logger.error("❌ Ошибка инициализации API Finam: %s", exc, exc_info=True)
 
-        except Exception as e:
-            logger.error(f"❌ Ошибка инициализации API Finam: {e}")
-    else:
-        logger.warning("📅 Переход в стабильный Mock/Sandbox Mode для тестов на выходных.")
-        
     while True:
         await asyncio.sleep(3600)
 
