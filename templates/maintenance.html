@@ -173,24 +173,23 @@
   }
   $("refresh-btn").addEventListener("click",refresh);
   $("cleanup-stale-resume-btn").addEventListener("click",async()=>{
-    const data=await api("/api/v1/paper/reconciliation");
-    const staleCount=(data.stale_positions||[]).length;
-    const actionText=staleCount
-      ? `Удалить только ${staleCount} записей STALE_REVIEW и автоматически возобновить PAPER? Закрытая история, вердикты, риск-состояние и текущие открытые позиции в памяти будут сохранены.`
-      : "STALE_REVIEW нет. Возобновить PAPER-сессию?";
-    if (!confirm(actionText)) return;
-    const button=$("cleanup-stale-resume-btn"); button.disabled=true;
+    const button=$("cleanup-stale-resume-btn");
+    button.disabled=true;
     try {
+      const data=await api("/api/v1/paper/reconciliation");
+      const staleCount=(data.stale_positions||[]).length;
+      const actionText=staleCount
+        ? "Удалить только "+staleCount+" записей STALE_REVIEW и автоматически возобновить PAPER? Закрытая история, вердикты, риск-состояние и текущие открытые позиции в памяти будут сохранены."
+        : "STALE_REVIEW нет. Возобновить PAPER-сессию?";
+      if (!confirm(actionText)) return;
       const result=await api("/api/v1/paper/session/cleanup-stale-and-resume",{method:"POST",body:"{}"});
       $("cleanup-stale-result").classList.remove("hidden");
       $("cleanup-stale-result").textContent=JSON.stringify(result,null,2);
       alert(result.message || "Очистка завершена, PAPER возобновлён.");
-      await refresh();
     } catch(err) {
       alert(err.message);
-      await refresh();
     } finally {
-      button.disabled=false;
+      await refresh();
     }
   });
   $("clear-btn").addEventListener("click",async()=>{
