@@ -2514,6 +2514,129 @@ async def clear_paper_session(payload: dict[str, object] = Body(...)):
         return result
 
 
+@app.post("/api/v1/paper/session/cleanup-stale-and-resume")
+async def cleanup_stale_and_resume_paper_session():
+    """Remove only quarantined STALE_REVIEW PAPER rows, then resume PAPER atomically."""
+    global _paper_session_generation, _balance_guard_last_signature
+    _require_paper_mode()
+
+    async with _paper_session_lock:
+        if execution_engine._opening_tickers or execution_engine._lock_closing:
+            raise HTTPException(
+                status_code=409,
+                detail="Есть незавершённая операция исполнения. Очистка и запуск отменены.",
+            )
+
+        snapshot_before = await db_manager.get_paper_session_snapshot()
+        if (
+            snapshot_before.get("live_trade_count", 0)
+            or snapshot_before.get("live_history_count", 0)
+            or snapshot_before.get("live_active_order_count", 0)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="В хранилище обнаружены LIVE-записи. Автоматический запуск PAPER заблокирован; данные не изменены.",
+            )
+
+        execution_engine._maintenance_active = True
+        execution_engine._maintenance_reason = (
+            "PAPER приостановлен на время удаления только STALE_REVIEW-записей."
+        )
+        _paper_session_generation += 1
+        await db_manager.set_json("piluitus:paper:maintenance", {
+            "active": True,
+            "reason": execution_engine._maintenance_reason,
+            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        })
+
+        # Drop queued market events so old candidates cannot run immediately after resume.
+        # Priority-zero emergency commands are retained.
+        emergency_items = []
+        while True:
+            try:
+                queued_item = anomaly_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            try:
+                if isinstance(queued_item, tuple) and queued_item and queued_item[0] == 0:
+                    emergency_items.append(queued_item)
+            finally:
+                anomaly_queue.task_done()
+        for item in emergency_items:
+            anomaly_queue.put_nowait(item)
+
+        with _ai_ticker_pending_lock:
+            _ai_ticker_pending.clear()
+            _ai_ticker_last_enqueued_at.clear()
+
+        try:
+            storage_result = await db_manager.clear_unreconciled_paper_positions()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        removed_ids = {
+            str(order_id) for order_id in storage_result.get("position_ids", [])
+        }
+        for order_id in removed_ids:
+            execution_engine._unreconciled_paper_positions.pop(order_id, None)
+
+        snapshot_after = await db_manager.get_paper_session_snapshot()
+        if snapshot_after.get("paper_stale_count", 0) > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Осталось STALE_REVIEW-позиций: {snapshot_after['paper_stale_count']}. "
+                    "PAPER оставлен на паузе; проверьте журнал."
+                ),
+            )
+        if (
+            snapshot_after.get("live_trade_count", 0)
+            or snapshot_after.get("live_history_count", 0)
+            or snapshot_after.get("live_active_order_count", 0)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="После очистки обнаружены LIVE-записи. PAPER оставлен на паузе.",
+            )
+
+        # No unresolved PAPER records remain in persistent storage. Clear any
+        # matching in-memory quarantine remnants but preserve current open positions,
+        # closed history, verdicts and risk state.
+        removed_memory_stale = len(execution_engine._unreconciled_paper_positions)
+        execution_engine._unreconciled_paper_positions.clear()
+        execution_engine._maintenance_active = False
+        execution_engine._maintenance_reason = ""
+        await db_manager.set_json("piluitus:paper:maintenance", {
+            "active": False,
+            "reason": "",
+            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        })
+
+        _balance_guard_last_signature = None
+        await _broadcast_paper_tables()
+        result = {
+            "status": "ok",
+            "maintenance_active": False,
+            "message": (
+                "STALE_REVIEW-записи удалены. PAPER-конвейер автоматически возобновлён; "
+                "закрытая история, вердикты, риск-состояние и текущие позиции в памяти сохранены."
+            ),
+            "storage": storage_result,
+            "memory": {"removed_stale_positions": removed_memory_stale},
+            "preserved": {
+                "paper_history_rows": snapshot_after.get("paper_history_count", 0),
+                "verdict_history_rows": snapshot_after.get("verdict_history_count", 0),
+                "verdict_execution_keys": snapshot_after.get("verdict_execution_count", 0),
+                "active_memory_positions": len(execution_engine.paper_positions),
+            },
+        }
+        logger.warning(
+            "🧹 [PAPER STALE CLEANUP + RESUME] deleted=%d; memory_stale=%d; PAPER resumed.",
+            storage_result.get("deleted_stale_positions", 0), removed_memory_stale,
+        )
+        return result
+
+
 @app.post("/api/v1/paper/session/resume")
 async def resume_paper_session():
     _require_paper_mode()
