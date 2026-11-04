@@ -2236,6 +2236,32 @@ async def background_broker_init():
     try:
         await broker.connect()
 
+        # Verify both the authenticated endpoint and the schedule parser before
+        # the first candidate reaches the executor. SBER is used only as a probe;
+        # every actual order is checked against its own instrument schedule.
+        try:
+            schedule_probe = await execution_engine._market_session_status("SBER")
+            logger.info(
+                "📅 [SESSION CALENDAR PROBE] SBER@MISX: known=%s, open=%s, entry_allowed=%s, "
+                "reason=%s, next_session=%s; actual entries are checked per instrument.",
+                schedule_probe.get("known"),
+                schedule_probe.get("is_open"),
+                schedule_probe.get("entry_allowed"),
+                schedule_probe.get("reason"),
+                schedule_probe.get("next_session_start", "-"),
+            )
+            if not schedule_probe.get("known"):
+                logger.warning(
+                    "⛔ [SESSION CALENDAR] расписание Finam не подтверждено; "
+                    "новые входы останутся заблокированы до успешной проверки."
+                )
+        except Exception as schedule_probe_exc:
+            logger.error(
+                "❌ [SESSION CALENDAR PROBE] ошибка проверки расписания Finam: %s",
+                type(schedule_probe_exc).__name__,
+                exc_info=True,
+            )
+
         bridge_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=10000)
         asyncio.create_task(
             broker.start_market_data_stream(
