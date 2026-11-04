@@ -177,7 +177,7 @@ class _DurableFileHandler(logging.FileHandler):
                 try:
                     sys.stderr.write(
                         "[PILUITUS LOG WARNING] Не удалось синхронизировать лог с диском: "
-                        f"{type(exc).__name__}\\n"
+                        f"{type(exc).__name__}\n"
                     )
                     sys.stderr.flush()
                 except Exception:
