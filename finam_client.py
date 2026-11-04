@@ -860,7 +860,28 @@ class FinamBrokerClient:
                                     normalized_selected.append(f"{ticker}@MISX")
                                     if len(normalized_selected) >= order_book_limit:
                                         break
+                                # The screener/LLM universe remains strictly Top-N.
+                                # Position monitoring has a separate technical requirement:
+                                # every open position must keep receiving BBO after it leaves Top-N.
                                 wanted = set(normalized_selected)
+                                position_symbols: set[str] = set()
+                                if self.open_positions_provider is not None:
+                                    try:
+                                        raw_positions = self.open_positions_provider()
+                                        seen_positions: set[str] = set()
+                                        for raw_ticker in raw_positions:
+                                            ticker = str(raw_ticker).strip().upper().split("@")[0]
+                                            if not ticker or ticker in seen_positions:
+                                                continue
+                                            seen_positions.add(ticker)
+                                            position_symbols.add(f"{ticker}@MISX")
+                                    except Exception as position_exc:
+                                        logger.warning(
+                                            "Finam ORDER_BOOK: не удалось получить тикеры открытых позиций; "
+                                            "подписки Top-%d сохраняются: %s",
+                                            order_book_limit, position_exc,
+                                        )
+                                wanted.update(position_symbols)
 
                                 sync_due = now_loop - last_order_book_sync >= order_book_refresh_sec
                                 selection_changed = wanted != order_book_subscribed
@@ -884,9 +905,10 @@ class FinamBrokerClient:
                                     last_order_book_sync = now_loop
                                     if added or removed:
                                         logger.info(
-                                            "📚 Finam ORDER_BOOK подписки синхронизированы с Top-%d: "
-                                            "активных=%d, добавлено=%d, снято=%d.",
-                                            order_book_limit, len(order_book_subscribed),
+                                            "📚 Finam ORDER_BOOK подписки синхронизированы: Top-%d=%d, "
+                                            "открытых_позиций=%d, всего=%d, добавлено=%d, снято=%d.",
+                                            order_book_limit, len(normalized_selected),
+                                            len(position_symbols), len(order_book_subscribed),
                                             len(added), len(removed),
                                         )
                             except Exception as sub_exc:
