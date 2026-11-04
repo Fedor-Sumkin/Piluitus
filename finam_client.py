@@ -941,7 +941,12 @@ class FinamBrokerClient:
                                             "подписки Top-%d сохраняются: %s",
                                             order_book_limit, position_exc,
                                         )
-                                last_open_position_symbols = set(position_symbols)
+                                # Position diagnostics use bare tickers because parser statistics
+                                # are keyed by normalized ticker (for example, "LSRG", not "LSRG@MISX").
+                                last_open_position_symbols = {
+                                    symbol.split("@", 1)[0].strip().upper()
+                                    for symbol in position_symbols
+                                }
                                 position_only_symbols = position_symbols - wanted
                                 wanted.update(position_symbols)
 
@@ -1047,7 +1052,7 @@ class FinamBrokerClient:
                                 parsed_age_text = f"{parsed_age:.1f}s" if parsed_age is not None else "нет"
                                 queued_age_text = f"{queued_age:.1f}s" if queued_age is not None else "нет"
                                 position_diag_parts.append(
-                                    f"{ticker}(sub_req={'Y' if subscribe_requested else 'N'},"
+                                    f"{ticker}(sub_req_local={'Y' if subscribe_requested else 'N'},"
                                     f"sub_req_age={sub_age_text},wire={stats['window_wire']},"
                                     f"wire_age={wire_age_text},parsed={stats['window_parsed']},"
                                     f"parse_age={parsed_age_text},queued={stats['window_queued']},"
@@ -1058,13 +1063,6 @@ class FinamBrokerClient:
                                     f"dropped={stats['window_dropped']},"
                                     f"flags={','.join(flags) or 'OK'})"
                                 )
-
-                                for key in (
-                                    "window_wire", "window_parse_no_update",
-                                    "window_parse_out_of_order", "window_parse_unrecognized",
-                                    "window_parsed", "window_queued", "window_dropped",
-                                ):
-                                    stats[key] = 0
 
                             position_diag_summary = " | ".join(position_diag_parts) or "-"
                             logger.info(
@@ -1112,6 +1110,15 @@ class FinamBrokerClient:
                             order_book_unattributed_messages = 0
                             order_book_unattributed_sample = ""
                             order_book_parser_sample = ""
+                            # Keep every symbol's window counters on the same 60-second
+                            # boundary, including symbols that become positions later.
+                            for symbol_stats in order_book_symbol_diag.values():
+                                for key in (
+                                    "window_wire", "window_parse_no_update",
+                                    "window_parse_out_of_order", "window_parse_unrecognized",
+                                    "window_parsed", "window_queued", "window_dropped",
+                                ):
+                                    symbol_stats[key] = 0
                             last_order_book_diag = now_loop
 
                         try:
