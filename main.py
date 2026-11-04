@@ -661,6 +661,7 @@ def _log_open_position_bbo_diagnostics() -> None:
             window_unusable = item["window_unusable"]
             invalid_reasons = dict(item["window_invalid_reasons"])
             last_event_monotonic = float(item["last_event_monotonic"] or 0.0)
+            last_result = str(item.get("last_result") or "-")
             item["window_events"] = 0
             item["window_valid"] = 0
             item["window_invalid"] = 0
@@ -679,7 +680,7 @@ def _log_open_position_bbo_diagnostics() -> None:
             "📘 [OPEN POSITION BBO 60s] %s side=%s exec=%s exec_age=%s "
             "Bid=%.6f Ask=%.6f bid_age=%s ask_age=%s book_event_age=%s "
             "book_receive_age=%s book_valid=%s book_reason=%s last_position_event_age=%s "
-            "events=%d valid=%d invalid=%d out_of_order=%d unusable=%d invalid_reasons=%s",
+            "last_position_result=%s events=%d valid=%d invalid=%d out_of_order=%d unusable=%d invalid_reasons=%s",
             ticker, side, executable_side, executable_age,
             _parse_finite_float(quote.get("bid")) or 0.0,
             _parse_finite_float(quote.get("ask")) or 0.0,
@@ -689,7 +690,7 @@ def _log_open_position_bbo_diagnostics() -> None:
             age_text("last_order_book_received"),
             bool(quote.get("order_book_valid", False)),
             str(quote.get("order_book_last_reason", "NO_ORDER_BOOK")),
-            last_event_age, window_events, window_valid, window_invalid,
+            last_event_age, last_result, window_events, window_valid, window_invalid,
             window_out_of_order, window_unusable, invalid_summary,
         )
 
