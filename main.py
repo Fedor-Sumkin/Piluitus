@@ -2091,7 +2091,14 @@ async def _start_tables_sync_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global bg_market_task, last_ai_verdicts_cache
-    logger.info("🚀 Запуск PILUITUS v35.2 | депозит=%.2f ₽ | общий лимит активов=15%% (%.2f ₽), одна позиция=5%% (%.2f ₽).", DEPOSIT, DEPOSIT * 0.15, DEPOSIT * 0.05)
+    gross_exposure_pct = execution_engine.max_gross_exposure_pct * 100.0
+    single_position_pct = execution_engine.max_single_position_pct * 100.0
+    logger.info(
+        "🚀 Запуск PILUITUS v35.2 | депозит=%.2f ₽ | общий лимит активов=%.1f%% (%.2f ₽), "
+        "одна позиция=%.1f%% (%.2f ₽).",
+        DEPOSIT, gross_exposure_pct, DEPOSIT * gross_exposure_pct / 100.0,
+        single_position_pct, DEPOSIT * single_position_pct / 100.0,
+    )
 
     try:
         await db_manager.connect()
