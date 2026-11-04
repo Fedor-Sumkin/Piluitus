@@ -122,7 +122,7 @@ logger.setLevel(logging.INFO)
 
 
 class _RunIdFilter(logging.Filter):
-    """Attach the current process run ID to every record written to its file."""
+    """Attach the current process run ID to every record written to a file."""
 
     def __init__(self, run_id: str):
         super().__init__()
@@ -133,53 +133,137 @@ class _RunIdFilter(logging.Filter):
         return True
 
 
-def _configure_run_file_logging() -> tuple[str, str | None]:
-    """Create one uniquely named UTF-8 log file for this project process."""
-    root_logger = logging.getLogger()
-    for existing_handler in root_logger.handlers:
-        if getattr(existing_handler, "_piluitus_run_log", False):
-            return (
-                str(getattr(existing_handler, "_piluitus_run_id", "existing")),
-                str(getattr(existing_handler, "_piluitus_run_path", "")) or None,
-            )
+class _DiagnosticLogFilter(logging.Filter):
+    """Keep high-volume market/telemetry diagnostics out of the session narrative."""
 
-    run_id = (
-        f"{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S')}_"
-        f"{os.getpid()}_{uuid4().hex[:8]}"
+    _markers = (
+        "[TRADE FLOW 60s]",
+        "[ORDER_BOOK 60s]",
+        "[OPEN POSITION BBO 60s]",
+        "[ORDER_BOOK PARSER SAMPLE]",
+        "[ORDER_BOOK UNATTRIBUTED SAMPLE]",
+        "[vLLM RAW LATENCY]",
+        "[PRE-LLM FILTER]",
+        "[PRE-LLM WAIT]",
+        "[M1 PATTERN]",
+        "[NUMPY ИМПУЛЬС]",
+        "[WS ПОТОК ФИНАМ]",
+        "Поток Finam активен:",
+        "Finam ORDER_BOOK подписки синхронизированы:",
     )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.ERROR:
+            return False
+        try:
+            message = record.getMessage()
+        except Exception:
+            return False
+        return any(marker in message for marker in self._markers)
+
+
+class _SessionLogFilter(logging.Filter):
+    """Keep ordinary session events and human-readable technical conclusions."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.ERROR:
+            return False
+        return not _DiagnosticLogFilter().filter(record)
+
+
+class _ErrorLogFilter(logging.Filter):
+    """Route errors and critical failures to the dedicated error file."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno >= logging.ERROR
+
+
+def _configure_run_file_logging() -> tuple[str, dict[str, str]]:
+    """Create session, diagnostic and error files for one uniquely named run."""
+    root_logger = logging.getLogger()
+    existing_handlers = [
+        handler for handler in root_logger.handlers
+        if getattr(handler, "_piluitus_run_log", False)
+    ]
+    if len(existing_handlers) >= 3:
+        paths = {
+            str(getattr(handler, "_piluitus_log_kind", "")):
+                str(getattr(handler, "_piluitus_run_path", ""))
+            for handler in existing_handlers
+        }
+        run_id = str(getattr(existing_handlers[0], "_piluitus_run_id", "existing"))
+        if all(paths.get(kind) for kind in ("session", "diagnostic", "errors")):
+            return run_id, paths
+
+    now = datetime.now().astimezone()
+    run_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}_{uuid4().hex[:8]}"
+    filename_stamp = now.strftime("%d%m%Y_%H.%M")
     log_dir_value = os.getenv("PILUITUS_LOG_DIR", "trading_logs").strip() or "trading_logs"
     log_dir = Path(log_dir_value).expanduser()
     if not log_dir.is_absolute():
         log_dir = PROJECT_ROOT / log_dir
 
+    names = {
+        "session": f"session_{filename_stamp}",
+        "diagnostic": f"diagnostic_{filename_stamp}",
+        "errors": f"errors_log_{filename_stamp}",
+    }
+    suffix_number = 1
+    while True:
+        suffix = "" if suffix_number == 1 else f"_{suffix_number:02d}"
+        candidate_paths = {
+            kind: log_dir / f"{stem}{suffix}.log"
+            for kind, stem in names.items()
+        }
+        if not any(path.exists() for path in candidate_paths.values()):
+            break
+        suffix_number += 1
+
+    created_handlers: list[logging.Handler] = []
+    filters: dict[str, logging.Filter] = {
+        "session": _SessionLogFilter(),
+        "diagnostic": _DiagnosticLogFilter(),
+        "errors": _ErrorLogFilter(),
+    }
+    paths: dict[str, str] = {}
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = (log_dir / f"run_{run_id}.log").resolve()
-        file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
-        file_handler.setLevel(logging.INFO)
-        file_handler.setFormatter(_PrivacyFormatter(
-            "%(asctime)s,%(msecs)03d [%(levelname)s] [RUN=%(run_id)s] %(name)s: %(message)s"
-        ))
-        file_handler.addFilter(_RunIdFilter(run_id))
-        setattr(file_handler, "_piluitus_run_log", True)
-        setattr(file_handler, "_piluitus_run_id", run_id)
-        setattr(file_handler, "_piluitus_run_path", str(log_path))
-        root_logger.addHandler(file_handler)
-        return run_id, str(log_path)
+        for kind in ("session", "diagnostic", "errors"):
+            path = candidate_paths[kind]
+            handler = logging.FileHandler(path, mode="x", encoding="utf-8")
+            created_handlers.append(handler)
+            handler.setLevel(logging.ERROR if kind == "errors" else logging.INFO)
+            handler.setFormatter(_PrivacyFormatter(
+                "%(asctime)s,%(msecs)03d [%(levelname)s] [RUN=%(run_id)s] %(name)s: %(message)s"
+            ))
+            handler.addFilter(_RunIdFilter(run_id))
+            handler.addFilter(filters[kind])
+            setattr(handler, "_piluitus_run_log", True)
+            setattr(handler, "_piluitus_log_kind", kind)
+            setattr(handler, "_piluitus_run_id", run_id)
+            setattr(handler, "_piluitus_run_path", str(path))
+            root_logger.addHandler(handler)
+            paths[kind] = str(path)
+        return run_id, paths
     except OSError as exc:
+        for handler in created_handlers:
+            root_logger.removeHandler(handler)
+            handler.close()
         root_logger.warning(
-            "Не удалось создать файл журнала запуска (каталог=%s): %s",
+            "Не удалось создать файловые журналы запуска (каталог=%s): %s",
             log_dir.name, type(exc).__name__,
         )
-        return run_id, None
+        return run_id, {}
 
 
-RUN_ID, RUN_LOG_PATH = _configure_run_file_logging()
+RUN_ID, RUN_LOG_PATHS = _configure_run_file_logging()
 logger.info(
-    "🧾 [RUN START] id=%s; log_file=%s",
-    RUN_ID, Path(RUN_LOG_PATH).name if RUN_LOG_PATH else "file logging unavailable",
+    "🧾 [RUN START] id=%s; session=%s; diagnostic=%s; errors=%s",
+    RUN_ID,
+    Path(RUN_LOG_PATHS["session"]).name if RUN_LOG_PATHS.get("session") else "unavailable",
+    Path(RUN_LOG_PATHS["diagnostic"]).name if RUN_LOG_PATHS.get("diagnostic") else "unavailable",
+    Path(RUN_LOG_PATHS["errors"]).name if RUN_LOG_PATHS.get("errors") else "unavailable",
 )
-
 
 class TerminalStatusLine:
     """One in-place terminal status line that is redrawn after log messages.
