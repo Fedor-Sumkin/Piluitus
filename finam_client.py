@@ -1037,17 +1037,13 @@ class FinamBrokerClient:
                                     flags.append("QUEUE_DROP")
                                     position_gaps.append(f"{ticker}:QUEUE_DROP={stats['window_dropped']}")
 
+                                sub_age_text = f"{sub_age:.1f}s" if sub_age is not None else "нет"
+                                wire_age_text = f"{wire_age:.1f}s" if wire_age is not None else "нет"
                                 position_diag_parts.append(
                                     f"{ticker}(sub={'Y' if is_subscribed else 'N'},"
-                                    f"sub_age={sub_age:.1f}s" if sub_age is not None else
-                                    f"{ticker}(sub={'Y' if is_subscribed else 'N'},sub_age=нет"
-                                )
-                                position_diag_parts[-1] += (
-                                    f",wire={stats['window_wire']},"
-                                    f"wire_age={wire_age:.1f}s" if wire_age is not None else ",wire_age=нет"
-                                )
-                                position_diag_parts[-1] += (
-                                    f",parsed={stats['window_parsed']},queued={stats['window_queued']},"
+                                    f"sub_age={sub_age_text},wire={stats['window_wire']},"
+                                    f"wire_age={wire_age_text},parsed={stats['window_parsed']},"
+                                    f"queued={stats['window_queued']},"
                                     f"no_update={stats['window_parse_no_update']},"
                                     f"parse_ooo={stats['window_parse_out_of_order']},"
                                     f"unparsed={stats['window_parse_unrecognized']},"
