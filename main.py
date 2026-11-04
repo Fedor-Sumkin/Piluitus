@@ -23,7 +23,12 @@ from datetime import datetime, time
 from uuid import uuid4
 from types import SimpleNamespace
 from fastapi.templating import Jinja2Templates
-from config import Settings
+from config import (
+    Settings,
+    PROJECT_ROOT,
+    LOG_REDACT_TELEGRAM_ID,
+    LOG_REDACT_PROJECT_PATH,
+)
 from risk_limits import validate_daily_loss_limit
 
 # --- PILUITUS‑V3 modules ------------------------------------------------
@@ -56,10 +61,48 @@ DEPOSIT      = float(os.getenv("TRADING_DEPOSIT", 100000.0))
 # --------------------------------------------------------------
 #  LOGGING REGIME
 # --------------------------------------------------------------
+class _PrivacyFormatter(logging.Formatter):
+    """Redact machine-specific paths and Telegram bot IDs from every log output."""
+
+    _telegram_id_re = re.compile(r"(?i)(\\bid\\s*=\\s*)\\d+\\b")
+
+    @staticmethod
+    def _redact_project_path(message: str) -> str:
+        if not LOG_REDACT_PROJECT_PATH:
+            return message
+        root = str(PROJECT_ROOT).rstrip("\\\\/")
+        if not root:
+            return message
+        variants = {
+            root,
+            root.replace("\\\\", "/"),
+            root.replace("/", "\\\\"),
+        }
+        flags = re.IGNORECASE if os.name == "nt" else 0
+        for candidate in sorted(variants, key=len, reverse=True):
+            if candidate:
+                message = re.sub(re.escape(candidate), "<PROJECT_ROOT>", message, flags=flags)
+        return message
+
+    def format(self, record: logging.LogRecord) -> str:
+        rendered = super().format(record)
+        if LOG_REDACT_TELEGRAM_ID and record.name.lower().startswith("aiogram"):
+            rendered = self._telegram_id_re.sub(r"\\1<REDACTED>", rendered)
+        return self._redact_project_path(rendered)
+
+
 logging.basicConfig(
     level=logging.WARNING,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
+# basicConfig may be a no-op when a server has already installed handlers;
+# replace the formatter on every existing root handler either way.
+for _root_handler in logging.getLogger().handlers:
+    _old_formatter = _root_handler.formatter
+    _format = getattr(_old_formatter, "_fmt", "%(message)s")
+    _datefmt = getattr(_old_formatter, "datefmt", None)
+    _root_handler.setFormatter(_PrivacyFormatter(_format, datefmt=_datefmt))
+
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("websockets").setLevel(logging.WARNING)
@@ -108,14 +151,14 @@ def _configure_run_file_logging() -> tuple[str, str | None]:
     log_dir_value = os.getenv("PILUITUS_LOG_DIR", "trading_logs").strip() or "trading_logs"
     log_dir = Path(log_dir_value).expanduser()
     if not log_dir.is_absolute():
-        log_dir = Path(__file__).resolve().parent / log_dir
+        log_dir = PROJECT_ROOT / log_dir
 
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = (log_dir / f"run_{run_id}.log").resolve()
         file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
         file_handler.setLevel(logging.INFO)
-        file_handler.setFormatter(logging.Formatter(
+        file_handler.setFormatter(_PrivacyFormatter(
             "%(asctime)s,%(msecs)03d [%(levelname)s] [RUN=%(run_id)s] %(name)s: %(message)s"
         ))
         file_handler.addFilter(_RunIdFilter(run_id))
@@ -125,14 +168,17 @@ def _configure_run_file_logging() -> tuple[str, str | None]:
         root_logger.addHandler(file_handler)
         return run_id, str(log_path)
     except OSError as exc:
-        root_logger.warning("Не удалось создать файл журнала запуска в %s: %s", log_dir, exc)
+        root_logger.warning(
+            "Не удалось создать файл журнала запуска (каталог=%s): %s",
+            log_dir.name, type(exc).__name__,
+        )
         return run_id, None
 
 
 RUN_ID, RUN_LOG_PATH = _configure_run_file_logging()
 logger.info(
     "🧾 [RUN START] id=%s; log_file=%s",
-    RUN_ID, RUN_LOG_PATH or "file logging unavailable",
+    RUN_ID, Path(RUN_LOG_PATH).name if RUN_LOG_PATH else "file logging unavailable",
 )
 
 
@@ -2203,7 +2249,7 @@ async def http_update_risk_limit(payload: dict = Body(...)):
 # --------------------------------------------------------------
 #  8️⃣  FastAPI ROUTING & WEBSOCKET ENDPOINT
 # --------------------------------------------------------------
-BASE_DIR = Path(__file__).parent                
+BASE_DIR = PROJECT_ROOT
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 PAPER_CLEAR_CONFIRMATION = "ОЧИСТИТЬ PAPER-СЕССИЮ"
 
