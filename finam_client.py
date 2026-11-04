@@ -153,14 +153,17 @@ class FinamBrokerClient:
 
         now = time.monotonic()
         cached = self._asset_schedule_cache.get(cache_key)
-        if cached is not None and now - cached[0] < (cache_ttl if cached[1] is not None else 20.0):
+        # Negative caching is longer than a few seconds so a provider outage
+        # cannot fan out retries across the full 88-symbol universe.
+        failure_cache_ttl = 60.0
+        if cached is not None and now - cached[0] < (cache_ttl if cached[1] is not None else failure_cache_ttl):
             return cached[1]
 
         lock = self._asset_schedule_locks.setdefault(cache_key, asyncio.Lock())
         async with lock:
             now = time.monotonic()
             cached = self._asset_schedule_cache.get(cache_key)
-            if cached is not None and now - cached[0] < (cache_ttl if cached[1] is not None else 20.0):
+            if cached is not None and now - cached[0] < (cache_ttl if cached[1] is not None else failure_cache_ttl):
                 return cached[1]
             url = f"{self.base_url}/v1/assets/{url_quote(symbol, safe='@')}/schedule"
             try:
@@ -185,6 +188,12 @@ class FinamBrokerClient:
                 if len(self._asset_schedule_cache) > 256:
                     self._asset_schedule_cache = {
                         key: value for key, value in self._asset_schedule_cache.items()
+                        if key.endswith(f"|{moscow_day}")
+                    }
+                    # Drop only previous-day locks. All current-day locks remain
+                    # stable so concurrent requests cannot bypass per-symbol locking.
+                    self._asset_schedule_locks = {
+                        key: lock for key, lock in self._asset_schedule_locks.items()
                         if key.endswith(f"|{moscow_day}")
                     }
                 logger.info(
