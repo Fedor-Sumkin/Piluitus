@@ -162,10 +162,8 @@
       $("clear-btn").disabled=!!(summary.live_trade_count || summary.live_history_count || summary.live_active_order_count);
       const cleanupBtn=$("cleanup-stale-resume-btn");
       const hasLive=!!(summary.live_trade_count || summary.live_history_count || summary.live_active_order_count);
-      cleanupBtn.disabled=hasLive || (!(Number(summary.paper_stale_count)>0) && !data.maintenance_active);
-      cleanupBtn.textContent=Number(summary.paper_stale_count)>0
-        ? "Удалить STALE_REVIEW и запустить PAPER"
-        : "Возобновить PAPER";
+      cleanupBtn.disabled=hasLive || !(Number(summary.paper_stale_count)>0);
+      cleanupBtn.textContent="Удалить STALE_REVIEW и запустить PAPER";
     } catch(err) {
       $("storage-note").textContent=err.message; $("storage-note").className="notice danger";
       $("stale-body").innerHTML="<tr><td colspan='5'>Не удалось загрузить журнал.</td></tr>";
