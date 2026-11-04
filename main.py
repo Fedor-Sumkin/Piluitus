@@ -79,6 +79,63 @@ def _parse_finite_float(value: object) -> float | None:
 logger.setLevel(logging.INFO)
 
 
+class _RunIdFilter(logging.Filter):
+    """Attach the current process run ID to every record written to its file."""
+
+    def __init__(self, run_id: str):
+        super().__init__()
+        self.run_id = run_id
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.run_id = self.run_id
+        return True
+
+
+def _configure_run_file_logging() -> tuple[str, str | None]:
+    """Create one uniquely named UTF-8 log file for this project process."""
+    root_logger = logging.getLogger()
+    for existing_handler in root_logger.handlers:
+        if getattr(existing_handler, "_piluitus_run_log", False):
+            return (
+                str(getattr(existing_handler, "_piluitus_run_id", "existing")),
+                str(getattr(existing_handler, "_piluitus_run_path", "")) or None,
+            )
+
+    run_id = (
+        f"{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S')}_"
+        f"{os.getpid()}_{uuid4().hex[:8]}"
+    )
+    log_dir_value = os.getenv("PILUITUS_LOG_DIR", "trading_logs").strip() or "trading_logs"
+    log_dir = Path(log_dir_value).expanduser()
+    if not log_dir.is_absolute():
+        log_dir = Path(__file__).resolve().parent / log_dir
+
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = (log_dir / f"run_{run_id}.log").resolve()
+        file_handler = logging.FileHandler(log_path, mode="w", encoding="utf-8")
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s,%(msecs)03d [%(levelname)s] [RUN=%(run_id)s] %(name)s: %(message)s"
+        ))
+        file_handler.addFilter(_RunIdFilter(run_id))
+        file_handler._piluitus_run_log = True
+        file_handler._piluitus_run_id = run_id
+        file_handler._piluitus_run_path = str(log_path)
+        root_logger.addHandler(file_handler)
+        return run_id, str(log_path)
+    except OSError as exc:
+        root_logger.warning("Не удалось создать файл журнала запуска в %s: %s", log_dir, exc)
+        return run_id, None
+
+
+RUN_ID, RUN_LOG_PATH = _configure_run_file_logging()
+logger.info(
+    "🧾 [RUN START] id=%s; log_file=%s",
+    RUN_ID, RUN_LOG_PATH or "file logging unavailable",
+)
+
+
 class TerminalStatusLine:
     """One in-place terminal status line that is redrawn after log messages.
 
@@ -514,6 +571,129 @@ except (TypeError, ValueError):
     _PENDING_BBO_CANDIDATE_TTL_SEC = 1.5
 
 
+# Per-open-position ORDER_BOOK diagnostics are reported in the same 60-second
+# windows as TRADE FLOW. These counters do not influence entries or exits.
+_position_order_book_diag_lock = threading.Lock()
+_position_order_book_diag: dict[str, dict[str, Any]] = {}
+
+
+def _record_position_order_book_event(ticker: str, result: dict[str, Any]) -> None:
+    engine = globals().get("execution_engine")
+    positions = getattr(engine, "paper_positions", {}) if engine is not None else {}
+    trade = positions.get(ticker) if isinstance(positions, dict) else None
+    if not isinstance(trade, dict) or str(trade.get("status", "OPEN")).upper() not in {"OPEN", "ACTIVE"}:
+        return
+
+    reason = str(result.get("reason") or result.get("book_reason") or "").strip().upper()
+    if not reason:
+        reason = "OK" if result.get("valid", True) else "UNKNOWN"
+    now = time_module.monotonic()
+    with _position_order_book_diag_lock:
+        item = _position_order_book_diag.setdefault(ticker, {
+            "window_events": 0,
+            "window_valid": 0,
+            "window_invalid": 0,
+            "window_out_of_order": 0,
+            "window_unusable": 0,
+            "window_invalid_reasons": {},
+            "last_event_monotonic": 0.0,
+            "last_result": "",
+        })
+        item["window_events"] += 1
+        if result.get("updated") and result.get("valid", True):
+            item["window_valid"] += 1
+        elif result.get("updated"):
+            item["window_invalid"] += 1
+            reasons = item["window_invalid_reasons"]
+            reasons[reason] = reasons.get(reason, 0) + 1
+        elif result.get("out_of_order"):
+            item["window_out_of_order"] += 1
+        else:
+            item["window_unusable"] += 1
+        item["last_event_monotonic"] = now
+        item["last_result"] = reason
+
+
+def _log_open_position_bbo_diagnostics() -> None:
+    engine = globals().get("execution_engine")
+    current_screener = globals().get("screener")
+    positions = getattr(engine, "paper_positions", {}) if engine is not None else {}
+    quotes = getattr(current_screener, "quotes", {}) if current_screener is not None else {}
+    if not isinstance(positions, dict) or not positions:
+        return
+
+    now = time_module.monotonic()
+    for raw_ticker, trade in sorted(positions.items()):
+        if not isinstance(trade, dict) or str(trade.get("status", "OPEN")).upper() not in {"OPEN", "ACTIVE"}:
+            continue
+        ticker = str(trade.get("ticker") or raw_ticker).strip().upper().split("@")[0]
+        quote = quotes.get(ticker, {}) if isinstance(quotes, dict) else {}
+        if not isinstance(quote, dict):
+            quote = {}
+
+        def age_text(field: str) -> str:
+            observed = _parse_finite_float(quote.get(field))
+            if observed is None or observed <= 0.0:
+                return "нет"
+            age = now - observed
+            return f"{age:.2f}s" if math.isfinite(age) and age >= 0.0 else "будущее"
+
+        side = str(trade.get("side", "")).strip().upper()
+        executable_side = "ASK" if side == "SELL" else "BID"
+        executable_age = age_text(
+            "last_ask_confirmed_seen" if executable_side == "ASK" else "last_bid_confirmed_seen"
+        )
+        with _position_order_book_diag_lock:
+            item = _position_order_book_diag.setdefault(ticker, {
+                "window_events": 0,
+                "window_valid": 0,
+                "window_invalid": 0,
+                "window_out_of_order": 0,
+                "window_unusable": 0,
+                "window_invalid_reasons": {},
+                "last_event_monotonic": 0.0,
+                "last_result": "",
+            })
+            window_events = item["window_events"]
+            window_valid = item["window_valid"]
+            window_invalid = item["window_invalid"]
+            window_out_of_order = item["window_out_of_order"]
+            window_unusable = item["window_unusable"]
+            invalid_reasons = dict(item["window_invalid_reasons"])
+            last_event_monotonic = float(item["last_event_monotonic"] or 0.0)
+            item["window_events"] = 0
+            item["window_valid"] = 0
+            item["window_invalid"] = 0
+            item["window_out_of_order"] = 0
+            item["window_unusable"] = 0
+            item["window_invalid_reasons"] = {}
+
+        invalid_summary = ",".join(
+            f"{reason}:{count}" for reason, count in sorted(invalid_reasons.items())
+        ) or "-"
+        last_event_age = (
+            f"{now - last_event_monotonic:.2f}s"
+            if last_event_monotonic > 0.0 and now >= last_event_monotonic else "нет"
+        )
+        logger.info(
+            "📘 [OPEN POSITION BBO 60s] %s side=%s exec=%s exec_age=%s "
+            "Bid=%.6f Ask=%.6f bid_age=%s ask_age=%s book_event_age=%s "
+            "book_receive_age=%s book_valid=%s book_reason=%s last_position_event_age=%s "
+            "events=%d valid=%d invalid=%d out_of_order=%d unusable=%d invalid_reasons=%s",
+            ticker, side, executable_side, executable_age,
+            _parse_finite_float(quote.get("bid")) or 0.0,
+            _parse_finite_float(quote.get("ask")) or 0.0,
+            age_text("last_bid_confirmed_seen"),
+            age_text("last_ask_confirmed_seen"),
+            age_text("last_order_book_event_seen"),
+            age_text("last_order_book_received"),
+            bool(quote.get("order_book_valid", False)),
+            str(quote.get("order_book_last_reason", "NO_ORDER_BOOK")),
+            last_event_age, window_events, window_valid, window_invalid,
+            window_out_of_order, window_unusable, invalid_summary,
+        )
+
+
 def _trade_flow_inc(key: str, amount: int = 1) -> None:
     with _trade_flow_lock:
         _trade_flow_counts[key] = _trade_flow_counts.get(key, 0) + amount
@@ -560,6 +740,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "BBO_exec_block=%(execution_bbo_blocked)d, ордеров_принято/открыто=%(orders_scheduled)d",
         values,
     )
+    _log_open_position_bbo_diagnostics()
 
 
 def _trade_flow_guard_block(reason: str) -> None:
@@ -1031,6 +1212,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
             except (TypeError, ValueError, KeyError):
                 _trade_flow_inc("orderbook_unusable")
                 return
+            _record_position_order_book_event(book_ticker, book_result)
             if book_result.get("updated") and book_result.get("valid", True):
                 _trade_flow_inc("orderbook_updates")
                 _trade_flow_inc("orderbook_side_touches", int(book_result.get("bbo_side_touch_count", 0) or 0))
