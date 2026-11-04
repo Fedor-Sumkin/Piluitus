@@ -151,6 +151,45 @@ class FinamBrokerClient:
         return value
 
     @staticmethod
+    def _extract_order_book_symbol_hints(value: Any) -> set[str]:
+        """Find instrument symbols in a decoded ORDER_BOOK envelope for diagnostics."""
+        found: set[str] = set()
+        symbol_keys = {
+            "symbol", "symbols", "ticker", "securitycode", "symbolcode",
+        }
+
+        def add_symbol(candidate: Any) -> None:
+            if isinstance(candidate, str):
+                ticker = candidate.strip().upper().split("@", 1)[0]
+                if ticker and len(ticker) <= 32 and not any(ch.isspace() for ch in ticker):
+                    found.add(ticker)
+            elif isinstance(candidate, dict):
+                for nested_key, nested_value in candidate.items():
+                    normalized = str(nested_key).replace("_", "").lower()
+                    if normalized in symbol_keys or normalized == "code":
+                        add_symbol(nested_value)
+            elif isinstance(candidate, list):
+                for item in candidate[:100]:
+                    add_symbol(item)
+
+        def visit(node: Any, depth: int = 0) -> None:
+            if depth > 7:
+                return
+            if isinstance(node, dict):
+                for key, child in node.items():
+                    normalized = str(key).replace("_", "").lower()
+                    if normalized in symbol_keys or normalized == "security":
+                        add_symbol(child)
+                    elif isinstance(child, (dict, list)):
+                        visit(child, depth + 1)
+            elif isinstance(node, list):
+                for item in node[:100]:
+                    visit(item, depth + 1)
+
+        visit(value)
+        return found
+
+    @staticmethod
     def _decode_payload(payload: Any) -> Any:
         """Decode Finam's payload: it can be a dict or a JSON-encoded string."""
         if isinstance(payload, str):
@@ -822,6 +861,26 @@ class FinamBrokerClient:
                     order_book_queue_dropped = 0
                     order_book_out_of_order = 0
                     order_book_subscribed: set[str] = set()
+                    order_book_subscribed_since: dict[str, float] = {}
+                    order_book_symbol_diag: dict[str, dict[str, Any]] = {}
+                    last_open_position_symbols: set[str] = set()
+                    order_book_unattributed_messages = 0
+                    order_book_unattributed_sample = ""
+
+                    def _order_book_symbol_stats(ticker: str) -> dict[str, Any]:
+                        return order_book_symbol_diag.setdefault(ticker, {
+                            "window_wire": 0,
+                            "window_parse_no_update": 0,
+                            "window_parse_out_of_order": 0,
+                            "window_parse_unrecognized": 0,
+                            "window_parsed": 0,
+                            "window_queued": 0,
+                            "window_dropped": 0,
+                            "last_wire_monotonic": 0.0,
+                            "last_parsed_monotonic": 0.0,
+                            "last_queued_monotonic": 0.0,
+                        })
+
                     last_order_book_sync = 0.0
                     last_order_book_diag = asyncio.get_running_loop().time()
                     last_ws_data_at = last_order_book_diag
@@ -881,6 +940,7 @@ class FinamBrokerClient:
                                             "подписки Top-%d сохраняются: %s",
                                             order_book_limit, position_exc,
                                         )
+                                last_open_position_symbols = set(position_symbols)
                                 position_only_symbols = position_symbols - wanted
                                 wanted.update(position_symbols)
 
@@ -896,6 +956,7 @@ class FinamBrokerClient:
                                         }))
                                         self._order_book_state.pop(symbol.split("@")[0].upper(), None)
                                         order_book_subscribed.discard(symbol)
+                                        order_book_subscribed_since.pop(symbol, None)
                                     for symbol in sorted(added):
                                         self._order_book_state.pop(symbol.split("@")[0].upper(), None)
                                         await ws.send(json.dumps({
@@ -903,14 +964,25 @@ class FinamBrokerClient:
                                             "data": {"symbol": symbol}, "token": self.jwt_token,
                                         }))
                                         order_book_subscribed.add(symbol)
+                                        order_book_subscribed_since[symbol] = now_loop
                                     last_order_book_sync = now_loop
                                     if added or removed:
+                                        position_symbols_text = ",".join(sorted(
+                                            symbol.split("@")[0] for symbol in position_symbols
+                                        )) or "-"
+                                        position_subscriptions_text = ",".join(sorted(
+                                            symbol.split("@")[0]
+                                            for symbol in position_symbols
+                                            if symbol in order_book_subscribed
+                                        )) or "-"
                                         logger.info(
                                             "📚 Finam ORDER_BOOK подписки синхронизированы: Top-%d=%d, "
-                                            "позиций_вне_Top=%d, всего=%d, добавлено=%d, снято=%d.",
+                                            "позиций_вне_Top=%d, всего=%d, добавлено=%d, снято=%d; "
+                                            "активные_позиции=%s; подписки_позиций=%s.",
                                             order_book_limit, len(normalized_selected),
                                             len(position_only_symbols), len(order_book_subscribed),
                                             len(added), len(removed),
+                                            position_symbols_text, position_subscriptions_text,
                                         )
                             except Exception as sub_exc:
                                 last_order_book_sync = now_loop
@@ -936,19 +1008,87 @@ class FinamBrokerClient:
                                     reverse=True,
                                 )[:12]
                             ) or "-"
+
+                            position_diag_parts: list[str] = []
+                            position_gaps: list[str] = []
+                            for ticker in sorted(last_open_position_symbols):
+                                symbol = f"{ticker}@MISX"
+                                stats = _order_book_symbol_stats(ticker)
+                                is_subscribed = symbol in order_book_subscribed
+                                subscribed_since = order_book_subscribed_since.get(symbol, 0.0)
+                                last_wire = float(stats.get("last_wire_monotonic", 0.0) or 0.0)
+                                wire_age = now_loop - last_wire if last_wire > 0.0 else None
+                                sub_age = now_loop - subscribed_since if subscribed_since > 0.0 else None
+
+                                flags: list[str] = []
+                                if not is_subscribed:
+                                    flags.append("NOT_SUBSCRIBED")
+                                    position_gaps.append(f"{ticker}:NOT_SUBSCRIBED")
+                                elif wire_age is None:
+                                    flags.append("NO_WIRE_DATA")
+                                    position_gaps.append(f"{ticker}:NO_WIRE_DATA")
+                                elif wire_age >= 60.0:
+                                    flags.append("WIRE_STALE")
+                                    position_gaps.append(f"{ticker}:WIRE_STALE={wire_age:.1f}s")
+                                if stats["window_wire"] > 0 and stats["window_parsed"] == 0:
+                                    flags.append("PARSE_EMPTY")
+                                    position_gaps.append(f"{ticker}:PARSE_EMPTY")
+                                if stats["window_dropped"] > 0:
+                                    flags.append("QUEUE_DROP")
+                                    position_gaps.append(f"{ticker}:QUEUE_DROP={stats['window_dropped']}")
+
+                                position_diag_parts.append(
+                                    f"{ticker}(sub={'Y' if is_subscribed else 'N'},"
+                                    f"sub_age={sub_age:.1f}s" if sub_age is not None else
+                                    f"{ticker}(sub={'Y' if is_subscribed else 'N'},sub_age=нет"
+                                )
+                                position_diag_parts[-1] += (
+                                    f",wire={stats['window_wire']},"
+                                    f"wire_age={wire_age:.1f}s" if wire_age is not None else ",wire_age=нет"
+                                )
+                                position_diag_parts[-1] += (
+                                    f",parsed={stats['window_parsed']},queued={stats['window_queued']},"
+                                    f"no_update={stats['window_parse_no_update']},"
+                                    f"parse_ooo={stats['window_parse_out_of_order']},"
+                                    f"unparsed={stats['window_parse_unrecognized']},"
+                                    f"dropped={stats['window_dropped']},"
+                                    f"flags={','.join(flags) or 'OK'})"
+                                )
+
+                                for key in (
+                                    "window_wire", "window_parse_no_update",
+                                    "window_parse_out_of_order", "window_parse_unrecognized",
+                                    "window_parsed", "window_queued", "window_dropped",
+                                ):
+                                    stats[key] = 0
+
+                            position_diag_summary = " | ".join(position_diag_parts) or "-"
                             logger.info(
                                 "📚 [ORDER_BOOK 60s] подписок=%d, сообщений=%d, "
                                 "событий_в_очередь=%d, затронуто_сторон_BBO=%d, "
                                 "heartbeat_без_движения_BBO=%d, некорректных_состояний=%d "
                                 "(причины=%s; тикеры=%s), "
-                                "без_timestamp_envelope=%d, out_of_order=%d, потерь_очереди=%d, ошибок_разбора=%d.",
+                                "без_timestamp_envelope=%d, out_of_order=%d, потерь_очереди=%d, "
+                                "ошибок_разбора=%d; позиции=[%s]; сообщений_без_тикера=%d.",
                                 len(order_book_subscribed), order_book_messages,
                                 enqueued_order_book_events, enqueued_bbo_side_updates,
                                 order_book_valid_no_bbo_delta, order_book_invalid_states,
                                 invalid_reason_summary, invalid_ticker_summary,
                                 order_book_missing_envelope_timestamp, order_book_out_of_order,
                                 order_book_queue_dropped, order_book_decode_failures,
+                                position_diag_summary, order_book_unattributed_messages,
                             )
+                            if position_gaps:
+                                logger.warning(
+                                    "📚 [ORDER_BOOK POSITION GAP] %s",
+                                    " | ".join(sorted(set(position_gaps))),
+                                )
+                            if order_book_unattributed_sample:
+                                logger.warning(
+                                    "📚 [ORDER_BOOK UNATTRIBUTED SAMPLE] %s",
+                                    order_book_unattributed_sample,
+                                )
+
                             order_book_messages = 0
                             order_book_decode_failures = 0
                             order_book_valid_no_bbo_delta = 0
@@ -960,6 +1100,8 @@ class FinamBrokerClient:
                             order_book_queue_dropped = 0
                             enqueued_order_book_events = 0
                             enqueued_bbo_side_updates = 0
+                            order_book_unattributed_messages = 0
+                            order_book_unattributed_sample = ""
                             last_order_book_diag = now_loop
 
                         try:
@@ -1042,7 +1184,34 @@ class FinamBrokerClient:
 
                         if subscription_type in {"ORDER_BOOK", "ORDERBOOK"}:
                             order_book_messages += 1
+                            message_received_monotonic = float(
+                                envelope.get("_received_monotonic", time.monotonic())
+                            )
+                            symbol_hints = self._extract_order_book_symbol_hints(payload)
                             book_updates = self._extract_order_book_updates(envelope)
+                            update_tickers = {
+                                str(item.get("ticker") or "").strip().upper().split("@")[0]
+                                for item in book_updates
+                                if isinstance(item, dict) and item.get("ticker")
+                            }
+                            observed_tickers = symbol_hints | update_tickers
+                            if not observed_tickers:
+                                order_book_unattributed_messages += 1
+                                if not order_book_unattributed_sample:
+                                    safe_payload = self._redact_for_log(payload)
+                                    order_book_unattributed_sample = json.dumps(
+                                        safe_payload, ensure_ascii=False, default=str
+                                    )[:1200]
+                            for observed_ticker in observed_tickers:
+                                symbol_stats = _order_book_symbol_stats(observed_ticker)
+                                symbol_stats["window_wire"] += 1
+                                symbol_stats["last_wire_monotonic"] = message_received_monotonic
+                                if observed_ticker not in update_tickers:
+                                    symbol_stats["window_parse_no_update"] += 1
+                                    if self._last_order_book_out_of_order:
+                                        symbol_stats["window_parse_out_of_order"] += 1
+                                    elif not self._last_order_book_payload_valid:
+                                        symbol_stats["window_parse_unrecognized"] += 1
                             if not book_updates:
                                 if self._last_order_book_out_of_order:
                                     order_book_out_of_order += 1
@@ -1072,6 +1241,11 @@ class FinamBrokerClient:
                                     )
                                     first_order_book_logged = True
                             for book_update in book_updates:
+                                book_ticker = str(book_update.get("ticker") or "").strip().upper().split("@")[0]
+                                symbol_stats = _order_book_symbol_stats(book_ticker) if book_ticker else None
+                                if symbol_stats is not None:
+                                    symbol_stats["window_parsed"] += 1
+                                    symbol_stats["last_parsed_monotonic"] = message_received_monotonic
                                 has_bbo_side_update = bool(
                                     book_update.get("bid_present") or book_update.get("ask_present")
                                 )
@@ -1093,12 +1267,17 @@ class FinamBrokerClient:
                                 try:
                                     queue.put_nowait(book_update)
                                     enqueued_order_book_events += 1
+                                    if symbol_stats is not None:
+                                        symbol_stats["window_queued"] += 1
+                                        symbol_stats["last_queued_monotonic"] = message_received_monotonic
                                     if book_update.get("bid_present"):
                                         enqueued_bbo_side_updates += 1
                                     if book_update.get("ask_present"):
                                         enqueued_bbo_side_updates += 1
                                 except asyncio.QueueFull:
                                     order_book_queue_dropped += 1
+                                    if symbol_stats is not None:
+                                        symbol_stats["window_dropped"] += 1
                                     logger.warning(
                                         "Очередь рыночных событий заполнена; ORDER_BOOK %s отброшен.",
                                         book_update.get("ticker"),
