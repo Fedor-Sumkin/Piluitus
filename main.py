@@ -64,19 +64,19 @@ DEPOSIT      = float(os.getenv("TRADING_DEPOSIT", 100000.0))
 class _PrivacyFormatter(logging.Formatter):
     """Redact machine-specific paths and Telegram bot IDs from every log output."""
 
-    _telegram_id_re = re.compile(r"(?i)(\\bid\\s*=\\s*)\\d+\\b")
+    _telegram_id_re = re.compile(r"(?i)(\bid\s*=\s*)\d+\b")
 
     @staticmethod
     def _redact_project_path(message: str) -> str:
         if not LOG_REDACT_PROJECT_PATH:
             return message
-        root = str(PROJECT_ROOT).rstrip("\\\\/")
+        root = str(PROJECT_ROOT).rstrip("\\/")
         if not root:
             return message
         variants = {
             root,
-            root.replace("\\\\", "/"),
-            root.replace("/", "\\\\"),
+            root.replace("\\", "/"),
+            root.replace("/", "\\"),
         }
         flags = re.IGNORECASE if os.name == "nt" else 0
         for candidate in sorted(variants, key=len, reverse=True):
@@ -87,9 +87,8 @@ class _PrivacyFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         rendered = super().format(record)
         if LOG_REDACT_TELEGRAM_ID and record.name.lower().startswith("aiogram"):
-            rendered = self._telegram_id_re.sub(r"\\1<REDACTED>", rendered)
+            rendered = self._telegram_id_re.sub(r"\1<REDACTED>", rendered)
         return self._redact_project_path(rendered)
-
 
 logging.basicConfig(
     level=logging.WARNING,
