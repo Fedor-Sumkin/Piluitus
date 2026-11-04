@@ -37,9 +37,10 @@ class AIEngine:
         
         self.clean_cyrillic_pattern = re.compile(r"[^a-zA-Zа-яА-ЯёЁ0-9_\s\.,;:\-\(\)%₽?!+=/\'\"<>]")
         self.spaces_pattern = re.compile(r"\s+")
+        model_label = str(self.model_name).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
         log.info(
-            "🧠 AIEngine v34 загружен: файл=%s | API=%s | модель=%s | max_tokens=%s",
-            __file__, self.api_path, self.model_name,
+            "🧠 AIEngine v34 загружен: файл=ai_engine.py | API=%s | модель=%s | max_tokens=%s",
+            self.api_path, model_label,
             min(1024, max(768, int(getattr(Settings, "VLLM_MAX_TOKENS", 768)))) ,
         )
 
