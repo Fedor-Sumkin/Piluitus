@@ -2688,13 +2688,15 @@ async def cleanup_stale_and_resume_paper_session():
         # closed history, verdicts and risk state.
         removed_memory_stale = len(execution_engine._unreconciled_paper_positions)
         execution_engine._unreconciled_paper_positions.clear()
-        execution_engine._maintenance_active = False
-        execution_engine._maintenance_reason = ""
+        # Persist the resume before lifting the in-memory maintenance lock.
+        # If storage fails, this process must remain paused.
         await db_manager.set_json("piluitus:paper:maintenance", {
             "active": False,
             "reason": "",
             "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         })
+        execution_engine._maintenance_active = False
+        execution_engine._maintenance_reason = ""
 
         _balance_guard_last_signature = None
         await _broadcast_paper_tables()
