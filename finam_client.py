@@ -816,6 +816,8 @@ class FinamBrokerClient:
                     order_book_decode_failures = 0
                     order_book_valid_no_bbo_delta = 0
                     order_book_invalid_states = 0
+                    order_book_invalid_reasons: dict[str, int] = {}
+                    order_book_invalid_by_ticker: dict[str, int] = {}
                     order_book_missing_envelope_timestamp = 0
                     order_book_queue_dropped = 0
                     order_book_out_of_order = 0
@@ -918,14 +920,32 @@ class FinamBrokerClient:
                                 )
 
                         if now_loop - last_order_book_diag >= 60.0:
+                            invalid_reason_summary = ", ".join(
+                                f"{reason}:{count}"
+                                for reason, count in sorted(
+                                    order_book_invalid_reasons.items(),
+                                    key=lambda item: item[1],
+                                    reverse=True,
+                                )[:8]
+                            ) or "-"
+                            invalid_ticker_summary = ", ".join(
+                                f"{ticker}:{count}"
+                                for ticker, count in sorted(
+                                    order_book_invalid_by_ticker.items(),
+                                    key=lambda item: item[1],
+                                    reverse=True,
+                                )[:12]
+                            ) or "-"
                             logger.info(
                                 "📚 [ORDER_BOOK 60s] подписок=%d, сообщений=%d, "
                                 "событий_в_очередь=%d, затронуто_сторон_BBO=%d, "
-                                "heartbeat_без_изменения_BBO=%d, некорректных_состояний=%d, "
+                                "heartbeat_без_движения_BBO=%d, некорректных_состояний=%d "
+                                "(причины=%s; тикеры=%s), "
                                 "без_timestamp_envelope=%d, out_of_order=%d, потерь_очереди=%d, ошибок_разбора=%d.",
                                 len(order_book_subscribed), order_book_messages,
                                 enqueued_order_book_events, enqueued_bbo_side_updates,
                                 order_book_valid_no_bbo_delta, order_book_invalid_states,
+                                invalid_reason_summary, invalid_ticker_summary,
                                 order_book_missing_envelope_timestamp, order_book_out_of_order,
                                 order_book_queue_dropped, order_book_decode_failures,
                             )
@@ -933,6 +953,8 @@ class FinamBrokerClient:
                             order_book_decode_failures = 0
                             order_book_valid_no_bbo_delta = 0
                             order_book_invalid_states = 0
+                            order_book_invalid_reasons.clear()
+                            order_book_invalid_by_ticker.clear()
                             order_book_missing_envelope_timestamp = 0
                             order_book_out_of_order = 0
                             order_book_queue_dropped = 0
@@ -1057,6 +1079,14 @@ class FinamBrokerClient:
                                     order_book_missing_envelope_timestamp += 1
                                 if not book_update.get("book_valid", True):
                                     order_book_invalid_states += 1
+                                    invalid_reason = str(book_update.get("book_reason") or "UNKNOWN").upper()
+                                    invalid_ticker = str(book_update.get("ticker") or "UNKNOWN").upper()
+                                    order_book_invalid_reasons[invalid_reason] = (
+                                        order_book_invalid_reasons.get(invalid_reason, 0) + 1
+                                    )
+                                    order_book_invalid_by_ticker[invalid_ticker] = (
+                                        order_book_invalid_by_ticker.get(invalid_ticker, 0) + 1
+                                    )
                                 elif not has_bbo_side_update:
                                     order_book_valid_no_bbo_delta += 1
                                 try:
