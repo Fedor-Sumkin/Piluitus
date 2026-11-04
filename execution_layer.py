@@ -906,15 +906,22 @@ class BaseExecutionEngine:
                     self._opening_tickers.discard(ticker)
                     self._reserved_notional.pop(ticker, None)
 
-    def schedule_paper_position_monitor(self, ticker: str, current_price: float, db: DBManager) -> None:
-        """Coalesce market ticks: at most one monitoring worker, latest price per ticker."""
+    def schedule_paper_position_monitor(
+        self, ticker: str, current_price: float | None, db: DBManager
+    ) -> None:
+        """Coalesce ticks and valid BBO refreshes into one PAPER exit-monitor worker."""
         if not self.paper_mode or self._maintenance_active or ticker not in self.paper_positions:
             return
         try:
-            price = float(current_price)
-        except (TypeError, ValueError):
-            return
-        if price <= 0:
+            price = float(current_price) if current_price is not None else 0.0
+        except (TypeError, ValueError, OverflowError):
+            price = 0.0
+        if not math.isfinite(price) or price <= 0.0:
+            # ORDER_BOOK may recover a fresh executable BBO without a new last trade.
+            # Use the position's persisted mark/entry only for monitor bookkeeping;
+            # SL/TP decisions still require _latest_fresh_exit_quote().
+            price = self._latest_price(ticker, self.paper_positions.get(ticker))
+        if not math.isfinite(price) or price <= 0.0:
             return
 
         self._pending_monitor_prices[ticker] = price
