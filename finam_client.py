@@ -865,6 +865,7 @@ class FinamBrokerClient:
                     order_book_symbol_diag: dict[str, dict[str, Any]] = {}
                     last_open_position_symbols: set[str] = set()
                     order_book_unattributed_messages = 0
+                    order_book_unattributed_sample = ""
                     order_book_parser_sample = ""
 
                     def _order_book_symbol_stats(ticker: str) -> dict[str, Any]:
@@ -1091,6 +1092,11 @@ class FinamBrokerClient:
                                     "📚 [ORDER_BOOK PARSER SAMPLE] %s",
                                     order_book_parser_sample,
                                 )
+                            if order_book_unattributed_sample:
+                                logger.warning(
+                                    "📚 [ORDER_BOOK UNATTRIBUTED SAMPLE] %s",
+                                    order_book_unattributed_sample,
+                                )
 
                             order_book_messages = 0
                             order_book_decode_failures = 0
@@ -1104,6 +1110,7 @@ class FinamBrokerClient:
                             enqueued_order_book_events = 0
                             enqueued_bbo_side_updates = 0
                             order_book_unattributed_messages = 0
+                            order_book_unattributed_sample = ""
                             order_book_parser_sample = ""
                             last_order_book_diag = now_loop
 
@@ -1201,9 +1208,9 @@ class FinamBrokerClient:
                             parse_missing_tickers = symbol_hints - update_tickers
                             if not observed_tickers:
                                 order_book_unattributed_messages += 1
-                                if not order_book_parser_sample:
+                                if not order_book_unattributed_sample:
                                     safe_payload = self._redact_for_log(payload)
-                                    order_book_parser_sample = json.dumps(
+                                    order_book_unattributed_sample = json.dumps(
                                         safe_payload, ensure_ascii=False, default=str
                                     )[:1200]
                             elif parse_missing_tickers and not order_book_parser_sample:
