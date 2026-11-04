@@ -7,7 +7,8 @@ from typing import Any, Protocol, TypedDict, cast
 import math
 import time
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone, time as datetime_time
+from zoneinfo import ZoneInfo
 from db_manager import DBManager
 import asyncio
 from uuid import uuid4
@@ -22,6 +23,8 @@ class BrokerClientProtocol(Protocol):
     async def place_order(
         self, ticker: str, lots: int, side: str, price: float, client_id: str
     ) -> object: ...
+
+    async def get_asset_schedule(self, ticker: str) -> dict[str, Any] | None: ...
 
 
 class MinuteBarPatternProtocol(Protocol):
@@ -53,6 +56,65 @@ class BBOExitQuote(TypedDict):
 
 
 TradeRecord = dict[str, Any]
+_MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+
+
+def _parse_schedule_datetime(value: object, session_date) -> datetime | None:
+    """Parse Finam REST Timestamp, ISO datetime or local HH:MM[:SS] safely."""
+    parsed: datetime | None = None
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, Mapping):
+        seconds_raw = value.get("seconds")
+        nanos_raw = value.get("nanos", 0)
+        if seconds_raw is not None:
+            try:
+                seconds = float(seconds_raw) + float(nanos_raw or 0.0) / 1_000_000_000.0
+                if math.isfinite(seconds):
+                    parsed = datetime.fromtimestamp(seconds, tz=timezone.utc)
+            except (TypeError, ValueError, OverflowError, OSError):
+                parsed = None
+        if parsed is None and value.get("value") is not None:
+            return _parse_schedule_datetime(value.get("value"), session_date)
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            seconds = float(value)
+            if seconds >= 1e18:
+                seconds /= 1_000_000_000.0
+            elif seconds >= 1e15:
+                seconds /= 1_000_000.0
+            elif seconds >= 1e12:
+                seconds /= 1_000.0
+            if math.isfinite(seconds):
+                parsed = datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (TypeError, ValueError, OverflowError, OSError):
+            parsed = None
+    elif isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            numeric = float(raw)
+        except ValueError:
+            numeric = math.nan
+        if math.isfinite(numeric):
+            return _parse_schedule_datetime(numeric, session_date)
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                clock = datetime_time.fromisoformat(raw)
+                parsed = datetime.combine(session_date, clock)
+            except ValueError:
+                return None
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_MOSCOW_TZ)
+    try:
+        return parsed.astimezone(_MOSCOW_TZ)
+    except (ValueError, OverflowError):
+        return None
 
 
 def _finite_or_default(value: object, default: float = 0.0) -> float:
@@ -184,6 +246,18 @@ class BaseExecutionEngine:
         )
         if self.paper_mode:
             logger.info("🛡️ РЕЖИМ АГЕНТА: [PAPER TRADING] — Симуляция ордеров через Redis ОЗУ.")
+            logger.info(
+                "🧪 [PAPER EXECUTION MODEL] Вход BUY=Ask/SELL=Bid, выход long=Bid/short=Ask; "
+                "спред учитывается через стороны BBO; полное исполнение на top-of-book предполагается, "
+                "а объём стакана не ограничивает fill, т.к. единицы Finam ещё не подтверждены."
+            )
+            if self.paper_commission_pct <= 0.0 or self.paper_slippage_bps <= 0.0:
+                logger.warning(
+                    "⚠️ [PAPER COST SETTINGS] комиссия=%.4f%% за сторону, доп.проскальзывание=%.2f bps. "
+                    "Нулевые параметры не учитываются в PnL; укажите собственный тариф Finam и модель "
+                    "дополнительного проскальзывания в .env. Спред уже включён в Ask/Bid.",
+                    self.paper_commission_pct, self.paper_slippage_bps,
+                )
         else:
             logger.warning("🔥 РЕЖИМ АГЕНТА: [LIVE TRADING] — Работа на реальном счёте Finam!")
 
@@ -577,6 +651,91 @@ class BaseExecutionEngine:
             "age_sec": float(chosen["ask_age_sec"] if side == "BUY" else chosen["bid_age_sec"]),
         }
 
+    @staticmethod
+    def _entry_cutoff_minutes() -> float:
+        value = _finite_or_default(os.getenv("PILUITUS_ENTRY_CUTOFF_MINUTES", "5"), 5.0)
+        return min(30.0, max(0.0, value))
+
+    async def _market_session_status(self, ticker: str) -> dict[str, Any]:
+        """Read the current instrument-specific Finam schedule in Moscow time."""
+        getter = getattr(self.broker, "get_asset_schedule", None)
+        if not callable(getter):
+            return {"known": False, "is_open": False, "entry_allowed": False, "reason": "schedule_api_unavailable"}
+        try:
+            payload = await getter(ticker)
+        except Exception as exc:
+            return {
+                "known": False, "is_open": False, "entry_allowed": False,
+                "reason": f"schedule_request_failed:{type(exc).__name__}",
+            }
+        if not isinstance(payload, Mapping) or not isinstance(payload.get("sessions"), list):
+            return {"known": False, "is_open": False, "entry_allowed": False, "reason": "schedule_missing_or_invalid"}
+
+        now = datetime.now(_MOSCOW_TZ)
+        parsed_windows: list[tuple[datetime, datetime, str]] = []
+        for raw_session in payload.get("sessions", []):
+            if not isinstance(raw_session, Mapping):
+                continue
+            interval_obj = raw_session.get("interval")
+            if not isinstance(interval_obj, Mapping):
+                continue
+            start = _parse_schedule_datetime(interval_obj.get("start_time"), now.date())
+            end = _parse_schedule_datetime(interval_obj.get("end_time"), now.date())
+            if start is None or end is None or end <= start:
+                continue
+            if start.date() <= now.date() <= end.date():
+                parsed_windows.append((start, end, str(raw_session.get("type") or "unknown")))
+
+        if payload.get("sessions") and not parsed_windows:
+            return {
+                "known": False, "is_open": False, "entry_allowed": False,
+                "reason": "schedule_intervals_unparseable_or_not_for_today",
+            }
+        if not parsed_windows:
+            return {
+                "known": True, "is_open": False, "entry_allowed": False,
+                "reason": "no_sessions_today", "session_type": "",
+            }
+
+        active = [(start, end, kind) for start, end, kind in parsed_windows if start <= now < end]
+        if active:
+            start, end, kind = min(active, key=lambda item: item[1])
+            seconds_to_close = max(0.0, (end - now).total_seconds())
+            cutoff_minutes = self._entry_cutoff_minutes()
+            allowed = seconds_to_close > cutoff_minutes * 60.0
+            return {
+                "known": True, "is_open": True, "entry_allowed": allowed,
+                "reason": "active_session" if allowed else "entry_cutoff_reached",
+                "session_type": kind, "session_start": start.isoformat(),
+                "session_end": end.isoformat(), "seconds_to_close": seconds_to_close,
+                "cutoff_minutes": cutoff_minutes,
+            }
+
+        future = [(start, end, kind) for start, end, kind in parsed_windows if start > now]
+        next_start = min(future, key=lambda item: item[0])[0] if future else None
+        return {
+            "known": True, "is_open": False, "entry_allowed": False,
+            "reason": "between_or_outside_sessions",
+            "next_session_start": next_start.isoformat() if next_start else None,
+            "session_type": "",
+        }
+
+    async def _check_entry_session(self, ticker: str) -> tuple[bool, str, dict[str, Any]]:
+        """Fail closed unless Finam confirms an active instrument session away from close."""
+        state = await self._market_session_status(ticker)
+        if not state.get("known"):
+            return False, f"расписание Finam недоступно/не распознано ({state.get('reason', 'unknown')})", state
+        if not state.get("is_open"):
+            next_start = state.get("next_session_start")
+            suffix = f"; следующая сессия={next_start}" if next_start else ""
+            return False, f"торги по инструменту сейчас закрыты ({state.get('reason')}){suffix}", state
+        if not state.get("entry_allowed"):
+            seconds = _finite_or_default(state.get("seconds_to_close"), 0.0)
+            cutoff = self._entry_cutoff_minutes()
+            return False, f"до закрытия сессии {seconds / 60.0:.2f} мин; защитный интервал={cutoff:.1f} мин", state
+        seconds = _finite_or_default(state.get("seconds_to_close"), 0.0)
+        return True, f"сессия={state.get('session_type')}; до закрытия {seconds / 60.0:.1f} мин", state
+
     def _paper_entry_bbo_diagnostic(self, ticker: str) -> str:
         """Describe why the current two-sided BBO is not executable."""
         if self.screener is None:
@@ -653,6 +812,18 @@ class BaseExecutionEngine:
 
             if ai_analysis.get("final_decision", "HOLD").upper() == "HOLD":
                 return {"status": "SKIPPED", "message": "AI Decision is HOLD"}
+
+            session_allowed, session_message, _session_state = await self._check_entry_session(ticker)
+            if not session_allowed:
+                logger.warning(
+                    "⛔ [ENTRY SESSION GUARD] %s %s: вход запрещён — %s.",
+                    side, ticker, session_message,
+                )
+                return {"status": "SKIPPED", "message": f"ENTRY_SESSION_BLOCK: {session_message}"}
+            logger.info(
+                "🕒 [ENTRY SESSION GUARD] %s: вход разрешён; %s; cutoff=%.1f мин.",
+                ticker, session_message, self._entry_cutoff_minutes(),
+            )
 
             entry_bbo: BBOExitQuote | None = None
             entry_bbo_wait_attempts = 0
@@ -764,6 +935,16 @@ class BaseExecutionEngine:
             ai_analysis["take_profit"] = take_profit
             logger.info("📊 [ATR ENFORCER] Уровни: SL=%s₽ TP=%s₽; %s", stop_loss, take_profit, reservation_info)
 
+            # Recheck immediately before creating a PAPER position or sending a LIVE order.
+            # This catches a session boundary crossed during inference/BBO/size preparation.
+            session_allowed, session_message, _session_state = await self._check_entry_session(ticker)
+            if not session_allowed:
+                logger.warning(
+                    "⛔ [ENTRY SESSION GUARD] %s %s: повторная проверка запретила вход — %s.",
+                    side, ticker, session_message,
+                )
+                return {"status": "SKIPPED", "message": f"ENTRY_SESSION_BLOCK_RECHECK: {session_message}"}
+
             trade_resp: object | None = None
             if not self.paper_mode:
                 if self.broker is None:
@@ -822,6 +1003,7 @@ class BaseExecutionEngine:
                 "status": "OPEN",
                 "mode": "PAPER" if self.paper_mode else "LIVE",
                 "paper_execution_model": "BBO_V8" if self.paper_mode else None,
+                "paper_fill_assumption": "FULL_FILL_AT_TOP_OF_BOOK_NO_DEPTH_CHECK" if self.paper_mode else None,
                 "session_id": self.session_id,
                 "ticker": ticker,
                 "entry_time": now.strftime("%H:%M:%S"),
@@ -1241,6 +1423,25 @@ class BaseExecutionEngine:
 
             bbo = self._latest_fresh_exit_quote(ticker, side)
             if bbo is None:
+                market_state = await self._market_session_status(ticker)
+                if market_state.get("known") and not market_state.get("is_open"):
+                    wait_state = "MARKET_CLOSED"
+                    wait_reason = "биржевая сессия закрыта; позиция сохранена до следующего доступного BBO"
+                elif not market_state.get("known"):
+                    wait_state = "WAITING_FOR_BBO"
+                    wait_reason = "календарь недоступен или исполнимый BBO ещё не получен"
+                else:
+                    wait_state = "WAITING_FOR_BBO"
+                    wait_reason = "сессия открыта, но свежая исполнимая сторона BBO отсутствует"
+                previous_wait_state = str(trade.get("exit_monitor_state") or "")
+                if previous_wait_state != wait_state:
+                    trade["exit_monitor_state"] = wait_state
+                    trade["exit_monitor_wait_reason"] = wait_reason
+                    logger.warning(
+                        "⏸️ [PAPER POSITION WAIT] %s %s: %s; позиция и SL/TP сохранены, "
+                        "закрытие будет проверено после появления свежего исполнимого BBO.",
+                        ticker, side, wait_reason,
+                    )
                 exit_transaction_side = "SELL" if side == "BUY" else "BUY"
                 estimated_exit_price = self._apply_paper_slippage(observed_last_price, exit_transaction_side)
                 estimated_gross_pnl = (estimated_exit_price - entry_price) * share_qty * sign
@@ -1303,6 +1504,18 @@ class BaseExecutionEngine:
                     )
                     self._last_bbo_exit_warning_at[ticker] = now_mono
                 return
+
+            # A coherent executable BBO has returned; resume the monitor without
+            # manufacturing a fill or changing the saved SL/TP levels.
+            if str(trade.get("exit_monitor_state") or "") != "ACTIVE":
+                previous_reason = str(trade.get("exit_monitor_wait_reason") or "ожидание BBO")
+                trade["exit_monitor_state"] = "ACTIVE"
+                trade.pop("exit_monitor_wait_reason", None)
+                logger.info(
+                    "▶️ [PAPER POSITION RESUMED] %s %s: получен свежий исполнимый BBO; "
+                    "мониторинг SL/TP продолжен (предыдущее состояние: %s).",
+                    ticker, side, previous_reason,
+                )
 
             # Closing a long means selling at Bid; closing a short means buying at Ask.
             executable_exit_price = float(bbo["executable_price"])
