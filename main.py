@@ -28,6 +28,8 @@ from config import (
     PROJECT_ROOT,
     LOG_REDACT_TELEGRAM_ID,
     LOG_REDACT_PROJECT_PATH,
+    TICKERS_TO_TRADE,
+    LOT_SIZES,
 )
 from risk_limits import validate_daily_loss_limit
 
@@ -37,7 +39,7 @@ from db_manager import DBManager
 from finam_client import FinamBrokerClient
 from screener_funnel import HFTMemoryScreener
 from execution_layer import BaseExecutionEngine
-from risk_manager import RiskManager, LOT_SIZES
+from risk_manager import RiskManager
 from signal_guard import validate_signal_evidence, infer_candidate_direction, validate_atr_readiness
 from candidate_recovery import refresh_candidate_bbo_metrics
 from dashboard_verdicts import (
@@ -1343,17 +1345,7 @@ def _make_priority_item(priority: int, event_type: str, payload: dict[str, Any])
     loop = asyncio.get_running_loop()
     return (int(priority), next(_priority_sequence), loop.time(), event_type, payload)
 
-TICKERS_TO_TRADE = [
-    "SBER", "SBERP", "GAZP", "LKOH", "NVTK", "YDEX", "ROSN", "VTBR", "AFLT", "MAGN",
-    "CHMF", "NLMK", "MOEX", "ALRS", "MTSS", "MGNT", "TATN", "SNGS", "SNGSP", "PLZL",
-    "HYDR", "FEES", "CBOM", "IRAO", "PHOR", "PIKK", "TRNFP", "TATNP", "AFKS", "RUAL",
-    "GCHE", "LSRG", "SMLT", "MSNG", "BANEP", "BSPB", "RENI", "UPRO", "SOFL", "POSI",
-    "RNFT", "UWGN", "VKCO", "HEAD", "OZON", "APRI", "MVID", "LENT", "OKEY", "AGRO",
-    "MDMG", "WUSH", "CARM", "LEAS", "DELI", "SVCB", "SFIN", "MTLR", "MTLRP", "RASP",
-    "FESH", "NMTP", "FLOT", "GECO", "ABIO", "BLNG", "DVEC", "ELFV", "ENPG", "GTRK",
-    "IRKT", "KAZT", "KAZTP", "KBSB", "KROT", "MAGE", "MAGEP", "MGTS", "MGTSP", "NKHP",
-    "NKNC", "NKNCP", "TGKA", "TGKB", "TGKBP", "TTLK", "VJGZ", "VJGZP"
-]
+
 
 # Все 88 инструментов остаются подписанными для сбора сравнимой статистики.
 # В LLM разрешается передавать только события от выбранного локальным рейтингом top-N.
