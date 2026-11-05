@@ -9,6 +9,7 @@ from collections.abc import Callable
 import websockets
 import httpx
 from db_manager import DBManager
+from config import LOT_SIZES
 
 logging.basicConfig(
     level=logging.INFO,
@@ -164,49 +165,14 @@ class RiskManager:
 
     @classmethod
     async def update_finam_lot_sizes(cls, finam_broker_client=None):
-        """
-        Промышленный контур персистентной лотности PILUITUS v3.0.
-        Зашивает реальные исторические спецификации лотов Мосбиржи (TQBR) 
-        для всех 88 торгуемых активов. Гарантирует запуск в понедельник без сбоев сети.
-        """
-        global LOT_SIZES
+        """Проверяет готовность единого справочника LOT_SIZES из config.py."""
         risk_logger = logging.getLogger("Piluitus.RiskManager")
-        
-        risk_logger.info("📦 [STATIC CONTOUR] Инициализация промышленного хардкода лотности по 88 акциям TQBR...")
-
-        # Реальная историческая спецификация лотов Мосбиржи под ваш список TICKERS_TO_TRADE
-        boevoy_hardcode = {
-            # --- Крупнейшие "голубые фишки" и тяжеловесы индекса ---
-            "SBER": 10, "SBERP": 10, "GAZP": 10, "LKOH": 1, "NVTK": 1, 
-            "YDEX": 1, "ROSN": 10, "VTBR": 10000, "AFLT": 10, "MAGN": 10,
-            "CHMF": 1, "NLMK": 10, "MOEX": 10, "ALRS": 10, "MTSS": 10, 
-            "MGNT": 1, "TATN": 1, "TATNP": 1, "SNGS": 100, "SNGSP": 100, 
-            "PLZL": 1, "PHOR": 1, "AFKS": 100, "RUAL": 10,
-
-            # --- Энергетика, металлы и ритейл ---
-            "HYDR": 1000, "FEES": 10000, "CBOM": 100, "IRAO": 100, 
-            "PIKK": 1, "TRNFP": 1, "GCHE": 1, "LSRG": 1, "SMLT": 1, 
-            "MSNG": 1000, "BANEP": 1, "BSPB": 10, "RENI": 10, "UPRO": 100, 
-            "SOFL": 10, "POSI": 1, "RNFT": 1, "UWGN": 10, "VKCO": 1, 
-            "HEAD": 1, "OZON": 1, "APRI": 10, "MVID": 10, "LENT": 1, 
-            "OKEY": 10, "AGRO": 1, "MDMG": 1, "WUSH": 1, "CARM": 100, 
-            "LEAS": 1, "DELI": 1, "SVCB": 10, "SFIN": 1, "MTLR": 1, 
-            "MTLRP": 1, "RASP": 1, "FLOT": 10, "GECO": 10, "ABIO": 10,
-
-            # --- Транспорт, порты и региональные дочки (Эшелоны) ---
-            "FESH": 10, "NMTP": 100, "BLNG": 10, "DVEC": 100, "ELFV": 1000, 
-            "ENPG": 1, "GTRK": 10, "IRKT": 10, "KAZT": 10, "KAZTP": 10, 
-            "KBSB": 1, "KROT": 1, "MAGE": 1, "MAGEP": 1, "MGTS": 1, 
-            "MGTSP": 1, "NKHP": 1, "NKNC": 10, "NKNCP": 10, "TGKA": 10000, 
-            "TGKB": 100000, "TGKBP": 100000, "TTLK": 10, "VJGZ": 100, "VJGZP": 100
-        }
-
-        # Атомарно обновляем глобальный словарь лотов ядра
-        LOT_SIZES.update(boevoy_hardcode)
-        
+        if not LOT_SIZES:
+            risk_logger.error("❌ Справочник LOT_SIZES в config.py пуст; расчёт размера позиции будет ограничен.")
+            return
         risk_logger.info(
-            f"🎯 [DATA STREAM] УСПЕШНО ЗАГРУЖЕНА НАСТОЯЩАЯ ЛОТНОСТЬ ПО {len(LOT_SIZES)} "
-            f"АКТИВАМ МОСБИРЖИ. К КОНТУРУ ТОРГОВЫХ РИСКОВ ПОНЕДЕЛЬНИКА ПРИСТУПИТЬ!"
+            "📦 [STATIC CONTOUR] Лотность загружена из config.py: %d инструментов.",
+            len(LOT_SIZES),
         )
 
 
