@@ -44,6 +44,21 @@ class AIEngine:
             min(1024, max(768, int(getattr(Settings, "VLLM_MAX_TOKENS", 768)))) ,
         )
 
+    async def _post_with_retry(self, path: str, *, json: dict) -> httpx.Response:
+        """Retry one transient transport failure once; never retry HTTP responses."""
+        for attempt in range(2):
+            try:
+                return await self.client.post(path, json=json)
+            except httpx.TransportError as exc:
+                if attempt >= 1:
+                    raise
+                log.warning(
+                    "[vLLM RETRY] Временный сетевой сбой (%s); повтор запроса 1/1 через 0.4s",
+                    type(exc).__name__,
+                )
+                await asyncio.sleep(0.4)
+        raise RuntimeError("vLLM retry loop exited unexpectedly")
+
     def _clean_text(self, text: str) -> str:
         """Нормализует текст, сохраняя английские названия индикаторов (VWAP, SMA, Bid/Ask)."""
         if not text:
@@ -552,7 +567,7 @@ class AIEngine:
                     "max_tokens": configured_max_tokens,
                 }
                 active_body = dict(request_body)
-                resp = await self.client.post(self.api_path, json=active_body)
+                resp = await self._post_with_retry(self.api_path, json=active_body)
 
                 # Сначала обрабатываем только известные причины отказа API.
                 if resp.status_code in (400, 422):
@@ -581,7 +596,7 @@ class AIEngine:
                             "[vLLM COMPAT] Переполнение контекста; повторяем компактный запрос, max_tokens=%s. Причина: %s",
                             compact_body["max_tokens"], error_detail,
                         )
-                        resp = await self.client.post(self.api_path, json=compact_body)
+                        resp = await self._post_with_retry(self.api_path, json=compact_body)
 
                 if resp.status_code in (400, 422):
                     error_detail = self._http_error_detail(resp)
@@ -593,7 +608,7 @@ class AIEngine:
                             "[vLLM COMPAT] Сервер отклонил temperature; повторяем без параметра. Причина: %s",
                             error_detail,
                         )
-                        resp = await self.client.post(self.api_path, json=sampling_body)
+                        resp = await self._post_with_retry(self.api_path, json=sampling_body)
 
                 if resp.status_code >= 400:
                     error_detail = self._http_error_detail(resp)
