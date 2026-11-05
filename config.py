@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -10,6 +11,84 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR / ".env"
 load_dotenv(dotenv_path=ENV_PATH)   # .env необязателен – если нет, просто читаем системные переменные
+
+
+# --------------------------------------------------------------
+#  Справочники инструментов проекта (единая точка настройки)
+#  Обновляйте эти таблицы здесь, не в бизнес-модулях.
+# --------------------------------------------------------------
+TICKERS_TO_TRADE: list[str] = [
+    "SBER", "SBERP", "GAZP", "LKOH", "NVTK", "YDEX", "ROSN", "VTBR", "AFLT", "MAGN",
+    "CHMF", "NLMK", "MOEX", "ALRS", "MTSS", "MGNT", "TATN", "SNGS", "SNGSP", "PLZL",
+    "HYDR", "FEES", "CBOM", "IRAO", "PHOR", "PIKK", "TRNFP", "TATNP", "AFKS", "RUAL",
+    "GCHE", "LSRG", "SMLT", "MSNG", "BANEP", "BSPB", "RENI", "UPRO", "SOFL", "POSI",
+    "RNFT", "UWGN", "VKCO", "HEAD", "OZON", "APRI", "MVID", "LENT", "OKEY", "AGRO",
+    "MDMG", "WUSH", "CARM", "LEAS", "DELI", "SVCB", "SFIN", "MTLR", "MTLRP", "RASP",
+    "FESH", "NMTP", "FLOT", "GECO", "ABIO", "BLNG", "DVEC", "ELFV", "ENPG", "GTRK",
+    "IRKT", "KAZT", "KAZTP", "KBSB", "KROT", "MAGE", "MAGEP", "MGTS", "MGTSP", "NKHP",
+    "NKNC", "NKNCP", "TGKA", "TGKB", "TGKBP", "TTLK", "VJGZ", "VJGZP"
+]
+
+LOT_SIZES: dict[str, int] = {
+    # --- Крупнейшие "голубые фишки" и тяжеловесы индекса ---
+    "SBER": 10, "SBERP": 10, "GAZP": 10, "LKOH": 1, "NVTK": 1, 
+    "YDEX": 1, "ROSN": 10, "VTBR": 10000, "AFLT": 10, "MAGN": 10,
+    "CHMF": 1, "NLMK": 10, "MOEX": 10, "ALRS": 10, "MTSS": 10, 
+    "MGNT": 1, "TATN": 1, "TATNP": 1, "SNGS": 100, "SNGSP": 100, 
+    "PLZL": 1, "PHOR": 1, "AFKS": 100, "RUAL": 10,
+
+    # --- Энергетика, металлы и ритейл ---
+    "HYDR": 1000, "FEES": 10000, "CBOM": 100, "IRAO": 100, 
+    "PIKK": 1, "TRNFP": 1, "GCHE": 1, "LSRG": 1, "SMLT": 1, 
+    "MSNG": 1000, "BANEP": 1, "BSPB": 10, "RENI": 10, "UPRO": 100, 
+    "SOFL": 10, "POSI": 1, "RNFT": 1, "UWGN": 10, "VKCO": 1, 
+    "HEAD": 1, "OZON": 1, "APRI": 10, "MVID": 10, "LENT": 1, 
+    "OKEY": 10, "AGRO": 1, "MDMG": 1, "WUSH": 1, "CARM": 100, 
+    "LEAS": 1, "DELI": 1, "SVCB": 10, "SFIN": 1, "MTLR": 1, 
+    "MTLRP": 1, "RASP": 1, "FLOT": 10, "GECO": 10, "ABIO": 10,
+
+    # --- Транспорт, порты и региональные дочки (Эшелоны) ---
+    "FESH": 10, "NMTP": 100, "BLNG": 10, "DVEC": 100, "ELFV": 1000, 
+    "ENPG": 1, "GTRK": 10, "IRKT": 10, "KAZT": 10, "KAZTP": 10, 
+    "KBSB": 1, "KROT": 1, "MAGE": 1, "MAGEP": 1, "MGTS": 1, 
+    "MGTSP": 1, "NKHP": 1, "NKNC": 10, "NKNCP": 10, "TGKA": 10000, 
+    "TGKB": 100000, "TGKBP": 100000, "TTLK": 10, "VJGZ": 100, "VJGZP": 100
+}
+
+RSS_FEEDS: list[str] = [
+    "https://bcs-express.ru",
+    "https://www.bfm.ru/news.rss?rubric=28",
+    "https://moex.com/export/news.aspx?cat=100",
+    "https://moex.com/export/news.aspx?cat=101",
+    "https://www.moex.com/export/news.aspx?cat=104",
+    "https://bfm.ru",
+    "https://www.moex.com/export/news.aspx?cat=122",
+    "https://www.finam.ru/analysis/forecasts/rsspoint/"
+]
+
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Локальный корень проекта можно задать в .env. По умолчанию используется
+# папка config.py, поэтому настройка не обязательна и проект остаётся переносимым.
+_project_root_value = os.getenv("PILUITUS_PROJECT_ROOT", "").strip()
+PROJECT_ROOT = (
+    Path(_project_root_value).expanduser()
+    if _project_root_value else BASE_DIR
+)
+if not PROJECT_ROOT.is_absolute():
+    PROJECT_ROOT = BASE_DIR / PROJECT_ROOT
+PROJECT_ROOT = PROJECT_ROOT.resolve()
+
+# Приватные значения фильтруются непосредственно при форматировании логов.
+LOG_REDACT_TELEGRAM_ID = _env_flag("PILUITUS_LOG_REDACT_TELEGRAM_ID", True)
+LOG_REDACT_PROJECT_PATH = _env_flag("PILUITUS_LOG_REDACT_PROJECT_PATH", True)
+
 
 # --------------------------------------------------------------
 # 2️⃣  Класс‑контейнер с параметрами (все публичные атрибуты!)
@@ -63,7 +142,15 @@ class Settings:
     MAX_GROSS_EXPOSURE_PCT: float = min(float(os.getenv("PILUITUS_MAX_GROSS_EXPOSURE_PCT", "0.10")), 0.15)
     MAX_SINGLE_POSITION_PCT: float = min(float(os.getenv("PILUITUS_MAX_SINGLE_POSITION_PCT", "0.05")), 0.05)
     ATR_MULTIPLIER: float = float(os.getenv("ATR_MULTIPLIER", "1.5"))
-    TRADE_DEPOSIT: float = float(os.getenv("TRADE_DEPOSIT", "100000.0"))
+    # Единственный источник стартового капитала для всех контуров.
+    # TRADE_DEPOSIT — новое имя; TRADING_DEPOSIT оставлено как legacy-fallback.
+    _TRADE_DEPOSIT_RAW = os.getenv("TRADE_DEPOSIT")
+    if _TRADE_DEPOSIT_RAW is None:
+        _TRADE_DEPOSIT_RAW = os.getenv("TRADING_DEPOSIT", "100000.0")
+    TRADE_DEPOSIT: float = float(_TRADE_DEPOSIT_RAW)
+    if not math.isfinite(TRADE_DEPOSIT) or TRADE_DEPOSIT <= 0:
+        raise ValueError("TRADE_DEPOSIT должен быть конечным числом больше нуля")
+    TRADING_DEPOSIT: float = TRADE_DEPOSIT  # совместимость со старым именем
 
     # ---------- Прочие ----------
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()

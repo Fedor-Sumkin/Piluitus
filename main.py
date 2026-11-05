@@ -8,6 +8,7 @@ import sys
 import time as time_module
 import threading
 import shutil
+import unicodedata
 from itertools import count
 from contextlib import asynccontextmanager
 from typing import Any, List, Union, cast
@@ -22,7 +23,14 @@ from datetime import datetime, time
 from uuid import uuid4
 from types import SimpleNamespace
 from fastapi.templating import Jinja2Templates
-from config import Settings
+from config import (
+    Settings,
+    PROJECT_ROOT,
+    LOG_REDACT_TELEGRAM_ID,
+    LOG_REDACT_PROJECT_PATH,
+    TICKERS_TO_TRADE,
+    LOT_SIZES,
+)
 from risk_limits import validate_daily_loss_limit
 
 # --- PILUITUS‑V3 modules ------------------------------------------------
@@ -31,7 +39,7 @@ from db_manager import DBManager
 from finam_client import FinamBrokerClient
 from screener_funnel import HFTMemoryScreener
 from execution_layer import BaseExecutionEngine
-from risk_manager import RiskManager, LOT_SIZES
+from risk_manager import RiskManager
 from signal_guard import validate_signal_evidence, infer_candidate_direction, validate_atr_readiness
 from candidate_recovery import refresh_candidate_bbo_metrics
 from dashboard_verdicts import (
@@ -50,15 +58,52 @@ load_dotenv()
 
 FINAM_TOKEN = os.getenv("FINAM_TOKEN", "")
 CLIENT_ID   = os.getenv("FINAM_CLIENT_ID", "UNKNOWN_ACCOUNT")
-DEPOSIT      = float(os.getenv("TRADING_DEPOSIT", 100000.0))
+DEPOSIT      = Settings.TRADE_DEPOSIT
 
 # --------------------------------------------------------------
 #  LOGGING REGIME
 # --------------------------------------------------------------
+class _PrivacyFormatter(logging.Formatter):
+    """Redact machine-specific paths and Telegram bot IDs from every log output."""
+
+    _telegram_id_re = re.compile(r"(?i)(\bid\s*=\s*)\d+\b")
+
+    @staticmethod
+    def _redact_project_path(message: str) -> str:
+        if not LOG_REDACT_PROJECT_PATH:
+            return message
+        root = str(PROJECT_ROOT).rstrip("\\/")
+        if not root:
+            return message
+        variants = {
+            root,
+            root.replace("\\", "/"),
+            root.replace("/", "\\"),
+        }
+        flags = re.IGNORECASE if os.name == "nt" else 0
+        for candidate in sorted(variants, key=len, reverse=True):
+            if candidate:
+                message = re.sub(re.escape(candidate), "<PROJECT_ROOT>", message, flags=flags)
+        return message
+
+    def format(self, record: logging.LogRecord) -> str:
+        rendered = super().format(record)
+        if LOG_REDACT_TELEGRAM_ID and record.name.lower().startswith("aiogram"):
+            rendered = self._telegram_id_re.sub(r"\1<REDACTED>", rendered)
+        return self._redact_project_path(rendered)
+
 logging.basicConfig(
     level=logging.WARNING,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
+# basicConfig may be a no-op when a server has already installed handlers;
+# replace the formatter on every existing root handler either way.
+for _root_handler in logging.getLogger().handlers:
+    _old_formatter = _root_handler.formatter
+    _format = getattr(_old_formatter, "_fmt", "%(message)s")
+    _datefmt = getattr(_old_formatter, "datefmt", None)
+    _root_handler.setFormatter(_PrivacyFormatter(_format, datefmt=_datefmt))
+
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("websockets").setLevel(logging.WARNING)
@@ -68,15 +113,258 @@ logger = logging.getLogger("Piluitus.Main")
 
 def _parse_finite_float(value: object) -> float | None:
     """Convert an untrusted JSON scalar to a finite float."""
-    if not isinstance(value, (int, float, str)):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        raw = value
+    elif isinstance(value, (int, float)):
+        raw = value
+    else:
         return None
     try:
-        number = float(value)
+        number = float(raw)
     except (TypeError, ValueError, OverflowError):
         return None
     return number if math.isfinite(number) else None
 logger.setLevel(logging.INFO)
 
+
+class _DurableFileHandler(logging.FileHandler):
+    """Flush every record and periodically force it from OS cache to storage.
+
+    Session/diagnostic logs are fsync'ed at a configurable interval to limit
+    disk I/O. The error log uses interval=0 and is fsync'ed on every record.
+    """
+
+    def __init__(
+        self,
+        filename,
+        mode: str = "a",
+        encoding: str | None = None,
+        delay: bool = False,
+        errors: str | None = None,
+        *,
+        sync_interval_seconds: float = 1.0,
+    ) -> None:
+        super().__init__(
+            filename,
+            mode=mode,
+            encoding=encoding,
+            delay=delay,
+            errors=errors,
+        )
+        self.sync_interval_seconds = max(0.0, float(sync_interval_seconds))
+        self._last_fsync_at = 0.0
+        self._last_fsync_warning_at = 0.0
+        self._closing = False
+
+    def flush(self) -> None:
+        # StreamHandler.emit() calls flush after every formatted log record.
+        # This first drains Python's text buffer into the OS.
+        super().flush()
+        stream = self.stream
+        if stream is None:
+            return
+
+        now = time_module.monotonic()
+        if (
+            not self._closing
+            and self.sync_interval_seconds > 0
+            and now - self._last_fsync_at < self.sync_interval_seconds
+        ):
+            return
+
+        try:
+            # Ask the operating system to commit the file data to the device.
+            os.fsync(stream.fileno())
+            self._last_fsync_at = now
+        except (OSError, ValueError) as exc:
+            # Do not recursively log from a handler that may itself be failing.
+            # Report at most once per minute directly to stderr.
+            if now - self._last_fsync_warning_at >= 60.0:
+                try:
+                    sys.stderr.write(
+                        "[PILUITUS LOG WARNING] Не удалось синхронизировать лог с диском: "
+                        f"{type(exc).__name__}\n"
+                    )
+                    sys.stderr.flush()
+                except Exception:
+                    pass
+                self._last_fsync_warning_at = now
+
+    def close(self) -> None:
+        # Force one final fsync before FileHandler closes the stream.
+        self._closing = True
+        try:
+            super().close()
+        finally:
+            self._closing = False
+
+
+def _log_fsync_interval_seconds() -> float:
+    raw_value = os.getenv("PILUITUS_LOG_FSYNC_INTERVAL_SECONDS", "1.0").strip()
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError, OverflowError):
+        return 1.0
+    return value if math.isfinite(value) and value >= 0.0 else 1.0
+
+
+class _RunIdFilter(logging.Filter):
+    """Attach the current process run ID to every record written to a file."""
+
+    def __init__(self, run_id: str):
+        super().__init__()
+        self.run_id = run_id
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        setattr(record, "run_id", self.run_id)
+        return True
+
+
+class _DiagnosticLogFilter(logging.Filter):
+    """Keep high-volume market/telemetry diagnostics out of the session narrative."""
+
+    _markers = (
+        "[TRADE FLOW 60s]",
+        "[ORDER_BOOK 60s]",
+        "[OPEN POSITION BBO 60s]",
+        "[ORDER_BOOK PARSER SAMPLE]",
+        "[ORDER_BOOK UNATTRIBUTED SAMPLE]",
+        "[vLLM RAW LATENCY]",
+        "[PRE-LLM FILTER]",
+        "[PRE-LLM WAIT]",
+        "[M1 PATTERN]",
+        "[NUMPY ИМПУЛЬС]",
+        "[WS ПОТОК ФИНАМ]",
+        "Поток Finam активен:",
+        "Finam ORDER_BOOK подписки синхронизированы:",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.ERROR:
+            return False
+        try:
+            message = record.getMessage()
+        except Exception:
+            return False
+        return any(marker in message for marker in self._markers)
+
+
+class _SessionLogFilter(logging.Filter):
+    """Keep ordinary session events and human-readable technical conclusions."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.ERROR:
+            return False
+        return not _DiagnosticLogFilter().filter(record)
+
+
+class _ErrorLogFilter(logging.Filter):
+    """Route errors and critical failures to the dedicated error file."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno >= logging.ERROR
+
+
+def _configure_run_file_logging() -> tuple[str, dict[str, str]]:
+    """Create session, diagnostic and error files for one uniquely named run."""
+    root_logger = logging.getLogger()
+    existing_handlers = [
+        handler for handler in root_logger.handlers
+        if getattr(handler, "_piluitus_run_log", False)
+    ]
+    if len(existing_handlers) >= 3:
+        paths = {
+            str(getattr(handler, "_piluitus_log_kind", "")):
+                str(getattr(handler, "_piluitus_run_path", ""))
+            for handler in existing_handlers
+        }
+        run_id = str(getattr(existing_handlers[0], "_piluitus_run_id", "existing"))
+        if all(paths.get(kind) for kind in ("session", "diagnostic", "errors")):
+            return run_id, paths
+
+    now = datetime.now().astimezone()
+    run_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{os.getpid()}_{uuid4().hex[:8]}"
+    filename_stamp = now.strftime("%d%m%Y_%H.%M")
+    log_dir_value = os.getenv("PILUITUS_LOG_DIR", "trading_logs").strip() or "trading_logs"
+    log_dir = Path(log_dir_value).expanduser()
+    if not log_dir.is_absolute():
+        log_dir = PROJECT_ROOT / log_dir
+
+    names = {
+        "session": f"session_{filename_stamp}",
+        "diagnostic": f"diagnostic_{filename_stamp}",
+        "errors": f"errors_log_{filename_stamp}",
+    }
+    suffix_number = 1
+    while True:
+        suffix = "" if suffix_number == 1 else f"_{suffix_number:02d}"
+        candidate_paths = {
+            kind: log_dir / f"{stem}{suffix}.log"
+            for kind, stem in names.items()
+        }
+        if not any(path.exists() for path in candidate_paths.values()):
+            break
+        suffix_number += 1
+
+    created_handlers: list[logging.Handler] = []
+    filters: dict[str, logging.Filter] = {
+        "session": _SessionLogFilter(),
+        "diagnostic": _DiagnosticLogFilter(),
+        "errors": _ErrorLogFilter(),
+    }
+    paths: dict[str, str] = {}
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        for kind in ("session", "diagnostic", "errors"):
+            path = candidate_paths[kind]
+            handler = _DurableFileHandler(
+                path,
+                mode="x",
+                encoding="utf-8",
+                sync_interval_seconds=(
+                    0.0 if kind == "errors" else _log_fsync_interval_seconds()
+                ),
+            )
+            created_handlers.append(handler)
+            handler.setLevel(logging.ERROR if kind == "errors" else logging.INFO)
+            handler.setFormatter(_PrivacyFormatter(
+                "%(asctime)s,%(msecs)03d [%(levelname)s] [RUN=%(run_id)s] %(name)s: %(message)s",
+                datefmt="%Y-%m-%d %H:%M:%S",
+            ))
+            handler.addFilter(_RunIdFilter(run_id))
+            handler.addFilter(filters[kind])
+            setattr(handler, "_piluitus_run_log", True)
+            setattr(handler, "_piluitus_log_kind", kind)
+            setattr(handler, "_piluitus_run_id", run_id)
+            setattr(handler, "_piluitus_run_path", str(path))
+            root_logger.addHandler(handler)
+            paths[kind] = str(path)
+        return run_id, paths
+    except OSError as exc:
+        for handler in created_handlers:
+            root_logger.removeHandler(handler)
+            handler.close()
+        root_logger.warning(
+            "Не удалось создать файловые журналы запуска (каталог=%s): %s",
+            log_dir.name, type(exc).__name__,
+        )
+        return run_id, {}
+
+
+RUN_ID, RUN_LOG_PATHS = _configure_run_file_logging()
+logger.info(
+    "🧾 [RUN START] id=%s; session=%s; diagnostic=%s; errors=%s",
+    RUN_ID,
+    Path(RUN_LOG_PATHS["session"]).name if RUN_LOG_PATHS.get("session") else "unavailable",
+    Path(RUN_LOG_PATHS["diagnostic"]).name if RUN_LOG_PATHS.get("diagnostic") else "unavailable",
+    Path(RUN_LOG_PATHS["errors"]).name if RUN_LOG_PATHS.get("errors") else "unavailable",
+)
+logger.info(
+    "🛡️ [LOG DURABILITY] session/diagnostic fsync interval=%.2fs; errors=fsync per record",
+    _log_fsync_interval_seconds(),
+)
 
 class TerminalStatusLine:
     """One in-place terminal status line that is redrawn after log messages.
@@ -112,10 +400,34 @@ class TerminalStatusLine:
         except OSError:
             return 120
 
+    @staticmethod
+    def _cell_width(value: str) -> int:
+        """Approximate terminal columns (not Python code points) for Unicode text."""
+        width = 0
+        for char in value:
+            if char == "\u200d" or "\ufe00" <= char <= "\ufe0f":
+                continue
+            if unicodedata.combining(char):
+                continue
+            width += 2 if unicodedata.east_asian_width(char) in {"W", "F"} else 1
+        return width
+
+    @classmethod
+    def _truncate_cells(cls, value: str, max_cells: int) -> str:
+        result: list[str] = []
+        used = 0
+        for char in value:
+            char_width = cls._cell_width(char)
+            if used + char_width > max_cells:
+                break
+            result.append(char)
+            used += char_width
+        return "".join(result)
+
     def _clear_locked(self) -> None:
         if self.enabled and self._visible:
-            # Spaces are more compatible with Windows terminals than ANSI clear-line codes.
-            self.stream.write("\r" + (" " * self._last_width) + "\r")
+            # Erase the whole terminal row: no stale suffix survives a shorter update.
+            self.stream.write("\r\x1b[2K")
             self.stream.flush()
         self._visible = False
         self._last_width = 0
@@ -128,13 +440,13 @@ class TerminalStatusLine:
             return
 
         self._clear_locked()
-        # Leave a few columns free to avoid terminal wrapping (emoji can be double-width).
-        max_chars = max(16, self._terminal_width() - 8)
-        text = self._text[:max_chars]
+        # Reserve columns to avoid wrapping; truncate by terminal cells, not code points.
+        max_cells = max(16, self._terminal_width() - 8)
+        text = self._truncate_cells(self._text, max_cells)
         self.stream.write(text)
         self.stream.flush()
         self._visible = True
-        self._last_width = len(text)
+        self._last_width = self._cell_width(text)
         self._last_draw = now
 
     def _compose_text_locked(self) -> None:
@@ -151,30 +463,30 @@ class TerminalStatusLine:
             self._impulse_text.strip(),
         ]
         segments = [segment for segment in segments if segment]
-        max_chars = max(32, self._terminal_width() - 8)
+        max_cells = max(32, self._terminal_width() - 8)
         if not segments:
             self._text = ""
             return
 
-        # Reserve space for all status sources. If the terminal is narrow, shorten
-        # the longest segments instead of letting later statuses disappear entirely.
+        # Reserve space for all status sources using rendered terminal-cell widths.
         separator = "  |  "
-        available = max_chars - len(separator) * (len(segments) - 1)
-        while sum(len(segment) for segment in segments) > available:
-            longest_index = max(range(len(segments)), key=lambda i: len(segments[i]))
+        available = max_cells - self._cell_width(separator) * (len(segments) - 1)
+        while sum(self._cell_width(segment) for segment in segments) > available:
+            longest_index = max(range(len(segments)), key=lambda i: self._cell_width(segments[i]))
             segment = segments[longest_index]
-            if len(segment) <= 12:
-                # If all remaining segments are short, drop the least critical last one.
+            segment_width = self._cell_width(segment)
+            if segment_width <= 12:
                 segments.pop()
                 if not segments:
                     self._text = ""
                     return
-                available = max_chars - len(separator) * (len(segments) - 1)
+                available = max_cells - self._cell_width(separator) * (len(segments) - 1)
                 continue
-            excess = sum(len(item) for item in segments) - available
-            target_length = max(12, len(segment) - max(1, excess))
-            segments[longest_index] = segment[:target_length - 1] + "…"
-        self._text = separator.join(segments)[:max_chars]
+            excess = sum(self._cell_width(item) for item in segments) - available
+            target_width = max(12, segment_width - max(1, excess))
+            shortened = self._truncate_cells(segment, target_width - 1)
+            segments[longest_index] = shortened + "…"
+        self._text = separator.join(segments)
 
     def update_funnel(self, text: str) -> None:
         """Update the local 88-to-top-N screener status in the persistent row."""
@@ -417,8 +729,8 @@ def _current_paper_open_pnl() -> float:
         if not isinstance(position, dict) or str(position.get("status", "OPEN")).upper() != "OPEN":
             continue
         try:
-            value = float(position.get("pnl", 0.0) or 0.0)
-            if value == value and abs(value) != float("inf"):
+            value = _parse_finite_float(position.get("pnl", 0.0))
+            if value is not None:
                 total += value
         except (TypeError, ValueError):
             continue
@@ -438,11 +750,26 @@ def _current_paper_assets_cost() -> float:
     return calculate_assets_used(positions, lot_sizes=LOT_SIZES)
 
 
+def _current_paper_open_entry_commission() -> float:
+    """Entry commissions already paid for currently open in-memory PAPER positions."""
+    if not getattr(execution_engine, "paper_mode", True):
+        return 0.0
+    total = 0.0
+    for position in getattr(execution_engine, "paper_positions", {}).values():
+        if not isinstance(position, dict) or str(position.get("status", "OPEN")).upper() != "OPEN":
+            continue
+        fee = _parse_finite_float(position.get("entry_commission_rub", 0.0))
+        if fee is not None and fee > 0.0:
+            total += fee
+    return round(total, 4)
+
+
 # In PAPER, in-memory positions are the live source of floating PnL and book cost.
 # Avoid adding the same OPEN journal rows a second time from Redis.
 if execution_engine.paper_mode:
     risk_manager.open_pnl_provider = _current_paper_open_pnl
     risk_manager.open_assets_cost_provider = _current_paper_assets_cost
+    risk_manager.open_entry_commission_provider = _current_paper_open_entry_commission
 
 # Глобальные кэши и лимиты ОЗУ под High-Load тики
 last_ai_verdicts_cache: list[dict[str, Any]] = []
@@ -487,6 +814,130 @@ try:
     _PENDING_BBO_CANDIDATE_TTL_SEC = min(5.0, max(0.25, float(os.getenv("PILUITUS_PENDING_BBO_TTL_SEC", "1.5"))))
 except (TypeError, ValueError):
     _PENDING_BBO_CANDIDATE_TTL_SEC = 1.5
+
+
+# Per-open-position ORDER_BOOK diagnostics are reported in the same 60-second
+# windows as TRADE FLOW. These counters do not influence entries or exits.
+_position_order_book_diag_lock = threading.Lock()
+_position_order_book_diag: dict[str, dict[str, Any]] = {}
+
+
+def _record_position_order_book_event(ticker: str, result: dict[str, Any]) -> None:
+    engine = globals().get("execution_engine")
+    positions = getattr(engine, "paper_positions", {}) if engine is not None else {}
+    trade = positions.get(ticker) if isinstance(positions, dict) else None
+    if not isinstance(trade, dict) or str(trade.get("status", "OPEN")).upper() not in {"OPEN", "ACTIVE"}:
+        return
+
+    reason = str(result.get("reason") or result.get("book_reason") or "").strip().upper()
+    if not reason:
+        reason = "OK" if result.get("valid", True) else "UNKNOWN"
+    now = time_module.monotonic()
+    with _position_order_book_diag_lock:
+        item = _position_order_book_diag.setdefault(ticker, {
+            "window_events": 0,
+            "window_valid": 0,
+            "window_invalid": 0,
+            "window_out_of_order": 0,
+            "window_unusable": 0,
+            "window_invalid_reasons": {},
+            "last_event_monotonic": 0.0,
+            "last_result": "",
+        })
+        item["window_events"] += 1
+        if result.get("updated") and result.get("valid", True):
+            item["window_valid"] += 1
+        elif result.get("updated"):
+            item["window_invalid"] += 1
+            reasons = item["window_invalid_reasons"]
+            reasons[reason] = reasons.get(reason, 0) + 1
+        elif result.get("out_of_order"):
+            item["window_out_of_order"] += 1
+        else:
+            item["window_unusable"] += 1
+        item["last_event_monotonic"] = now
+        item["last_result"] = reason
+
+
+def _log_open_position_bbo_diagnostics() -> None:
+    engine = globals().get("execution_engine")
+    current_screener = globals().get("screener")
+    positions = getattr(engine, "paper_positions", {}) if engine is not None else {}
+    quotes = getattr(current_screener, "quotes", {}) if current_screener is not None else {}
+    if not isinstance(positions, dict) or not positions:
+        return
+
+    now = time_module.monotonic()
+    for raw_ticker, trade in sorted(positions.items()):
+        if not isinstance(trade, dict) or str(trade.get("status", "OPEN")).upper() not in {"OPEN", "ACTIVE"}:
+            continue
+        ticker = str(trade.get("ticker") or raw_ticker).strip().upper().split("@")[0]
+        quote = quotes.get(ticker, {}) if isinstance(quotes, dict) else {}
+        if not isinstance(quote, dict):
+            quote = {}
+
+        def age_text(field: str) -> str:
+            observed = _parse_finite_float(quote.get(field))
+            if observed is None or observed <= 0.0:
+                return "нет"
+            age = now - observed
+            return f"{age:.2f}s" if math.isfinite(age) and age >= 0.0 else "будущее"
+
+        side = str(trade.get("side", "")).strip().upper()
+        executable_side = "ASK" if side == "SELL" else "BID"
+        executable_age = age_text(
+            "last_ask_confirmed_seen" if executable_side == "ASK" else "last_bid_confirmed_seen"
+        )
+        with _position_order_book_diag_lock:
+            item = _position_order_book_diag.setdefault(ticker, {
+                "window_events": 0,
+                "window_valid": 0,
+                "window_invalid": 0,
+                "window_out_of_order": 0,
+                "window_unusable": 0,
+                "window_invalid_reasons": {},
+                "last_event_monotonic": 0.0,
+                "last_result": "",
+            })
+            window_events = item["window_events"]
+            window_valid = item["window_valid"]
+            window_invalid = item["window_invalid"]
+            window_out_of_order = item["window_out_of_order"]
+            window_unusable = item["window_unusable"]
+            invalid_reasons = dict(item["window_invalid_reasons"])
+            last_event_monotonic = float(item["last_event_monotonic"] or 0.0)
+            last_result = str(item.get("last_result") or "-")
+            item["window_events"] = 0
+            item["window_valid"] = 0
+            item["window_invalid"] = 0
+            item["window_out_of_order"] = 0
+            item["window_unusable"] = 0
+            item["window_invalid_reasons"] = {}
+
+        invalid_summary = ",".join(
+            f"{reason}:{count}" for reason, count in sorted(invalid_reasons.items())
+        ) or "-"
+        last_event_age = (
+            f"{now - last_event_monotonic:.2f}s"
+            if last_event_monotonic > 0.0 and now >= last_event_monotonic else "нет"
+        )
+        logger.info(
+            "📘 [OPEN POSITION BBO 60s] %s side=%s exec=%s exec_age=%s "
+            "Bid=%.6f Ask=%.6f bid_age=%s ask_age=%s book_event_age=%s "
+            "book_receive_age=%s book_valid=%s book_reason=%s last_position_event_age=%s "
+            "last_position_result=%s events=%d valid=%d invalid=%d out_of_order=%d unusable=%d invalid_reasons=%s",
+            ticker, side, executable_side, executable_age,
+            _parse_finite_float(quote.get("bid")) or 0.0,
+            _parse_finite_float(quote.get("ask")) or 0.0,
+            age_text("last_bid_confirmed_seen"),
+            age_text("last_ask_confirmed_seen"),
+            age_text("last_order_book_event_seen"),
+            age_text("last_order_book_received"),
+            bool(quote.get("order_book_valid", False)),
+            str(quote.get("order_book_last_reason", "NO_ORDER_BOOK")),
+            last_event_age, last_result, window_events, window_valid, window_invalid,
+            window_out_of_order, window_unusable, invalid_summary,
+        )
 
 
 def _trade_flow_inc(key: str, amount: int = 1) -> None:
@@ -535,6 +986,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "BBO_exec_block=%(execution_bbo_blocked)d, ордеров_принято/открыто=%(orders_scheduled)d",
         values,
     )
+    _log_open_position_bbo_diagnostics()
 
 
 def _trade_flow_guard_block(reason: str) -> None:
@@ -644,13 +1096,12 @@ def _store_pending_bbo_candidate(
     received_monotonic: object | None = None,
 ) -> None:
     now = time_module.monotonic()
-    try:
-        received_at = float(received_monotonic) if received_monotonic is not None else now
-        if not math.isfinite(received_at) or received_at <= 0.0 or received_at > now + 0.05:
-            received_at = now
-        received_at = min(now, received_at)
-    except (TypeError, ValueError, OverflowError):
+    received_at = _parse_finite_float(received_monotonic)
+    if received_at is None:
         received_at = now
+    if not math.isfinite(received_at) or received_at <= 0.0 or received_at > now + 0.05:
+        received_at = now
+    received_at = min(now, received_at)
     entry = {"created_at": received_at, "payload": payload}
     with _pending_bbo_lock:
         _pending_bbo_candidates[str(ticker).upper()] = entry
@@ -761,11 +1212,14 @@ _dashboard_balance_snapshot = {
     "initial_deposit": round(DEPOSIT, 2),
     "free_margin": round(DEPOSIT, 2),
     "margin_used": 0.0,
+    "open_entry_commission": 0.0,
     "exposure_cap": round(DEPOSIT * 0.15, 2),
     "exposure_cap_pct": 0.15,
     "single_position_cap": round(DEPOSIT * 0.05, 2),
     "unreconciled_positions_count": 0,
     "pnl": 0.0,
+    "realized_pnl": 0.0,
+    "open_pnl": 0.0,
     "active_positions_count": 0,
 }
 _balance_guard_last_signature: tuple[int, bool] | None = None
@@ -804,11 +1258,11 @@ async def _get_dashboard_open_positions() -> list[dict]:
 async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = None) -> dict:
     """Build a non-mark-to-market dashboard snapshot.
 
-    The user's requested accounting is explicit: free balance = configured initial
-    deposit minus acquisition cost of currently open assets. The assets field uses
-    entry_price * quantity and therefore stays unchanged when market quotes move.
-    PnL remains a separate performance metric; open PnL is not added to these two
-    fields. ``equity`` is kept as an API compatibility alias for initial deposit.
+    Free cash = configured initial deposit + realized net PnL - acquisition cost
+    of currently open assets. The assets field uses entry_price * quantity and
+    therefore stays unchanged when market quotes move. Total PnL also includes
+    floating PnL from open positions. The original deposit remains unchanged for
+    risk limits; equity reports deposit plus total (realized + floating) PnL.
     """
     global _dashboard_balance_snapshot
     from portfolio_metrics import calculate_assets_used, calculate_free_balance
@@ -830,6 +1284,20 @@ async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = Non
     except (TypeError, ValueError, OverflowError):
         pnl = 0.0
 
+    try:
+        realized_pnl = float(getattr(risk_manager, "realized_pnl", 0.0) or 0.0)
+        if not math.isfinite(realized_pnl):
+            realized_pnl = 0.0
+    except (TypeError, ValueError, OverflowError):
+        realized_pnl = 0.0
+
+    try:
+        open_pnl = float(getattr(risk_manager, "open_pnl", pnl - realized_pnl) or 0.0)
+        if not math.isfinite(open_pnl):
+            open_pnl = pnl - realized_pnl
+    except (TypeError, ValueError, OverflowError):
+        open_pnl = pnl - realized_pnl
+
     # Old PAPER positions are not restored as live simulated positions after a
     # restart. Until an operator reviews them, their saved acquisition cost stays
     # reserved and all new entries are blocked by ExecutionLayer.
@@ -850,21 +1318,29 @@ async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = Non
         latest_prices=None,
         lot_sizes=LOT_SIZES,
     )
-    free_balance = calculate_free_balance(initial_deposit, assets_used)
+    open_entry_commission = _current_paper_open_entry_commission()
+    free_balance = round(
+        calculate_free_balance(initial_deposit + realized_pnl, assets_used)
+        - open_entry_commission,
+        2,
+    )
     max_gross_pct = min(max(0.0, float(getattr(execution_engine, "max_gross_exposure_pct", 0.15))), 0.15)
     max_single_pct = min(max(0.0, float(getattr(execution_engine, "max_single_position_pct", 0.05))), 0.05)
     exposure_cap = round(initial_deposit * max_gross_pct, 2)
     single_position_cap = round(initial_deposit * max_single_pct, 2)
     _dashboard_balance_snapshot = {
-        "equity": round(initial_deposit, 2),
+        "equity": round(initial_deposit + pnl, 2),
         "initial_deposit": round(initial_deposit, 2),
         "free_margin": free_balance,
         "margin_used": round(assets_used, 2),
+        "open_entry_commission": round(open_entry_commission, 4),
         "exposure_cap": exposure_cap,
         "exposure_cap_pct": max_gross_pct,
         "single_position_cap": single_position_cap,
         "unreconciled_positions_count": len(unresolved_positions),
         "pnl": round(pnl, 2),
+        "realized_pnl": round(realized_pnl, 2),
+        "open_pnl": round(open_pnl, 2),
         "active_positions_count": len(positions),
     }
 
@@ -891,17 +1367,7 @@ def _make_priority_item(priority: int, event_type: str, payload: dict[str, Any])
     loop = asyncio.get_running_loop()
     return (int(priority), next(_priority_sequence), loop.time(), event_type, payload)
 
-TICKERS_TO_TRADE = [
-    "SBER", "SBERP", "GAZP", "LKOH", "NVTK", "YDEX", "ROSN", "VTBR", "AFLT", "MAGN",
-    "CHMF", "NLMK", "MOEX", "ALRS", "MTSS", "MGNT", "TATN", "SNGS", "SNGSP", "PLZL",
-    "HYDR", "FEES", "CBOM", "IRAO", "PHOR", "PIKK", "TRNFP", "TATNP", "AFKS", "RUAL",
-    "GCHE", "LSRG", "SMLT", "MSNG", "BANEP", "BSPB", "RENI", "UPRO", "SOFL", "POSI",
-    "RNFT", "UWGN", "VKCO", "HEAD", "OZON", "APRI", "MVID", "LENT", "OKEY", "AGRO",
-    "MDMG", "WUSH", "CARM", "LEAS", "DELI", "SVCB", "SFIN", "MTLR", "MTLRP", "RASP",
-    "FESH", "NMTP", "FLOT", "GECO", "ABIO", "BLNG", "DVEC", "ELFV", "ENPG", "GTRK",
-    "IRKT", "KAZT", "KAZTP", "KBSB", "KROT", "MAGE", "MAGEP", "MGTS", "MGTSP", "NKHP",
-    "NKNC", "NKNCP", "TGKA", "TGKB", "TGKBP", "TTLK", "VJGZ", "VJGZP"
-]
+
 
 # Все 88 инструментов остаются подписанными для сбора сравнимой статистики.
 # В LLM разрешается передавать только события от выбранного локальным рейтингом top-N.
@@ -1006,6 +1472,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
             except (TypeError, ValueError, KeyError):
                 _trade_flow_inc("orderbook_unusable")
                 return
+            _record_position_order_book_event(book_ticker, book_result)
             if book_result.get("updated") and book_result.get("valid", True):
                 _trade_flow_inc("orderbook_updates")
                 _trade_flow_inc("orderbook_side_touches", int(book_result.get("bbo_side_touch_count", 0) or 0))
@@ -1018,10 +1485,11 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                     last_trade_price = execution_engine._latest_price(
                         book_ticker, execution_engine.paper_positions.get(book_ticker)
                     )
-                    if last_trade_price > 0.0:
-                        execution_engine.schedule_paper_position_monitor(
-                            book_ticker, last_trade_price, db_manager
-                        )
+                    execution_engine.schedule_paper_position_monitor(
+                        book_ticker,
+                        last_trade_price if last_trade_price > 0.0 else None,
+                        db_manager,
+                    )
             elif book_result.get("updated"):
                 _trade_flow_inc("orderbook_invalid")
                 logger.debug(
@@ -1797,54 +2265,66 @@ class MarketWorker:
 # --------------------------------------------------------------
 async def background_broker_init():
     """
-    Промышленный контур проверки торговых сессий Мосбиржи.
-    Связывает нативный gRPC-стрим котировок Финам с обработчиком ядра.
+    Поддерживает Finam market-data stream независимо от дня недели.
+    Торговые интервалы каждого инструмента проверяются отдельно через Finam schedule API;
+    это также позволяет получать данные в предусмотренные MOEX сессии выходного дня.
     """
-    logger.info("🔌 Проверка брокерского соединения Финам...")
-    current_time = datetime.now()
-    day_of_week = current_time.weekday()
-    
-    # 0 = Понедельник, 4 = Пятница. Строго рабочие дни Мосбиржи.
-    if 0 <= day_of_week <= 4:
-        logger.info(f"📅 Инициализация LIVE-контура. Обнаружен рабочий день сессии: {current_time.strftime('%A')}.")
+    logger.info("🔌 Проверка брокерского соединения Finam; календарь сессий будет проверяться по каждому инструменту...")
+    try:
+        await broker.connect()
+
+        # Verify both the authenticated endpoint and the schedule parser before
+        # the first candidate reaches the executor. SBER is used only as a probe;
+        # every actual order is checked against its own instrument schedule.
         try:
-            # Нативно инициализируем JWT-токены и соединение SDK Финам
-            await broker.connect()
-            
-            # Адаптируем под PriorityQueue. Создаем мостовую очередь,
-            # выгребаем из нее данные и перенаправляем в полиморфный обработчик process_market_event.
-            bridge_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=10000)
-            
-            # Запускаем бесконечный бинарный WebSocket котировок из finam_client.py
-            asyncio.create_task(
-                broker.start_market_data_stream(
-                    tickers=TICKERS_TO_TRADE,
-                    queue=bridge_queue,
-                    screener=screener
-                )
+            schedule_probe = await execution_engine._market_session_status("SBER")
+            logger.info(
+                "📅 [SESSION CALENDAR PROBE] SBER@MISX: known=%s, open=%s, entry_allowed=%s, "
+                "reason=%s, next_session=%s; actual entries are checked per instrument.",
+                schedule_probe.get("known"),
+                schedule_probe.get("is_open"),
+                schedule_probe.get("entry_allowed"),
+                schedule_probe.get("reason"),
+                schedule_probe.get("next_session_start", "-"),
             )
-            
-            # Внутренний воркер-перенаправлятор из bridge_queue в асинхронный конвейер
-            async def _bridge_worker():
-                while True:
+            if not schedule_probe.get("known"):
+                logger.warning(
+                    "⛔ [SESSION CALENDAR] расписание Finam не подтверждено; "
+                    "новые входы останутся заблокированы до успешной проверки."
+                )
+        except Exception as schedule_probe_exc:
+            logger.error(
+                "❌ [SESSION CALENDAR PROBE] ошибка проверки расписания Finam: %s",
+                type(schedule_probe_exc).__name__,
+                exc_info=True,
+            )
+
+        bridge_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=10000)
+        asyncio.create_task(
+            broker.start_market_data_stream(
+                tickers=TICKERS_TO_TRADE,
+                queue=bridge_queue,
+                screener=screener,
+            )
+        )
+
+        async def _bridge_worker():
+            while True:
+                try:
+                    raw_event = await bridge_queue.get()
                     try:
-                        raw_event = await bridge_queue.get()
-                        try:
-                            await process_market_event(raw_event)
-                        finally:
-                            bridge_queue.task_done()
-                    except Exception as bridge_err:
-                        logger.error(f"❌ Ошибка моста WebSocket-котировок: {bridge_err}")
-                        await asyncio.sleep(0.1)
+                        await process_market_event(raw_event)
+                    finally:
+                        bridge_queue.task_done()
+                except Exception as bridge_err:
+                    logger.error("❌ Ошибка моста WebSocket-котировок: %s", bridge_err, exc_info=True)
+                    await asyncio.sleep(0.1)
 
-            asyncio.create_task(_bridge_worker())
-            logger.info("⏳ Задача подключения к Finam WebSocket запущена; подтверждение появится после HANDSHAKE_SUCCESS.")
+        asyncio.create_task(_bridge_worker())
+        logger.info("⏳ Задача Finam WebSocket запущена; ожидаем HANDSHAKE_SUCCESS.")
+    except Exception as exc:
+        logger.error("❌ Ошибка инициализации API Finam: %s", exc, exc_info=True)
 
-        except Exception as e:
-            logger.error(f"❌ Ошибка инициализации API Finam: {e}")
-    else:
-        logger.warning("📅 Переход в стабильный Mock/Sandbox Mode для тестов на выходных.")
-        
     while True:
         await asyncio.sleep(3600)
 
@@ -1882,7 +2362,14 @@ async def _start_tables_sync_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global bg_market_task, last_ai_verdicts_cache
-    logger.info("🚀 Запуск PILUITUS v35.2 | депозит=%.2f ₽ | общий лимит активов=15%% (%.2f ₽), одна позиция=5%% (%.2f ₽).", DEPOSIT, DEPOSIT * 0.15, DEPOSIT * 0.05)
+    gross_exposure_pct = execution_engine.max_gross_exposure_pct * 100.0
+    single_position_pct = execution_engine.max_single_position_pct * 100.0
+    logger.info(
+        "🚀 Запуск PILUITUS v35.2 | депозит=%.2f ₽ | общий лимит активов=%.1f%% (%.2f ₽), "
+        "одна позиция=%.1f%% (%.2f ₽).",
+        DEPOSIT, gross_exposure_pct, DEPOSIT * gross_exposure_pct / 100.0,
+        single_position_pct, DEPOSIT * single_position_pct / 100.0,
+    )
 
     try:
         await db_manager.connect()
@@ -1987,7 +2474,7 @@ async def http_update_risk_limit(payload: dict = Body(...)):
 # --------------------------------------------------------------
 #  8️⃣  FastAPI ROUTING & WEBSOCKET ENDPOINT
 # --------------------------------------------------------------
-BASE_DIR = Path(__file__).parent                
+BASE_DIR = PROJECT_ROOT
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 PAPER_CLEAR_CONFIRMATION = "ОЧИСТИТЬ PAPER-СЕССИЮ"
 
@@ -2250,6 +2737,136 @@ async def clear_paper_session(payload: dict[str, object] = Body(...)):
             "balance": balance,
         }
         logger.warning("🧹 Полная очистка PAPER-сессии завершена; торговля приостановлена до ручного возобновления.")
+        return result
+
+
+@app.post("/api/v1/paper/session/cleanup-stale-and-resume")
+async def cleanup_stale_and_resume_paper_session():
+    """Remove only quarantined STALE_REVIEW PAPER rows, then resume PAPER atomically."""
+    global _paper_session_generation, _balance_guard_last_signature
+    _require_paper_mode()
+
+    async with _paper_session_lock:
+        if execution_engine._opening_tickers or execution_engine._lock_closing:
+            raise HTTPException(
+                status_code=409,
+                detail="Есть незавершённая операция исполнения. Очистка и запуск отменены.",
+            )
+
+        snapshot_before = await db_manager.get_paper_session_snapshot()
+        if (
+            snapshot_before.get("live_trade_count", 0)
+            or snapshot_before.get("live_history_count", 0)
+            or snapshot_before.get("live_active_order_count", 0)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="В хранилище обнаружены LIVE-записи. Автоматический запуск PAPER заблокирован; данные не изменены.",
+            )
+
+        execution_engine._maintenance_active = True
+        execution_engine._maintenance_reason = (
+            "PAPER приостановлен на время удаления только STALE_REVIEW-записей."
+        )
+        _paper_session_generation += 1
+        await db_manager.set_json("piluitus:paper:maintenance", {
+            "active": True,
+            "reason": execution_engine._maintenance_reason,
+            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        })
+
+        # Drop queued market events so old candidates cannot run immediately after resume.
+        # Priority-zero emergency commands are retained.
+        emergency_items = []
+        while True:
+            try:
+                queued_item = anomaly_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            try:
+                if isinstance(queued_item, tuple) and queued_item and queued_item[0] == 0:
+                    emergency_items.append(queued_item)
+            finally:
+                anomaly_queue.task_done()
+        for item in emergency_items:
+            anomaly_queue.put_nowait(item)
+
+        with _ai_ticker_pending_lock:
+            _ai_ticker_pending.clear()
+            _ai_ticker_last_enqueued_at.clear()
+
+        try:
+            storage_result = await db_manager.clear_unreconciled_paper_positions()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        removed_ids = {
+            str(order_id) for order_id in storage_result.get("position_ids", [])
+        }
+        removed_memory_stale = sum(
+            1 for order_id in removed_ids
+            if order_id in execution_engine._unreconciled_paper_positions
+        )
+        for order_id in removed_ids:
+            execution_engine._unreconciled_paper_positions.pop(order_id, None)
+
+        snapshot_after = await db_manager.get_paper_session_snapshot()
+        if snapshot_after.get("paper_stale_count", 0) > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Осталось STALE_REVIEW-позиций: {snapshot_after['paper_stale_count']}. "
+                    "PAPER оставлен на паузе; проверьте журнал."
+                ),
+            )
+        if (
+            snapshot_after.get("live_trade_count", 0)
+            or snapshot_after.get("live_history_count", 0)
+            or snapshot_after.get("live_active_order_count", 0)
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="После очистки обнаружены LIVE-записи. PAPER оставлен на паузе.",
+            )
+
+        # No unresolved PAPER records remain in persistent storage. Clear any
+        # matching in-memory quarantine remnants but preserve current open positions,
+        # closed history, verdicts and risk state.
+        removed_memory_stale += len(execution_engine._unreconciled_paper_positions)
+        execution_engine._unreconciled_paper_positions.clear()
+        # Persist the resume before lifting the in-memory maintenance lock.
+        # If storage fails, this process must remain paused.
+        await db_manager.set_json("piluitus:paper:maintenance", {
+            "active": False,
+            "reason": "",
+            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        })
+        execution_engine._maintenance_active = False
+        execution_engine._maintenance_reason = ""
+
+        _balance_guard_last_signature = None
+        await _broadcast_paper_tables()
+        result = {
+            "status": "ok",
+            "maintenance_active": False,
+            "message": (
+                "STALE_REVIEW-записи архивированы без фиктивного закрытия. PAPER-конвейер автоматически "
+                "возобновлён; полные карточки архивных позиций, закрытая история, вердикты, риск-состояние "
+                "и текущие позиции в памяти сохранены."
+            ),
+            "storage": storage_result,
+            "memory": {"removed_stale_positions": removed_memory_stale},
+            "preserved": {
+                "paper_history_rows": snapshot_after.get("paper_history_count", 0),
+                "verdict_history_rows": snapshot_after.get("verdict_history_count", 0),
+                "verdict_execution_keys": snapshot_after.get("verdict_execution_count", 0),
+                "active_memory_positions": len(execution_engine.paper_positions),
+            },
+        }
+        logger.warning(
+            "🗃️ [PAPER STALE ARCHIVE + RESUME] archived=%d; memory_stale=%d; PAPER resumed.",
+            storage_result.get("archived_stale_positions", 0), removed_memory_stale,
+        )
         return result
 
 

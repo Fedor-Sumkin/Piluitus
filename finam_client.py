@@ -1,18 +1,37 @@
 import asyncio
 import logging
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from urllib.parse import quote as url_quote
 from collections.abc import Callable, Iterable
 from typing import Any
 import json
 import inspect
 import os
+import re
 import time
 import websockets
 import httpx
 
 logger = logging.getLogger("Piluitus.FinamGateway")
 JOURNAL_FILE = "trading_journal.json"
+
+
+def _crossed_bbo_recovery_due(
+    now_monotonic: float,
+    crossed_since: float,
+    last_recovery_at: float,
+    recovery_after_sec: float,
+    recovery_cooldown_sec: float,
+) -> bool:
+    """Check whether a crossed book warrants a rate-limited snapshot resync."""
+    return (
+        now_monotonic >= crossed_since
+        and now_monotonic - crossed_since >= recovery_after_sec
+        and now_monotonic >= last_recovery_at
+        and now_monotonic - last_recovery_at >= recovery_cooldown_sec
+    )
+_MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
 
 
 def _event_timestamp_to_monotonic(value: object, receive_monotonic: float) -> float:
@@ -80,6 +99,8 @@ class FinamBrokerClient:
         self.ws_endpoint = f"wss://{self.host}/ws"
         self.jwt_token = ""
         self.headers: dict[str, str] = {}
+        # Serializes JWT refreshes triggered by concurrent REST requests.
+        self._auth_refresh_lock = asyncio.Lock()
         self.is_demo = is_demo
         self.client: Any = None
         self.is_ws_running = False
@@ -92,6 +113,11 @@ class FinamBrokerClient:
         # Optional synchronous callback supplied by main.py. It returns tickers
         # with live positions that must retain BBO even after leaving the screener.
         self.open_positions_provider: Callable[[], Iterable[str]] | None = None
+        # Finam publishes per-instrument session intervals; cache them by Moscow date.
+        self._asset_schedule_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+        self._asset_schedule_locks: dict[str, asyncio.Lock] = {}
+        # Per-symbol throttle for detailed crossed-BBO diagnostics.
+        self._crossed_bbo_log_last_at: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # 1️⃣  CONNECT 
@@ -122,18 +148,194 @@ class FinamBrokerClient:
         }
         logger.info("Авторизация Finam Trade API подтверждена.")
 
+    async def _refresh_auth_if_unchanged(self, rejected_token: str) -> bool:
+        """Refresh the REST JWT once when a request proves the current token is rejected.
+
+        Concurrent 401 responses share one refresh: requests that observed the old
+        token reuse the newly issued JWT instead of repeatedly authenticating.
+        """
+        async with self._auth_refresh_lock:
+            if self.jwt_token and self.jwt_token != rejected_token:
+                return True
+            try:
+                await self.connect()
+            except Exception as exc:
+                logger.warning(
+                    "Не удалось обновить JWT Finam после HTTP 401 (%s).",
+                    type(exc).__name__,
+                )
+                return False
+            return bool(self.jwt_token)
+
+    async def _request_asset_schedule(
+        self, url: str, jwt_token: str
+    ) -> dict[str, Any]:
+        """Fetch one schedule using the supplied JWT."""
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(
+                url,
+                headers={
+                    "Authorization": f"Bearer {jwt_token}",
+                    "Accept": "application/json",
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Finam schedule response is not a JSON object")
+        return payload
+
+    async def get_asset_schedule(self, ticker: str) -> dict[str, Any] | None:
+        """Return the authenticated Finam schedule for one MOEX instrument.
+
+        The API returns explicit session intervals (including exceptional sessions).
+        Cache only for the current Moscow calendar date; a failed lookup is cached
+        briefly to avoid retrying the endpoint for every candidate tick.
+        """
+        if not self.jwt_token:
+            return None
+
+        normalized_ticker = str(ticker or "").strip().upper().split("@", 1)[0]
+        if not normalized_ticker:
+            return None
+        symbol = f"{normalized_ticker}@MISX"
+        moscow_day = datetime.now(_MOSCOW_TZ).date().isoformat()
+        cache_key = f"{symbol}|{moscow_day}"
+        try:
+            cache_ttl = float(os.getenv("FINAM_ASSET_SCHEDULE_CACHE_SEC", "300"))
+        except (TypeError, ValueError, OverflowError):
+            cache_ttl = 300.0
+        if not math.isfinite(cache_ttl):
+            cache_ttl = 300.0
+        cache_ttl = min(1800.0, max(30.0, cache_ttl))
+
+        now = time.monotonic()
+        cached = self._asset_schedule_cache.get(cache_key)
+        # Negative caching is longer than a few seconds so a provider outage
+        # cannot fan out retries across the full 88-symbol universe.
+        failure_cache_ttl = 60.0
+        if cached is not None and now - cached[0] < (cache_ttl if cached[1] is not None else failure_cache_ttl):
+            return cached[1]
+
+        lock = self._asset_schedule_locks.setdefault(cache_key, asyncio.Lock())
+        async with lock:
+            now = time.monotonic()
+            cached = self._asset_schedule_cache.get(cache_key)
+            if cached is not None and now - cached[0] < (cache_ttl if cached[1] is not None else failure_cache_ttl):
+                return cached[1]
+            url = f"{self.base_url}/v1/assets/{url_quote(symbol, safe='@')}/schedule"
+            request_jwt = self.jwt_token
+            try:
+                try:
+                    payload = await self._request_asset_schedule(url, request_jwt)
+                except httpx.HTTPStatusError as auth_exc:
+                    if auth_exc.response.status_code != 401:
+                        raise
+                    # Finam access JWTs expire while a long-lived WebSocket may
+                    # continue streaming. Renew the JWT and retry this REST call once.
+                    logger.warning(
+                        "Finam отклонил REST JWT для расписания %s (HTTP 401); "
+                        "обновляем сессию и повторяем запрос один раз.",
+                        normalized_ticker,
+                    )
+                    if not await self._refresh_auth_if_unchanged(request_jwt):
+                        raise
+                    payload = await self._request_asset_schedule(url, self.jwt_token)
+
+                if not isinstance(payload, dict) or not isinstance(payload.get("sessions"), list):
+                    self._asset_schedule_cache[cache_key] = (time.monotonic(), None)
+                    logger.warning(
+                        "Finam вернул неизвестный формат расписания для %s; новые входы будут заблокированы.",
+                        normalized_ticker,
+                    )
+                    return None
+                self._asset_schedule_cache[cache_key] = (time.monotonic(), payload)
+                if len(self._asset_schedule_cache) > 256:
+                    self._asset_schedule_cache = {
+                        key: value for key, value in self._asset_schedule_cache.items()
+                        if key.endswith(f"|{moscow_day}")
+                    }
+                    # Drop only previous-day locks. All current-day locks remain
+                    # stable so concurrent requests cannot bypass per-symbol locking.
+                    self._asset_schedule_locks = {
+                        key: lock for key, lock in self._asset_schedule_locks.items()
+                        if key.endswith(f"|{moscow_day}")
+                    }
+                logger.info(
+                    "📅 Finam schedule загружено: %s, интервалов=%d, кэш=%.0fs.",
+                    normalized_ticker, len(payload["sessions"]), cache_ttl,
+                )
+                return payload
+            except httpx.HTTPStatusError as exc:
+                # Log the provider status and a redacted response hint so 401/403,
+                # 404, 429 and 5xx failures can be distinguished without exposing JWTs.
+                response = exc.response
+                try:
+                    response_payload = response.json()
+                    if isinstance(response_payload, (dict, list)):
+                        response_hint = json.dumps(
+                            self._redact_for_log(response_payload),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                    else:
+                        response_hint = str(response_payload)
+                except (ValueError, TypeError, json.JSONDecodeError):
+                    response_hint = response.text or ""
+                response_hint = re.sub(
+                    r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1<redacted>", response_hint
+                )
+                response_hint = re.sub(
+                    r"(?i)(\"?(?:access[_-]?token|refresh[_-]?token|token|authorization|password|secret|api[_-]?key)\"?\s*[:=]\s*\"?)[^\"\s&,}]+",
+                    r"\1<redacted>", response_hint,
+                )
+                response_hint = re.sub(r"\s+", " ", response_hint).strip()[:400]
+                request_id = (
+                    response.headers.get("x-request-id")
+                    or response.headers.get("x-correlation-id")
+                    or response.headers.get("request-id")
+                    or "unavailable"
+                )
+                self._asset_schedule_cache[cache_key] = (time.monotonic(), None)
+                logger.warning(
+                    "Не удалось получить расписание Finam для %s: HTTP %s %s; "
+                    "request_id=%s; content_type=%s; response=%s; новые входы заблокированы.",
+                    normalized_ticker,
+                    response.status_code,
+                    response.reason_phrase,
+                    request_id,
+                    response.headers.get("content-type", "unknown"),
+                    response_hint or "<empty>",
+                )
+                return None
+            except httpx.RequestError as exc:
+                self._asset_schedule_cache[cache_key] = (time.monotonic(), None)
+                logger.warning(
+                    "Сетевая ошибка при получении расписания Finam для %s (%s); новые входы заблокированы.",
+                    normalized_ticker, type(exc).__name__,
+                )
+                return None
+            except Exception as exc:
+                self._asset_schedule_cache[cache_key] = (time.monotonic(), None)
+                logger.warning(
+                    "Неожиданная ошибка при получении расписания Finam для %s (%s); новые входы заблокированы.",
+                    normalized_ticker, type(exc).__name__,
+                )
+                return None
+
     # ------------------------------------------------------------------
     # 2️⃣  START_MARKET_DATA_STREAM (Адаптирован под асинхронный NumPy-скринер)
     # ------------------------------------------------------------------
     @staticmethod
     def _decimal(value: Any, default: float = 0.0) -> float:
-        """Convert Finam decimal fields from either strings or {value: ...}."""
+        """Convert Finam decimal fields and reject NaN/Infinity."""
         if isinstance(value, dict):
             value = value.get("value", default)
         try:
-            return float(value)
-        except (TypeError, ValueError):
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
             return default
+        return number if math.isfinite(number) else default
 
     @staticmethod
     def _redact_for_log(value: Any) -> Any:
@@ -148,6 +350,45 @@ class FinamBrokerClient:
         if isinstance(value, list):
             return [FinamBrokerClient._redact_for_log(item) for item in value[:20]]
         return value
+
+    @staticmethod
+    def _extract_order_book_symbol_hints(value: Any) -> set[str]:
+        """Find instrument symbols in a decoded ORDER_BOOK envelope for diagnostics."""
+        found: set[str] = set()
+        symbol_keys = {
+            "symbol", "symbols", "ticker", "securitycode", "symbolcode",
+        }
+
+        def add_symbol(candidate: Any) -> None:
+            if isinstance(candidate, str):
+                ticker = candidate.strip().upper().split("@", 1)[0]
+                if ticker and len(ticker) <= 32 and not any(ch.isspace() for ch in ticker):
+                    found.add(ticker)
+            elif isinstance(candidate, dict):
+                for nested_key, nested_value in candidate.items():
+                    normalized = str(nested_key).replace("_", "").lower()
+                    if normalized in symbol_keys or normalized == "code":
+                        add_symbol(nested_value)
+            elif isinstance(candidate, list):
+                for item in candidate[:100]:
+                    add_symbol(item)
+
+        def visit(node: Any, depth: int = 0) -> None:
+            if depth > 7:
+                return
+            if isinstance(node, dict):
+                for key, child in node.items():
+                    normalized = str(key).replace("_", "").lower()
+                    if normalized in symbol_keys or normalized == "security":
+                        add_symbol(child)
+                    elif isinstance(child, (dict, list)):
+                        visit(child, depth + 1)
+            elif isinstance(node, list):
+                for item in node[:100]:
+                    visit(item, depth + 1)
+
+        visit(value)
+        return found
 
     @staticmethod
     def _decode_payload(payload: Any) -> Any:
@@ -242,18 +483,17 @@ class FinamBrokerClient:
             if price <= 0:
                 continue
 
-            # QUOTES has both lastSize (size of the last trade) and volume
-            # (cumulative session volume). Prefer lastSize for the screener's
-            # per-event `volume`; retain cumulative volume separately.
+            # The screener's per-event `volume` must be the size of this
+            # trade, never cumulative session volume. Falling back to `volume`
+            # fabricates a trade-size spike when lastSize is absent and can
+            # distort both anomaly detection and VWAP weighting.
             last_size_raw = item.get("lastSize")
             if last_size_raw is None:
                 last_size_raw = item.get("last_size")
             if last_size_raw is None:
                 last_size_raw = item.get("size")
             session_volume_raw = item.get("volume")
-            last_size = cls._decimal(
-                last_size_raw if last_size_raw is not None else session_volume_raw
-            )
+            last_size = cls._decimal(last_size_raw)
             session_volume = cls._decimal(session_volume_raw)
 
             ticker = symbol.split("@")[0]
@@ -576,6 +816,16 @@ class FinamBrokerClient:
                     "order_book_timestamp": message_timestamp,
                     "received_monotonic": received_monotonic,
                     "timestamp_source": "ENVELOPE" if message_timestamp not in (None, "") else "RECEIVE_FALLBACK",
+                    "previous_bid": previous_bid[0] if previous_bid else None,
+                    "previous_ask": previous_ask[0] if previous_ask else None,
+                    "bid_changed_in_book": bid_changed_in_book,
+                    "ask_changed_in_book": ask_changed_in_book,
+                    "bid_side_touched": bool(bid_rows_touched),
+                    "ask_side_touched": bool(ask_rows_touched),
+                    "bid_best_level_touched": best_bid_touched,
+                    "ask_best_level_touched": best_ask_touched,
+                    "bid_touched_levels": sorted(bid_rows_touched.keys(), reverse=True)[:3],
+                    "ask_touched_levels": sorted(ask_rows_touched.keys())[:3],
                     "book_valid": False,
                     "book_reason": "CROSSED_BBO",
                 })
@@ -816,10 +1066,59 @@ class FinamBrokerClient:
                     order_book_decode_failures = 0
                     order_book_valid_no_bbo_delta = 0
                     order_book_invalid_states = 0
+                    order_book_invalid_reasons: dict[str, int] = {}
+                    order_book_invalid_by_ticker: dict[str, int] = {}
                     order_book_missing_envelope_timestamp = 0
                     order_book_queue_dropped = 0
                     order_book_out_of_order = 0
                     order_book_subscribed: set[str] = set()
+                    order_book_subscribed_since: dict[str, float] = {}
+                    order_book_symbol_diag: dict[str, dict[str, Any]] = {}
+                    # Persistent crossed books may retain stale depth after a missed
+                    # or rejected delta. Request a fresh snapshot for that symbol only.
+                    order_book_crossed_since: dict[str, float] = {}
+                    order_book_crossed_last_recovery: dict[str, float] = {}
+                    order_book_crossed_last_attempt: dict[str, float] = {}
+                    try:
+                        crossed_recovery_sec = min(
+                            30.0,
+                            max(1.0, float(os.getenv("FINAM_ORDER_BOOK_CROSSED_RECOVERY_SEC", "5.0"))),
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        crossed_recovery_sec = 5.0
+                    try:
+                        crossed_recovery_cooldown_sec = min(
+                            300.0,
+                            max(15.0, float(os.getenv("FINAM_ORDER_BOOK_CROSSED_RECOVERY_COOLDOWN_SEC", "60.0"))),
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        crossed_recovery_cooldown_sec = 60.0
+                    try:
+                        crossed_recovery_retry_sec = min(
+                            30.0,
+                            max(1.0, float(os.getenv("FINAM_ORDER_BOOK_CROSSED_RECOVERY_RETRY_SEC", "5.0"))),
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        crossed_recovery_retry_sec = 5.0
+                    last_open_position_symbols: set[str] = set()
+                    order_book_unattributed_messages = 0
+                    order_book_unattributed_sample = ""
+                    order_book_parser_sample = ""
+
+                    def _order_book_symbol_stats(ticker: str) -> dict[str, Any]:
+                        return order_book_symbol_diag.setdefault(ticker, {
+                            "window_wire": 0,
+                            "window_parse_no_update": 0,
+                            "window_parse_out_of_order": 0,
+                            "window_parse_unrecognized": 0,
+                            "window_parsed": 0,
+                            "window_queued": 0,
+                            "window_dropped": 0,
+                            "last_wire_monotonic": 0.0,
+                            "last_parsed_monotonic": 0.0,
+                            "last_queued_monotonic": 0.0,
+                        })
+
                     last_order_book_sync = 0.0
                     last_order_book_diag = asyncio.get_running_loop().time()
                     last_ws_data_at = last_order_book_diag
@@ -846,28 +1145,47 @@ class FinamBrokerClient:
                                 # turn. A Top-15 rotation should not wait for the
                                 # periodic refresh timer before its BBO subscription
                                 # is requested (the timer is only a safety resync).
-                                required_tickers = list(selected[:order_book_limit])
-                                positions_read_ok = True
-                                provider = self.open_positions_provider
-                                if callable(provider):
+                                # Top-N remains the only screener/LLM candidate set.
+                                # ORDER_BOOK additionally retains every open position for exit monitoring.
+                                normalized_selected: list[str] = []
+                                seen_selected: set[str] = set()
+                                for raw_ticker in selected:
+                                    ticker = str(raw_ticker).strip().upper().split("@")[0]
+                                    if not ticker or ticker in seen_selected:
+                                        continue
+                                    seen_selected.add(ticker)
+                                    normalized_selected.append(f"{ticker}@MISX")
+                                    if len(normalized_selected) >= order_book_limit:
+                                        break
+                                # The screener/LLM universe remains strictly Top-N.
+                                # Position monitoring has a separate technical requirement:
+                                # every open position must keep receiving BBO after it leaves Top-N.
+                                wanted = set(normalized_selected)
+                                position_symbols: set[str] = set()
+                                if self.open_positions_provider is not None:
                                     try:
-                                        required_tickers.extend(provider())
-                                    except Exception as positions_exc:
-                                        positions_read_ok = False
-                                        logger.exception(
-                                            "Finam ORDER_BOOK: не удалось получить открытые позиции; "
-                                            "сохраняем текущие подписки: %s", positions_exc
+                                        raw_positions = self.open_positions_provider()
+                                        seen_positions: set[str] = set()
+                                        for raw_ticker in raw_positions:
+                                            ticker = str(raw_ticker).strip().upper().split("@")[0]
+                                            if not ticker or ticker in seen_positions:
+                                                continue
+                                            seen_positions.add(ticker)
+                                            position_symbols.add(f"{ticker}@MISX")
+                                    except Exception as position_exc:
+                                        logger.warning(
+                                            "Finam ORDER_BOOK: не удалось получить тикеры открытых позиций; "
+                                            "подписки Top-%d сохраняются: %s",
+                                            order_book_limit, position_exc,
                                         )
-                                wanted = {
-                                    f"{str(ticker).strip().upper().split('@')[0]}@MISX"
-                                    for ticker in required_tickers
-                                    if str(ticker).strip()
+                                # Position diagnostics use bare tickers because parser statistics
+                                # are keyed by normalized ticker (for example, "LSRG", not "LSRG@MISX").
+                                last_open_position_symbols = {
+                                    symbol.split("@", 1)[0].strip().upper()
+                                    for symbol in position_symbols
                                 }
-                                if not positions_read_ok:
-                                    # Fail closed for removals when the live-position
-                                    # provider is unavailable; still allow newly
-                                    # selected Top-15 tickers to be added.
-                                    wanted.update(order_book_subscribed)
+                                position_only_symbols = position_symbols - wanted
+                                wanted.update(position_symbols)
 
                                 sync_due = now_loop - last_order_book_sync >= order_book_refresh_sec
                                 selection_changed = wanted != order_book_subscribed
@@ -881,6 +1199,7 @@ class FinamBrokerClient:
                                         }))
                                         self._order_book_state.pop(symbol.split("@")[0].upper(), None)
                                         order_book_subscribed.discard(symbol)
+                                        order_book_subscribed_since.pop(symbol, None)
                                     for symbol in sorted(added):
                                         self._order_book_state.pop(symbol.split("@")[0].upper(), None)
                                         await ws.send(json.dumps({
@@ -888,13 +1207,25 @@ class FinamBrokerClient:
                                             "data": {"symbol": symbol}, "token": self.jwt_token,
                                         }))
                                         order_book_subscribed.add(symbol)
+                                        order_book_subscribed_since[symbol] = now_loop
                                     last_order_book_sync = now_loop
                                     if added or removed:
+                                        position_symbols_text = ",".join(sorted(
+                                            symbol.split("@")[0] for symbol in position_symbols
+                                        )) or "-"
+                                        position_subscriptions_text = ",".join(sorted(
+                                            symbol.split("@")[0]
+                                            for symbol in position_symbols
+                                            if symbol in order_book_subscribed
+                                        )) or "-"
                                         logger.info(
-                                            "📚 Finam ORDER_BOOK подписки синхронизированы с Top-%d: "
-                                            "активных=%d, добавлено=%d, снято=%d.",
-                                            order_book_limit, len(order_book_subscribed),
+                                            "📚 Finam ORDER_BOOK подписки синхронизированы: Top-%d=%d, "
+                                            "позиций_вне_Top=%d, всего=%d, добавлено=%d, снято=%d; "
+                                            "активные_позиции=%s; запрошенные_подписки_позиций=%s.",
+                                            order_book_limit, len(normalized_selected),
+                                            len(position_only_symbols), len(order_book_subscribed),
                                             len(added), len(removed),
+                                            position_symbols_text, position_subscriptions_text,
                                         )
                             except Exception as sub_exc:
                                 last_order_book_sync = now_loop
@@ -904,26 +1235,127 @@ class FinamBrokerClient:
                                 )
 
                         if now_loop - last_order_book_diag >= 60.0:
+                            invalid_reason_summary = ", ".join(
+                                f"{reason}:{count}"
+                                for reason, count in sorted(
+                                    order_book_invalid_reasons.items(),
+                                    key=lambda item: item[1],
+                                    reverse=True,
+                                )[:8]
+                            ) or "-"
+                            invalid_ticker_summary = ", ".join(
+                                f"{ticker}:{count}"
+                                for ticker, count in sorted(
+                                    order_book_invalid_by_ticker.items(),
+                                    key=lambda item: item[1],
+                                    reverse=True,
+                                )[:12]
+                            ) or "-"
+
+                            position_diag_parts: list[str] = []
+                            position_gaps: list[str] = []
+                            for ticker in sorted(last_open_position_symbols):
+                                symbol = f"{ticker}@MISX"
+                                stats = _order_book_symbol_stats(ticker)
+                                subscribe_requested = symbol in order_book_subscribed
+                                subscribed_since = order_book_subscribed_since.get(symbol, 0.0)
+                                last_wire = float(stats.get("last_wire_monotonic", 0.0) or 0.0)
+                                last_parsed = float(stats.get("last_parsed_monotonic", 0.0) or 0.0)
+                                last_queued = float(stats.get("last_queued_monotonic", 0.0) or 0.0)
+                                wire_age = now_loop - last_wire if last_wire > 0.0 else None
+                                sub_age = now_loop - subscribed_since if subscribed_since > 0.0 else None
+                                parsed_age = now_loop - last_parsed if last_parsed > 0.0 else None
+                                queued_age = now_loop - last_queued if last_queued > 0.0 else None
+
+                                flags: list[str] = []
+                                if not subscribe_requested:
+                                    flags.append("NO_SUBSCRIBE_REQUEST")
+                                    position_gaps.append(f"{ticker}:NO_SUBSCRIBE_REQUEST")
+                                elif wire_age is None:
+                                    flags.append("NO_WIRE_DATA")
+                                    position_gaps.append(f"{ticker}:NO_WIRE_DATA")
+                                elif wire_age >= 60.0:
+                                    flags.append("WIRE_STALE")
+                                    position_gaps.append(f"{ticker}:WIRE_STALE={wire_age:.1f}s")
+                                if stats["window_wire"] > 0 and stats["window_parsed"] == 0:
+                                    flags.append("PARSE_EMPTY")
+                                    position_gaps.append(f"{ticker}:PARSE_EMPTY")
+                                if stats["window_dropped"] > 0:
+                                    flags.append("QUEUE_DROP")
+                                    position_gaps.append(f"{ticker}:QUEUE_DROP={stats['window_dropped']}")
+
+                                sub_age_text = f"{sub_age:.1f}s" if sub_age is not None else "нет"
+                                wire_age_text = f"{wire_age:.1f}s" if wire_age is not None else "нет"
+                                parsed_age_text = f"{parsed_age:.1f}s" if parsed_age is not None else "нет"
+                                queued_age_text = f"{queued_age:.1f}s" if queued_age is not None else "нет"
+                                position_diag_parts.append(
+                                    f"{ticker}(sub_req_local={'Y' if subscribe_requested else 'N'},"
+                                    f"sub_req_age={sub_age_text},wire={stats['window_wire']},"
+                                    f"wire_age={wire_age_text},parsed={stats['window_parsed']},"
+                                    f"parse_age={parsed_age_text},queued={stats['window_queued']},"
+                                    f"queue_age={queued_age_text},"
+                                    f"no_update={stats['window_parse_no_update']},"
+                                    f"parse_ooo={stats['window_parse_out_of_order']},"
+                                    f"unparsed={stats['window_parse_unrecognized']},"
+                                    f"dropped={stats['window_dropped']},"
+                                    f"flags={','.join(flags) or 'OK'})"
+                                )
+
+                            position_diag_summary = " | ".join(position_diag_parts) or "-"
                             logger.info(
                                 "📚 [ORDER_BOOK 60s] подписок=%d, сообщений=%d, "
                                 "событий_в_очередь=%d, затронуто_сторон_BBO=%d, "
-                                "heartbeat_без_изменения_BBO=%d, некорректных_состояний=%d, "
-                                "без_timestamp_envelope=%d, out_of_order=%d, потерь_очереди=%d, ошибок_разбора=%d.",
+                                "heartbeat_без_движения_BBO=%d, некорректных_состояний=%d "
+                                "(причины=%s; тикеры=%s), "
+                                "без_timestamp_envelope=%d, out_of_order=%d, потерь_очереди=%d, "
+                                "ошибок_разбора=%d; позиции=[%s]; сообщений_без_тикера=%d.",
                                 len(order_book_subscribed), order_book_messages,
                                 enqueued_order_book_events, enqueued_bbo_side_updates,
                                 order_book_valid_no_bbo_delta, order_book_invalid_states,
+                                invalid_reason_summary, invalid_ticker_summary,
                                 order_book_missing_envelope_timestamp, order_book_out_of_order,
                                 order_book_queue_dropped, order_book_decode_failures,
+                                position_diag_summary, order_book_unattributed_messages,
                             )
+                            if position_gaps:
+                                logger.warning(
+                                    "📚 [ORDER_BOOK POSITION GAP] %s",
+                                    " | ".join(sorted(set(position_gaps))),
+                                )
+                            if order_book_parser_sample:
+                                logger.warning(
+                                    "📚 [ORDER_BOOK PARSER SAMPLE] %s",
+                                    order_book_parser_sample,
+                                )
+                            if order_book_unattributed_sample:
+                                logger.warning(
+                                    "📚 [ORDER_BOOK UNATTRIBUTED SAMPLE] %s",
+                                    order_book_unattributed_sample,
+                                )
+
                             order_book_messages = 0
                             order_book_decode_failures = 0
                             order_book_valid_no_bbo_delta = 0
                             order_book_invalid_states = 0
+                            order_book_invalid_reasons.clear()
+                            order_book_invalid_by_ticker.clear()
                             order_book_missing_envelope_timestamp = 0
                             order_book_out_of_order = 0
                             order_book_queue_dropped = 0
                             enqueued_order_book_events = 0
                             enqueued_bbo_side_updates = 0
+                            order_book_unattributed_messages = 0
+                            order_book_unattributed_sample = ""
+                            order_book_parser_sample = ""
+                            # Keep every symbol's window counters on the same 60-second
+                            # boundary, including symbols that become positions later.
+                            for symbol_stats in order_book_symbol_diag.values():
+                                for key in (
+                                    "window_wire", "window_parse_no_update",
+                                    "window_parse_out_of_order", "window_parse_unrecognized",
+                                    "window_parsed", "window_queued", "window_dropped",
+                                ):
+                                    symbol_stats[key] = 0
                             last_order_book_diag = now_loop
 
                         try:
@@ -1006,7 +1438,41 @@ class FinamBrokerClient:
 
                         if subscription_type in {"ORDER_BOOK", "ORDERBOOK"}:
                             order_book_messages += 1
+                            message_received_monotonic = float(
+                                envelope.get("_received_monotonic", time.monotonic())
+                            )
+                            symbol_hints = self._extract_order_book_symbol_hints(payload)
                             book_updates = self._extract_order_book_updates(envelope)
+                            update_tickers = {
+                                str(item.get("ticker") or "").strip().upper().split("@")[0]
+                                for item in book_updates
+                                if isinstance(item, dict) and item.get("ticker")
+                            }
+                            observed_tickers = symbol_hints | update_tickers
+                            parse_missing_tickers = symbol_hints - update_tickers
+                            if not observed_tickers:
+                                order_book_unattributed_messages += 1
+                                if not order_book_unattributed_sample:
+                                    safe_payload = self._redact_for_log(payload)
+                                    order_book_unattributed_sample = json.dumps(
+                                        safe_payload, ensure_ascii=False, default=str
+                                    )[:1200]
+                            elif parse_missing_tickers and not order_book_parser_sample:
+                                safe_payload = self._redact_for_log(payload)
+                                order_book_parser_sample = (
+                                    f"symbols={','.join(sorted(parse_missing_tickers))}; payload="
+                                    + json.dumps(safe_payload, ensure_ascii=False, default=str)[:1000]
+                                )
+                            for observed_ticker in observed_tickers:
+                                symbol_stats = _order_book_symbol_stats(observed_ticker)
+                                symbol_stats["window_wire"] += 1
+                                symbol_stats["last_wire_monotonic"] = message_received_monotonic
+                                if observed_ticker not in update_tickers:
+                                    symbol_stats["window_parse_no_update"] += 1
+                                    if self._last_order_book_out_of_order:
+                                        symbol_stats["window_parse_out_of_order"] += 1
+                                    elif not self._last_order_book_payload_valid:
+                                        symbol_stats["window_parse_unrecognized"] += 1
                             if not book_updates:
                                 if self._last_order_book_out_of_order:
                                     order_book_out_of_order += 1
@@ -1036,6 +1502,11 @@ class FinamBrokerClient:
                                     )
                                     first_order_book_logged = True
                             for book_update in book_updates:
+                                book_ticker = str(book_update.get("ticker") or "").strip().upper().split("@")[0]
+                                symbol_stats = _order_book_symbol_stats(book_ticker) if book_ticker else None
+                                if symbol_stats is not None:
+                                    symbol_stats["window_parsed"] += 1
+                                    symbol_stats["last_parsed_monotonic"] = message_received_monotonic
                                 has_bbo_side_update = bool(
                                     book_update.get("bid_present") or book_update.get("ask_present")
                                 )
@@ -1043,17 +1514,139 @@ class FinamBrokerClient:
                                     order_book_missing_envelope_timestamp += 1
                                 if not book_update.get("book_valid", True):
                                     order_book_invalid_states += 1
-                                elif not has_bbo_side_update:
-                                    order_book_valid_no_bbo_delta += 1
+                                    invalid_reason = str(book_update.get("book_reason") or "UNKNOWN").upper()
+                                    invalid_ticker = str(book_update.get("ticker") or "UNKNOWN").upper()
+                                    invalid_ticker_reason = f"{invalid_ticker}/{invalid_reason}"
+                                    order_book_invalid_reasons[invalid_reason] = (
+                                        order_book_invalid_reasons.get(invalid_reason, 0) + 1
+                                    )
+                                    order_book_invalid_by_ticker[invalid_ticker_reason] = (
+                                        order_book_invalid_by_ticker.get(invalid_ticker_reason, 0) + 1
+                                    )
+                                    if invalid_reason == "CROSSED_BBO":
+                                        now_monotonic = time.monotonic()
+                                        crossed_since = order_book_crossed_since.setdefault(
+                                            invalid_ticker, now_monotonic
+                                        )
+                                        symbol = f"{invalid_ticker}@MISX"
+                                        last_recovery = order_book_crossed_last_recovery.get(invalid_ticker, 0.0)
+                                        last_attempt = order_book_crossed_last_attempt.get(invalid_ticker, 0.0)
+                                        recovery_due = _crossed_bbo_recovery_due(
+                                            now_monotonic,
+                                            crossed_since,
+                                            last_recovery,
+                                            crossed_recovery_sec,
+                                            crossed_recovery_cooldown_sec,
+                                        )
+                                        retry_due = (
+                                            now_monotonic >= last_attempt
+                                            and now_monotonic - last_attempt >= crossed_recovery_retry_sec
+                                        )
+                                        if symbol in order_book_subscribed and recovery_due and retry_due:
+                                            # Keep the desired-subscription marker in place while
+                                            # resubscribing. If either WS send fails, the next
+                                            # retry must still be eligible instead of being
+                                            # permanently gated by a discarded subscription.
+                                            order_book_crossed_last_attempt[invalid_ticker] = now_monotonic
+                                            try:
+                                                await ws.send(json.dumps({
+                                                    "action": "UNSUBSCRIBE",
+                                                    "type": "ORDER_BOOK",
+                                                    "data": {"symbol": symbol},
+                                                    "token": self.jwt_token,
+                                                }))
+                                                self._order_book_state.pop(invalid_ticker, None)
+                                                await ws.send(json.dumps({
+                                                    "action": "SUBSCRIBE",
+                                                    "type": "ORDER_BOOK",
+                                                    "data": {"symbol": symbol},
+                                                    "token": self.jwt_token,
+                                                }))
+                                                order_book_subscribed_since[symbol] = time.monotonic()
+                                                order_book_crossed_last_recovery[invalid_ticker] = time.monotonic()
+                                                order_book_crossed_since.pop(invalid_ticker, None)
+                                                logger.warning(
+                                                    "🔄 [ORDER_BOOK CROSSED_RECOVERY] %s: crossed BBO persisted %.1fs; "
+                                                    "fresh ORDER_BOOK snapshot requested. Execution remains blocked "
+                                                    "until a valid BBO; cooldown=%.0fs, retry=%.1fs.",
+                                                    invalid_ticker,
+                                                    now_monotonic - crossed_since,
+                                                    crossed_recovery_cooldown_sec,
+                                                    crossed_recovery_retry_sec,
+                                                )
+                                            except Exception as recovery_exc:
+                                                logger.error(
+                                                    "[ORDER_BOOK CROSSED_RECOVERY] %s: resubscribe failed: %s. "
+                                                    "Crossed timer retained; retry in %.1fs; BBO remains invalid.",
+                                                    invalid_ticker,
+                                                    recovery_exc,
+                                                    crossed_recovery_retry_sec,
+                                                )
+                                    else:
+                                        # Missing-side/other invalid states are not a
+                                        # persistent crossed book; restart the timer if it
+                                        # becomes crossed again later.
+                                        order_book_crossed_since.pop(invalid_ticker, None)
+                                    if invalid_reason == "CROSSED_BBO":
+                                        last_detail_log = self._crossed_bbo_log_last_at.get(invalid_ticker, 0.0)
+                                        if now_monotonic - last_detail_log >= 15.0:
+                                            self._crossed_bbo_log_last_at[invalid_ticker] = now_monotonic
+                                            bid_price = float(book_update.get("bid") or 0.0)
+                                            ask_price = float(book_update.get("ask") or 0.0)
+                                            midpoint = (bid_price + ask_price) / 2.0
+                                            crossed_bps = (
+                                                (bid_price - ask_price) / midpoint * 10000.0
+                                                if midpoint > 0.0 else 0.0
+                                            )
+                                            bid_depth = book_update.get("bid_levels")
+                                            ask_depth = book_update.get("ask_levels")
+                                            bid_top = bid_depth[:3] if isinstance(bid_depth, list) else []
+                                            ask_top = ask_depth[:3] if isinstance(ask_depth, list) else []
+                                            logger.warning(
+                                                "[ORDER_BOOK CROSSED_BBO] %s: Bid=%.6f x %s, Ask=%.6f x %s; "
+                                                "cross=%.2f bps; previous Bid/Ask=%s/%s; "
+                                                "side-touched Bid/Ask=%s/%s; best-level-touched=%s/%s; "
+                                                "delta-levels Bid=%s Ask=%s; top3 Bid=%s Ask=%s; "
+                                                "event_timestamp=%s; timestamp_source=%s.",
+                                                invalid_ticker,
+                                                bid_price,
+                                                book_update.get("bid_size"),
+                                                ask_price,
+                                                book_update.get("ask_size"),
+                                                crossed_bps,
+                                                book_update.get("previous_bid"),
+                                                book_update.get("previous_ask"),
+                                                book_update.get("bid_side_touched"),
+                                                book_update.get("ask_side_touched"),
+                                                book_update.get("bid_best_level_touched"),
+                                                book_update.get("ask_best_level_touched"),
+                                                book_update.get("bid_touched_levels"),
+                                                book_update.get("ask_touched_levels"),
+                                                bid_top,
+                                                ask_top,
+                                                book_update.get("order_book_timestamp"),
+                                                book_update.get("timestamp_source", "UNKNOWN"),
+                                            )
+                                else:
+                                    # Any non-crossed state ends the persistence timer.
+                                    if book_ticker:
+                                        order_book_crossed_since.pop(book_ticker, None)
+                                    if not has_bbo_side_update:
+                                        order_book_valid_no_bbo_delta += 1
                                 try:
                                     queue.put_nowait(book_update)
                                     enqueued_order_book_events += 1
+                                    if symbol_stats is not None:
+                                        symbol_stats["window_queued"] += 1
+                                        symbol_stats["last_queued_monotonic"] = message_received_monotonic
                                     if book_update.get("bid_present"):
                                         enqueued_bbo_side_updates += 1
                                     if book_update.get("ask_present"):
                                         enqueued_bbo_side_updates += 1
                                 except asyncio.QueueFull:
                                     order_book_queue_dropped += 1
+                                    if symbol_stats is not None:
+                                        symbol_stats["window_dropped"] += 1
                                     logger.warning(
                                         "Очередь рыночных событий заполнена; ORDER_BOOK %s отброшен.",
                                         book_update.get("ticker"),

@@ -57,6 +57,17 @@
             font-weight: bold;
             margin-top: 5px;
         }
+        .balance-profit-row {
+            display: flex;
+            align-items: baseline;
+            justify-content: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .balance-profit-rub {
+            font-size: 15px;
+            font-weight: 600;
+        }
 
         .exposure-guard {
             margin-top: 10px;
@@ -127,7 +138,7 @@
         <div class="panel-title">💰 МОНИТОРИНГ КАПИТАЛА И ЭФФЕКТИВНОСТИ ИИ</div>
         <div class="balance-grid">
             <div class="balance-card">
-                <div>Баланс (депозит − стоимость активов по цене покупки)</div>
+                <div>Свободные средства (депозит + реализованный PnL − активы по цене покупки)</div>
                 <div id="balance-margin" class="balance-value">0.00 ₽</div>
             </div>
             <div class="balance-card">
@@ -135,8 +146,11 @@
                 <div id="balance-margin-used" class="balance-value" style="color: var(--accent-blue);">0.00 ₽</div>
             </div>
             <div class="balance-card">
-                <div>Процент прибыли с торгов</div>
-                <div id="balance-pnl-percent" class="balance-value" style="color: var(--accent-green);">0.00 %</div>
+                <div>Прибыль / убыток от торговли</div>
+                <div class="balance-profit-row">
+                    <span id="balance-pnl-percent" class="balance-value" style="color: var(--accent-green);">0.00 %</span>
+                    <span id="balance-pnl-rub" class="balance-profit-rub" style="color: var(--accent-green);">0,00 ₽</span>
+                </div>
             </div>
         </div>
         <div id="balance-exposure-guard" class="exposure-guard" role="status">
@@ -327,6 +341,13 @@
         const pnlPercentEl = document.getElementById("balance-pnl-percent");
         pnlPercentEl.innerText = (pnlPercent >= 0 ? "+" : "") + pnlPercent.toFixed(2) + " %";
         pnlPercentEl.style.color = pnlPercent >= 0 ? "var(--accent-green)" : "var(--accent-red)";
+
+        const pnlRubEl = document.getElementById("balance-pnl-rub");
+        const pnlRubText = (pnlRub >= 0 ? "+" : "−")
+            + Math.abs(pnlRub).toLocaleString("ru-RU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+            + " ₽";
+        pnlRubEl.innerText = pnlRubText;
+        pnlRubEl.style.color = pnlRub >= 0 ? "var(--accent-green)" : "var(--accent-red)";
 
         const capRaw = Number(data.exposure_cap);
         const exposureCap = Number.isFinite(capRaw) && capRaw >= 0 ? capRaw : START_DEPOSIT * 0.15;

@@ -9,7 +9,7 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from db_manager import DBManager
-from config import Settings   # <-- параметры из config.py
+from config import Settings, RSS_FEEDS as CONFIG_RSS_FEEDS
 from typing import cast, Any
 
 logger = logging.getLogger("Piluitus.NewsParser")
@@ -25,16 +25,7 @@ NEWS_SYSTEM_PROMPT = """
 """
 
 class MarketNewsParser:
-    RSS_FEEDS = [
-        "https://bcs-express.ru",
-        "https://www.bfm.ru/news.rss?rubric=28",
-        "https://moex.com/export/news.aspx?cat=100",
-        "https://moex.com/export/news.aspx?cat=101",
-        "https://www.moex.com/export/news.aspx?cat=104",
-        "https://bfm.ru",
-        "https://www.moex.com/export/news.aspx?cat=122",
-        "https://www.finam.ru/analysis/forecasts/rsspoint/"
-    ]
+    RSS_FEEDS = CONFIG_RSS_FEEDS
 
     @staticmethod
     def _clean_and_repair_json(raw_text: str) -> list:
