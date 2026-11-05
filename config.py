@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -141,7 +142,15 @@ class Settings:
     MAX_GROSS_EXPOSURE_PCT: float = min(float(os.getenv("PILUITUS_MAX_GROSS_EXPOSURE_PCT", "0.10")), 0.15)
     MAX_SINGLE_POSITION_PCT: float = min(float(os.getenv("PILUITUS_MAX_SINGLE_POSITION_PCT", "0.05")), 0.05)
     ATR_MULTIPLIER: float = float(os.getenv("ATR_MULTIPLIER", "1.5"))
-    TRADE_DEPOSIT: float = float(os.getenv("TRADE_DEPOSIT", "100000.0"))
+    # Единственный источник стартового капитала для всех контуров.
+    # TRADE_DEPOSIT — новое имя; TRADING_DEPOSIT оставлено как legacy-fallback.
+    _TRADE_DEPOSIT_RAW = os.getenv("TRADE_DEPOSIT")
+    if _TRADE_DEPOSIT_RAW is None:
+        _TRADE_DEPOSIT_RAW = os.getenv("TRADING_DEPOSIT", "100000.0")
+    TRADE_DEPOSIT: float = float(_TRADE_DEPOSIT_RAW)
+    if not math.isfinite(TRADE_DEPOSIT) or TRADE_DEPOSIT <= 0:
+        raise ValueError("TRADE_DEPOSIT должен быть конечным числом больше нуля")
+    TRADING_DEPOSIT: float = TRADE_DEPOSIT  # совместимость со старым именем
 
     # ---------- Прочие ----------
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()

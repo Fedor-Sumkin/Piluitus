@@ -58,7 +58,7 @@ load_dotenv()
 
 FINAM_TOKEN = os.getenv("FINAM_TOKEN", "")
 CLIENT_ID   = os.getenv("FINAM_CLIENT_ID", "UNKNOWN_ACCOUNT")
-DEPOSIT      = float(os.getenv("TRADING_DEPOSIT", 100000.0))
+DEPOSIT      = Settings.TRADE_DEPOSIT
 
 # --------------------------------------------------------------
 #  LOGGING REGIME

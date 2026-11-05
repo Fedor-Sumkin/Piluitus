@@ -9,7 +9,7 @@ from collections.abc import Callable
 import websockets
 import httpx
 from db_manager import DBManager
-from config import LOT_SIZES
+from config import LOT_SIZES, Settings
 
 logging.basicConfig(
     level=logging.INFO,
@@ -141,12 +141,16 @@ class RealMarketSimulator:
 # LOT_SIZES импортирован из config.py и остаётся единым справочником проекта.
 
 class RiskManager:
-    def __init__(self, max_risk_per_trade=0.005, daily_loss_limit=0.10, initial_deposit=100000.0):
-        self.initial_deposit = initial_deposit
-        
-        # Контур ОЗУ-метрик, которые теперь восстанавливаются из Redis
-        self.current_equity = initial_deposit
-        self.free_margin = initial_deposit
+    def __init__(self, max_risk_per_trade=0.005, daily_loss_limit=0.10, initial_deposit: float | None = None):
+        configured_deposit = Settings.TRADE_DEPOSIT if initial_deposit is None else float(initial_deposit)
+        if not math.isfinite(configured_deposit) or configured_deposit <= 0.0:
+            raise ValueError("initial_deposit должен быть конечным числом больше нуля")
+        self.initial_deposit = configured_deposit
+
+        # Стартовый капитал задаётся конфигурацией. Redis хранит историю,
+        # позиции и расчётные снимки, но не может менять базу риск-лимитов.
+        self.current_equity = configured_deposit
+        self.free_margin = configured_deposit
         self.total_session_pnl = 0.0
         self.realized_pnl = 0.0
         self.open_pnl = 0.0
@@ -211,17 +215,45 @@ class RiskManager:
                 self._blocked_date = today
                 return False
 
-            # 1. ПЕРСИСТЕНТНАЯ ИНИЦИАЛИЗАЦИЯ: Восстановление баланса при старте сессии
+            # 1. Стартовый депозит всегда берётся из config/.env.
+            # Старый Redis-ключ читаем только для диагностики и синхронизируем:
+            # он больше не имеет права подменять базу расчёта риск-лимитов.
             if not self._balance_initialized:
+                configured_deposit = float(self.initial_deposit)
                 saved_balance = await redis_inst.get("piluitus:risk:persistent_balance")
+                saved_value: float | None = None
                 if saved_balance is not None:
-                    self.initial_deposit = float(saved_balance)
-                    risk_logger.info(f"💾 [PERSISTENCE] Баланс восстановлен из Redis после перезагрузки: {self.initial_deposit:.2f} ₽")
+                    try:
+                        saved_value = float(saved_balance)
+                    except (TypeError, ValueError, OverflowError):
+                        saved_value = None
+
+                if saved_balance is None:
+                    risk_logger.info(
+                        "🆕 [PERSISTENCE] Зафиксирован стартовый депозит из config/.env: %.2f ₽",
+                        configured_deposit,
+                    )
+                elif saved_value is None or not math.isfinite(saved_value) or not math.isclose(
+                    saved_value, configured_deposit, rel_tol=0.0, abs_tol=0.01
+                ):
+                    risk_logger.warning(
+                        "⚠️ [PERSISTENCE] Старый Redis persistent_balance=%r ₽ отличается от "
+                        "настроенного TRADE_DEPOSIT=%.2f ₽. Используется конфигурация; "
+                        "ключ будет синхронизирован. История сделок и позиции не удаляются.",
+                        saved_balance, configured_deposit,
+                    )
                 else:
-                    # Если запускаемся впервые в истории — берем дефолтный депозит и фиксируем его в базу
-                    await redis_inst.set("piluitus:risk:persistent_balance", str(self.initial_deposit))
-                    risk_logger.info(f"🆕 [PERSISTENCE] Зафиксирован стартовый депозит сессии: {self.initial_deposit:.2f} ₽")
-                
+                    risk_logger.info(
+                        "💾 [PERSISTENCE] Стартовый депозит подтверждён конфигурацией: %.2f ₽",
+                        configured_deposit,
+                    )
+
+                # Сохраняем значение для совместимости со старыми читателями,
+                # но источником истины остаётся config/.env.
+                await redis_inst.set(
+                    "piluitus:risk:persistent_balance",
+                    f"{configured_deposit:.2f}",
+                )
                 self._balance_initialized = True
 
             # 2. Считаем PnL только за сегодняшнюю календарную дату, а не за всю
