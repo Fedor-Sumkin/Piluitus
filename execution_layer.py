@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import inspect
 from collections.abc import Iterable, Mapping
 from typing import Any, Protocol, TypedDict, cast
 import math
@@ -661,7 +662,8 @@ class BaseExecutionEngine:
         if not callable(getter):
             return {"known": False, "is_open": False, "entry_allowed": False, "reason": "schedule_api_unavailable"}
         try:
-            payload = await getter(ticker)
+            result = getter(ticker)
+            payload = await result if inspect.isawaitable(result) else result
         except Exception as exc:
             return {
                 "known": False, "is_open": False, "entry_allowed": False,
