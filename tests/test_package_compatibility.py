@@ -11,6 +11,7 @@ LEGACY_SHIMS = {
     "dashboard_verdicts.py": "piluitus.ai.dashboard_verdicts",
     "db_manager.py": "piluitus.storage.db_manager",
     "execution_layer.py": "piluitus.execution.execution_layer",
+    "evolution_agent.py": "piluitus.execution.legacy_evolution_agent",
     "finam_client.py": "piluitus.exchange.finam_client",
     "knowledge_parser.py": "piluitus.ai.knowledge_parser",
     "market_logger.py": "piluitus.monitoring.market_logger",
@@ -64,3 +65,10 @@ def test_risk_and_portfolio_legacy_imports_are_module_aliases() -> None:
 
     assert risk_limits is packaged_limits
     assert portfolio_metrics is packaged_metrics
+
+
+def test_legacy_evolution_agent_root_import_is_module_alias() -> None:
+    import evolution_agent
+    from piluitus.execution import legacy_evolution_agent
+
+    assert evolution_agent is legacy_evolution_agent
