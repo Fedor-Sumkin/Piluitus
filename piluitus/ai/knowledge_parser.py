@@ -11,7 +11,7 @@ from db_manager import DBManager
 from config import PROJECT_ROOT
 
 logger = logging.getLogger("Piluitus.KnowledgeParser")
-KNOWLEDGE_BASE_FILE = str(PROJECT_ROOT / "ai_market_knowledge.json")
+KNOWLEDGE_BASE_FILE = str(PROJECT_ROOT / "data" / "knowledge" / "ai_market_knowledge.json")
 
 class TechnicalKnowledgeParser:
     """Модуль автоматической загрузки, парсинга (TXT/PDF) и кэширования стратегий в Redis ОЗУ"""

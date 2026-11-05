@@ -10,8 +10,8 @@ import json
 import os
 
 def deploy_purified_rules():
-    purified_file = str(PROJECT_ROOT / "purified_book_rules.json")
-    target_file = str(PROJECT_ROOT / "ai_market_knowledge.json")
+    purified_file = str(PROJECT_ROOT / "data" / "knowledge" / "purified_book_rules.json")
+    target_file = str(PROJECT_ROOT / "data" / "knowledge" / "ai_market_knowledge.json")
     
     if not os.path.exists(purified_file):
         print(f"❌ Ошибка: Файл {purified_file} не найден.")

@@ -21,6 +21,8 @@ def test_data_sources_are_in_data_tree() -> None:
     assert any(csv_dir.glob("*.csv"))
     assert (source_dir / "imported_OrderBook_and_Risk_Rules.txt").is_file()
     assert any(source_dir.glob("*.pdf"))
+    assert (PROJECT_ROOT / "data" / "knowledge" / "ai_market_knowledge.json").is_file()
+    assert (PROJECT_ROOT / "data" / "knowledge" / "purified_book_rules.json").is_file()
 
 
 def test_patch_implementations_and_legacy_launchers_exist() -> None:

@@ -15,7 +15,7 @@ from ollama import AsyncClient
 
 # --- НАСТРОЙКИ ПУТЕЙ ---
 PDF_DIR = str(PROJECT_ROOT / "data" / "knowledge" / "sources")
-OUTPUT_FILE = str(PROJECT_ROOT / "purified_book_rules.json")
+OUTPUT_FILE = str(PROJECT_ROOT / "data" / "knowledge" / "purified_book_rules.json")
 
 DISTILLER_SYSTEM_PROMPT = """
 Ты — ведущий ИИ-архитектор торговой системы PILUITUS V2. Твоя задача — провести жесткую математическую дистилляцию текста из профессиональной книги по трейдингу.

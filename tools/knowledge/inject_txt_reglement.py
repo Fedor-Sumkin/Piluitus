@@ -10,7 +10,7 @@ import os
 
 # --- НАСТРОЙКИ ПУТЕЙ ---
 TXT_SOURCE = str(PROJECT_ROOT / "data" / "knowledge" / "sources" / "imported_OrderBook_and_Risk_Rules.txt")
-RAG_TARGET = str(PROJECT_ROOT / "ai_market_knowledge.json")
+RAG_TARGET = str(PROJECT_ROOT / "data" / "knowledge" / "ai_market_knowledge.json")
 
 def import_txt_reglement():
     print("🔄 Запуск системного импортера регламентов из TXT...")

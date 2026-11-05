@@ -13,7 +13,7 @@ from typing import List, Dict, Any
 
 # --- НАСТРОЙКИ МОДЕРНИЗАЦИИ ---
 CSV_DIR = str(PROJECT_ROOT / "data" / "historical_ticks")          
-RAG_OUTPUT = str(PROJECT_ROOT / "ai_market_knowledge.json") 
+RAG_OUTPUT = str(PROJECT_ROOT / "data" / "knowledge" / "ai_market_knowledge.json") 
 MULTIPLIER_THRESHOLD = 7.0            # ИСПРАВЛЕНО: Жесткий фильтр (Объем выше среднего в 7+ раз)
 WINDOW_SIZE = 20                      
 
