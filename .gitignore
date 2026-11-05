@@ -7,4 +7,5 @@ __pycache__/
 trading_logs/
 live_market_logs/
 /import_knowledge/
+/data/knowledge/sources/
 data/historical_ticks/

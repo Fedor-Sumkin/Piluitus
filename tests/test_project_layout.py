@@ -74,3 +74,8 @@ def test_fallback_aof_path_is_anchored_to_project_root() -> None:
     db_source = (PROJECT_ROOT / "piluitus" / "storage" / "db_manager.py").read_text(encoding="utf-8")
     assert "AOF_FILE = str(PROJECT_ROOT / \"piluitus_fallback_aof.jsonl\")" in db_source
     assert "def __init__(self, aof_path: str = AOF_FILE)" in db_source
+
+
+def test_new_knowledge_sources_keep_legacy_ignore_behavior() -> None:
+    ignore = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "/data/knowledge/sources/" in ignore
