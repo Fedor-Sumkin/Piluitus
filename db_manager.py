@@ -48,6 +48,9 @@ class _InMemory:
                     if not line.strip():
                         continue
                     event = json.loads(line)
+                    if not isinstance(event, dict):
+                        log.warning("Пропущена некорректная AOF-запись: ожидался JSON-объект")
+                        continue
                     cmd = event.get("cmd")
                     key = event.get("key")
                     val = event.get("val")
@@ -644,6 +647,9 @@ class DBManager:
                     continue
                 try:
                     trade = json.loads(raw)
+                    if not isinstance(trade, dict):
+                        log.warning("Пропущена некорректная запись сделки для ключа %s", key_str)
+                        continue
                     order_id = key_str.split(":")[-1]
                     result[order_id] = trade
                 except json.JSONDecodeError:
