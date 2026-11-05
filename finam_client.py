@@ -1,4 +1,4 @@
-"""Compatibility alias for piluitus.exchange.finam_client; keeps a single shared module instance."""
+"""Compatibility alias for exchange.finam_client; preserves one shared module instance."""
 import sys
-from piluitus.exchange.finam_client import *  # noqa: F401,F403
-sys.modules[__name__] = sys.modules["piluitus.exchange.finam_client"]
+from exchange.finam_client import *  # noqa: F401,F403
+sys.modules[__name__] = sys.modules["exchange.finam_client"]

@@ -1,4 +1,4 @@
-"""Compatibility alias for piluitus.portfolio.pnl_exporter; keeps one module instance."""
+"""Compatibility alias for portfolio.pnl_exporter; preserves one shared module instance."""
 import sys
-from piluitus.portfolio.pnl_exporter import *  # noqa: F401,F403
-sys.modules[__name__] = sys.modules["piluitus.portfolio.pnl_exporter"]
+from portfolio.pnl_exporter import *  # noqa: F401,F403
+sys.modules[__name__] = sys.modules["portfolio.pnl_exporter"]

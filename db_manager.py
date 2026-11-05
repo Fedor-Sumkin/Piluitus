@@ -1,4 +1,4 @@
-"""Compatibility alias for piluitus.storage.db_manager; keeps a single shared module instance."""
+"""Compatibility alias for storage.db_manager; preserves one shared module instance."""
 import sys
-from piluitus.storage.db_manager import *  # noqa: F401,F403
-sys.modules[__name__] = sys.modules["piluitus.storage.db_manager"]
+from storage.db_manager import *  # noqa: F401,F403
+sys.modules[__name__] = sys.modules["storage.db_manager"]

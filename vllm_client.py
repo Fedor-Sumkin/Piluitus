@@ -1,4 +1,4 @@
-"""Compatibility alias for piluitus.ai.vllm_client; keeps a single shared module instance."""
+"""Compatibility alias for ai.vllm_client; preserves one shared module instance."""
 import sys
-from piluitus.ai.vllm_client import *  # noqa: F401,F403
-sys.modules[__name__] = sys.modules["piluitus.ai.vllm_client"]
+from ai.vllm_client import *  # noqa: F401,F403
+sys.modules[__name__] = sys.modules["ai.vllm_client"]

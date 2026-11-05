@@ -71,7 +71,7 @@ def test_gitignore_covers_virtualenv_bytecode_and_runtime_logs() -> None:
 
 
 def test_fallback_aof_path_is_anchored_to_project_root() -> None:
-    db_source = (PROJECT_ROOT / "piluitus" / "storage" / "db_manager.py").read_text(encoding="utf-8")
+    db_source = (PROJECT_ROOT / "storage" / "db_manager.py").read_text(encoding="utf-8")
     assert "AOF_FILE = str(PROJECT_ROOT / \"piluitus_fallback_aof.jsonl\")" in db_source
     assert "def __init__(self, aof_path: str = AOF_FILE)" in db_source
 
@@ -79,3 +79,16 @@ def test_fallback_aof_path_is_anchored_to_project_root() -> None:
 def test_new_knowledge_sources_keep_legacy_ignore_behavior() -> None:
     ignore = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "/data/knowledge/sources/" in ignore
+
+def test_domain_packages_live_at_project_root() -> None:
+    package_names = (
+        "ai", "exchange", "execution", "monitoring",
+        "portfolio", "risk", "storage", "strategy",
+    )
+    for package_name in package_names:
+        package_dir = PROJECT_ROOT / package_name
+        assert package_dir.is_dir(), package_name
+        assert (package_dir / "__init__.py").is_file(), package_name
+
+    assert not (PROJECT_ROOT / "piluitus").exists()
+

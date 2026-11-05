@@ -1,4 +1,4 @@
-"""Compatibility alias for piluitus.execution.execution_layer; keeps a single shared module instance."""
+"""Compatibility alias for execution.execution_layer; preserves one shared module instance."""
 import sys
-from piluitus.execution.execution_layer import *  # noqa: F401,F403
-sys.modules[__name__] = sys.modules["piluitus.execution.execution_layer"]
+from execution.execution_layer import *  # noqa: F401,F403
+sys.modules[__name__] = sys.modules["execution.execution_layer"]

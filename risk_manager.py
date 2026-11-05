@@ -1,4 +1,4 @@
-"""Compatibility alias for piluitus.risk.risk_manager; keeps a single shared module instance."""
+"""Compatibility alias for risk.risk_manager; preserves one shared module instance."""
 import sys
-from piluitus.risk.risk_manager import *  # noqa: F401,F403
-sys.modules[__name__] = sys.modules["piluitus.risk.risk_manager"]
+from risk.risk_manager import *  # noqa: F401,F403
+sys.modules[__name__] = sys.modules["risk.risk_manager"]
