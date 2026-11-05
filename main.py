@@ -1195,6 +1195,8 @@ _dashboard_balance_snapshot = {
     "single_position_cap": round(DEPOSIT * 0.05, 2),
     "unreconciled_positions_count": 0,
     "pnl": 0.0,
+    "realized_pnl": 0.0,
+    "open_pnl": 0.0,
     "active_positions_count": 0,
 }
 _balance_guard_last_signature: tuple[int, bool] | None = None
@@ -1233,11 +1235,11 @@ async def _get_dashboard_open_positions() -> list[dict]:
 async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = None) -> dict:
     """Build a non-mark-to-market dashboard snapshot.
 
-    The user's requested accounting is explicit: free balance = configured initial
-    deposit minus acquisition cost of currently open assets. The assets field uses
-    entry_price * quantity and therefore stays unchanged when market quotes move.
-    PnL remains a separate performance metric; open PnL is not added to these two
-    fields. ``equity`` is kept as an API compatibility alias for initial deposit.
+    Free cash = configured initial deposit + realized net PnL - acquisition cost
+    of currently open assets. The assets field uses entry_price * quantity and
+    therefore stays unchanged when market quotes move. Total PnL also includes
+    floating PnL from open positions. The original deposit remains unchanged for
+    risk limits; equity reports deposit plus total (realized + floating) PnL.
     """
     global _dashboard_balance_snapshot
     from portfolio_metrics import calculate_assets_used, calculate_free_balance
@@ -1259,6 +1261,20 @@ async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = Non
     except (TypeError, ValueError, OverflowError):
         pnl = 0.0
 
+    try:
+        realized_pnl = float(getattr(risk_manager, "realized_pnl", 0.0) or 0.0)
+        if not math.isfinite(realized_pnl):
+            realized_pnl = 0.0
+    except (TypeError, ValueError, OverflowError):
+        realized_pnl = 0.0
+
+    try:
+        open_pnl = float(getattr(risk_manager, "open_pnl", pnl - realized_pnl) or 0.0)
+        if not math.isfinite(open_pnl):
+            open_pnl = pnl - realized_pnl
+    except (TypeError, ValueError, OverflowError):
+        open_pnl = pnl - realized_pnl
+
     # Old PAPER positions are not restored as live simulated positions after a
     # restart. Until an operator reviews them, their saved acquisition cost stays
     # reserved and all new entries are blocked by ExecutionLayer.
@@ -1279,13 +1295,13 @@ async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = Non
         latest_prices=None,
         lot_sizes=LOT_SIZES,
     )
-    free_balance = calculate_free_balance(initial_deposit, assets_used)
+    free_balance = calculate_free_balance(initial_deposit + realized_pnl, assets_used)
     max_gross_pct = min(max(0.0, float(getattr(execution_engine, "max_gross_exposure_pct", 0.15))), 0.15)
     max_single_pct = min(max(0.0, float(getattr(execution_engine, "max_single_position_pct", 0.05))), 0.05)
     exposure_cap = round(initial_deposit * max_gross_pct, 2)
     single_position_cap = round(initial_deposit * max_single_pct, 2)
     _dashboard_balance_snapshot = {
-        "equity": round(initial_deposit, 2),
+        "equity": round(initial_deposit + pnl, 2),
         "initial_deposit": round(initial_deposit, 2),
         "free_margin": free_balance,
         "margin_used": round(assets_used, 2),
@@ -1294,6 +1310,8 @@ async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = Non
         "single_position_cap": single_position_cap,
         "unreconciled_positions_count": len(unresolved_positions),
         "pnl": round(pnl, 2),
+        "realized_pnl": round(realized_pnl, 2),
+        "open_pnl": round(open_pnl, 2),
         "active_positions_count": len(positions),
     }
 
