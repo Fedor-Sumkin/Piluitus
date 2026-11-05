@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
+from collections.abc import Mapping
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -60,11 +61,19 @@ def _event_epoch_seconds(value: object) -> float | None:
     """
     if value is None or isinstance(value, bool):
         return None
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         # Protobuf JSON Timestamp: seconds may be encoded as a decimal string.
+        raw_seconds = value.get("seconds")
+        raw_nanos = value.get("nanos", 0)
+        if not isinstance(raw_seconds, (int, float, str)) or isinstance(raw_seconds, bool):
+            return None
+        if raw_nanos is None:
+            raw_nanos = 0
+        if not isinstance(raw_nanos, (int, float, str)) or isinstance(raw_nanos, bool):
+            return None
         try:
-            seconds = float(value.get("seconds"))
-            nanos = float(value.get("nanos", 0) or 0.0)
+            seconds = float(raw_seconds)
+            nanos = float(raw_nanos)
         except (TypeError, ValueError):
             return None
         if not math.isfinite(seconds) or not math.isfinite(nanos):
