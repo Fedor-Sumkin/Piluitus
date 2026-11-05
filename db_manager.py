@@ -615,7 +615,7 @@ class DBManager:
                     continue
                 try:
                     trade = json.loads(raw)
-                    if trade.get("status") == "OPEN":
+                    if isinstance(trade, dict) and trade.get("status") == "OPEN":
                         order_id = key_str.split(":")[-1]
                         result[order_id] = trade
                 except json.JSONDecodeError:
