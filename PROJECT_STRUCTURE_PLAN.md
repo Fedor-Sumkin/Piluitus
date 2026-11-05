@@ -130,3 +130,27 @@ Piluitus/
 - `market_logger.py` использует относительный каталог `live_market_logs`; после переноса должен быть закреплён путь от корня проекта.
 - `rag_ai_distiller.py` жёстко задаёт PDF_DIR абсолютным Windows-путём и OUTPUT_FILE относительным путём. Перевести на PROJECT_ROOT и аргументы командной строки, сохранив значения по умолчанию.
 - `clear_redis.py` выполняет `FLUSHALL` без пароля/DB-параметра из полного Settings и без подтверждения. Это опасный сценарий; безопасное подтверждение и точный scope очистки должны быть добавлены отдельным осознанным изменением, не менять очистку автоматически в рамках простого перемещения.
+
+
+## Выполнено: первый этап перемещения служебных скриптов
+
+Ветка: `refactor/project-structure`.
+
+- Реализации `clear_redis.py` и `clean_rag.py` перенесены в `tools/maintenance/`.
+- Реализации `historical_downloader.py` и `history_to_rag.py` перенесены в `tools/data/`.
+- Реализации `rag_ai_distiller.py`, `merge_rules.py` и `inject_txt_reglement.py` перенесены в `tools/knowledge/`.
+- В прежних местах оставлены совместимые launchers, чтобы старые команды запуска продолжали работать.
+- Добавлен bootstrap корня проекта: утилиты могут импортировать корневые модули и запускаться независимо от текущей рабочей директории.
+- Пути этих утилит к историческим CSV, PDF, TXT и JSON теперь вычисляются относительно корня проекта, без жёсткой привязки к `C:\\projects\\Piluitus`.
+- `clear_redis.py` теперь по умолчанию ничего не очищает; для запуска требуется `--confirm`, используется `FLUSHDB` только выбранной базы, а не опасный `FLUSHALL`.
+
+Примеры новых команд:
+- `python tools/maintenance/clear_redis.py --help`
+- `python tools/maintenance/clean_rag.py`
+- `python tools/data/historical_downloader.py`
+- `python tools/data/history_to_rag.py`
+- `python tools/knowledge/rag_ai_distiller.py`
+- `python tools/knowledge/merge_rules.py`
+- `python tools/knowledge/inject_txt_reglement.py`
+
+Корневые compatibility-launchers оставлены намеренно. Перенос торговых runtime-модулей пока не выполнен: он требует отдельного прохода по статическим и динамическим импортам, чтобы сохранить единый экземпляр глобальных объектов и не нарушить запуск `python main.py`.
