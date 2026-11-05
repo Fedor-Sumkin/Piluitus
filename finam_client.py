@@ -1571,6 +1571,12 @@ class FinamBrokerClient:
                                                 )
                                             finally:
                                                 order_book_crossed_since.pop(invalid_ticker, None)
+                                    else:
+                                        # Missing-side/other invalid states are not a
+                                        # persistent crossed book; restart the timer if it
+                                        # becomes crossed again later.
+                                        order_book_crossed_since.pop(invalid_ticker, None)
+                                    if invalid_reason == "CROSSED_BBO":
                                         last_detail_log = self._crossed_bbo_log_last_at.get(invalid_ticker, 0.0)
                                         if now_monotonic - last_detail_log >= 15.0:
                                             self._crossed_bbo_log_last_at[invalid_ticker] = now_monotonic
