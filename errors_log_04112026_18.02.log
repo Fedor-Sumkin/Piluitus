@@ -1,3 +1,0 @@
-2026-11-04 18:40:49,794,794 [ERROR] [RUN=20261104_180221_6792_3bc50180] Piluitus.FinamGateway: Finam WebSocket отключён/не подключён: sent 1011 (internal error) keepalive ping timeout; no close frame received. Повтор через 1 сек.
-2026-11-04 18:40:53,231,231 [ERROR] [RUN=20261104_180221_6792_3bc50180] Piluitus.FinamGateway: Ошибка подписки/потока Finam: {'code': 4004, 'type': 'NOT_FOUND', 'message': 'Symbols are not found'}
-2026-11-04 18:41:08,712,712 [ERROR] [RUN=20261104_180221_6792_3bc50180] aiogram.dispatcher: Failed to fetch updates - TelegramNetworkError: HTTP Client says - Request timeout error
