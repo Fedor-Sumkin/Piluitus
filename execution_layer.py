@@ -13,8 +13,8 @@ from db_manager import DBManager
 import asyncio
 from uuid import uuid4
 
-# Лоты подтягиваются динамически из risk_manager.py (кэш Мосбиржи)
-from risk_manager import LOT_SIZES
+# Единый справочник лотности хранится в config.py.
+from config import LOT_SIZES
 
 logger = logging.getLogger("Piluitus.ExecutionLayer")
 
