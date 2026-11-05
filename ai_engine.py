@@ -418,6 +418,7 @@ class AIEngine:
             '0.75-0.89 all required entry checks confirmed; 0.50-0.74 mixed; below 0.50 weak. '
             f'candidate={direction}; ticker={str(ticker)[:10]}; price={cls._prompt_value(price, 12)}; '
             f'last_size={cls._prompt_value(volume, 10)}. '
+            'Candidate side is binding: BUY candidate allows BUY or HOLD only; SELL candidate allows SELL or HOLD only; NONE requires HOLD. Never invert the candidate. '
             'Required common checks: volume_spike>=1.5, valid BBO, spread<=0.5%. '
             f'{direction_rules} '
             'volume_spike=last trade size/prior mean. Missing or conflicting evidence means HOLD. '
