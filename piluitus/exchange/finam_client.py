@@ -555,7 +555,13 @@ class FinamBrokerClient:
             or payload.get("books")
         )
         if raw_books is None and (payload.get("symbol") or payload.get("ticker")):
-            if any(key in payload for key in ("rows", "bids", "asks", "levels")):
+            payload_snapshot_flag = bool(
+                payload.get(
+                    "is_data_snapshot",
+                    payload.get("is_snapshot", payload.get("isDataSnapshot", False)),
+                )
+            )
+            if any(key in payload for key in ("rows", "bids", "asks", "levels")) or payload_snapshot_flag:
                 raw_books = [payload]
         if isinstance(raw_books, dict):
             raw_books = [raw_books]
@@ -579,7 +585,25 @@ class FinamBrokerClient:
             raw_rows = raw_rows_obj if isinstance(raw_rows_obj, list) else []
             raw_bids = book.get("bids")
             raw_asks = book.get("asks")
-            if not (isinstance(raw_rows_obj, list) or isinstance(raw_bids, list) or isinstance(raw_asks, list)):
+            snapshot_flag = bool(
+                book.get(
+                    "is_data_snapshot",
+                    book.get(
+                        "is_snapshot",
+                        book.get("isDataSnapshot", payload.get("is_data_snapshot", payload.get("is_snapshot", False))),
+                    ),
+                )
+            )
+            has_level_payload = bool(
+                isinstance(raw_rows_obj, list)
+                or isinstance(raw_bids, list)
+                or isinstance(raw_asks, list)
+            )
+            # Finam may send an explicit empty snapshot after a session closes.
+            # It is authoritative evidence that the reconstructed book is empty,
+            # unlike a malformed/empty delta which must remain unrecognized.
+            empty_snapshot = bool(snapshot_flag and not has_level_payload)
+            if not has_level_payload and not empty_snapshot:
                 continue
             self._last_order_book_payload_valid = True
             state = self._order_book_state.setdefault(
@@ -621,17 +645,6 @@ class FinamBrokerClient:
             previous_bid = (max(bids), bids[max(bids)]) if bids else None
             previous_ask = (min(asks), asks[min(asks)]) if asks else None
 
-            # Finam's documented JSON field is is_data_snapshot (snake_case).
-            # Keep camelCase aliases for older/alternate gateways.
-            snapshot_flag = bool(
-                book.get(
-                    "is_data_snapshot",
-                    book.get(
-                        "is_snapshot",
-                        book.get("isDataSnapshot", payload.get("is_data_snapshot", payload.get("is_snapshot", False))),
-                    ),
-                )
-            )
             first_payload_for_symbol = not bool(state.get("initialized"))
             if snapshot_flag or first_payload_for_symbol:
                 bids.clear()
@@ -747,6 +760,46 @@ class FinamBrokerClient:
             fallback_timestamp = level_fallback_timestamp
             if fallback_timestamp is None or fallback_timestamp == "":
                 fallback_timestamp = datetime.now(timezone.utc).isoformat()
+
+            if empty_snapshot:
+                # An explicit empty snapshot clears both sides and invalidates the
+                # executable BBO. Never let the previous top-of-book survive a
+                # server-confirmed empty book (commonly sent after market close).
+                state["initialized"] = True
+                state["published_bid"] = None
+                state["published_ask"] = None
+                state["published_bid_timestamp"] = ""
+                state["published_ask_timestamp"] = ""
+                state["bid_bbo_timestamp"] = fallback_timestamp
+                state["ask_bbo_timestamp"] = fallback_timestamp
+                updates.append({
+                    "event_type": "ORDER_BOOK",
+                    "ticker": ticker,
+                    "bid": 0.0,
+                    "ask": 0.0,
+                    "bid_size": 0.0,
+                    "ask_size": 0.0,
+                    "bid_present": True,
+                    "ask_present": True,
+                    "bid_size_present": True,
+                    "ask_size_present": True,
+                    "bid_timestamp": fallback_timestamp,
+                    "ask_timestamp": fallback_timestamp,
+                    "bid_levels": [],
+                    "ask_levels": [],
+                    "bid_levels_present": True,
+                    "ask_levels_present": True,
+                    "order_book_timestamp": message_timestamp,
+                    "received_monotonic": received_monotonic,
+                    "timestamp_source": "ENVELOPE" if message_timestamp not in (None, "") else "RECEIVE_FALLBACK",
+                    "previous_bid": previous_bid[0] if previous_bid else None,
+                    "previous_ask": previous_ask[0] if previous_ask else None,
+                    "bid_side_touched": True,
+                    "ask_side_touched": True,
+                    "book_valid": False,
+                    "book_reason": "EMPTY_SNAPSHOT",
+                })
+                continue
 
             # Remember when the current best level became the BBO (including when
             # deletion of a better level exposed an older resting level). This is
