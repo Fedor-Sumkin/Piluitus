@@ -80,6 +80,7 @@ def test_new_knowledge_sources_keep_legacy_ignore_behavior() -> None:
     ignore = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
     assert "/data/knowledge/sources/" in ignore
 
+
 def test_domain_packages_live_at_project_root() -> None:
     package_names = (
         "ai", "exchange", "execution", "monitoring",
