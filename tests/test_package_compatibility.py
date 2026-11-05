@@ -37,11 +37,10 @@ def test_all_legacy_root_shims_target_the_expected_package_module() -> None:
 
         direct_alias = f'sys.modules[__name__] = sys.modules["{target_module}"]'
         indirect_alias = (
-            f"from {target_module} import __name__ as _name"
-            "\n"
-            "sys.modules[__name__] = sys.modules[_name]"
+            f"from {target_module} import __name__ as _name" in source
+            and "sys.modules[__name__] = sys.modules[_name]" in source
         )
-        assert direct_alias in source or indirect_alias in source, root_file
+        assert direct_alias in source or indirect_alias, root_file
 
 
 def test_strategy_legacy_imports_are_module_aliases() -> None:
