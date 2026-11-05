@@ -600,6 +600,8 @@ class DBManager:
     async def get_active_positions(self) -> dict:
         """Возвращает словарь {order_id: trade_dict, ...} только для OPEN позиций."""
         client = await RedisClient.get_client()
+        if client is None:
+            raise RuntimeError("DBManager: Redis-клиент недоступен при чтении активных позиций")
         pattern = "piluitus:trade:*"
         cursor: int = 0
         result: dict = {}
