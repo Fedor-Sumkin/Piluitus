@@ -8,6 +8,7 @@ from typing import Any
 import json
 import inspect
 import os
+import re
 import time
 import websockets
 import httpx
@@ -97,6 +98,8 @@ class FinamBrokerClient:
         # Finam publishes per-instrument session intervals; cache them by Moscow date.
         self._asset_schedule_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
         self._asset_schedule_locks: dict[str, asyncio.Lock] = {}
+        # Per-symbol throttle for detailed crossed-BBO diagnostics.
+        self._crossed_bbo_log_last_at: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # 1️⃣  CONNECT 
@@ -201,11 +204,59 @@ class FinamBrokerClient:
                     normalized_ticker, len(payload["sessions"]), cache_ttl,
                 )
                 return payload
-            except Exception as exc:
-                # Do not include request headers, URL credentials or response bodies in logs.
+            except httpx.HTTPStatusError as exc:
+                # Log the provider status and a redacted response hint so 401/403,
+                # 404, 429 and 5xx failures can be distinguished without exposing JWTs.
+                response = exc.response
+                try:
+                    response_payload = response.json()
+                    if isinstance(response_payload, (dict, list)):
+                        response_hint = json.dumps(
+                            self._redact_for_log(response_payload),
+                            ensure_ascii=False,
+                            separators=(",", ":"),
+                        )
+                    else:
+                        response_hint = str(response_payload)
+                except (ValueError, TypeError, json.JSONDecodeError):
+                    response_hint = response.text or ""
+                response_hint = re.sub(
+                    r"(?i)(bearer\\s+)[A-Za-z0-9._~+/=-]+", r"\\1<redacted>", response_hint
+                )
+                response_hint = re.sub(
+                    r"(?i)(\"?(?:access[_-]?token|refresh[_-]?token|token|authorization|password|secret|api[_-]?key)\"?\\s*[:=]\\s*\"?)[^\"\\s&,}]+",
+                    r"\\1<redacted>", response_hint,
+                )
+                response_hint = re.sub(r"\\s+", " ", response_hint).strip()[:400]
+                request_id = (
+                    response.headers.get("x-request-id")
+                    or response.headers.get("x-correlation-id")
+                    or response.headers.get("request-id")
+                    or "unavailable"
+                )
                 self._asset_schedule_cache[cache_key] = (time.monotonic(), None)
                 logger.warning(
-                    "Не удалось получить расписание Finam для %s (%s); новые входы заблокированы.",
+                    "Не удалось получить расписание Finam для %s: HTTP %s %s; "
+                    "request_id=%s; content_type=%s; response=%s; новые входы заблокированы.",
+                    normalized_ticker,
+                    response.status_code,
+                    response.reason_phrase,
+                    request_id,
+                    response.headers.get("content-type", "unknown"),
+                    response_hint or "<empty>",
+                )
+                return None
+            except httpx.RequestError as exc:
+                self._asset_schedule_cache[cache_key] = (time.monotonic(), None)
+                logger.warning(
+                    "Сетевая ошибка при получении расписания Finam для %s (%s); новые входы заблокированы.",
+                    normalized_ticker, type(exc).__name__,
+                )
+                return None
+            except Exception as exc:
+                self._asset_schedule_cache[cache_key] = (time.monotonic(), None)
+                logger.warning(
+                    "Неожиданная ошибка при получении расписания Finam для %s (%s); новые входы заблокированы.",
                     normalized_ticker, type(exc).__name__,
                 )
                 return None
@@ -703,6 +754,12 @@ class FinamBrokerClient:
                     "order_book_timestamp": message_timestamp,
                     "received_monotonic": received_monotonic,
                     "timestamp_source": "ENVELOPE" if message_timestamp not in (None, "") else "RECEIVE_FALLBACK",
+                    "previous_bid": previous_bid[0] if previous_bid else None,
+                    "previous_ask": previous_ask[0] if previous_ask else None,
+                    "bid_changed_in_book": bid_changed_in_book,
+                    "ask_changed_in_book": ask_changed_in_book,
+                    "bid_best_level_touched": best_bid_touched,
+                    "ask_best_level_touched": best_ask_touched,
                     "book_valid": False,
                     "book_reason": "CROSSED_BBO",
                 })
@@ -1374,6 +1431,42 @@ class FinamBrokerClient:
                                     order_book_invalid_by_ticker[invalid_ticker_reason] = (
                                         order_book_invalid_by_ticker.get(invalid_ticker_reason, 0) + 1
                                     )
+                                    if invalid_reason == "CROSSED_BBO":
+                                        now_monotonic = time.monotonic()
+                                        last_detail_log = self._crossed_bbo_log_last_at.get(invalid_ticker, 0.0)
+                                        if now_monotonic - last_detail_log >= 15.0:
+                                            self._crossed_bbo_log_last_at[invalid_ticker] = now_monotonic
+                                            bid_price = float(book_update.get("bid") or 0.0)
+                                            ask_price = float(book_update.get("ask") or 0.0)
+                                            midpoint = (bid_price + ask_price) / 2.0
+                                            crossed_bps = (
+                                                (bid_price - ask_price) / midpoint * 10000.0
+                                                if midpoint > 0.0 else 0.0
+                                            )
+                                            bid_depth = book_update.get("bid_levels")
+                                            ask_depth = book_update.get("ask_levels")
+                                            bid_top = bid_depth[:3] if isinstance(bid_depth, list) else []
+                                            ask_top = ask_depth[:3] if isinstance(ask_depth, list) else []
+                                            logger.warning(
+                                                "[ORDER_BOOK CROSSED_BBO] %s: Bid=%.6f x %s, Ask=%.6f x %s; "
+                                                "cross=%.2f bps; previous Bid/Ask=%s/%s; "
+                                                "best-level-touched Bid/Ask=%s/%s; top3 Bid=%s Ask=%s; "
+                                                "event_timestamp=%s; timestamp_source=%s.",
+                                                invalid_ticker,
+                                                bid_price,
+                                                book_update.get("bid_size"),
+                                                ask_price,
+                                                book_update.get("ask_size"),
+                                                crossed_bps,
+                                                book_update.get("previous_bid"),
+                                                book_update.get("previous_ask"),
+                                                book_update.get("bid_best_level_touched"),
+                                                book_update.get("ask_best_level_touched"),
+                                                bid_top,
+                                                ask_top,
+                                                book_update.get("order_book_timestamp"),
+                                                book_update.get("timestamp_source", "UNKNOWN"),
+                                            )
                                 elif not has_bbo_side_update:
                                     order_book_valid_no_bbo_delta += 1
                                 try:
