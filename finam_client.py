@@ -221,13 +221,13 @@ class FinamBrokerClient:
                 except (ValueError, TypeError, json.JSONDecodeError):
                     response_hint = response.text or ""
                 response_hint = re.sub(
-                    r"(?i)(bearer\\s+)[A-Za-z0-9._~+/=-]+", r"\\1<redacted>", response_hint
+                    r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1<redacted>", response_hint
                 )
                 response_hint = re.sub(
-                    r"(?i)(\"?(?:access[_-]?token|refresh[_-]?token|token|authorization|password|secret|api[_-]?key)\"?\\s*[:=]\\s*\"?)[^\"\\s&,}]+",
-                    r"\\1<redacted>", response_hint,
+                    r"(?i)(\"?(?:access[_-]?token|refresh[_-]?token|token|authorization|password|secret|api[_-]?key)\"?\s*[:=]\s*\"?)[^\"\s&,}]+",
+                    r"\1<redacted>", response_hint,
                 )
-                response_hint = re.sub(r"\\s+", " ", response_hint).strip()[:400]
+                response_hint = re.sub(r"\s+", " ", response_hint).strip()[:400]
                 request_id = (
                     response.headers.get("x-request-id")
                     or response.headers.get("x-correlation-id")
@@ -758,8 +758,12 @@ class FinamBrokerClient:
                     "previous_ask": previous_ask[0] if previous_ask else None,
                     "bid_changed_in_book": bid_changed_in_book,
                     "ask_changed_in_book": ask_changed_in_book,
+                    "bid_side_touched": bool(bid_rows_touched),
+                    "ask_side_touched": bool(ask_rows_touched),
                     "bid_best_level_touched": best_bid_touched,
                     "ask_best_level_touched": best_ask_touched,
+                    "bid_touched_levels": sorted(bid_rows_touched.keys(), reverse=True)[:3],
+                    "ask_touched_levels": sorted(ask_rows_touched.keys())[:3],
                     "book_valid": False,
                     "book_reason": "CROSSED_BBO",
                 })
@@ -1450,7 +1454,8 @@ class FinamBrokerClient:
                                             logger.warning(
                                                 "[ORDER_BOOK CROSSED_BBO] %s: Bid=%.6f x %s, Ask=%.6f x %s; "
                                                 "cross=%.2f bps; previous Bid/Ask=%s/%s; "
-                                                "best-level-touched Bid/Ask=%s/%s; top3 Bid=%s Ask=%s; "
+                                                "side-touched Bid/Ask=%s/%s; best-level-touched=%s/%s; "
+                                                "delta-levels Bid=%s Ask=%s; top3 Bid=%s Ask=%s; "
                                                 "event_timestamp=%s; timestamp_source=%s.",
                                                 invalid_ticker,
                                                 bid_price,
@@ -1460,8 +1465,12 @@ class FinamBrokerClient:
                                                 crossed_bps,
                                                 book_update.get("previous_bid"),
                                                 book_update.get("previous_ask"),
+                                                book_update.get("bid_side_touched"),
+                                                book_update.get("ask_side_touched"),
                                                 book_update.get("bid_best_level_touched"),
                                                 book_update.get("ask_best_level_touched"),
+                                                book_update.get("bid_touched_levels"),
+                                                book_update.get("ask_touched_levels"),
                                                 bid_top,
                                                 ask_top,
                                                 book_update.get("order_book_timestamp"),
