@@ -1079,13 +1079,12 @@ def _store_pending_bbo_candidate(
     received_monotonic: object | None = None,
 ) -> None:
     now = time_module.monotonic()
-    try:
-        received_at = float(received_monotonic) if received_monotonic is not None else now
-        if not math.isfinite(received_at) or received_at <= 0.0 or received_at > now + 0.05:
-            received_at = now
-        received_at = min(now, received_at)
-    except (TypeError, ValueError, OverflowError):
+    received_at = _parse_finite_float(received_monotonic)
+    if received_at is None:
         received_at = now
+    if not math.isfinite(received_at) or received_at <= 0.0 or received_at > now + 0.05:
+        received_at = now
+    received_at = min(now, received_at)
     entry = {"created_at": received_at, "payload": payload}
     with _pending_bbo_lock:
         _pending_bbo_candidates[str(ticker).upper()] = entry
