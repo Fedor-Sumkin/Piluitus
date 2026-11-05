@@ -147,7 +147,9 @@ class RiskManager:
         # Контур ОЗУ-метрик, которые теперь восстанавливаются из Redis
         self.current_equity = initial_deposit
         self.free_margin = initial_deposit
-        self.total_session_pnl = 0.0  
+        self.total_session_pnl = 0.0
+        self.realized_pnl = 0.0
+        self.open_pnl = 0.0
         
         self.max_risk_per_trade = max_risk_per_trade
         self.daily_loss_limit = daily_loss_limit
@@ -262,7 +264,8 @@ class RiskManager:
             journal = await db.get_active_positions()
             history = await redis_inst.lrange("piluitus:trade_history", 0, -1)
             total_daily_pnl_rub = 0.0
-            total_session_pnl_rub = 0.0
+            total_open_pnl_rub = 0.0
+            total_realized_pnl_rub = 0.0
 
             def _trade_date(trade: dict) -> date | None:
                 for field in ("exit_timestamp", "entry_timestamp", "timestamp", "closed_at", "created_at"):
@@ -288,7 +291,7 @@ class RiskManager:
                         position_pnl = float(trade.get("pnl", 0.0) or 0.0)
                     except (TypeError, ValueError):
                         position_pnl = 0.0
-                    total_session_pnl_rub += position_pnl
+                    total_open_pnl_rub += position_pnl
                     if trade_date is None or trade_date == today:
                         total_daily_pnl_rub += position_pnl
 
@@ -296,7 +299,7 @@ class RiskManager:
                 try:
                     open_pnl = float(self.open_pnl_provider())
                     if math.isfinite(open_pnl):
-                        total_session_pnl_rub += open_pnl
+                        total_open_pnl_rub += open_pnl
                         total_daily_pnl_rub += open_pnl
                 except Exception as provider_exc:
                     risk_logger.warning("Не удалось получить текущий PnL открытых PAPER-позиций: %s", provider_exc)
@@ -310,21 +313,29 @@ class RiskManager:
                         if not isinstance(trade, dict):
                             continue
                         trade_pnl = float(trade.get("pnl", 0.0) or 0.0)
-                        total_session_pnl_rub += trade_pnl
+                        total_realized_pnl_rub += trade_pnl
                         if _trade_date(trade) == today:
                             total_daily_pnl_rub += trade_pnl
                     except (TypeError, ValueError, json.JSONDecodeError):
                         continue
 
-            # 3. Обновляем equity по суммарному PnL журнала, не обнуляя прошлые
-            # дни; дневную блокировку при этом проверяем отдельно ниже.
+            # 3. Разделяем реализованный и плавающий PnL.
+            # Свободные средства = стартовый депозит + реализованный PnL
+            # минус себестоимость открытых позиций. Плавающий PnL входит
+            # в equity/общую доходность, но не изменяет денежный остаток
+            # до фактического закрытия позиции.
+            self.realized_pnl = round(total_realized_pnl_rub, 2)
+            self.open_pnl = round(total_open_pnl_rub, 2)
+            total_session_pnl_rub = total_realized_pnl_rub + total_open_pnl_rub
             self.total_session_pnl = round(total_session_pnl_rub, 2)
             self.current_equity = round(self.initial_deposit + total_session_pnl_rub, 2)
             if self.open_assets_cost_provider is not None:
                 try:
                     assets_cost = float(self.open_assets_cost_provider())
                     if math.isfinite(assets_cost) and assets_cost >= 0.0:
-                        self.free_margin = round(self.initial_deposit - assets_cost, 2)
+                        self.free_margin = round(
+                            self.initial_deposit + self.realized_pnl - assets_cost, 2
+                        )
                     else:
                         self.free_margin = 0.0
                 except Exception as provider_exc:
@@ -338,7 +349,9 @@ class RiskManager:
             balance_state_payload = {
                 "equity": self.current_equity,
                 "free_margin": self.free_margin,
-                "pnl": self.total_session_pnl
+                "pnl": self.total_session_pnl,
+                "realized_pnl": self.realized_pnl,
+                "open_pnl": self.open_pnl
             }
             await redis_inst.set("piluitus:risk:balance_state", json.dumps(balance_state_payload))
 
