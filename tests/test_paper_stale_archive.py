@@ -79,9 +79,13 @@ class StalePaperArchiveTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored["entry_price"], 37.0)
         self.assertNotIn("exit_price", stored)
         self.assertNotIn("pnl", stored)
+        self.assertIn(f"piluitus:trade:{position_id}", redis.values)
         self.assertEqual(len(redis.lists["piluitus:trade_history"]), 1)
-        self.assertEqual(len(redis.lists["active_orders"]), 1)
-        self.assertEqual(json.loads(redis.lists["active_orders"][0])["id"], "LIVE_order")
+        self.assertEqual(len(redis.lists["piluitus:active_orders"]), 1)
+        self.assertEqual(
+            json.loads(redis.lists["piluitus:active_orders"][0])["id"],
+            "LIVE_order",
+        )
 
         snapshot = await db.get_paper_session_snapshot()
         self.assertEqual(snapshot["paper_stale_count"], 0)
