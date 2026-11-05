@@ -17,7 +17,7 @@ load_dotenv()
 API_TOKEN = os.getenv("FINAM_TOKEN")
 
 BASE_URL = "https://api.finam.ru"
-CSV_DIR = str(PROJECT_ROOT / "historical_ticks")
+CSV_DIR = str(PROJECT_ROOT / "data" / "historical_ticks")
 os.makedirs(CSV_DIR, exist_ok=True)
 
 DAYS_BACK = 90

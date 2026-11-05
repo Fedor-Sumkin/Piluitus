@@ -2,6 +2,9 @@
 venv/
 .venv/
 __pycache__/
+**/__pycache__/
+*.py[cod]
 trading_logs/
-import_knowledge/
-historical_ticks/
+live_market_logs/
+/import_knowledge/
+data/historical_ticks/

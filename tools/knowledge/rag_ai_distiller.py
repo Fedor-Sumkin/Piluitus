@@ -14,7 +14,7 @@ from pypdf import PdfReader
 from ollama import AsyncClient
 
 # --- НАСТРОЙКИ ПУТЕЙ ---
-PDF_DIR = str(PROJECT_ROOT / "import_knowledge")
+PDF_DIR = str(PROJECT_ROOT / "data" / "knowledge" / "sources")
 OUTPUT_FILE = str(PROJECT_ROOT / "purified_book_rules.json")
 
 DISTILLER_SYSTEM_PROMPT = """

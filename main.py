@@ -2453,7 +2453,8 @@ async def http_update_risk_limit(payload: dict = Body(...)):
 #  8️⃣  FastAPI ROUTING & WEBSOCKET ENDPOINT
 # --------------------------------------------------------------
 BASE_DIR = PROJECT_ROOT
-templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+TEMPLATE_DIR = BASE_DIR / "interface" / "templates"
+templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 PAPER_CLEAR_CONFIRMATION = "ОЧИСТИТЬ PAPER-СЕССИЮ"
 
 
@@ -2481,7 +2482,7 @@ async def _broadcast_paper_tables() -> None:
 
 @app.get("/maintenance", response_class=HTMLResponse)
 async def read_maintenance_page():
-    page_path = BASE_DIR / "templates" / "maintenance.html"
+    page_path = TEMPLATE_DIR / "maintenance.html"
     if not page_path.is_file():
         return HTMLResponse("<h1>maintenance.html не найден</h1>", status_code=404)
     return FileResponse(page_path)
@@ -2872,10 +2873,10 @@ async def resume_paper_session():
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
-    index_path = BASE_DIR / "templates" / "index.html"          
+    index_path = TEMPLATE_DIR / "index.html"          
     if not index_path.is_file():
         return HTMLResponse(
-            content="<h1>404 – index.html не найден</h1><p>Поместите файл в папку templates.</p>",
+            content="<h1>404 – index.html не найден</h1><p>Поместите файл в папку interface/templates.</p>",
             status_code=404,
         )
     return FileResponse(index_path)
