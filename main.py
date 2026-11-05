@@ -721,8 +721,8 @@ def _current_paper_open_pnl() -> float:
         if not isinstance(position, dict) or str(position.get("status", "OPEN")).upper() != "OPEN":
             continue
         try:
-            value = float(position.get("pnl", 0.0) or 0.0)
-            if value == value and abs(value) != float("inf"):
+            value = _parse_finite_float(position.get("pnl", 0.0))
+            if value is not None:
                 total += value
         except (TypeError, ValueError):
             continue
