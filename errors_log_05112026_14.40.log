@@ -1,3 +1,0 @@
-2026-11-05 14:42:08,903 [ERROR] [RUN=20261105_144034_22196_3145cd24] Piluitus.FinamGateway: Finam WebSocket отключён/не подключён: sent 1011 (internal error) keepalive ping timeout; no close frame received. Повтор через 1 сек.
-2026-11-05 14:43:08,226 [ERROR] [RUN=20261105_144034_22196_3145cd24] Piluitus.FinamGateway: Finam WebSocket отключён/не подключён: sent 1011 (internal error) keepalive ping timeout; no close frame received. Повтор через 1 сек.
-2026-11-05 14:43:11,307 [ERROR] [RUN=20261105_144034_22196_3145cd24] Piluitus.FinamGateway: Ошибка подписки/потока Finam: {'code': 4004, 'type': 'NOT_FOUND', 'message': 'Symbols are not found'}
