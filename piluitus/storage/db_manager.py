@@ -18,9 +18,10 @@ from datetime import datetime
 from typing import Any, List, Optional, Union, cast
 
 import redis.asyncio as redis                     # pip install redis‑asyncio
-from config import Settings                       # ваш Settings‑класс (см. config.py)
+from config import PROJECT_ROOT, Settings       # единый корень проекта и настройки
 
 log = logging.getLogger(__name__)   # под именем "Piluitus.DBManager"
+AOF_FILE = str(PROJECT_ROOT / "piluitus_fallback_aof.jsonl")
 
 
 # ----------------------------------------------------------------------
@@ -31,7 +32,7 @@ class _InMemory:
     Самый лёгкий in‑memory‑мок, имитирующий методы redis‑клиента.
     Защищен от потери данных при рестарте через механизм локального AOF-логирования.
     """
-    def __init__(self, aof_path: str = "piluitus_fallback_aof.jsonl") -> None:
+    def __init__(self, aof_path: str = AOF_FILE) -> None:
         self._store: dict[str, Any] = {}
         self.aof_path = aof_path
         self._lock = asyncio.Lock()  # Защита от race conditions при параллельной HFT-записи
