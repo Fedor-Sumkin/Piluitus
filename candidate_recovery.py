@@ -12,6 +12,8 @@ from typing import Any
 
 
 def _finite(value: object, default: float = 0.0) -> float:
+    if not isinstance(value, (int, float, str)) or isinstance(value, bool):
+        return default
     try:
         number = float(value)
     except (TypeError, ValueError, OverflowError):
