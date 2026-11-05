@@ -65,15 +65,27 @@ def _event_epoch_seconds(value: object) -> float | None:
         # Protobuf JSON Timestamp: seconds may be encoded as a decimal string.
         raw_seconds = value.get("seconds")
         raw_nanos = value.get("nanos", 0)
-        if not isinstance(raw_seconds, (int, float, str)) or isinstance(raw_seconds, bool):
+        if isinstance(raw_seconds, bool):
+            return None
+        if isinstance(raw_seconds, str):
+            seconds_raw = raw_seconds
+        elif isinstance(raw_seconds, (int, float)):
+            seconds_raw = raw_seconds
+        else:
             return None
         if raw_nanos is None:
-            raw_nanos = 0
-        if not isinstance(raw_nanos, (int, float, str)) or isinstance(raw_nanos, bool):
+            nanos_raw: int | float | str = 0
+        elif isinstance(raw_nanos, bool):
+            return None
+        elif isinstance(raw_nanos, str):
+            nanos_raw = raw_nanos
+        elif isinstance(raw_nanos, (int, float)):
+            nanos_raw = raw_nanos
+        else:
             return None
         try:
-            seconds = float(raw_seconds)
-            nanos = float(raw_nanos)
+            seconds = float(seconds_raw)
+            nanos = float(nanos_raw)
         except (TypeError, ValueError):
             return None
         if not math.isfinite(seconds) or not math.isfinite(nanos):
