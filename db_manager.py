@@ -21,6 +21,7 @@ import redis.asyncio as redis                     # pip install redis‑asyncio
 from config import Settings                       # ваш Settings‑класс (см. config.py)
 
 log = logging.getLogger(__name__)   # под именем "Piluitus.DBManager"
+DB_MANAGER_BUILD_ID = "paper-stale-archive-2026-11-05-r2"
 
 
 # ----------------------------------------------------------------------
@@ -554,6 +555,22 @@ class DBManager:
                 archived_trade_keys.append(key)
                 archived_ids.add(fallback_id)
 
+            # Read back every archived payload before touching active-order references.
+            # A storage backend that silently drops a write must never be treated as
+            # a successful reconciliation/resume.
+            for trade_id in archived_ids:
+                archived_key = f"piluitus:trade:{trade_id}"
+                persisted = self._decode_json_value(await client.get(archived_key))
+                if (
+                    not isinstance(persisted, dict)
+                    or str(persisted.get("status", "")).upper() != "STALE_ARCHIVED"
+                    or str(persisted.get("reconciliation_status", "")).upper() != "ARCHIVED_UNRESOLVED"
+                ):
+                    raise RuntimeError(
+                        f"Не удалось подтвердить архивирование PAPER-позиции {trade_id}; "
+                        "исходная запись не удаляется, PAPER должен остаться на паузе."
+                    )
+
             # Remove only stale PAPER references from active_orders. Full records
             # remain durable and available for audit.
             orders_raw = await self._read_list_raw(client, "piluitus:active_orders")
@@ -604,7 +621,13 @@ class DBManager:
         Вызывать один раз при старте приложения (см. main.py).
         """
         self._redis = await RedisClient.get_client()
-        log.info("✅ DBManager: соединение с Redis готово")
+        log.info(
+            "✅ DBManager: соединение готово; build=%s module=%s file=%s backend=%s",
+            DB_MANAGER_BUILD_ID,
+            __name__,
+            __file__,
+            "fallback_aof" if isinstance(self._redis, _InMemory) else "redis_compatible",
+        )
 
     @property
     def _client(self) -> Union[redis.Redis, _InMemory]:
