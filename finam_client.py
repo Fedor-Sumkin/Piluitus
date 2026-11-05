@@ -1078,6 +1078,7 @@ class FinamBrokerClient:
                     # or rejected delta. Request a fresh snapshot for that symbol only.
                     order_book_crossed_since: dict[str, float] = {}
                     order_book_crossed_last_recovery: dict[str, float] = {}
+                    order_book_crossed_last_attempt: dict[str, float] = {}
                     try:
                         crossed_recovery_sec = min(
                             30.0,
@@ -1092,6 +1093,13 @@ class FinamBrokerClient:
                         )
                     except (TypeError, ValueError, OverflowError):
                         crossed_recovery_cooldown_sec = 60.0
+                    try:
+                        crossed_recovery_retry_sec = min(
+                            30.0,
+                            max(1.0, float(os.getenv("FINAM_ORDER_BOOK_CROSSED_RECOVERY_RETRY_SEC", "5.0"))),
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        crossed_recovery_retry_sec = 5.0
                     last_open_position_symbols: set[str] = set()
                     order_book_unattributed_messages = 0
                     order_book_unattributed_sample = ""
@@ -1522,20 +1530,24 @@ class FinamBrokerClient:
                                         )
                                         symbol = f"{invalid_ticker}@MISX"
                                         last_recovery = order_book_crossed_last_recovery.get(invalid_ticker, 0.0)
-                                        if (
-                                            symbol in order_book_subscribed
-                                            and _crossed_bbo_recovery_due(
-                                                now_monotonic,
-                                                crossed_since,
-                                                last_recovery,
-                                                crossed_recovery_sec,
-                                                crossed_recovery_cooldown_sec,
-                                            )
-                                        ):
-                                            # Force a fresh subscription snapshot. The crossed
-                                            # BBO is still enqueued as invalid below; no fill can
-                                            # use it while the new book is being assembled.
-                                            order_book_crossed_last_recovery[invalid_ticker] = now_monotonic
+                                        last_attempt = order_book_crossed_last_attempt.get(invalid_ticker, 0.0)
+                                        recovery_due = _crossed_bbo_recovery_due(
+                                            now_monotonic,
+                                            crossed_since,
+                                            last_recovery,
+                                            crossed_recovery_sec,
+                                            crossed_recovery_cooldown_sec,
+                                        )
+                                        retry_due = (
+                                            now_monotonic >= last_attempt
+                                            and now_monotonic - last_attempt >= crossed_recovery_retry_sec
+                                        )
+                                        if symbol in order_book_subscribed and recovery_due and retry_due:
+                                            # Keep the desired-subscription marker in place while
+                                            # resubscribing. If either WS send fails, the next
+                                            # retry must still be eligible instead of being
+                                            # permanently gated by a discarded subscription.
+                                            order_book_crossed_last_attempt[invalid_ticker] = now_monotonic
                                             try:
                                                 await ws.send(json.dumps({
                                                     "action": "UNSUBSCRIBE",
@@ -1543,8 +1555,6 @@ class FinamBrokerClient:
                                                     "data": {"symbol": symbol},
                                                     "token": self.jwt_token,
                                                 }))
-                                                order_book_subscribed.discard(symbol)
-                                                order_book_subscribed_since.pop(symbol, None)
                                                 self._order_book_state.pop(invalid_ticker, None)
                                                 await ws.send(json.dumps({
                                                     "action": "SUBSCRIBE",
@@ -1552,25 +1562,26 @@ class FinamBrokerClient:
                                                     "data": {"symbol": symbol},
                                                     "token": self.jwt_token,
                                                 }))
-                                                order_book_subscribed.add(symbol)
                                                 order_book_subscribed_since[symbol] = time.monotonic()
+                                                order_book_crossed_last_recovery[invalid_ticker] = time.monotonic()
+                                                order_book_crossed_since.pop(invalid_ticker, None)
                                                 logger.warning(
                                                     "🔄 [ORDER_BOOK CROSSED_RECOVERY] %s: crossed BBO persisted %.1fs; "
-                                                    "requested a fresh ORDER_BOOK snapshot. Execution remains blocked "
-                                                    "until a valid BBO; cooldown=%.0fs.",
+                                                    "fresh ORDER_BOOK snapshot requested. Execution remains blocked "
+                                                    "until a valid BBO; cooldown=%.0fs, retry=%.1fs.",
                                                     invalid_ticker,
                                                     now_monotonic - crossed_since,
                                                     crossed_recovery_cooldown_sec,
+                                                    crossed_recovery_retry_sec,
                                                 )
                                             except Exception as recovery_exc:
                                                 logger.error(
                                                     "[ORDER_BOOK CROSSED_RECOVERY] %s: resubscribe failed: %s. "
-                                                    "BBO remains invalid.",
+                                                    "Crossed timer retained; retry in %.1fs; BBO remains invalid.",
                                                     invalid_ticker,
                                                     recovery_exc,
+                                                    crossed_recovery_retry_sec,
                                                 )
-                                            finally:
-                                                order_book_crossed_since.pop(invalid_ticker, None)
                                     else:
                                         # Missing-side/other invalid states are not a
                                         # persistent crossed book; restart the timer if it
