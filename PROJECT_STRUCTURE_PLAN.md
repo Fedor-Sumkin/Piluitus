@@ -154,3 +154,23 @@ Piluitus/
 - `python tools/knowledge/inject_txt_reglement.py`
 
 Корневые compatibility-launchers оставлены намеренно. Перенос торговых runtime-модулей пока не выполнен: он требует отдельного прохода по статическим и динамическим импортам, чтобы сохранить единый экземпляр глобальных объектов и не нарушить запуск `python main.py`.
+
+
+## Выполнено: перенос основных модулей в пакеты
+
+В корне оставлены совместимые import-shims. Они перенаправляют импорт на исходный объект модуля внутри пакета, чтобы старые импорты из `main.py`, тестов и динамических загрузчиков продолжали получать один и тот же экземпляр модуля.
+
+Перенесены:
+- `piluitus/exchange/`: `finam_client.py`.
+- `piluitus/strategy/`: `screener.py`, `screener_funnel.py`, `minute_bar_patterns.py`, `signal_guard.py`, `candidate_recovery.py`.
+- `piluitus/ai/`: `ai_engine.py`, `vllm_client.py`, `rag_prompt_utils.py`, `knowledge_parser.py`, `news_parser.py`, `dashboard_verdicts.py`.
+- `piluitus/risk/`: `risk_manager.py`, `risk_limits.py`.
+- `piluitus/execution/`: `execution_layer.py`.
+- `piluitus/storage/`: `db_manager.py`.
+- `piluitus/portfolio/`: `portfolio_metrics.py`, `pnl_exporter.py`.
+- `piluitus/monitoring/`: `market_logger.py`.
+- `interface/`: `tg_bot.py`.
+
+`main.py` и `config.py` оставлены в корне как точки входа и единая конфигурация. `templates/` и данные пока не перемещались: пути к ним используются несколькими частями приложения, и сначала нужно завершить проверку всех потребителей. `evolution_agent.py` оставлен в корне до отдельной проверки его назначения и использования.
+
+Это перенос с обратной совместимостью, а не одномоментная перепись импортов: старые абсолютные импорты продолжают работать через shims, новые модули доступны через пакетные пути.
