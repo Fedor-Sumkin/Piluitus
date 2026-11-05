@@ -154,6 +154,8 @@ class RiskManager:
         self.total_session_pnl = 0.0
         self.realized_pnl = 0.0
         self.open_pnl = 0.0
+        self.open_entry_commission = 0.0
+        self.accounting_period_start: datetime | None = None
         
         self.max_risk_per_trade = max_risk_per_trade
         self.daily_loss_limit = daily_loss_limit
@@ -165,6 +167,7 @@ class RiskManager:
         # Optional in-process unrealized PnL provider (wired to PAPER positions by main.py).
         self.open_pnl_provider: Callable[[], float] | None = None
         self.open_assets_cost_provider: Callable[[], float] | None = None
+        self.open_entry_commission_provider: Callable[[], float] | None = None
 
     @classmethod
     async def update_finam_lot_sizes(cls, finam_broker_client=None):
@@ -248,8 +251,95 @@ class RiskManager:
                         configured_deposit,
                     )
 
-                # Сохраняем значение для совместимости со старыми читателями,
-                # но источником истины остаётся config/.env.
+                # Separate this configured deposit from PnL accumulated before
+                # the account-period start. Historical rows remain stored for audit.
+                period_key = "piluitus:risk:accounting_period"
+                saved_period_raw = await redis_inst.get(period_key)
+                if isinstance(saved_period_raw, (bytes, bytearray)):
+                    saved_period_raw = saved_period_raw.decode("utf-8", errors="replace")
+                saved_period = None
+                if isinstance(saved_period_raw, str):
+                    try:
+                        decoded_period = json.loads(saved_period_raw)
+                        if isinstance(decoded_period, dict):
+                            saved_period = decoded_period
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        saved_period = None
+
+                def _parse_period_datetime(raw: object) -> datetime | None:
+                    if raw is None:
+                        return None
+                    try:
+                        if isinstance(raw, (int, float)):
+                            stamp = float(raw)
+                            if not math.isfinite(stamp):
+                                return None
+                            if stamp > 1_000_000_000_000:
+                                stamp /= 1000.0
+                            return datetime.fromtimestamp(stamp).astimezone()
+                        value = str(raw).strip()
+                        if not value:
+                            return None
+                        try:
+                            stamp = float(value)
+                            if math.isfinite(stamp) and stamp > 0:
+                                if stamp > 1_000_000_000_000:
+                                    stamp /= 1000.0
+                                return datetime.fromtimestamp(stamp).astimezone()
+                        except ValueError:
+                            pass
+                        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                        return parsed.astimezone() if parsed.tzinfo else parsed.astimezone()
+                    except (TypeError, ValueError, OverflowError, OSError):
+                        return None
+
+                saved_period_deposit = None
+                if saved_period is not None:
+                    try:
+                        saved_period_deposit = float(saved_period.get("initial_deposit"))
+                    except (TypeError, ValueError, OverflowError):
+                        saved_period_deposit = None
+                saved_period_start = (
+                    _parse_period_datetime(saved_period.get("start_timestamp"))
+                    if saved_period is not None else None
+                )
+                period_matches = (
+                    saved_period_start is not None
+                    and saved_period_deposit is not None
+                    and math.isfinite(saved_period_deposit)
+                    and math.isclose(saved_period_deposit, configured_deposit, rel_tol=0.0, abs_tol=0.01)
+                )
+                if period_matches:
+                    self.accounting_period_start = saved_period_start
+                    risk_logger.info(
+                        "📆 [ACCOUNTING PERIOD] Продолжен период с %s; стартовый депозит=%.2f ₽.",
+                        self.accounting_period_start.isoformat(timespec="seconds"),
+                        configured_deposit,
+                    )
+                else:
+                    self.accounting_period_start = datetime.now().astimezone()
+                    reason = (
+                        "deposit_changed"
+                        if saved_period_start is not None and saved_period_deposit is not None
+                        else "period_initialized"
+                    )
+                    period_payload = {
+                        "version": 1,
+                        "period_id": self.accounting_period_start.strftime("%Y%m%dT%H%M%S%z"),
+                        "start_timestamp": self.accounting_period_start.isoformat(timespec="milliseconds"),
+                        "initial_deposit": round(configured_deposit, 2),
+                        "reason": reason,
+                    }
+                    await redis_inst.set(period_key, json.dumps(period_payload, ensure_ascii=False))
+                    risk_logger.warning(
+                        "📆 [ACCOUNTING PERIOD] Начат новый учётный период: start=%s, deposit=%.2f ₽, "
+                        "reason=%s. Исторические сделки сохранены, но не входят в PnL нового периода.",
+                        self.accounting_period_start.isoformat(timespec="seconds"),
+                        configured_deposit,
+                        reason,
+                    )
+
+                # Compatibility key for older readers; config remains authoritative.
                 await redis_inst.set(
                     "piluitus:risk:persistent_balance",
                     f"{configured_deposit:.2f}",
@@ -264,17 +354,46 @@ class RiskManager:
             total_open_pnl_rub = 0.0
             total_realized_pnl_rub = 0.0
 
-            def _trade_date(trade: dict) -> date | None:
-                for field in ("exit_timestamp", "entry_timestamp", "timestamp", "closed_at", "created_at"):
+            def _trade_datetime(trade: dict) -> datetime | None:
+                # Closed trades use exit_timestamp first. Legacy Unix timestamps
+                # in seconds and milliseconds are supported as well.
+                for field in ("exit_timestamp", "closed_at", "timestamp", "entry_timestamp", "created_at"):
                     raw = trade.get(field)
-                    if not raw:
+                    if raw is None or raw == "":
                         continue
                     try:
-                        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-                        return parsed.date()
-                    except (TypeError, ValueError):
+                        if isinstance(raw, (int, float)):
+                            stamp = float(raw)
+                            if not math.isfinite(stamp):
+                                continue
+                            if stamp > 1_000_000_000_000:
+                                stamp /= 1000.0
+                            return datetime.fromtimestamp(stamp).astimezone()
+                        value = str(raw).strip()
+                        try:
+                            stamp = float(value)
+                            if math.isfinite(stamp) and stamp > 0:
+                                if stamp > 1_000_000_000_000:
+                                    stamp /= 1000.0
+                                return datetime.fromtimestamp(stamp).astimezone()
+                        except ValueError:
+                            pass
+                        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                        return parsed.astimezone() if parsed.tzinfo else parsed.astimezone()
+                    except (TypeError, ValueError, OverflowError, OSError):
                         continue
                 return None
+
+            accounting_period_start = self.accounting_period_start
+            if accounting_period_start is None:
+                risk_logger.critical("Учётный период не инициализирован; новые сделки блокируются.")
+                self.block_trading = True
+                self._blocked_date = today
+                return False
+
+            def _is_in_accounting_period(trade: dict) -> bool:
+                trade_dt = _trade_datetime(trade)
+                return trade_dt is not None and trade_dt >= accounting_period_start
 
             # PAPER: in-memory monitor is authoritative for floating PnL. Redis
             # OPEN rows describe the same positions and must not be added again.
@@ -283,13 +402,15 @@ class RiskManager:
                 for trade in journal.values():
                     if not isinstance(trade, dict):
                         continue
-                    trade_date = _trade_date(trade)
+                    if not _is_in_accounting_period(trade):
+                        continue
+                    trade_date = _trade_datetime(trade).date()
                     try:
                         position_pnl = float(trade.get("pnl", 0.0) or 0.0)
                     except (TypeError, ValueError):
                         position_pnl = 0.0
                     total_open_pnl_rub += position_pnl
-                    if trade_date is None or trade_date == today:
+                    if trade_date == today:
                         total_daily_pnl_rub += position_pnl
 
             if self.open_pnl_provider is not None:
@@ -309,9 +430,12 @@ class RiskManager:
                         trade = json.loads(raw_trade) if isinstance(raw_trade, str) else raw_trade
                         if not isinstance(trade, dict):
                             continue
+                        if not _is_in_accounting_period(trade):
+                            continue
                         trade_pnl = float(trade.get("pnl", 0.0) or 0.0)
                         total_realized_pnl_rub += trade_pnl
-                        if _trade_date(trade) == today:
+                        trade_dt = _trade_datetime(trade)
+                        if trade_dt is not None and trade_dt.date() == today:
                             total_daily_pnl_rub += trade_pnl
                     except (TypeError, ValueError, json.JSONDecodeError):
                         continue
@@ -323,6 +447,18 @@ class RiskManager:
             # до фактического закрытия позиции.
             self.realized_pnl = round(total_realized_pnl_rub, 2)
             self.open_pnl = round(total_open_pnl_rub, 2)
+            open_entry_commission = 0.0
+            if self.open_entry_commission_provider is not None:
+                try:
+                    candidate_fee = float(self.open_entry_commission_provider())
+                    if math.isfinite(candidate_fee) and candidate_fee >= 0.0:
+                        open_entry_commission = candidate_fee
+                except Exception as provider_exc:
+                    risk_logger.warning(
+                        "Не удалось получить оплаченные комиссии открытых PAPER-позиций: %s",
+                        provider_exc,
+                    )
+            self.open_entry_commission = round(open_entry_commission, 4)
             total_session_pnl_rub = total_realized_pnl_rub + total_open_pnl_rub
             self.total_session_pnl = round(total_session_pnl_rub, 2)
             self.current_equity = round(self.initial_deposit + total_session_pnl_rub, 2)
@@ -331,7 +467,8 @@ class RiskManager:
                     assets_cost = float(self.open_assets_cost_provider())
                     if math.isfinite(assets_cost) and assets_cost >= 0.0:
                         self.free_margin = round(
-                            self.initial_deposit + self.realized_pnl - assets_cost, 2
+                            self.initial_deposit + self.realized_pnl
+                            - assets_cost - self.open_entry_commission, 2
                         )
                     else:
                         self.free_margin = 0.0
@@ -348,7 +485,12 @@ class RiskManager:
                 "free_margin": self.free_margin,
                 "pnl": self.total_session_pnl,
                 "realized_pnl": self.realized_pnl,
-                "open_pnl": self.open_pnl
+                "open_pnl": self.open_pnl,
+                "open_entry_commission": self.open_entry_commission,
+                "accounting_period_start": (
+                    self.accounting_period_start.isoformat(timespec="seconds")
+                    if self.accounting_period_start is not None else None
+                ),
             }
             await redis_inst.set("piluitus:risk:balance_state", json.dumps(balance_state_payload))
 

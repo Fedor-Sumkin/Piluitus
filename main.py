@@ -750,11 +750,26 @@ def _current_paper_assets_cost() -> float:
     return calculate_assets_used(positions, lot_sizes=LOT_SIZES)
 
 
+def _current_paper_open_entry_commission() -> float:
+    """Entry commissions already paid for currently open in-memory PAPER positions."""
+    if not getattr(execution_engine, "paper_mode", True):
+        return 0.0
+    total = 0.0
+    for position in getattr(execution_engine, "paper_positions", {}).values():
+        if not isinstance(position, dict) or str(position.get("status", "OPEN")).upper() != "OPEN":
+            continue
+        fee = _parse_finite_float(position.get("entry_commission_rub", 0.0))
+        if fee is not None and fee > 0.0:
+            total += fee
+    return round(total, 4)
+
+
 # In PAPER, in-memory positions are the live source of floating PnL and book cost.
 # Avoid adding the same OPEN journal rows a second time from Redis.
 if execution_engine.paper_mode:
     risk_manager.open_pnl_provider = _current_paper_open_pnl
     risk_manager.open_assets_cost_provider = _current_paper_assets_cost
+    risk_manager.open_entry_commission_provider = _current_paper_open_entry_commission
 
 # Глобальные кэши и лимиты ОЗУ под High-Load тики
 last_ai_verdicts_cache: list[dict[str, Any]] = []
@@ -1197,6 +1212,7 @@ _dashboard_balance_snapshot = {
     "initial_deposit": round(DEPOSIT, 2),
     "free_margin": round(DEPOSIT, 2),
     "margin_used": 0.0,
+    "open_entry_commission": 0.0,
     "exposure_cap": round(DEPOSIT * 0.15, 2),
     "exposure_cap_pct": 0.15,
     "single_position_cap": round(DEPOSIT * 0.05, 2),
@@ -1302,7 +1318,12 @@ async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = Non
         latest_prices=None,
         lot_sizes=LOT_SIZES,
     )
-    free_balance = calculate_free_balance(initial_deposit + realized_pnl, assets_used)
+    open_entry_commission = _current_paper_open_entry_commission()
+    free_balance = round(
+        calculate_free_balance(initial_deposit + realized_pnl, assets_used)
+        - open_entry_commission,
+        2,
+    )
     max_gross_pct = min(max(0.0, float(getattr(execution_engine, "max_gross_exposure_pct", 0.15))), 0.15)
     max_single_pct = min(max(0.0, float(getattr(execution_engine, "max_single_position_pct", 0.05))), 0.05)
     exposure_cap = round(initial_deposit * max_gross_pct, 2)
@@ -1312,6 +1333,7 @@ async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = Non
         "initial_deposit": round(initial_deposit, 2),
         "free_margin": free_balance,
         "margin_used": round(assets_used, 2),
+        "open_entry_commission": round(open_entry_commission, 4),
         "exposure_cap": exposure_cap,
         "exposure_cap_pct": max_gross_pct,
         "single_position_cap": single_position_cap,
@@ -2828,8 +2850,9 @@ async def cleanup_stale_and_resume_paper_session():
             "status": "ok",
             "maintenance_active": False,
             "message": (
-                "STALE_REVIEW-записи удалены. PAPER-конвейер автоматически возобновлён; "
-                "закрытая история, вердикты, риск-состояние и текущие позиции в памяти сохранены."
+                "STALE_REVIEW-записи архивированы без фиктивного закрытия. PAPER-конвейер автоматически "
+                "возобновлён; полные карточки архивных позиций, закрытая история, вердикты, риск-состояние "
+                "и текущие позиции в памяти сохранены."
             ),
             "storage": storage_result,
             "memory": {"removed_stale_positions": removed_memory_stale},
@@ -2841,8 +2864,8 @@ async def cleanup_stale_and_resume_paper_session():
             },
         }
         logger.warning(
-            "🧹 [PAPER STALE CLEANUP + RESUME] deleted=%d; memory_stale=%d; PAPER resumed.",
-            storage_result.get("deleted_stale_positions", 0), removed_memory_stale,
+            "🗃️ [PAPER STALE ARCHIVE + RESUME] archived=%d; memory_stale=%d; PAPER resumed.",
+            storage_result.get("archived_stale_positions", 0), removed_memory_stale,
         )
         return result
 

@@ -395,8 +395,9 @@ class DBManager:
             "paper_trade_count": len(paper_trades),
             "paper_open_count": sum(1 for row in paper_trades if str(row.get("status", "")).upper() == "OPEN"),
             "paper_stale_count": sum(1 for row in paper_trades if str(row.get("status", "")).upper() == "STALE_REVIEW"),
+            "paper_archived_count": sum(1 for row in paper_trades if str(row.get("status", "")).upper() == "STALE_ARCHIVED"),
             "paper_closed_count": sum(1 for row in paper_trades if str(row.get("status", "")).upper() == "CLOSED"),
-            "paper_other_count": sum(1 for row in paper_trades if str(row.get("status", "")).upper() not in {"OPEN", "STALE_REVIEW", "CLOSED"}),
+            "paper_other_count": sum(1 for row in paper_trades if str(row.get("status", "")).upper() not in {"OPEN", "STALE_REVIEW", "STALE_ARCHIVED", "CLOSED"}),
             "live_trade_count": live_trade_count,
             "other_trade_count": other_trade_count,
             "paper_history_count": paper_history_count,
@@ -486,29 +487,32 @@ class DBManager:
             return result
 
     async def clear_unreconciled_paper_positions(self) -> dict:
-        """Delete only PAPER records explicitly quarantined as STALE_REVIEW.
+        """Archive PAPER records explicitly quarantined as STALE_REVIEW.
 
-        Closed PAPER history, verdicts, risk snapshots, LIVE records and all other
-        storage keys are preserved. The corresponding active_orders references
-        are removed by ID so stale entries cannot be rediscovered as active.
+        Full trade payloads remain in piluitus:trade:<id> for audit. Only the
+        corresponding active_orders references are removed so archived positions
+        cannot be rediscovered as active.
         """
         async with self._paper_session_lock:
             client = await self._get_client()
             snapshot = await self.get_paper_session_snapshot()
-            stale_ids = {
-                str(row.get("id") or "").strip()
-                for row in snapshot.get("paper_trades", [])
+            stale_rows = [
+                row for row in snapshot.get("paper_trades", [])
                 if isinstance(row, dict)
                 and str(row.get("status", "")).upper() == "STALE_REVIEW"
                 and str(row.get("reconciliation_status", "")).upper() == "REVIEW_REQUIRED"
                 and str(row.get("id") or "").strip()
-            }
+            ]
+            stale_ids = {str(row.get("id")).strip() for row in stale_rows}
             if not stale_ids:
                 return {
+                    "archived_stale_positions": 0,
+                    "archived_trade_keys": 0,
                     "deleted_stale_positions": 0,
                     "deleted_trade_keys": 0,
                     "deleted_active_order_rows": 0,
                     "position_ids": [],
+                    "preserved_paper_trade_keys": snapshot["paper_trade_count"],
                     "preserved_paper_history_rows": snapshot["paper_history_count"],
                     "preserved_verdict_history_rows": snapshot["verdict_history_count"],
                     "preserved_verdict_execution_keys": snapshot["verdict_execution_count"],
@@ -519,24 +523,39 @@ class DBManager:
                     "aof_compacted": False,
                 }
 
-            matching_trade_keys: list[str] = []
+            now = datetime.now().astimezone().isoformat(timespec="milliseconds")
+            archived_trade_keys: list[str] = []
+            archived_ids: set[str] = set()
             for key in await self._scan_matching_keys(client, "piluitus:trade:*"):
                 fallback_id = key.rsplit(":", 1)[-1]
                 if fallback_id not in stale_ids:
                     continue
                 trade = self._decode_json_value(await client.get(key))
                 if (
-                    self.is_paper_trade(trade, fallback_id)
-                    and isinstance(trade, dict)
-                    and str(trade.get("status", "")).upper() == "STALE_REVIEW"
-                    and str(trade.get("reconciliation_status", "")).upper() == "REVIEW_REQUIRED"
+                    not self.is_paper_trade(trade, fallback_id)
+                    or not isinstance(trade, dict)
+                    or str(trade.get("status", "")).upper() != "STALE_REVIEW"
+                    or str(trade.get("reconciliation_status", "")).upper() != "REVIEW_REQUIRED"
                 ):
-                    matching_trade_keys.append(key)
+                    continue
 
-            deleted_trade_keys = (
-                await client.delete(*matching_trade_keys) if matching_trade_keys else 0
-            )
+                archived_trade = dict(trade)
+                archived_trade.update({
+                    "status": "STALE_ARCHIVED",
+                    "archived_from_status": "STALE_REVIEW",
+                    "reconciliation_status": "ARCHIVED_UNRESOLVED",
+                    "archived_at": now,
+                    "archive_reason": (
+                        "Оператор выбрал архивирование без фиктивного закрытия. "
+                        "Позиция не получила искусственную цену выхода или PnL."
+                    ),
+                })
+                await client.set(key, json.dumps(archived_trade, ensure_ascii=False))
+                archived_trade_keys.append(key)
+                archived_ids.add(fallback_id)
 
+            # Remove only stale PAPER references from active_orders. Full records
+            # remain durable and available for audit.
             orders_raw = await self._read_list_raw(client, "piluitus:active_orders")
             kept_orders: list[str] = []
             removed_order_rows = 0
@@ -547,7 +566,7 @@ class DBManager:
                     continue
                 nested = item.get("data") if isinstance(item.get("data"), dict) else item
                 fallback_id = str(item.get("id") or nested.get("id") or "").strip()
-                if fallback_id in stale_ids and self.is_paper_trade(nested, fallback_id):
+                if fallback_id in archived_ids and self.is_paper_trade(nested, fallback_id):
                     removed_order_rows += 1
                     continue
                 kept_orders.append(raw)
@@ -560,10 +579,13 @@ class DBManager:
                 aof_compacted = True
 
             result = {
-                "deleted_stale_positions": len(matching_trade_keys),
-                "deleted_trade_keys": int(deleted_trade_keys),
+                "archived_stale_positions": len(archived_ids),
+                "archived_trade_keys": len(archived_trade_keys),
+                "deleted_stale_positions": 0,
+                "deleted_trade_keys": 0,
                 "deleted_active_order_rows": removed_order_rows,
-                "position_ids": sorted(stale_ids),
+                "position_ids": sorted(archived_ids),
+                "preserved_paper_trade_keys": snapshot["paper_trade_count"],
                 "preserved_paper_history_rows": snapshot["paper_history_count"],
                 "preserved_verdict_history_rows": snapshot["verdict_history_count"],
                 "preserved_verdict_execution_keys": snapshot["verdict_execution_count"],
@@ -573,7 +595,7 @@ class DBManager:
                 "storage_backend": snapshot["storage_backend"],
                 "aof_compacted": aof_compacted,
             }
-            log.warning("🧹 STALE_REVIEW PAPER positions removed; other PAPER history preserved: %s", result)
+            log.warning("🗃️ STALE_REVIEW PAPER positions archived; full trade records and other history preserved: %s", result)
             return result
 
     async def connect(self) -> None:

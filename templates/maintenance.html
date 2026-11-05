@@ -50,9 +50,9 @@
 
   <section class="panel">
     <h2>Быстрая очистка сверки и запуск PAPER</h2>
-    <div class="notice danger"><b>Только для тестовых PAPER-сессий.</b> Кнопка удаляет исключительно записи со статусом STALE_REVIEW / REVIEW_REQUIRED и связанные с ними строки active_orders. Закрытая история PAPER, история вердиктов, риск-состояние, текущие открытые позиции в памяти, база знаний RAG, новости и LIVE-данные сохраняются. Цена выхода и фиктивный PnL не создаются.</div>
+    <div class="notice danger"><b>Только для тестовых PAPER-сессий.</b> Кнопка переводит исключительно записи со статусом STALE_REVIEW / REVIEW_REQUIRED в архив, сохраняя полные карточки сделок; связанные с ними строки active_orders удаляются. Закрытая история PAPER, история вердиктов, риск-состояние, текущие открытые позиции в памяти, база знаний RAG, новости и LIVE-данные сохраняются. Цена выхода и фиктивный PnL не создаются.</div>
     <p class="muted">После удаления записей автоматическая сверка хранилища выполняется повторно, затем PAPER-конвейер возобновляется. Если обнаружена незавершённая операция, LIVE-записи или оставшиеся STALE_REVIEW, запуск не выполняется, а сессия остаётся на паузе.</p>
-    <div class="field"><button id="cleanup-stale-resume-btn" class="warn" disabled>Удалить STALE_REVIEW и запустить PAPER</button></div>
+    <div class="field"><button id="cleanup-stale-resume-btn" class="warn" disabled>Архивировать STALE_REVIEW и запустить PAPER</button></div>
     <div id="cleanup-stale-result" class="result hidden"></div>
   </section>
 
@@ -98,6 +98,7 @@
       stat("PAPER-записей", number(summary.paper_trade_count)),
       stat("Открытых в журнале", number(summary.paper_open_count)),
       stat("STALE_REVIEW", number(summary.paper_stale_count)),
+      stat("Архив старых позиций", number(summary.paper_archived_count)),
       stat("Закрытых PAPER", number(summary.paper_closed_count)),
       stat("История сделок PAPER", number(summary.paper_history_count)),
       stat("PAPER active_orders", number(summary.paper_active_order_count)),
@@ -163,7 +164,7 @@
       const cleanupBtn=$("cleanup-stale-resume-btn");
       const hasLive=!!(summary.live_trade_count || summary.live_history_count || summary.live_active_order_count);
       cleanupBtn.disabled=hasLive || !(Number(summary.paper_stale_count)>0);
-      cleanupBtn.textContent="Удалить STALE_REVIEW и запустить PAPER";
+      cleanupBtn.textContent="Архивировать STALE_REVIEW и запустить PAPER";
     } catch(err) {
       $("storage-note").textContent=err.message; $("storage-note").className="notice danger";
       $("stale-body").innerHTML="<tr><td colspan='5'>Не удалось загрузить журнал.</td></tr>";
@@ -177,7 +178,7 @@
       const data=await api("/api/v1/paper/reconciliation");
       const staleCount=(data.stale_positions||[]).length;
       const actionText=staleCount
-        ? "Удалить только "+staleCount+" записей STALE_REVIEW и автоматически возобновить PAPER? Закрытая история, вердикты, риск-состояние и текущие открытые позиции в памяти будут сохранены."
+        ? "Архивировать "+staleCount+" записей STALE_REVIEW и автоматически возобновить PAPER? Полные карточки позиций и закрытая история будут сохранены; фиктивное закрытие и PnL не создаются."
         : "STALE_REVIEW нет. Возобновить PAPER-сессию?";
       if (!confirm(actionText)) return;
       const result=await api("/api/v1/paper/session/cleanup-stale-and-resume",{method:"POST",body:"{}"});
