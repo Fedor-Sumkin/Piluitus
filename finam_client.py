@@ -83,6 +83,8 @@ class FinamBrokerClient:
         self.ws_endpoint = f"wss://{self.host}/ws"
         self.jwt_token = ""
         self.headers: dict[str, str] = {}
+        # Serializes JWT refreshes triggered by concurrent REST requests.
+        self._auth_refresh_lock = asyncio.Lock()
         self.is_demo = is_demo
         self.client: Any = None
         self.is_ws_running = False
@@ -130,6 +132,43 @@ class FinamBrokerClient:
         }
         logger.info("Авторизация Finam Trade API подтверждена.")
 
+    async def _refresh_auth_if_unchanged(self, rejected_token: str) -> bool:
+        """Refresh the REST JWT once when a request proves the current token is rejected.
+
+        Concurrent 401 responses share one refresh: requests that observed the old
+        token reuse the newly issued JWT instead of repeatedly authenticating.
+        """
+        async with self._auth_refresh_lock:
+            if self.jwt_token and self.jwt_token != rejected_token:
+                return True
+            try:
+                await self.connect()
+            except Exception as exc:
+                logger.warning(
+                    "Не удалось обновить JWT Finam после HTTP 401 (%s).",
+                    type(exc).__name__,
+                )
+                return False
+            return bool(self.jwt_token)
+
+    async def _request_asset_schedule(
+        self, url: str, jwt_token: str
+    ) -> dict[str, Any]:
+        """Fetch one schedule using the supplied JWT."""
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.get(
+                url,
+                headers={
+                    "Authorization": f"Bearer {jwt_token}",
+                    "Accept": "application/json",
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Finam schedule response is not a JSON object")
+        return payload
+
     async def get_asset_schedule(self, ticker: str) -> dict[str, Any] | None:
         """Return the authenticated Finam schedule for one MOEX instrument.
 
@@ -169,17 +208,24 @@ class FinamBrokerClient:
             if cached is not None and now - cached[0] < (cache_ttl if cached[1] is not None else failure_cache_ttl):
                 return cached[1]
             url = f"{self.base_url}/v1/assets/{url_quote(symbol, safe='@')}/schedule"
+            request_jwt = self.jwt_token
             try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    response = await client.get(
-                        url,
-                        headers={
-                            "Authorization": f"Bearer {self.jwt_token}",
-                            "Accept": "application/json",
-                        },
+                try:
+                    payload = await self._request_asset_schedule(url, request_jwt)
+                except httpx.HTTPStatusError as auth_exc:
+                    if auth_exc.response.status_code != 401:
+                        raise
+                    # Finam access JWTs expire while a long-lived WebSocket may
+                    # continue streaming. Renew the JWT and retry this REST call once.
+                    logger.warning(
+                        "Finam отклонил REST JWT для расписания %s (HTTP 401); "
+                        "обновляем сессию и повторяем запрос один раз.",
+                        normalized_ticker,
                     )
-                    response.raise_for_status()
-                    payload = response.json()
+                    if not await self._refresh_auth_if_unchanged(request_jwt):
+                        raise
+                    payload = await self._request_asset_schedule(url, self.jwt_token)
+
                 if not isinstance(payload, dict) or not isinstance(payload.get("sessions"), list):
                     self._asset_schedule_cache[cache_key] = (time.monotonic(), None)
                     logger.warning(
