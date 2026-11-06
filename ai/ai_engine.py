@@ -231,7 +231,7 @@ class AIEngine:
             raw_decision = str(parsed.get("final_decision", "HOLD")).strip().upper()
             # The model is an approval critic, never the owner of trade direction.
             # BUY/SELL responses are legacy contract violations and fail closed.
-            model_contract_violation = raw_decision in {"BUY", "SELL"}
+            model_contract_violation = raw_decision not in {"APPROVE", "HOLD"}
             decision = raw_decision if raw_decision in {"APPROVE", "HOLD"} else "HOLD"
 
             raw_confidence = parsed.get("confidence_score")
@@ -254,6 +254,7 @@ class AIEngine:
                 "error_type": None,
                 "final_decision": decision,
                 "model_decision": decision,
+                "model_raw_decision": raw_decision,
                 "model_contract_violation": model_contract_violation,
                 "confidence_score": confidence,
                 "confidence_valid": confidence_valid,

@@ -200,7 +200,7 @@ class BaseExecutionEngine:
         try:
             cooldown = float(
                 stop_loss_cooldown_sec if stop_loss_cooldown_sec is not None
-                else os.getenv("PILUITUS_STOP_LOSS_COOLDOWN_SEC", "60")
+                else os.getenv("PILUITUS_STOP_LOSS_COOLDOWN_SEC", "180")
             )
             self.stop_loss_cooldown_sec = max(0.0, cooldown) if math.isfinite(cooldown) else 180.0
         except (TypeError, ValueError):
@@ -262,7 +262,7 @@ class BaseExecutionEngine:
 
         logger.info(
             "🛡️ [PORTFOLIO GUARD] capital=%.2f ₽ gross_cap=%.0f%% single_position_cap=%.0f%% "
-            "stop_cooldown=%.0fs repeat_SL=%d/%0.fs->%.0fs shadow_BE=%s@%.2fR",
+            "stop_cooldown=%.0fs repeat_SL=%d/%.0fs->%.0fs shadow_BE=%s@%.2fR",
             self.initial_capital,
             self.max_gross_exposure_pct * 100,
             self.max_single_position_pct * 100,

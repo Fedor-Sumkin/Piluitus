@@ -2013,13 +2013,14 @@ class MarketWorker:
                     decision = candidate_direction
                 else:
                     decision = "HOLD"
-                    if model_decision in {"BUY", "SELL"} or model_contract_violation:
+                    if model_decision != "HOLD" or model_contract_violation:
                         model_contract_violation = True
                         _trade_flow_inc("llm_contract_violation")
                         logger.error(
                             "🛑 [LLM CONTRACT] %s: модель вернула %s вместо APPROVE/HOLD; "
                             "локальный кандидат=%s, вход запрещён.",
-                            ticker, model_decision, candidate_direction or "NONE",
+                            ticker, ai_analysis.get("model_raw_decision", model_decision),
+                            candidate_direction or "NONE",
                         )
                 ai_analysis["model_decision"] = model_decision
                 ai_analysis["final_decision"] = decision
