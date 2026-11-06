@@ -463,12 +463,13 @@ class HFTMemoryScreener:
         fresh_old_drop = old_drop >= 50.0 and old_drop_at > 0.0 and now - old_drop_at <= self.size_signal_ttl_sec
 
         if size <= 0.0:
-            quote[size_key] = 0.0
-            quote[f"{side}_size_current"] = 0.0
-            quote[f"{side}_size_baseline"] = float(np.median([
+            prior_sizes = [
                 float(value) for ts, value in history
                 if now - float(ts) <= 60.0 and float(value) > 0.0
-            ])) if history else 0.0
+            ]
+            quote[size_key] = 0.0
+            quote[f"{side}_size_current"] = 0.0
+            quote[f"{side}_size_baseline"] = float(np.median(prior_sizes)) if prior_sizes else 0.0
             quote[seen_key] = 0.0
             quote[drop_key] = 0.0
             quote[drop_at_key] = 0.0
