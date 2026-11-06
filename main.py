@@ -2029,7 +2029,11 @@ class MarketWorker:
                 elif model_decision == "HOLD":
                     _trade_flow_inc("llm_model_hold")
                 model_contract_violation = bool(ai_analysis.get("model_contract_violation", False))
-                if model_decision == "APPROVE" and candidate_direction in {"BUY", "SELL"}:
+                if (
+                    model_decision == "APPROVE"
+                    and candidate_direction in {"BUY", "SELL"}
+                    and not model_contract_violation
+                ):
                     decision = candidate_direction
                 else:
                     decision = "HOLD"
