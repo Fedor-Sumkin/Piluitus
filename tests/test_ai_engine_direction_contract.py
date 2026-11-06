@@ -69,6 +69,20 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertTrue(result["model_contract_violation"])
         self.assertEqual(result["finish_reason"], "length")
 
+    def test_approval_without_valid_confidence_is_contract_violation(self) -> None:
+        engine = object.__new__(AIEngine)
+        result = engine._cpu_intensive_processing({
+            "choices": [{
+                "message": {"content": '{"final_decision":"APPROVE","confidence_score":"unknown"}'},
+                "finish_reason": "stop",
+            }]
+        })
+
+        self.assertEqual(result["final_decision"], "HOLD")
+        self.assertEqual(result["model_raw_decision"], "APPROVE")
+        self.assertTrue(result["model_contract_violation"])
+        self.assertFalse(result["confidence_valid"])
+
     def test_valid_hold_is_not_a_contract_violation(self) -> None:
         result = AIEngine._cpu_intensive_processing({
             "choices": [{
