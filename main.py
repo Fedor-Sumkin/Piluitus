@@ -42,6 +42,7 @@ from execution_layer import BaseExecutionEngine
 from risk_manager import RiskManager
 from signal_guard import validate_signal_evidence, infer_candidate_direction, validate_atr_readiness
 from candidate_recovery import refresh_candidate_bbo_metrics
+from scalping_strategy import evaluate_scalping_candidate
 from dashboard_verdicts import (
     build_verdict_explanation,
     finite_float,
@@ -975,6 +976,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "orders_opened_buy", "orders_opened_sell", "guard_blocked",
         "guard_quotes", "guard_spread", "guard_volume", "guard_direction", "guard_size",
         "guard_text", "guard_other", "confidence_blocked", "risk_blocked", "zero_lot",
+        "strategy_shadow_evaluated", "strategy_shadow_pass", "strategy_shadow_reject",
         "orders_scheduled", "orderbook_updates", "orderbook_unusable",
         "orderbook_side_touches", "orderbook_heartbeats", "orderbook_invalid",
         "orderbook_out_of_order", "active_position_skipped", "atr_unready_candidates",
@@ -1014,6 +1016,8 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "после_LLM_исполнение: portfolio_cap_block=%(portfolio_cap_blocked)d, "
         "portfolio_size_reduced=%(portfolio_size_reduced)d, entry_session_block=%(entry_session_blocked)d, "
         "other_block=%(execution_other_blocked)d; "
+        "strategy_shadow=%(strategy_shadow_pass)d/%(strategy_shadow_evaluated)d pass "
+        "(reject=%(strategy_shadow_reject)d); "
         "confidence=%(confidence_blocked)d, RiskManager_pre_LLM=%(risk_blocked)d, "
         "минимальный_лот_по_риску=%(zero_lot)d, BBO_entry_block=%(execution_bbo_blocked)d, "
         "ордеров_принято/открыто=%(orders_scheduled)d",
@@ -1073,6 +1077,24 @@ def _log_prefilter_blocked(ticker: str, reason: str, *, interval_sec: float = 15
         "⏭️ [PRE-LLM FILTER] %s пропущен до запроса LLM (%s): %s",
         ticker, bucket, reason,
     )
+
+
+def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -> dict[str, Any]:
+    """Log a research-only strategy score; it never changes the baseline order path."""
+    result = evaluate_scalping_candidate(direction, metrics)
+    _trade_flow_inc("strategy_shadow_evaluated")
+    _trade_flow_inc("strategy_shadow_pass" if result.get("eligible") else "strategy_shadow_reject")
+    components = result.get("components", {})
+    logger.info(
+        "🧪 [STRATEGY SHADOW] %s side=%s eligible=%s score=%.1f/%.0f regime=%s "
+        "queue_imbalance=%s spread_ATR=%s hard_blocks=%s reasons=%s",
+        ticker, direction, bool(result.get("eligible")), float(result.get("score", 0.0)),
+        float(result.get("threshold", 70.0)), result.get("regime", "UNKNOWN"),
+        result.get("queue_imbalance"), result.get("spread_atr_ratio"),
+        ",".join(result.get("hard_blocks", [])) or "-",
+        ",".join(result.get("reasons", [])) or "-",
+    )
+    return result
 
 
 def _reserve_ai_ticker(ticker: str) -> bool:
@@ -1208,6 +1230,7 @@ async def _resume_pending_bbo_candidate(ticker: str) -> None:
         _trade_flow_inc("direction_prefilter_skipped")
         return
 
+    _log_scalping_shadow(key, direction, metrics)
     evidence_ok, evidence_reason = validate_signal_evidence(direction, metrics)
     if not evidence_ok:
         if _guard_reason_bucket(evidence_reason) == "quotes":
@@ -1671,6 +1694,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                     )
                 else:
                     _trade_flow_inc("local_candidate_buy" if candidate_direction == "BUY" else "local_candidate_sell")
+                    _log_scalping_shadow(ticker, candidate_direction, metrics_payload)
                     evidence_ok, evidence_reason = validate_signal_evidence(candidate_direction, metrics_payload)
                     if not evidence_ok:
                         if _guard_reason_bucket(evidence_reason) == "quotes":

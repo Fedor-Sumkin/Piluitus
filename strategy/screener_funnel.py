@@ -1018,6 +1018,18 @@ class HFTMemoryScreener:
             ask_drop_at = float(quote.get("ask_size_drop_at", 0.0) or 0.0)
             bid_drop_age = now - bid_drop_at if bid_drop_at > 0.0 else -1.0
             ask_drop_age = now - ask_drop_at if ask_drop_at > 0.0 else -1.0
+            queue_size_total = current_bid_size + current_ask_size
+            queue_imbalance_available = bool(
+                quote.get("order_book_valid", False)
+                and current_bid_size > 0.0
+                and current_ask_size > 0.0
+                and queue_size_total > 0.0
+            )
+            queue_imbalance = (
+                (current_bid_size - current_ask_size) / queue_size_total
+                if queue_imbalance_available else 0.0
+            )
+            queue_imbalance_age = max(bid_size_age, ask_size_age)
             metrics: dict[str, Any] = {
                 "current_price": float(price),
                 "vwap": float(vwap),
@@ -1040,6 +1052,10 @@ class HFTMemoryScreener:
                 "ask_size_age_sec": round(ask_size_age, 3) if math.isfinite(ask_size_age) else -1.0,
                 "bid_size_available": float(current_bid_size > 0),
                 "ask_size_available": float(current_ask_size > 0),
+                "order_book_valid": float(bool(quote.get("order_book_valid", False))),
+                "queue_imbalance_available": float(queue_imbalance_available),
+                "queue_imbalance": float(queue_imbalance),
+                "queue_imbalance_age_sec": round(queue_imbalance_age, 3) if math.isfinite(queue_imbalance_age) else -1.0,
                 "bid_ask_available": float(bbo_fresh),
                 "bid_quote_age_sec": round(bid_age, 3) if math.isfinite(bid_age) else -1.0,
                 "ask_quote_age_sec": round(ask_age, 3) if math.isfinite(ask_age) else -1.0,

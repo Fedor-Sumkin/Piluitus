@@ -1689,9 +1689,20 @@ class BaseExecutionEngine:
                         side_age = time.monotonic() - seen_at if seen_at > 0.0 else math.inf
                     except (TypeError, ValueError, AttributeError):
                         side_age = math.inf
-                    try:
-                        warning_max_age = float(os.getenv("PILUITUS_BBO_EXIT_MAX_AGE_SEC", "2.0"))
-                    except (TypeError, ValueError):
+                    # Report the exact same effective TTL used by
+                    # _latest_fresh_exit_quote(); a separate EXIT_MAX_AGE value
+                    # previously made healthy (<2s) quotes appear inconsistent.
+                    configured_warning_age = (
+                        getattr(self.screener, "bbo_max_age_sec", None)
+                        if self.screener is not None else None
+                    )
+                    if configured_warning_age is None:
+                        configured_warning_age = os.getenv(
+                            "PILUITUS_BBO_MAX_AGE_SEC",
+                            os.getenv("PILUITUS_BBO_EXIT_MAX_AGE_SEC", "2.0"),
+                        )
+                    warning_max_age = _finite_or_default(configured_warning_age, 2.0)
+                    if not math.isfinite(warning_max_age) or warning_max_age <= 0.0:
                         warning_max_age = 2.0
                     warning_max_age = min(5.0, max(0.25, warning_max_age))
 

@@ -109,6 +109,10 @@ def _refresh_locked(
     order_book_age = now - last_order_book_seen if last_order_book_seen > 0.0 else -1.0
     bid_level_seen = _finite(quote.get("last_bid_seen"))
     ask_level_seen = _finite(quote.get("last_ask_seen"))
+    queue_size_total = bid_size + ask_size
+    queue_imbalance_available = bool(bid_size > 0.0 and ask_size > 0.0 and queue_size_total > 0.0)
+    queue_imbalance = (bid_size - ask_size) / queue_size_total if queue_imbalance_available else 0.0
+    queue_imbalance_age = max(bid_size_age, ask_size_age)
 
     metrics.update(
         {
@@ -118,6 +122,10 @@ def _refresh_locked(
             "ask_size": ask_size,
             "bid_size_available": float(bid_size > 0.0),
             "ask_size_available": float(ask_size > 0.0),
+            "order_book_valid": 1.0,
+            "queue_imbalance_available": float(queue_imbalance_available),
+            "queue_imbalance": queue_imbalance,
+            "queue_imbalance_age_sec": round(queue_imbalance_age, 3) if math.isfinite(queue_imbalance_age) else -1.0,
             "bid_size_drop_pct": bid_drop,
             "ask_size_drop_pct": ask_drop,
             "bid_size_baseline": _finite(quote.get("bid_size_baseline")),

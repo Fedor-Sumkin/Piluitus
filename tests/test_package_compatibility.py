@@ -24,6 +24,7 @@ LEGACY_SHIMS = {
     "risk_manager.py": "risk.risk_manager",
     "screener.py": "strategy.screener",
     "screener_funnel.py": "strategy.screener_funnel",
+    "scalping_strategy.py": "strategy.scalping_strategy",
     "signal_guard.py": "strategy.signal_guard",
     "tg_bot.py": "interface.tg_bot",
     "vllm_client.py": "ai.vllm_client",
@@ -46,13 +47,16 @@ def test_all_legacy_root_shims_target_the_expected_package_module() -> None:
 def test_strategy_legacy_imports_are_module_aliases() -> None:
     import candidate_recovery
     import minute_bar_patterns
+    import scalping_strategy
     import signal_guard
     from strategy import candidate_recovery as packaged_recovery
     from strategy import minute_bar_patterns as packaged_patterns
+    from strategy import scalping_strategy as packaged_scalping
     from strategy import signal_guard as packaged_guard
 
     assert candidate_recovery is packaged_recovery
     assert minute_bar_patterns is packaged_patterns
+    assert scalping_strategy is packaged_scalping
     assert signal_guard is packaged_guard
 
 
