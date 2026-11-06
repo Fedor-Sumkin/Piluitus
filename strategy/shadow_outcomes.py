@@ -1,0 +1,289 @@
+"""Forward outcome labelling for research-only PILUITUS strategy candidates.
+
+All observations are hypothetical. Entries and exits use the executable side
+of a fresh BBO, with the PAPER commission/slippage settings applied for
+sensitivity analysis. Nothing in this module submits, changes or closes orders.
+"""
+from __future__ import annotations
+
+import logging
+import math
+import os
+import time
+from collections.abc import Mapping
+from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
+
+logger = logging.getLogger("Piluitus.StrategyShadow")
+
+
+def _number(metrics: Mapping[str, Any], key: str, default: float = 0.0) -> float:
+    value = metrics.get(key, default)
+    if isinstance(value, bool):
+        return float(value)
+    if not isinstance(value, (int, float, str)):
+        return default
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return numeric if math.isfinite(numeric) else default
+
+
+def _cost_settings() -> tuple[float, float]:
+    try:
+        commission_pct = min(1.0, max(0.0, float(os.getenv("PILUITUS_PAPER_COMMISSION_PCT", "0"))))
+    except (TypeError, ValueError, OverflowError):
+        commission_pct = 0.0
+    try:
+        slippage_bps = min(100.0, max(0.0, float(os.getenv("PILUITUS_PAPER_SLIPPAGE_BPS", "0"))))
+    except (TypeError, ValueError, OverflowError):
+        slippage_bps = 0.0
+    if not math.isfinite(commission_pct):
+        commission_pct = 0.0
+    if not math.isfinite(slippage_bps):
+        slippage_bps = 0.0
+    return commission_pct, slippage_bps
+
+
+def _apply_adverse_slippage(price: float, transaction_side: str, slippage_bps: float) -> float:
+    rate = max(0.0, slippage_bps) / 10_000.0
+    adjusted = price * (1.0 + rate if transaction_side == "BUY" else 1.0 - rate)
+    return adjusted if math.isfinite(adjusted) and adjusted > 0.0 else price
+
+
+class ShadowForwardTracker:
+    """Label candidate forward performance at fixed horizons using fresh executable BBO."""
+
+    def __init__(
+        self,
+        horizons_seconds: tuple[int, ...] = (60, 180, 300),
+        *,
+        max_label_lag_sec: float = 30.0,
+        max_pending_per_ticker: int = 100,
+    ) -> None:
+        normalized = tuple(sorted({int(x) for x in horizons_seconds if int(x) > 0}))
+        if not normalized:
+            raise ValueError("At least one positive shadow horizon is required.")
+        self.horizons_seconds = normalized
+        self.max_label_lag_sec = max(1.0, float(max_label_lag_sec))
+        self.max_pending_per_ticker = max(1, int(max_pending_per_ticker))
+        self._pending: dict[str, list[dict[str, Any]]] = {}
+
+    @staticmethod
+    def _fresh_bbo(metrics: Mapping[str, Any]) -> tuple[bool, dict[str, float]]:
+        bid = _number(metrics, "bid")
+        ask = _number(metrics, "ask")
+        bid_age = _number(metrics, "bid_quote_age_sec", math.inf)
+        ask_age = _number(metrics, "ask_quote_age_sec", math.inf)
+        max_age = min(5.0, max(0.25, _number(metrics, "bbo_max_age_sec", 2.0)))
+        valid = (
+            _number(metrics, "bid_ask_available") >= 0.5
+            and _number(metrics, "spread_available") >= 0.5
+            and _number(metrics, "order_book_valid") >= 0.5
+            and bid > 0.0
+            and ask >= bid
+            and ask > 0.0
+            and 0.0 <= bid_age <= max_age
+            and 0.0 <= ask_age <= max_age
+        )
+        return valid, {
+            "bid": bid,
+            "ask": ask,
+            "bid_age_sec": bid_age,
+            "ask_age_sec": ask_age,
+            "max_age_sec": max_age,
+        }
+
+    def record_candidate(
+        self,
+        ticker: str,
+        direction: str,
+        metrics: Mapping[str, Any],
+        shadow_result: Mapping[str, Any],
+    ) -> str | None:
+        """Start a forward label only when the candidate had a fresh coherent BBO."""
+        symbol = str(ticker or "").strip().upper().split("@")[0]
+        side = str(direction or "").strip().upper()
+        if not symbol or side not in {"BUY", "SELL"} or not isinstance(metrics, Mapping):
+            return None
+        fresh, quote = self._fresh_bbo(metrics)
+        if not fresh:
+            return None
+
+        entry_bid = quote["bid"]
+        entry_ask = quote["ask"]
+        entry_price = entry_ask if side == "BUY" else entry_bid
+        entry_mid = (entry_bid + entry_ask) / 2.0
+        commission_pct, slippage_bps = _cost_settings()
+        entry_fill = _apply_adverse_slippage(
+            entry_price, "BUY" if side == "BUY" else "SELL", slippage_bps
+        )
+        now_mono = time.monotonic()
+        candidate_id = uuid4().hex[:16]
+        row = {
+            "candidate_id": candidate_id,
+            "ticker": symbol,
+            "side": side,
+            "created_monotonic": now_mono,
+            "created_at_utc": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "entry_bid": entry_bid,
+            "entry_ask": entry_ask,
+            "entry_mid": entry_mid,
+            "entry_executable_price": entry_price,
+            "entry_fill_price": entry_fill,
+            "commission_pct_per_side": commission_pct,
+            "slippage_bps": slippage_bps,
+            "score": _number(shadow_result, "score"),
+            "shadow_eligible": bool(shadow_result.get("eligible", False)),
+            "regime": str(shadow_result.get("regime") or "UNKNOWN"),
+            "queue_imbalance": _number(metrics, "queue_imbalance") if _number(metrics, "queue_imbalance_available") >= 0.5 else None,
+            "spread_atr_ratio": _number(shadow_result, "spread_atr_ratio", math.nan),
+            "spread_pct": _number(metrics, "spread_pct"),
+            "atr_pct": _number(metrics, "bar_atr_pct"),
+            "volume_spike": _number(metrics, "volume_spike"),
+            "pattern": str(metrics.get("bar_pattern_name") or ""),
+            "remaining_horizons": list(self.horizons_seconds),
+            "mfe_executable_pct": 0.0,
+            "mae_executable_pct": 0.0,
+        }
+        pending = self._pending.setdefault(symbol, [])
+        if len(pending) >= self.max_pending_per_ticker:
+            removed = pending.pop(0)
+            logger.warning(
+                "[STRATEGY SHADOW DROP] id=%s ticker=%s reason=pending_limit",
+                removed["candidate_id"], symbol,
+            )
+        pending.append(row)
+        logger.info(
+            "[STRATEGY SHADOW SAMPLE] id=%s ticker=%s side=%s score=%.1f eligible=%s "
+            "entry=%s entry_fill=%.6f commission=%.4f%%/side slippage=%.2fbps",
+            candidate_id, symbol, side, row["score"], row["shadow_eligible"],
+            "ASK" if side == "BUY" else "BID", entry_fill, commission_pct, slippage_bps,
+        )
+        return candidate_id
+
+    @staticmethod
+    def _executable_return_pct(row: Mapping[str, Any], exit_raw: float) -> tuple[float, float, float]:
+        side = str(row["side"])
+        exit_fill = _apply_adverse_slippage(
+            exit_raw,
+            "SELL" if side == "BUY" else "BUY",
+            float(row["slippage_bps"]),
+        )
+        entry_fill = float(row["entry_fill_price"])
+        quantity_unit_entry_notional = entry_fill
+        sign = 1.0 if side == "BUY" else -1.0
+        gross_rub_per_share = (exit_fill - entry_fill) * sign
+        fee_rub_per_share = (
+            entry_fill + exit_fill
+        ) * float(row["commission_pct_per_side"]) / 100.0
+        net_rub_per_share = gross_rub_per_share - fee_rub_per_share
+        gross_pct = gross_rub_per_share / quantity_unit_entry_notional * 100.0
+        net_pct = net_rub_per_share / quantity_unit_entry_notional * 100.0
+        return gross_pct, net_pct, exit_fill
+
+    def observe_market_tick(self, ticker: str, metrics: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Update excursions and emit any horizon labels reached on a fresh quote."""
+        symbol = str(ticker or "").strip().upper().split("@")[0]
+        pending = self._pending.get(symbol)
+        if not symbol or not pending:
+            return []
+        now_mono = time.monotonic()
+        fresh, quote = self._fresh_bbo(metrics) if isinstance(metrics, Mapping) else (False, {})
+        completed: list[dict[str, Any]] = []
+        survivors: list[dict[str, Any]] = []
+
+        for row in pending:
+            elapsed = max(0.0, now_mono - float(row["created_monotonic"]))
+            side = str(row["side"])
+            exit_raw = quote.get("bid", 0.0) if side == "BUY" else quote.get("ask", 0.0)
+            mid = (
+                (quote["bid"] + quote["ask"]) / 2.0 if fresh else 0.0
+            )
+            if fresh:
+                gross_pct, net_pct, exit_fill = self._executable_return_pct(row, float(exit_raw))
+                row["mfe_executable_pct"] = max(float(row["mfe_executable_pct"]), net_pct)
+                row["mae_executable_pct"] = min(float(row["mae_executable_pct"]), net_pct)
+            else:
+                gross_pct = net_pct = exit_fill = math.nan
+
+            remaining: list[int] = []
+            for horizon in row["remaining_horizons"]:
+                if elapsed >= horizon and fresh:
+                    sign = 1.0 if side == "BUY" else -1.0
+                    mid_return_pct = (
+                        (mid / float(row["entry_mid"]) - 1.0) * 100.0 * sign
+                    )
+                    label = {
+                        "candidate_id": row["candidate_id"],
+                        "ticker": symbol,
+                        "side": side,
+                        "result": "OK",
+                        "horizon_sec": horizon,
+                        "elapsed_sec": round(elapsed, 3),
+                        "label_lag_sec": round(max(0.0, elapsed - horizon), 3),
+                        "entry_executable_price": round(float(row["entry_executable_price"]), 6),
+                        "entry_fill_price": round(float(row["entry_fill_price"]), 6),
+                        "exit_executable_price": round(float(exit_raw), 6),
+                        "exit_fill_price": round(float(exit_fill), 6),
+                        "mid_return_pct": round(mid_return_pct, 6),
+                        "gross_executable_return_pct": round(gross_pct, 6),
+                        "net_executable_return_pct": round(net_pct, 6),
+                        "mfe_executable_pct": round(float(row["mfe_executable_pct"]), 6),
+                        "mae_executable_pct": round(float(row["mae_executable_pct"]), 6),
+                        "score": row["score"],
+                        "shadow_eligible": row["shadow_eligible"],
+                        "regime": row["regime"],
+                        "queue_imbalance": row["queue_imbalance"],
+                        "spread_atr_ratio": row["spread_atr_ratio"],
+                        "commission_pct_per_side": row["commission_pct_per_side"],
+                        "slippage_bps": row["slippage_bps"],
+                    }
+                    completed.append(label)
+                    logger.info(
+                        "[STRATEGY SHADOW OUTCOME] id=%s ticker=%s side=%s horizon=%ss "
+                        "elapsed=%.2fs lag=%.2fs result=OK net=%.5f%% gross=%.5f%% "
+                        "mid=%.5f%% MFE=%.5f%% MAE=%.5f%% score=%.1f eligible=%s",
+                        label["candidate_id"], symbol, side, horizon, elapsed,
+                        label["label_lag_sec"], net_pct, gross_pct, mid_return_pct,
+                        row["mfe_executable_pct"], row["mae_executable_pct"],
+                        row["score"], row["shadow_eligible"],
+                    )
+                elif elapsed > horizon + self.max_label_lag_sec:
+                    label = {
+                        "candidate_id": row["candidate_id"],
+                        "ticker": symbol,
+                        "side": side,
+                        "result": "NO_FRESH_BBO",
+                        "horizon_sec": horizon,
+                        "elapsed_sec": round(elapsed, 3),
+                        "label_lag_sec": round(max(0.0, elapsed - horizon), 3),
+                        "score": row["score"],
+                        "shadow_eligible": row["shadow_eligible"],
+                        "regime": row["regime"],
+                    }
+                    completed.append(label)
+                    logger.warning(
+                        "[STRATEGY SHADOW OUTCOME] id=%s ticker=%s side=%s horizon=%ss "
+                        "elapsed=%.2fs result=NO_FRESH_BBO",
+                        label["candidate_id"], symbol, side, horizon, elapsed,
+                    )
+                else:
+                    remaining.append(horizon)
+            row["remaining_horizons"] = remaining
+            if remaining:
+                survivors.append(row)
+
+        if survivors:
+            self._pending[symbol] = survivors
+        else:
+            self._pending.pop(symbol, None)
+        return completed
+
+    def pending_count(self, ticker: str | None = None) -> int:
+        if ticker is None:
+            return sum(len(rows) for rows in self._pending.values())
+        symbol = str(ticker or "").strip().upper().split("@")[0]
+        return len(self._pending.get(symbol, []))

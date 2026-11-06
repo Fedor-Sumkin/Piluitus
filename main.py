@@ -43,6 +43,7 @@ from risk_manager import RiskManager
 from signal_guard import validate_signal_evidence, infer_candidate_direction, validate_atr_readiness
 from candidate_recovery import refresh_candidate_bbo_metrics
 from scalping_strategy import evaluate_scalping_candidate
+from shadow_outcomes import ShadowForwardTracker
 from dashboard_verdicts import (
     build_verdict_explanation,
     finite_float,
@@ -801,6 +802,8 @@ _last_funnel_ready = False
 _trade_flow_lock = threading.Lock()
 _trade_flow_counts: dict[str, int] = {}
 _trade_flow_last_log_at = time_module.monotonic()
+# Forward labels are research-only and bounded in memory; all observations are logged.
+scalping_shadow_tracker = ShadowForwardTracker()
 
 # One outstanding AI event per ticker prevents repeated nearly identical
 # anomaly events from filling the queue while inference is still running.
@@ -1082,12 +1085,13 @@ def _log_prefilter_blocked(ticker: str, reason: str, *, interval_sec: float = 15
 def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -> dict[str, Any]:
     """Log a research-only strategy score; it never changes the baseline order path."""
     result = evaluate_scalping_candidate(direction, metrics)
+    observation_id = scalping_shadow_tracker.record_candidate(ticker, direction, metrics, result)
     _trade_flow_inc("strategy_shadow_evaluated")
     _trade_flow_inc("strategy_shadow_pass" if result.get("eligible") else "strategy_shadow_reject")
     logger.info(
-        "🧪 [STRATEGY SHADOW] %s side=%s eligible=%s score=%.1f/%.0f regime=%s "
+        "🧪 [STRATEGY SHADOW] %s id=%s side=%s eligible=%s score=%.1f/%.0f regime=%s "
         "queue_imbalance=%s spread_ATR=%s hard_blocks=%s reasons=%s",
-        ticker, direction, bool(result.get("eligible")), float(result.get("score", 0.0)),
+        ticker, observation_id or "-", direction, bool(result.get("eligible")), float(result.get("score", 0.0)),
         float(result.get("threshold", 70.0)), result.get("regime", "UNKNOWN"),
         result.get("queue_imbalance"), result.get("spread_atr_ratio"),
         ",".join(result.get("hard_blocks", [])) or "-",
@@ -1538,6 +1542,12 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                 _trade_flow_inc("orderbook_side_touches", int(book_result.get("bbo_side_touch_count", 0) or 0))
                 if book_result.get("heartbeat_only"):
                     _trade_flow_inc("orderbook_heartbeats")
+                shadow_metrics: dict[str, Any] = {}
+                shadow_bbo_ready, _shadow_bbo_reason = refresh_candidate_bbo_metrics(
+                    screener, book_ticker, shadow_metrics, now=time_module.monotonic()
+                )
+                if shadow_bbo_ready:
+                    scalping_shadow_tracker.observe_market_tick(book_ticker, shadow_metrics)
                 await _resume_pending_bbo_candidate(book_ticker)
                 # ORDER_BOOK can refresh BBO independently of QUOTES. Re-run the
                 # PAPER exit monitor only after a coherent book confirmation.
@@ -1634,6 +1644,9 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
         )
 
         _trade_flow_inc("quotes_received")
+        quote_metrics_for_shadow = analysis.get("metrics", {})
+        if isinstance(quote_metrics_for_shadow, dict):
+            scalping_shadow_tracker.observe_market_tick(ticker, quote_metrics_for_shadow)
         funnel_status = screener.get_status()
         terminal_status.update_funnel(screener.get_status_text())
         if analysis.get("selected") and analysis.get("selection_ready"):
