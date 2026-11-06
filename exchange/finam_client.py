@@ -105,6 +105,9 @@ class FinamBrokerClient:
         self._asset_schedule_locks: dict[str, asyncio.Lock] = {}
         # Per-symbol throttle for detailed crossed-BBO diagnostics.
         self._crossed_bbo_log_last_at: dict[str, float] = {}
+        # Track a crossed-book episode from first detection until the next
+        # coherent BBO is published. Individual crossed deltas are not episodes.
+        self._crossed_bbo_since: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # 1️⃣  CONNECT 
@@ -609,6 +612,8 @@ class FinamBrokerClient:
             # It is authoritative evidence that the reconstructed book is empty,
             # unlike a malformed/empty delta which must remain unrecognized.
             empty_snapshot = bool(snapshot_flag and not has_level_payload)
+            if empty_snapshot:
+                self._crossed_bbo_since.pop(ticker, None)
             if not has_level_payload and not empty_snapshot:
                 self._last_order_book_unrecognized_tickers.add(ticker)
                 continue
@@ -845,6 +850,9 @@ class FinamBrokerClient:
             # snapshot. The next coherent update will then publish all sides that
             # changed during the crossed interval.
             if best_bid > 0 and best_ask > 0 and best_ask < best_bid:
+                crossed_started = ticker not in self._crossed_bbo_since
+                crossed_since = self._crossed_bbo_since.setdefault(ticker, received_monotonic)
+                crossed_duration = max(0.0, received_monotonic - crossed_since)
                 bid_levels = [[float(px), float(sz)] for px, sz in sorted(bids.items(), reverse=True)]
                 ask_levels = [[float(px), float(sz)] for px, sz in sorted(asks.items())]
                 updates.append({
@@ -879,6 +887,8 @@ class FinamBrokerClient:
                     "ask_touched_levels": sorted(ask_rows_touched.keys())[:3],
                     "book_valid": False,
                     "book_reason": "CROSSED_BBO",
+                    "crossed_started": crossed_started,
+                    "crossed_duration_sec": round(crossed_duration, 3),
                 })
                 continue
 
@@ -913,6 +923,11 @@ class FinamBrokerClient:
             if ask_present:
                 state["published_ask"] = current_ask
                 state["published_ask_timestamp"] = ask_timestamp
+            crossed_since = self._crossed_bbo_since.pop(ticker, None)
+            crossed_recovered_after = (
+                max(0.0, received_monotonic - crossed_since)
+                if crossed_since is not None else None
+            )
             # Retain current full depth for diagnostics and later execution-model
             # calibration. The quantity unit must be verified before using it to
             # simulate multi-level fills.
@@ -944,6 +959,11 @@ class FinamBrokerClient:
                 "book_reason": (
                     "OK" if current_bid and current_ask and current_ask[0] >= current_bid[0]
                     else "MISSING_BBO_SIDE"
+                ),
+                "crossed_recovered": crossed_since is not None,
+                "crossed_recovered_after_sec": (
+                    round(crossed_recovered_after, 3)
+                    if crossed_recovered_after is not None else None
                 ),
             })
         return updates
@@ -1117,6 +1137,7 @@ class FinamBrokerClient:
                     order_book_decode_failures = 0
                     order_book_valid_no_bbo_delta = 0
                     order_book_invalid_states = 0
+                    order_book_crossed_episodes = 0
                     order_book_invalid_reasons: dict[str, int] = {}
                     order_book_invalid_by_ticker: dict[str, int] = {}
                     order_book_missing_envelope_timestamp = 0
@@ -1331,7 +1352,7 @@ class FinamBrokerClient:
                                 "📚 [ORDER_BOOK 60s] подписок=%d, сообщений=%d, "
                                 "событий_в_очередь=%d, затронуто_сторон_BBO=%d, "
                                 "heartbeat_без_движения_BBO=%d, некорректных_состояний=%d "
-                                "(причины=%s; тикеры=%s), "
+                                "(причины=%s; тикеры=%s), CROSSED_BBO_эпизодов=%d, "
                                 "без_timestamp_envelope=%d, out_of_order=%d, потерь_очереди=%d, "
                                 "ошибок_разбора=%d; позиции=[%s]; сообщений_без_тикера=%d.",
                                 len(order_book_subscribed), order_book_messages,
@@ -1339,6 +1360,7 @@ class FinamBrokerClient:
                                 order_book_valid_no_bbo_delta, order_book_invalid_states,
                                 invalid_reason_summary, invalid_ticker_summary,
                                 order_book_missing_envelope_timestamp, order_book_out_of_order,
+                                order_book_crossed_episodes,
                                 order_book_queue_dropped, order_book_decode_failures,
                                 position_diag_summary, order_book_unattributed_messages,
                             )
@@ -1362,6 +1384,7 @@ class FinamBrokerClient:
                             order_book_decode_failures = 0
                             order_book_valid_no_bbo_delta = 0
                             order_book_invalid_states = 0
+                            order_book_crossed_episodes = 0
                             order_book_invalid_reasons.clear()
                             order_book_invalid_by_ticker.clear()
                             order_book_missing_envelope_timestamp = 0
@@ -1572,6 +1595,8 @@ class FinamBrokerClient:
                                         order_book_invalid_by_ticker.get(invalid_ticker_reason, 0) + 1
                                     )
                                     if invalid_reason == "CROSSED_BBO":
+                                        if book_update.get("crossed_started"):
+                                            order_book_crossed_episodes += 1
                                         now_monotonic = time.monotonic()
                                         last_detail_log = self._crossed_bbo_log_last_at.get(invalid_ticker, 0.0)
                                         if now_monotonic - last_detail_log >= 15.0:
@@ -1612,7 +1637,17 @@ class FinamBrokerClient:
                                                 book_update.get("order_book_timestamp"),
                                                 book_update.get("timestamp_source", "UNKNOWN"),
                                             )
-                                elif not has_bbo_side_update:
+                                else:
+                                    if book_update.get("crossed_recovered"):
+                                        logger.warning(
+                                            "[ORDER_BOOK CROSSED_RECOVERY] %s: согласованный BBO восстановлен "
+                                            "через %.3fs; Bid=%.6f Ask=%.6f.",
+                                            book_ticker,
+                                            float(book_update.get("crossed_recovered_after_sec") or 0.0),
+                                            float(book_update.get("bid") or 0.0),
+                                            float(book_update.get("ask") or 0.0),
+                                        )
+                                if book_update.get("book_valid", True) and not has_bbo_side_update:
                                     order_book_valid_no_bbo_delta += 1
                                 try:
                                     queue.put_nowait(book_update)
