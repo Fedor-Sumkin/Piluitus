@@ -120,7 +120,7 @@ class Settings:
     # Общий таймаут (сек) для запросов к vLLM (можно переопределять в отдельных вызовах)
     VLLM_TIMEOUT: int = int(os.getenv("VLLM_TIMEOUT", "30"))
     # Увеличенный бюджет ответа уменьшает риск обрезания JSON; AIEngine ограничивает его диапазоном 768..1024.
-    VLLM_MAX_TOKENS: int = int(os.getenv("VLLM_MAX_TOKENS", "1024"))
+    VLLM_MAX_TOKENS: int = int(os.getenv("VLLM_MAX_TOKENS", "1280"))
 
     # ---------- Finam ----------
     FINAM_TOKEN: str = os.getenv("FINAM_TOKEN", "")
@@ -136,10 +136,10 @@ class Settings:
     # ---------- Бизнес‑правила ----------
     DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "0.015"))   # 1.5 % от депозита
     MAX_RISK_PCT: float = float(os.getenv("MAX_RISK_PCT", "0.005"))                     # 0.5 % от сделки
-    # Capital allocation: 10% default overall / 5% per position; hard overall ceiling 15%.
+    # Capital allocation: 10% default overall / 3% per position; hard overall ceiling 15%.
     # Values from older .env files are clamped again in ExecutionLayer.
     MAX_GROSS_EXPOSURE_PCT: float = min(float(os.getenv("PILUITUS_MAX_GROSS_EXPOSURE_PCT", "0.10")), 0.15)
-    MAX_SINGLE_POSITION_PCT: float = min(float(os.getenv("PILUITUS_MAX_SINGLE_POSITION_PCT", "0.05")), 0.05)
+    MAX_SINGLE_POSITION_PCT: float = min(float(os.getenv("PILUITUS_MAX_SINGLE_POSITION_PCT", "0.03")), 0.03)
     MAX_OPEN_STOP_RISK_PCT: float = min(float(os.getenv("PILUITUS_MAX_OPEN_STOP_RISK_PCT", "0.01")), 0.05)
     DRAWDOWN_WARNING_PCT: float = min(float(os.getenv("PILUITUS_DRAWDOWN_WARNING_PCT", "0.03")), 0.50)
     MAX_DRAWDOWN_PCT: float = min(float(os.getenv("PILUITUS_MAX_DRAWDOWN_PCT", "0.05")), 0.50)
