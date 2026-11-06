@@ -1359,9 +1359,9 @@ class FinamBrokerClient:
                                 enqueued_order_book_events, enqueued_bbo_side_updates,
                                 order_book_valid_no_bbo_delta, order_book_invalid_states,
                                 invalid_reason_summary, invalid_ticker_summary,
-                                order_book_missing_envelope_timestamp, order_book_out_of_order,
-                                order_book_crossed_episodes,
-                                order_book_queue_dropped, order_book_decode_failures,
+                                order_book_crossed_episodes, order_book_missing_envelope_timestamp,
+                                order_book_out_of_order, order_book_queue_dropped,
+                                order_book_decode_failures,
                                 position_diag_summary, order_book_unattributed_messages,
                             )
                             if position_gaps:
