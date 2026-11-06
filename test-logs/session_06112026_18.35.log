@@ -1,0 +1,224 @@
+2026-11-06 18:35:43,545 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🧾 [RUN START] id=20261106_183543_13700_0167e11d; session=session_06112026_18.35.log; diagnostic=diagnostic_06112026_18.35.log; errors=errors_log_06112026_18.35.log
+2026-11-06 18:35:43,548 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🛡️ [LOG DURABILITY] session/diagnostic fsync interval=1.00s; errors=fsync per record
+2026-11-06 18:35:43,756 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.AIEngine: 🧠 AIEngine v34 загружен: файл=ai_engine.py | API=/v1/chat/completions | модель=deepseek-r1-7b | max_tokens=1280
+2026-11-06 18:35:43,757 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 🛡️ [PORTFOLIO GUARD] capital=40000.00 ₽ gross_cap=10% single_position_cap=3% open_stop_risk_cap=1% stop_cooldown=180s repeat_SL=2/1800s->900s shadow_BE=True@1.00R
+2026-11-06 18:35:43,757 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 🛡️ РЕЖИМ АГЕНТА: [PAPER TRADING] — Симуляция ордеров через Redis ОЗУ.
+2026-11-06 18:35:43,757 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 🧪 [PAPER EXECUTION MODEL] Вход BUY=Ask/SELL=Bid, выход long=Bid/short=Ask; спред учитывается через стороны BBO; полное исполнение на top-of-book предполагается, а объём стакана не ограничивает fill, т.к. единицы Finam ещё не подтверждены.
+2026-11-06 18:35:43,757 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: ⚠️ [PAPER COST SETTINGS] комиссия=0.0000% за сторону, доп.проскальзывание=0.00 bps. Нулевые параметры не учитываются в PnL; укажите собственный тариф Finam и модель дополнительного проскальзывания в .env. Спред уже включён в Ask/Bid.
+2026-11-06 18:35:43,757 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 💰 [CAPITAL SYNC] TRADING_DEPOSIT=40000.00 ₽; ExecutionLayer=40000.00 ₽; RiskManager=40000.00 ₽.
+2026-11-06 18:35:43,758 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Screener: 🎯 Локальная воронка инициализирована: universe=88, top_n=15, min_samples=8, coverage=60%
+2026-11-06 18:35:43,870 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.error: Started server process [13700]
+2026-11-06 18:35:43,871 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.error: Waiting for application startup.
+2026-11-06 18:35:43,871 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🚀 Запуск PILUITUS v35.2 | депозит=40000.00 ₽ | общий лимит активов=10.0% (4000.00 ₽), одна позиция=3.0% (1200.00 ₽).
+2026-11-06 18:35:43,871 [INFO] [RUN=20261106_183543_13700_0167e11d] storage.db_manager: 🔌 Попытка подключения к Redis localhost:6379
+2026-11-06 18:35:43,877 [INFO] [RUN=20261106_183543_13700_0167e11d] storage.db_manager: ✅ Redis‑соединение успешно установлено
+2026-11-06 18:35:43,877 [INFO] [RUN=20261106_183543_13700_0167e11d] storage.db_manager: ✅ DBManager: соединение с Redis готово
+2026-11-06 18:35:43,945 [INFO] [RUN=20261106_183543_13700_0167e11d] storage.db_manager: 💾 RAG‑rules saved (13 items)
+2026-11-06 18:35:43,946 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.KnowledgeParser: 🧠 RAG готов: JSON-записей=13, правил ScalpingRules=13, активных=7, отключённых из-за требований к данным=6, отвергнуто JSON=0, старых/непригодных записей Redis удалено=13
+2026-11-06 18:35:43,963 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: ⚠️ Переведено в STALE_REVIEW старых PAPER-позиций: 3. Они не закрыты автоматически и не добавлены в realized PnL.
+2026-11-06 18:35:43,964 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: В старом PAPER-журнале найдено позиций для ручной проверки: 3
+2026-11-06 18:35:43,965 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 📚 Из Redis успешно восстановлено 100 вердиктов.
+2026-11-06 18:35:43,965 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.RiskManager: 📦 [STATIC CONTOUR] Лотность загружена из config.py: 88 инструментов.
+2026-11-06 18:35:43,965 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🤖 Подключаем Telegram‑бот к API...
+2026-11-06 18:35:43,966 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🟢 Telegram‑бот успешно инициализирован.
+2026-11-06 18:35:43,966 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🤖 ИИ‑конвейер воркеров Piluitus v35.2 успешно запущен.
+2026-11-06 18:35:43,966 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.NewsParser: 📰 Запуск фонового цикла парсинга новостей Мосбиржи...
+2026-11-06 18:35:44,129 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 📊 Воркер синхронизации таблиц и капитала запущен.
+2026-11-06 18:35:44,129 [INFO] [RUN=20261106_183543_13700_0167e11d] aiogram.dispatcher: Start polling
+2026-11-06 18:35:44,130 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🔌 Проверка брокерского соединения Finam; календарь сессий будет проверяться по каждому инструменту...
+2026-11-06 18:35:44,302 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.error: Application startup complete.
+2026-11-06 18:35:44,309 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.error: Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)
+2026-11-06 18:35:44,817 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: Авторизация Finam Trade API подтверждена.
+2026-11-06 18:35:45,444 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: 📅 Finam schedule загружено: SBER, интервалов=23, кэш=300s.
+2026-11-06 18:35:45,445 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 📅 [SESSION CALENDAR PROBE] SBER@MISX: known=True, open=True, entry_allowed=True, reason=active_session, next_session=-; actual entries are checked per instrument.
+2026-11-06 18:35:45,446 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: ⏳ Задача Finam WebSocket запущена; ожидаем HANDSHAKE_SUCCESS.
+2026-11-06 18:35:45,448 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: Подготовлено 88 уникальных инструментов Finam; подписка будет отправлена 9 запросами по не более 10 символов.
+2026-11-06 18:35:45,546 [INFO] [RUN=20261106_183543_13700_0167e11d] aiogram.dispatcher: Run polling for bot @AI_TRAID_FEDOR_BOT id=<REDACTED> - 'AI_TRAID_FEDOR'
+2026-11-06 18:35:50,875 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: TCP/TLS WebSocket Finam установлен; ожидаем HANDSHAKE_SUCCESS (websockets 12.0).
+2026-11-06 18:35:50,876 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: ✅ Finam WS: авторизация успешна (HANDSHAKE_SUCCESS)
+2026-11-06 18:35:50,877 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 1/9, символов 10 (SBER@MISX, SBERP@MISX, GAZP@MISX…).
+2026-11-06 18:35:50,944 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 2/9, символов 10 (CHMF@MISX, NLMK@MISX, MOEX@MISX…).
+2026-11-06 18:35:51,009 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 3/9, символов 10 (HYDR@MISX, FEES@MISX, CBOM@MISX…).
+2026-11-06 18:35:51,055 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 4/9, символов 10 (GCHE@MISX, LSRG@MISX, SMLT@MISX…).
+2026-11-06 18:35:51,118 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 5/9, символов 10 (RNFT@MISX, UWGN@MISX, VKCO@MISX…).
+2026-11-06 18:35:51,164 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 6/9, символов 10 (MDMG@MISX, WUSH@MISX, CARM@MISX…).
+2026-11-06 18:35:51,210 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 7/9, символов 10 (FESH@MISX, NMTP@MISX, FLOT@MISX…).
+2026-11-06 18:35:51,273 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 8/9, символов 10 (IRKT@MISX, KAZT@MISX, KAZTP@MISX…).
+2026-11-06 18:35:51,320 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 9/9, символов 8 (NKNC@MISX, NKNCP@MISX, TGKA@MISX…).
+2026-11-06 18:35:51,321 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: Все 9 запросов подписки отправлены; ожидаем поток котировок.
+2026-11-06 18:35:51,321 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: Получено первое DATA от Finam: subscription_type=QUOTES, payload_type=dict, payload_keys=['quote']
+2026-11-06 18:35:51,322 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: ✅ Первая котировка Finam передана в очередь: SBER price=293.33 volume=1.0 bid=293.33 ask=293.34 bid_size=786.0 ask_size=1066.0 presence=(True,True,True,True) timestamp=2026-11-06T15:35:49.761092Z
+2026-11-06 18:35:51,323 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 Воронка прогревается: котировки получены по 1/88 инструментам; пригодны для рейтинга 0; цель top-15.
+2026-11-06 18:35:51,754 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.error: ('127.0.0.1', 51295) - "WebSocket /ws/frontend" [accepted]
+2026-11-06 18:35:51,755 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🔌 К WS‑шлюзу подключился веб-интерфейс. Отправка стартового пакета...
+2026-11-06 18:35:51,755 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.error: connection open
+2026-11-06 18:35:52,227 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.NewsParser: 📰 [NEWS] Успешно сохранено и обновлено 1 новостей в Redis.
+2026-11-06 18:35:53,365 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.access: 127.0.0.1:51296 - "GET /api/v1/paper/reconciliation HTTP/1.1" 200
+2026-11-06 18:35:55,325 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.access: 127.0.0.1:51296 - "GET /api/v1/paper/reconciliation HTTP/1.1" 200
+2026-11-06 18:35:56,210 [WARNING] [RUN=20261106_183543_13700_0167e11d] storage.db_manager: 🧹 STALE_REVIEW PAPER positions removed; other PAPER history preserved: {'deleted_stale_positions': 3, 'deleted_trade_keys': 3, 'deleted_active_order_rows': 3, 'position_ids': ['PAPER_1793977291090_03aead63', 'PAPER_1793977749007_3cdd160f', 'PAPER_1793977752477_acc3e984'], 'preserved_paper_history_rows': 78, 'preserved_verdict_history_rows': 100, 'preserved_verdict_execution_keys': 489, 'preserved_live_trade_keys': 0, 'preserved_live_history_rows': 0, 'preserved_live_active_order_rows': 0, 'storage_backend': 'redis_compatible', 'aof_compacted': False}
+2026-11-06 18:35:56,233 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🧹 [PAPER STALE CLEANUP + RESUME] deleted=3; memory_stale=3; PAPER resumed.
+2026-11-06 18:35:56,234 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.access: 127.0.0.1:51296 - "POST /api/v1/paper/session/cleanup-stale-and-resume HTTP/1.1" 200
+2026-11-06 18:35:57,831 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.access: 127.0.0.1:51296 - "GET /api/v1/paper/reconciliation HTTP/1.1" 200
+2026-11-06 18:36:02,035 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.access: 127.0.0.1:51296 - "GET / HTTP/1.1" 200
+2026-11-06 18:36:02,085 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.error: ('127.0.0.1', 51306) - "WebSocket /ws/frontend" [accepted]
+2026-11-06 18:36:02,085 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🔌 К WS‑шлюзу подключился веб-интерфейс. Отправка стартового пакета...
+2026-11-06 18:36:02,086 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.error: connection open
+2026-11-06 18:36:21,424 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 Воронка прогревается: котировки получены по 88/88 инструментам; пригодны для рейтинга 8; цель top-15.
+2026-11-06 18:36:51,830 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 Воронка прогревается: котировки получены по 88/88 инструментам; пригодны для рейтинга 23; цель top-15.
+2026-11-06 18:37:14,239 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: HYDR, LSRG, MVID, AFKS, AFLT, FEES, VKCO, ALRS, IRAO, SNGSP, NLMK, PLZL, MAGN, SBER, POSI
+2026-11-06 18:37:14,399 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: ✅ Finam ORDER_BOOK активен: AFKS Bid=9.019×443.0 Ask=9.026×408.0; timestamp_source=ENVELOPE.
+2026-11-06 18:37:30,611 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: ✅ [PRE-LLM RESUME] MVID: свежий BBO подтверждён, кандидат SELL передан в LLM-очередь.
+2026-11-06 18:37:30,619 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.RiskManager: 💾 [PERSISTENCE] Депозит Redis согласован с конфигурацией: 40000.00 ₽
+2026-11-06 18:37:31,227 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] MVID candidate=SELL model=HOLD final=HOLD confidence=65.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 18:37:44,238 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: ALRS, MVID, MSNG, HYDR, AFKS, LSRG, FEES, AFLT, IRKT, UPRO, SVCB, NLMK, RUAL, VKCO, HEAD
+2026-11-06 18:38:13,851 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 СИГНАЛ УТВЕРЖДЁН ИИ: RASP → BUY (95.0%)
+2026-11-06 18:38:13,853 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: Сигнал BUY по RASP заблокирован после LLM: Недостаточно закрытых M1-диапазонов для ATR: 2/5; новая позиция не открыта.
+2026-11-06 18:38:13,853 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] RASP candidate=BUY model=APPROVE final=BUY confidence=95.0% confidence_valid=True contract_violation=False reason=APPROVED
+2026-11-06 18:38:14,628 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: LSRG, RASP, MSNG, AFLT, ALRS, NMTP, MTLR, AFKS, SVCB, FEES, UPRO, PLZL, HEAD, IRKT, ABIO
+2026-11-06 18:38:44,767 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: RASP, AFKS, RENI, ABIO, LSRG, MSNG, PLZL, IRKT, POSI, MTLR, FEES, NMTP, AFLT, UPRO, NLMK
+2026-11-06 18:38:47,226 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] NMTP candidate=SELL model=HOLD final=HOLD confidence=65.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 18:39:03,817 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 СИГНАЛ УТВЕРЖДЁН ИИ: SMLT → BUY (95.0%)
+2026-11-06 18:39:03,821 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: Сигнал BUY по SMLT заблокирован после LLM: Недостаточно закрытых M1-диапазонов для ATR: 3/5; новая позиция не открыта.
+2026-11-06 18:39:03,821 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] SMLT candidate=BUY model=APPROVE final=BUY confidence=95.0% confidence_valid=True contract_violation=False reason=APPROVED
+2026-11-06 18:39:15,161 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: IRKT, MSNG, GECO, ABIO, RASP, AFKS, RENI, AFLT, MTLR, NMTP, LSRG, RUAL, NLMK, POSI, WUSH
+2026-11-06 18:39:21,022 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] AFKS candidate=SELL model=HOLD final=HOLD confidence=65.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 18:39:45,175 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MSNG, MVID, ABIO, IRKT, MGNT, RENI, RASP, GCHE, FEES, LSRG, AFKS, RUAL, NMTP, WUSH, HYDR
+2026-11-06 18:40:14,375 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 СИГНАЛ УТВЕРЖДЁН ИИ: IRKT → BUY (95.0%)
+2026-11-06 18:40:14,377 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: Сигнал BUY по IRKT заблокирован после LLM: Недостаточно закрытых M1-диапазонов для ATR: 4/5; новая позиция не открыта.
+2026-11-06 18:40:14,378 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] IRKT candidate=BUY model=APPROVE final=BUY confidence=95.0% confidence_valid=True contract_violation=False reason=APPROVED
+2026-11-06 18:40:15,242 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: RASP, MSNG, NKHP, IRKT, GCHE, UPRO, FEES, MVID, NMTP, RUAL, DELI, ABIO, LSRG, MGNT, ALRS
+2026-11-06 18:40:25,349 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 СИГНАЛ УТВЕРЖДЁН ИИ: LSRG → BUY (95.0%)
+2026-11-06 18:40:25,351 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: Сигнал BUY по LSRG заблокирован после LLM: Недостаточно закрытых M1-диапазонов для ATR: 4/5; новая позиция не открыта.
+2026-11-06 18:40:25,351 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] LSRG candidate=BUY model=APPROVE final=BUY confidence=95.0% confidence_valid=True contract_violation=False reason=APPROVED
+2026-11-06 18:40:41,809 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] DELI candidate=SELL model=HOLD final=HOLD confidence=65.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 18:40:45,332 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: DELI, IRKT, RASP, MSNG, NKHP, ABIO, MVID, GCHE, UPRO, CBOM, FEES, RUAL, FESH, ELFV, HYDR
+2026-11-06 18:40:46,149 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 СИГНАЛ УТВЕРЖДЁН ИИ: IRKT → BUY (95.0%)
+2026-11-06 18:40:46,150 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: Сигнал BUY по IRKT заблокирован после LLM: Недостаточно закрытых M1-диапазонов для ATR: 4/5; новая позиция не открыта.
+2026-11-06 18:40:46,150 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] IRKT candidate=BUY model=APPROVE final=BUY confidence=95.0% confidence_valid=True contract_violation=False reason=APPROVED
+2026-11-06 18:40:56,657 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.NewsParser: 📰 [NEWS] Успешно сохранено и обновлено 1 новостей в Redis.
+2026-11-06 18:41:15,381 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: IRKT, RASP, MSNG, NKHP, ELFV, ABIO, SVCB, CBOM, GCHE, DELI, HYDR, UPRO, MVID, RENI, OKEY
+2026-11-06 18:41:16,003 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] SVCB candidate=SELL model=HOLD final=HOLD confidence=65.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 18:41:41,855 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🔌 WS‑клиент отключён
+2026-11-06 18:41:41,861 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.error: connection closed
+2026-11-06 18:41:45,866 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: IRKT, NKHP, RASP, ELFV, GECO, MSNG, DELI, FESH, TGKA, UPRO, MGNT, RENI, HYDR, FLOT, OKEY
+2026-11-06 18:42:16,229 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: NKHP, IRKT, MSNG, ABIO, RASP, GECO, TGKA, LSRG, KROT, UPRO, FLOT, OKEY, FESH, ELFV, MVID
+2026-11-06 18:42:27,233 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 СИГНАЛ УТВЕРЖДЁН ИИ: HEAD → BUY (95.0%)
+2026-11-06 18:42:27,235 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: Сигнал BUY по HEAD пропущен: риск на минимальный лот превышает лимит.
+2026-11-06 18:42:27,236 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] HEAD candidate=BUY model=APPROVE final=BUY confidence=95.0% confidence_valid=True contract_violation=False reason=APPROVED
+2026-11-06 18:42:34,811 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 СИГНАЛ УТВЕРЖДЁН ИИ: IRKT → BUY (95.0%)
+2026-11-06 18:42:34,812 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🧮 [POSITION SIZE] BUY IRKT: lots=6 shares=60 price=19.6600 notional=1179.60 ₽ planned_risk=7.20 ₽ ATR=0.036667 (6 M1 ranges) stop=0.6104%
+2026-11-06 18:42:34,813 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] IRKT candidate=BUY model=APPROVE final=BUY confidence=95.0% confidence_valid=True contract_violation=False reason=APPROVED
+2026-11-06 18:42:35,371 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: 📅 Finam schedule загружено: IRKT, интервалов=23, кэш=300s.
+2026-11-06 18:42:35,372 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 🕒 [ENTRY SESSION GUARD] IRKT: вход разрешён; сессия=CORE_TRADING; до закрытия 12.4 мин; cutoff=5.0 мин.
+2026-11-06 18:42:35,372 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 📊 [ATR ENFORCER] Уровни: SL=19.6₽ TP=19.84₽; notional=1180.80 ₽; gross_before=0.00 ₽; gross_cap=4000.00 ₽; single_cap=1200.00 ₽; open_stop_risk=0.00/400.00 ₽; new_stop_risk=4.80 ₽
+2026-11-06 18:42:35,380 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 📡 [DASHBOARD EXECUTION] BUY IRKT: FAILED — cannot access local variable 'lot_multiplier' where it is not associated with a value
+2026-11-06 18:42:37,718 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: ✅ [PRE-LLM RESUME] IRKT: свежий BBO подтверждён, кандидат BUY передан в LLM-очередь.
+2026-11-06 18:42:38,150 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 СИГНАЛ УТВЕРЖДЁН ИИ: IRKT → BUY (95.0%)
+2026-11-06 18:42:38,151 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🧮 [POSITION SIZE] BUY IRKT: lots=6 shares=60 price=19.6800 notional=1180.80 ₽ planned_risk=7.20 ₽ ATR=0.036667 (6 M1 ranges) stop=0.6098%
+2026-11-06 18:42:38,151 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] IRKT candidate=BUY model=APPROVE final=BUY confidence=95.0% confidence_valid=True contract_violation=False reason=APPROVED
+2026-11-06 18:42:38,152 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 🕒 [ENTRY SESSION GUARD] IRKT: вход разрешён; сессия=CORE_TRADING; до закрытия 12.3 мин; cutoff=5.0 мин.
+2026-11-06 18:42:38,153 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 📊 [ATR ENFORCER] Уровни: SL=19.62₽ TP=19.86₽; notional=1182.00 ₽; gross_before=0.00 ₽; gross_cap=4000.00 ₽; single_cap=1200.00 ₽; open_stop_risk=0.00/400.00 ₽; new_stop_risk=4.80 ₽
+2026-11-06 18:42:38,159 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 📡 [DASHBOARD EXECUTION] BUY IRKT: FAILED — cannot access local variable 'lot_multiplier' where it is not associated with a value
+2026-11-06 18:42:46,408 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: IRKT, ABIO, MVID, MSNG, NKHP, RASP, GECO, DELI, UPRO, KROT, HEAD, LSRG, RENI, TGKA, FEES
+2026-11-06 18:42:57,129 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] FEES candidate=SELL model=HOLD final=HOLD confidence=65.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 18:43:11,675 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: ✅ [PRE-LLM RESUME] MSNG: свежий BBO подтверждён, кандидат BUY передан в LLM-очередь.
+2026-11-06 18:43:12,210 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] MSNG candidate=BUY model=HOLD final=HOLD confidence=65.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 18:43:16,417 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MSNG, NKHP, GECO, IRKT, DELI, LSRG, KROT, MVID, RENI, ABIO, RASP, MDMG, TGKA, NLMK, MTLRP
+2026-11-06 18:43:28,447 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: ✅ [PRE-LLM RESUME] HYDR: свежий BBO подтверждён, кандидат SELL передан в LLM-очередь.
+2026-11-06 18:43:29,003 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] HYDR candidate=SELL model=HOLD final=HOLD confidence=65.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 18:43:46,455 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MSNG, NLMK, UWGN, MTLRP, IRKT, KROT, MVID, MDMG, DELI, RASP, RENI, ABIO, TGKA, NKHP, MGNT
+2026-11-06 18:44:16,476 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: HYDR, IRKT, WUSH, AFKS, UWGN, MTLRP, KROT, DELI, MDMG, CBOM, RASP, RENI, SVCB, MGNT, MVID
+2026-11-06 18:44:30,008 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] WUSH candidate=SELL model=HOLD final=HOLD confidence=65.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 18:44:32,700 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] MGNT candidate=SELL model=HOLD final=HOLD confidence=65.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 18:44:46,723 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MVID, MGNT, FEES, TGKA, UWGN, MTLRP, FLOT, RASP, MDMG, WUSH, KROT, NMTP, RENI, CBOM, NLMK
+2026-11-06 18:44:51,200 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] ALRS candidate=BUY model=HOLD final=HOLD confidence=65.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 18:44:51,654 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 СИГНАЛ УТВЕРЖДЁН ИИ: FEES → BUY (95.0%)
+2026-11-06 18:44:51,654 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🧮 [POSITION SIZE] BUY FEES: lots=1 shares=10000 price=0.0689 notional=689.00 ₽ planned_risk=3.00 ₽ ATR=0.000052 (8 M1 ranges) stop=0.4354%
+2026-11-06 18:44:51,655 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] FEES candidate=BUY model=APPROVE final=BUY confidence=95.0% confidence_valid=True contract_violation=False reason=APPROVED
+2026-11-06 18:44:56,819 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: Сетевая ошибка при получении расписания Finam для FEES (ConnectTimeout); новые входы заблокированы.
+2026-11-06 18:44:56,825 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: ⛔ [ENTRY SESSION GUARD] BUY FEES: вход запрещён — расписание Finam недоступно/не распознано (schedule_missing_or_invalid).
+2026-11-06 18:44:56,829 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 📡 [DASHBOARD EXECUTION] BUY FEES: BLOCKED — ENTRY_SESSION_BLOCK: расписание Finam недоступно/не распознано (schedule_missing_or_invalid)
+2026-11-06 18:45:16,227 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 СИГНАЛ УТВЕРЖДЁН ИИ: MVID → BUY (95.0%)
+2026-11-06 18:45:16,228 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🧮 [POSITION SIZE] BUY MVID: lots=2 shares=20 price=55.0000 notional=1100.00 ₽ planned_risk=10.00 ₽ ATR=0.127778 (9 M1 ranges) stop=0.9091%
+2026-11-06 18:45:16,229 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] MVID candidate=BUY model=APPROVE final=BUY confidence=95.0% confidence_valid=True contract_violation=False reason=APPROVED
+2026-11-06 18:45:16,920 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: 📅 Finam schedule загружено: MVID, интервалов=23, кэш=300s.
+2026-11-06 18:45:16,921 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 🕒 [ENTRY SESSION GUARD] MVID: вход разрешён; сессия=CORE_TRADING; до закрытия 9.7 мин; cutoff=5.0 мин.
+2026-11-06 18:45:16,921 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 📊 [ATR ENFORCER] Уровни: SL=54.65₽ TP=55.25₽; notional=1097.00 ₽; gross_before=0.00 ₽; gross_cap=4000.00 ₽; single_cap=1200.00 ₽; open_stop_risk=0.00/400.00 ₽; new_stop_risk=4.00 ₽
+2026-11-06 18:45:16,925 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 📡 [DASHBOARD EXECUTION] BUY MVID: FAILED — cannot access local variable 'lot_multiplier' where it is not associated with a value
+2026-11-06 18:45:17,212 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MSNG, MVID, MTLRP, NMTP, MGNT, FEES, MDMG, KROT, TGKA, FLOT, RENI, RASP, ALRS, WUSH, FESH
+2026-11-06 18:45:47,550 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: FEES, MSNG, TGKA, NMTP, ABIO, MTLRP, TGKB, MGNT, MVID, KROT, RENI, RASP, FESH, FLOT, CBOM
+2026-11-06 18:46:04,470 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.NewsParser: 📰 [NEWS] Успешно сохранено и обновлено 1 новостей в Redis.
+2026-11-06 18:46:04,856 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] MDMG candidate=BUY model=HOLD final=HOLD confidence=65.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 18:46:17,783 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: CBOM, FEES, ABIO, TGKA, MTLRP, FESH, KROT, ENPG, TGKB, MDMG, RENI, RASP, FLOT, MSNG, MVID
+2026-11-06 18:46:35,796 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] HYDR candidate=SELL model=HOLD final=HOLD confidence=65.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 18:46:48,049 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: FEES, IRKT, CBOM, KROT, MVID, MDMG, MTLRP, FESH, ABIO, RUAL, TGKB, HYDR, MSNG, RNFT, TGKA
+2026-11-06 18:47:18,058 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: AFKS, FEES, ELFV, CBOM, KROT, RUAL, MVID, MTLRP, FESH, NKHP, TGKB, MDMG, POSI, HYDR, MSNG
+2026-11-06 18:47:48,200 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: WUSH, RASP, FEES, CBOM, ELFV, KROT, MDMG, MTLRP, NKHP, TGKB, HYDR, POSI, DELI, IRKT, RENI
+2026-11-06 18:48:09,830 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 СИГНАЛ УТВЕРЖДЁН ИИ: FEES → BUY (95.0%)
+2026-11-06 18:48:09,832 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🧮 [POSITION SIZE] BUY FEES: lots=1 shares=10000 price=0.0690 notional=689.80 ₽ planned_risk=1.80 ₽ ATR=0.000093 (12 M1 ranges) stop=0.2609%
+2026-11-06 18:48:09,832 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] FEES candidate=BUY model=APPROVE final=BUY confidence=95.0% confidence_valid=True contract_violation=False reason=APPROVED
+2026-11-06 18:48:10,412 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: 📅 Finam schedule загружено: FEES, интервалов=23, кэш=300s.
+2026-11-06 18:48:10,413 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 🕒 [ENTRY SESSION GUARD] FEES: вход разрешён; сессия=CORE_TRADING; до закрытия 6.8 мин; cutoff=5.0 мин.
+2026-11-06 18:48:10,413 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 📊 [ATR ENFORCER] Уровни: SL=0.0687₽ TP=0.0693₽; notional=689.20 ₽; gross_before=0.00 ₽; gross_cap=4000.00 ₽; single_cap=1200.00 ₽; open_stop_risk=0.00/400.00 ₽; new_stop_risk=2.20 ₽
+2026-11-06 18:48:10,417 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 📡 [DASHBOARD EXECUTION] BUY FEES: FAILED — cannot access local variable 'lot_multiplier' where it is not associated with a value
+2026-11-06 18:48:18,277 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MTLRP, FEES, MSNG, CBOM, TGKB, ELFV, KROT, IRKT, MDMG, NKHP, DELI, MVID, WUSH, RENI, POSI
+2026-11-06 18:48:38,013 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 СИГНАЛ УТВЕРЖДЁН ИИ: MVID → BUY (95.0%)
+2026-11-06 18:48:38,015 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🧮 [POSITION SIZE] BUY MVID: lots=2 shares=20 price=55.5000 notional=1110.00 ₽ planned_risk=6.00 ₽ ATR=0.187500 (12 M1 ranges) stop=0.5405%
+2026-11-06 18:48:38,015 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] MVID candidate=BUY model=APPROVE final=BUY confidence=95.0% confidence_valid=True contract_violation=False reason=APPROVED
+2026-11-06 18:48:38,018 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 🕒 [ENTRY SESSION GUARD] MVID: вход разрешён; сессия=CORE_TRADING; до закрытия 6.3 мин; cutoff=5.0 мин.
+2026-11-06 18:48:38,019 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 📊 [ATR ENFORCER] Уровни: SL=55.1187₽ TP=55.9625₽; notional=1108.00 ₽; gross_before=0.00 ₽; gross_cap=4000.00 ₽; single_cap=1200.00 ₽; open_stop_risk=0.00/400.00 ₽; new_stop_risk=5.63 ₽
+2026-11-06 18:48:38,022 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 📡 [DASHBOARD EXECUTION] BUY MVID: FAILED — cannot access local variable 'lot_multiplier' where it is not associated with a value
+2026-11-06 18:48:48,762 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: WUSH, ABIO, RASP, MTLRP, IRKT, FEES, TGKB, MSNG, RUAL, DELI, RENI, MDMG, UPRO, NMTP, CBOM
+2026-11-06 18:49:18,832 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: RASP, MSNG, MTLRP, CBOM, DELI, ELFV, TGKB, WUSH, FEES, KROT, IRKT, RENI, UPRO, NMTP, ABIO
+2026-11-06 18:49:29,999 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] IRKT candidate=SELL model=HOLD final=HOLD confidence=65.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 18:49:33,695 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: ✅ [PRE-LLM RESUME] NMTP: свежий BBO подтверждён, кандидат BUY передан в LLM-очередь.
+2026-11-06 18:49:34,133 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 СИГНАЛ УТВЕРЖДЁН ИИ: NMTP → BUY (95.0%)
+2026-11-06 18:49:34,133 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🧮 [POSITION SIZE] BUY NMTP: lots=1 shares=100 price=6.8900 notional=689.00 ₽ planned_risk=3.00 ₽ ATR=0.004583 (12 M1 ranges) stop=0.4354%
+2026-11-06 18:49:34,134 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] NMTP candidate=BUY model=APPROVE final=BUY confidence=95.0% confidence_valid=True contract_violation=False reason=APPROVED
+2026-11-06 18:49:34,757 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: 📅 Finam schedule загружено: NMTP, интервалов=23, кэш=300s.
+2026-11-06 18:49:34,760 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 🕒 [ENTRY SESSION GUARD] NMTP: вход разрешён; сессия=CORE_TRADING; до закрытия 5.4 мин; cutoff=5.0 мин.
+2026-11-06 18:49:34,761 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 📊 [ATR ENFORCER] Уровни: SL=6.86₽ TP=6.95₽; notional=689.00 ₽; gross_before=0.00 ₽; gross_cap=4000.00 ₽; single_cap=1200.00 ₽; open_stop_risk=0.00/400.00 ₽; new_stop_risk=3.00 ₽
+2026-11-06 18:49:34,764 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 📡 [DASHBOARD EXECUTION] BUY NMTP: FAILED — cannot access local variable 'lot_multiplier' where it is not associated with a value
+2026-11-06 18:49:45,863 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: ✅ [PRE-LLM RESUME] RUAL: свежий BBO подтверждён, кандидат BUY передан в LLM-очередь.
+2026-11-06 18:49:46,412 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 СИГНАЛ УТВЕРЖДЁН ИИ: RUAL → BUY (95.0%)
+2026-11-06 18:49:46,412 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🧮 [POSITION SIZE] BUY RUAL: lots=4 shares=40 price=24.0700 notional=962.80 ₽ planned_risk=2.41 ₽ ATR=0.012692 (13 M1 ranges) stop=0.2501%
+2026-11-06 18:49:46,413 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] RUAL candidate=BUY model=APPROVE final=BUY confidence=95.0% confidence_valid=True contract_violation=False reason=APPROVED
+2026-11-06 18:49:47,074 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: 📅 Finam schedule загружено: RUAL, интервалов=23, кэш=300s.
+2026-11-06 18:49:47,076 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 🕒 [ENTRY SESSION GUARD] RUAL: вход разрешён; сессия=CORE_TRADING; до закрытия 5.2 мин; cutoff=5.0 мин.
+2026-11-06 18:49:47,077 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: 📊 [ATR ENFORCER] Уровни: SL=24.0098₽ TP=24.1903₽; notional=962.80 ₽; gross_before=0.00 ₽; gross_cap=4000.00 ₽; single_cap=1200.00 ₽; open_stop_risk=0.00/400.00 ₽; new_stop_risk=2.41 ₽
+2026-11-06 18:49:47,081 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 📡 [DASHBOARD EXECUTION] BUY RUAL: FAILED — cannot access local variable 'lot_multiplier' where it is not associated with a value
+2026-11-06 18:49:48,986 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: RUAL, RASP, MTLRP, CBOM, FEES, IRKT, TGKB, FESH, KROT, NKHP, NMTP, MSNG, WUSH, RENI, POSI
+2026-11-06 18:50:19,075 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: RUAL, CBOM, RASP, MTLRP, NMTP, FEES, MVID, IRKT, TGKB, KROT, MGNT, NKHP, MSNG, POSI, ALRS
+2026-11-06 18:50:49,371 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MVID, MTLRP, ELFV, WUSH, IRKT, TGKB, NKHP, FEES, MSNG, RASP, NMTP, ALRS, RUAL, KROT, CBOM
+2026-11-06 18:51:10,138 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.NewsParser: 📰 [NEWS] Успешно сохранено и обновлено 1 новостей в Redis.
+2026-11-06 18:51:19,503 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: FEES, MTLRP, FESH, ELFV, TGKB, MVID, MSNG, GECO, NKHP, MAGEP, RENI, IRKT, RASP, WUSH, SNGS
+2026-11-06 18:51:49,716 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MAGEP, MVID, RUAL, FESH, MTLRP, NMTP, TGKB, MSNG, DELI, ELFV, UPRO, GECO, IRKT, RENI, RASP
+2026-11-06 18:52:19,845 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MVID, HYDR, MAGEP, TGKB, FESH, MTLRP, DELI, MSNG, ELFV, RUAL, UPRO, SMLT, FLOT, RENI, RASP
+2026-11-06 18:52:49,991 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: TGKB, MAGEP, MTLRP, FESH, MSNG, ALRS, HYDR, MVID, RASP, RUAL, DELI, UPRO, FLOT, POSI, WUSH
+2026-11-06 18:53:10,403 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] FLOT candidate=SELL model=HOLD final=HOLD confidence=65.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 18:53:14,596 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: ✅ [PRE-LLM RESUME] MVID: свежий BBO подтверждён, кандидат BUY передан в LLM-очередь.
+2026-11-06 18:53:15,099 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 СИГНАЛ УТВЕРЖДЁН ИИ: MVID → BUY (95.0%)
+2026-11-06 18:53:15,100 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🧮 [POSITION SIZE] BUY MVID: lots=2 shares=20 price=55.7000 notional=1114.00 ₽ planned_risk=7.18 ₽ ATR=0.239286 (14 M1 ranges) stop=0.6443%
+2026-11-06 18:53:15,100 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] MVID candidate=BUY model=APPROVE final=BUY confidence=95.0% confidence_valid=True contract_violation=False reason=APPROVED
+2026-11-06 18:53:20,018 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MVID, TGKB, HYDR, FESH, MAGEP, FEES, MTLRP, IRKT, FLOT, MDMG, RASP, POSI, MSNG, DELI, UPRO
+2026-11-06 18:53:20,291 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.FinamGateway: Сетевая ошибка при получении расписания Finam для MVID (ConnectTimeout); новые входы заблокированы.
+2026-11-06 18:53:20,292 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: ⛔ [ENTRY SESSION GUARD] BUY MVID: вход запрещён — расписание Finam недоступно/не распознано (schedule_missing_or_invalid).
+2026-11-06 18:53:20,293 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 📡 [DASHBOARD EXECUTION] BUY MVID: BLOCKED — ENTRY_SESSION_BLOCK: расписание Finam недоступно/не распознано (schedule_missing_or_invalid)
+2026-11-06 18:53:22,682 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🎯 СИГНАЛ УТВЕРЖДЁН ИИ: MVID → BUY (95.0%)
+2026-11-06 18:53:22,684 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🧮 [POSITION SIZE] BUY MVID: lots=2 shares=20 price=55.8000 notional=1116.00 ₽ planned_risk=8.00 ₽ ATR=0.239286 (14 M1 ranges) stop=0.7168%
+2026-11-06 18:53:22,684 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: [LLM DECISION] MVID candidate=BUY model=APPROVE final=BUY confidence=95.0% confidence_valid=True contract_violation=False reason=APPROVED
+2026-11-06 18:53:22,686 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.ExecutionLayer: ⛔ [ENTRY SESSION GUARD] BUY MVID: вход запрещён — расписание Finam недоступно/не распознано (schedule_missing_or_invalid).
+2026-11-06 18:53:22,687 [WARNING] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 📡 [DASHBOARD EXECUTION] BUY MVID: BLOCKED — ENTRY_SESSION_BLOCK: расписание Finam недоступно/не распознано (schedule_missing_or_invalid)
+2026-11-06 18:53:40,833 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.error: Shutting down
+2026-11-06 18:53:40,847 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🔌 WS‑клиент отключён
+2026-11-06 18:53:40,848 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.error: connection closed
+2026-11-06 18:53:40,939 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.error: Waiting for application shutdown.
+2026-11-06 18:53:40,940 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🛑 Начинаем штатную остановку фоновых задач PILUITUS...
+2026-11-06 18:53:40,941 [INFO] [RUN=20261106_183543_13700_0167e11d] aiogram.dispatcher: Polling stopped
+2026-11-06 18:53:40,944 [WARNING] [RUN=20261106_183543_13700_0167e11d] aiogram.dispatcher: Sleep for 1.000000 seconds and try again... (tryings = 0, bot id = <REDACTED>)
+2026-11-06 18:53:42,039 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.AIEngine: [AIEngine] HTTP‑клиент закрыт
+2026-11-06 18:53:42,041 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🛑 Фоновые задачи остановлены; AIEngine закрыт.
+2026-11-06 18:53:42,041 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.error: Application shutdown complete.
+2026-11-06 18:53:42,041 [INFO] [RUN=20261106_183543_13700_0167e11d] uvicorn.error: Finished server process [13700]
+2026-11-06 18:53:42,042 [INFO] [RUN=20261106_183543_13700_0167e11d] aiogram.dispatcher: Polling stopped for bot @AI_TRAID_FEDOR_BOT id=<REDACTED> - 'AI_TRAID_FEDOR'
+2026-11-06 18:53:42,044 [INFO] [RUN=20261106_183543_13700_0167e11d] Piluitus.Main: 🛑 PILUITUS остановлен оператором (Ctrl+C).
