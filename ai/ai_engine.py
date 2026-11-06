@@ -277,6 +277,17 @@ class AIEngine:
                 "raw_preview": raw_preview,
                 "finish_reason": finish_reason,
                 "usage": usage if isinstance(usage, dict) else {},
+                # A malformed/truncated response is a contract violation, not a
+                # normal HOLD. Keep the explicit decision fields so callers and
+                # diagnostics can fail closed without losing the cause.
+                "final_decision": "HOLD",
+                "model_decision": "HOLD",
+                "model_raw_decision": "INVALID_RESPONSE",
+                "model_contract_violation": True,
+                "confidence_score": 0.0,
+                "confidence_valid": False,
+                "confidence_raw": None,
+                "contract_error_type": "text_parsing",
             }
 
     @staticmethod
@@ -563,7 +574,7 @@ class AIEngine:
 
         try:
             async with asyncio.timeout(float(Settings.VLLM_TIMEOUT)):
-                configured_max_tokens = max(768, min(1024, int(getattr(Settings, "VLLM_MAX_TOKENS", 768))))
+                configured_max_tokens = max(768, min(1536, int(getattr(Settings, "VLLM_MAX_TOKENS", 1280))))
                 request_body = {
                     "model": self.model_name,
                     "messages": [{"role": "user", "content": user_prompt}],
@@ -681,9 +692,15 @@ class AIEngine:
             else:
                 critic = str(processed["exc"])
             return {
+                "error_type": "text_parsing",
                 "final_decision": "HOLD",
+                "model_decision": "HOLD",
+                "model_raw_decision": "INVALID_RESPONSE",
+                "model_contract_violation": True,
+                "contract_error_type": "text_parsing",
                 "confidence_score": 0.0,
                 "confidence_valid": False,
+                "confidence_raw": None,
                 "tactic_opinion": "Ответ модели не прошёл проверку формата; вход заблокирован.",
                 "critic_opinion": self._compact_opinion(critic, max_chars=165),
                 "latency": round(inference_latency, 3)
