@@ -75,6 +75,35 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(outcomes[0]["result"], "NO_FRESH_BBO")
         self.assertNotIn("net_executable_return_pct", outcomes[0])
 
+    def test_configured_costs_reduce_net_executable_return(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,))
+        with patch.dict("os.environ", {
+            "PILUITUS_PAPER_COMMISSION_PCT": "0.10",
+            "PILUITUS_PAPER_SLIPPAGE_BPS": "1.0",
+        }), patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 160.0]):
+            tracker.record_candidate(
+                "SBER", "BUY", quote_metrics(100.0, 100.1),
+                {"score": 90.0, "eligible": True, "regime": "TREND_ALIGNED"},
+            )
+            outcomes = tracker.observe_market_tick("SBER", quote_metrics(101.0, 101.1))
+        self.assertLess(
+            outcomes[0]["net_executable_return_pct"],
+            outcomes[0]["gross_executable_return_pct"],
+        )
+        self.assertEqual(outcomes[0]["commission_pct_per_side"], 0.10)
+        self.assertEqual(outcomes[0]["slippage_bps"], 1.0)
+
+    def test_candidate_without_confirmed_order_book_is_not_recorded(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,))
+        metrics = quote_metrics(100.0, 100.1)
+        metrics["order_book_valid"] = 0.0
+        candidate_id = tracker.record_candidate(
+            "SBER", "BUY", metrics,
+            {"score": 90.0, "eligible": True, "regime": "TREND_ALIGNED"},
+        )
+        self.assertIsNone(candidate_id)
+        self.assertEqual(tracker.pending_count(), 0)
+
     def test_each_horizon_is_emitted_once_and_tracker_is_bounded(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60, 180), max_pending_per_ticker=1)
         with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[0.0, 1.0, 61.0, 181.0]):

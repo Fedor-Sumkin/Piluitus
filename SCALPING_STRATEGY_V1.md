@@ -7,7 +7,7 @@
 
 The PAPER run on 2026-11-06 produced three BUY entries (SMLT, LSRG, UWGN), all closed by STOP_LOSS after roughly ten minutes. The local baseline mostly combines signed short-horizon price movement, position relative to VWAP, last-trade-size impulse, and a fresh spread/BBO check. Those are useful candidate filters, but they do not establish that there is enough follow-through or order-book pressure to pay the spread and other trading costs.
 
-The new evaluator runs beside the baseline and writes `[STRATEGY SHADOW]` records. A bounded in-memory forward tracker now labels each eligible fresh-BBO candidate at +1, +3 and +5 minutes, logging executable-side returns, gross/net sensitivity, MFE and MAE as `[STRATEGY SHADOW OUTCOME]`. Candidate and outcome records are hypothetical; the tracker does not submit or alter orders. The score is a deterministic evidence grade, **not a probability of profit**.
+The new evaluator runs beside the baseline and writes `[STRATEGY SHADOW]` records. A bounded in-memory forward tracker now labels each local directional candidate that has a fresh coherent BBO at +1, +3 and +5 minutes, irrespective of whether the shadow score qualifies, logging executable-side returns, gross/net sensitivity, MFE and MAE as `[STRATEGY SHADOW OUTCOME]`. Candidate and outcome records are hypothetical; the tracker does not submit or alter orders. The score is a deterministic evidence grade, **not a probability of profit**.
 
 ## v1 features and starting weights
 

@@ -173,15 +173,15 @@ class ShadowForwardTracker:
             float(row["slippage_bps"]),
         )
         entry_fill = float(row["entry_fill_price"])
-        quantity_unit_entry_notional = entry_fill
+        entry_fill_price = entry_fill
         sign = 1.0 if side == "BUY" else -1.0
         gross_rub_per_share = (exit_fill - entry_fill) * sign
         fee_rub_per_share = (
             entry_fill + exit_fill
         ) * float(row["commission_pct_per_side"]) / 100.0
         net_rub_per_share = gross_rub_per_share - fee_rub_per_share
-        gross_pct = gross_rub_per_share / quantity_unit_entry_notional * 100.0
-        net_pct = net_rub_per_share / quantity_unit_entry_notional * 100.0
+        gross_pct = gross_rub_per_share / entry_fill_price * 100.0
+        net_pct = net_rub_per_share / entry_fill_price * 100.0
         return gross_pct, net_pct, exit_fill
 
     def observe_market_tick(self, ticker: str, metrics: Mapping[str, Any]) -> list[dict[str, Any]]:
