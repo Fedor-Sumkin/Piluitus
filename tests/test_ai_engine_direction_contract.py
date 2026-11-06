@@ -188,7 +188,8 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertIn("exactly two keys", prompt)
         self.assertIn("APPROVE or HOLD", prompt)
         self.assertIn("Never output BUY/SELL as a decision", prompt)
-        self.assertNotIn("RAG", prompt)
+        self.assertNotIn("Advisory RAG context", prompt)
+        self.assertNotIn("RISK_PER_TRADE", prompt)
 
     def test_retry_prompt_uses_the_same_m1_alternative_as_primary_prompt(self) -> None:
         prompt = AIEngine._build_contract_retry_prompt(

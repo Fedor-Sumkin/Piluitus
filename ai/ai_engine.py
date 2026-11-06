@@ -591,6 +591,7 @@ class AIEngine:
             "Repair the previous response. Return ONLY one JSON object with exactly two keys: "
             "final_decision (APPROVE or HOLD) and confidence_score (JSON number 0.0..1.0). "
             "Do not add any other keys, reasoning, Markdown, or text outside JSON. "
+            "Never output BUY/SELL as a decision. "
             "Apply the same candidate-side and evidence rules below; do not introduce stricter checks. "
             + shared_rules
         )
