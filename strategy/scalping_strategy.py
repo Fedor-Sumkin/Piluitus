@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -115,6 +116,14 @@ def evaluate_scalping_candidate(
 
     pattern_confirmed = _number(metrics, "bar_pattern_confirmed") >= 0.5
     pattern_name = str(metrics.get("bar_pattern_name") or "").strip().upper()
+    if pattern_confirmed:
+        signal_at = _number(metrics, "_bar_pattern_signal_at_monotonic", -1.0)
+        try:
+            max_pattern_age = max(2.0, float(os.getenv("PILUITUS_PATTERN_SIGNAL_MAX_AGE_SEC", "15")))
+        except (TypeError, ValueError, OverflowError):
+            max_pattern_age = 15.0
+        pattern_age = time.monotonic() - signal_at if signal_at > 0.0 else math.inf
+        pattern_confirmed = -0.25 <= pattern_age <= max_pattern_age
     pattern_side = "BUY" if pattern_name.endswith("_BUY") else "SELL" if pattern_name.endswith("_SELL") else ""
     trend_aligned = (
         _number(metrics, "bar_trend_up") >= 0.5

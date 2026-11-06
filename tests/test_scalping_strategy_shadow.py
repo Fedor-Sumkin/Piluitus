@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 import unittest
 from unittest.mock import patch
 
@@ -27,6 +28,7 @@ def strong_buy_metrics() -> dict[str, float | str]:
         "bar_atr_periods": 8.0,
         "bar_pattern_confirmed": 1.0,
         "bar_pattern_name": "M1_RANGE_BREAKOUT_BUY",
+        "_bar_pattern_signal_at_monotonic": time.monotonic(),
         "bar_trend_up": 1.0,
         "bar_trend_down": 0.0,
     }
@@ -73,6 +75,12 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
         result = evaluate_scalping_candidate("BUY", metrics)
         self.assertFalse(result["eligible"])
         self.assertIn("m1_pattern_conflicts_with_candidate", result["hard_blocks"])
+
+    def test_stale_m1_pattern_is_not_treated_as_fresh_confirmation(self) -> None:
+        metrics = strong_buy_metrics()
+        metrics["_bar_pattern_signal_at_monotonic"] = time.monotonic() - 30.0
+        result = evaluate_scalping_candidate("BUY", metrics)
+        self.assertNotIn("fresh_matching_m1_pattern", result["reasons"])
 
     def test_missing_queue_measurement_is_explicit_not_fabricated(self) -> None:
         metrics = strong_buy_metrics()
