@@ -33,6 +33,17 @@ class SignalGuardSizeDiagnosticsTests(unittest.TestCase):
         self.assertIn("история=4", reason)
         self.assertIn("возраст сигнала=0.25s", reason)
 
+    def test_diagnostic_reports_observed_drop_separately_from_confirmed_event(self) -> None:
+        metrics = self.metrics(0.0)
+        metrics["bid_size_baseline"] = 1762.0
+        metrics["bid_size_current"] = 1162.0
+
+        ok, reason = validate_signal_evidence("SELL", metrics)
+
+        self.assertFalse(ok)
+        self.assertIn("фактическое изменение размера=34.1%", reason)
+        self.assertIn("подтверждённое сокращение=0.0%", reason)
+
     def test_recent_depletion_at_threshold_passes_size_guard(self) -> None:
         ok, reason = validate_signal_evidence("SELL", self.metrics(50.0))
 
