@@ -1,0 +1,3 @@
+2026-11-06 17:52:25,876 [CRITICAL] [RUN=20261106_174252_1660_64279abf] Piluitus.RiskManager: 🧊 [GLOBAL LOSS STREAK] 3 убыточных сделок подряд; новые входы на паузе ещё 582 сек.
+2026-11-06 18:11:25,059 [CRITICAL] [RUN=20261106_174252_1660_64279abf] Piluitus.RiskManager: 🧊 [GLOBAL LOSS STREAK] 3 убыточных сделок подряд; новые входы на паузе ещё 596 сек.
+2026-11-06 18:16:50,103 [ERROR] [RUN=20261106_174252_1660_64279abf] aiogram.dispatcher: Failed to fetch updates - TelegramNetworkError: HTTP Client says - ServerDisconnectedError: Server disconnected
