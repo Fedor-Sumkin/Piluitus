@@ -174,6 +174,7 @@ class RiskManager:
         self._drawdown_warning_active = False
         self._loss_streak_count = 0
         self._loss_pause_signature: str | None = None
+        self._last_loss_streak_diagnostic_signature: str | None = None
         self._last_risk_snapshot_monotonic = 0.0
         self._cached_trading_allowed: bool | None = None
         self._balance_initialized = False
@@ -479,14 +480,42 @@ class RiskManager:
             closed_trades.sort(key=lambda row: row[0])
             loss_streak = 0
             latest_loss_at: datetime | None = None
+            recent_loss_rows: list[tuple[datetime, dict]] = []
             for closed_at, trade in reversed(closed_trades):
                 pnl = float(trade.get("pnl", 0.0) or 0.0)
                 if pnl >= 0.0:
                     break
                 loss_streak += 1
+                recent_loss_rows.append((closed_at, trade))
                 if latest_loss_at is None:
                     latest_loss_at = closed_at
             self._loss_streak_count = loss_streak
+
+            # Keep the global pause policy unchanged, but make its provenance
+            # auditable: show the exact latest losses and their persisted mode/IDs.
+            diagnostic_signature = (
+                f"{expected_mode}:{loss_streak}:"
+                f"{latest_loss_at.isoformat() if latest_loss_at is not None else 'none'}"
+            )
+            if diagnostic_signature != self._last_loss_streak_diagnostic_signature:
+                recent_details = []
+                for closed_at, trade in recent_loss_rows[:7]:
+                    recent_details.append(
+                        f"{str(trade.get('ticker') or '?').upper()}/"
+                        f"{str(trade.get('side') or '?').upper()}:"
+                        f"{float(trade.get('pnl', 0.0) or 0.0):+.2f}₽@"
+                        f"{closed_at.isoformat(timespec='seconds')}"
+                        f"[mode={str(trade.get('mode') or 'LEGACY_UNTAGGED').upper()},"
+                        f"id={str(trade.get('id') or trade.get('order_id') or '?')[:16]}]"
+                    )
+                risk_logger.info(
+                    "[LOSS STREAK AUDIT] mode=%s; consecutive_losses=%d; "
+                    "latest_loss=%s; recent_losses_newest_first=%s",
+                    expected_mode, loss_streak,
+                    latest_loss_at.isoformat(timespec="seconds") if latest_loss_at else "нет",
+                    " | ".join(recent_details) if recent_details else "нет",
+                )
+                self._last_loss_streak_diagnostic_signature = diagnostic_signature
 
             pause_sec = (
                 self.loss_streak_5_pause_sec if loss_streak >= 5
@@ -499,9 +528,10 @@ class RiskManager:
                     signature = f"{loss_streak}:{latest_loss_at.isoformat()}:{pause_sec}"
                     if signature != self._loss_pause_signature:
                         risk_logger.critical(
-                            "🧊 [GLOBAL LOSS STREAK] %d убыточных сделок подряд; "
-                            "новые входы на паузе ещё %.0f сек.",
-                            loss_streak, max(0.0, (pause_until - now).total_seconds()),
+                            "🧊 [GLOBAL LOSS STREAK] mode=%s; %d убыточных сделок подряд; "
+                            "последний убыток=%s; новые входы на паузе ещё %.0f сек.",
+                            expected_mode, loss_streak, latest_loss_at.isoformat(timespec="seconds"),
+                            max(0.0, (pause_until - now).total_seconds()),
                         )
                         self._loss_pause_signature = signature
                     return _cache_result(False)

@@ -1694,6 +1694,16 @@ class BaseExecutionEngine:
                     except (TypeError, ValueError):
                         warning_max_age = 2.0
                     warning_max_age = min(5.0, max(0.25, warning_max_age))
+
+                    def _quote_age(field: str) -> float:
+                        stamp = _finite_or_default(quote.get(field, 0.0), 0.0)
+                        age = time.monotonic() - stamp if stamp > 0.0 else math.inf
+                        return age if math.isfinite(age) and age >= 0.0 else math.inf
+
+                    book_event_age = _quote_age("last_order_book_event_seen")
+                    book_receive_age = _quote_age("last_order_book_received")
+                    bid_confirm_age = _quote_age("last_bid_confirmed_seen")
+                    ask_confirm_age = _quote_age("last_ask_confirmed_seen")
                     if bid_value > 0.0 and ask_value > 0.0 and ask_value < bid_value:
                         guard_reason = "пересекающийся BBO (Ask ниже Bid)"
                     elif (bid_value if side == "BUY" else ask_value) <= 0.0:
@@ -1706,10 +1716,16 @@ class BaseExecutionEngine:
                         guard_reason = "BBO не прошёл проверку исполнимости"
                     age_text = f"{side_age:.2f}s" if math.isfinite(side_age) else "нет метки"
                     logger.warning(
-                        "⏸️ [PAPER EXIT GUARD] %s: %s; age=%s, лимит=%.2fs, "
-                        "Bid=%.4f Ask=%.4f; проверка SL/TP отложена, last=%.4f.",
+                        "⏸️ [PAPER EXIT GUARD] %s: %s; executable_age=%s, лимит=%.2fs, "
+                        "Bid=%.4f Ask=%.4f; book_valid=%s event_age=%s receive_age=%s "
+                        "bid_confirm_age=%s ask_confirm_age=%s; SL/TP отложены, last=%.4f.",
                         ticker, guard_reason, age_text, warning_max_age,
-                        bid_value, ask_value, observed_last_price,
+                        bid_value, ask_value, bool(quote.get("order_book_valid", False)),
+                        f"{book_event_age:.2f}s" if math.isfinite(book_event_age) else "нет",
+                        f"{book_receive_age:.2f}s" if math.isfinite(book_receive_age) else "нет",
+                        f"{bid_confirm_age:.2f}s" if math.isfinite(bid_confirm_age) else "нет",
+                        f"{ask_confirm_age:.2f}s" if math.isfinite(ask_confirm_age) else "нет",
+                        observed_last_price,
                     )
                     self._last_bbo_exit_warning_at[ticker] = now_mono
                 return

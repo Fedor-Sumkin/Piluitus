@@ -1007,7 +1007,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "heartbeat_без_движения_BBO=%(orderbook_heartbeats)d, некорректных_состояний=%(orderbook_invalid)d, "
         "событий_не_по_порядку=%(orderbook_out_of_order)d, ошибок_обработки=%(orderbook_unusable)d; "
         "повторные кандидаты по открытым позициям=%(active_position_skipped)d; "
-        "ATR не готов перед LLM (не блокирует)=%(atr_unready_candidates)d; "
+        "ATR ожидание до LLM (кандидаты отложены)=%(atr_unready_candidates)d; "
         "блок ATR после APPROVE=%(atr_history_blocked)d; "
         "BBO wait=%(bbo_deferred)d, resumed=%(bbo_resumed)d, expired=%(bbo_expired)d, "
         "superseded=%(bbo_superseded)d, cancelled=%(bbo_cancelled)d, pending_now=%(bbo_pending)d; "
@@ -1218,9 +1218,14 @@ async def _resume_pending_bbo_candidate(ticker: str) -> None:
         _log_prefilter_blocked(key, evidence_reason)
         return
 
-    atr_ready, _atr_reason = validate_atr_readiness(metrics)
+    atr_ready, atr_reason = validate_atr_readiness(metrics)
     if not atr_ready:
+        # Do not preserve an old signal while ATR warms up. A later market tick
+        # must produce a fresh candidate after the required closed M1 bars exist.
         _trade_flow_inc("atr_unready_candidates")
+        _cancel_pending_bbo_candidate(key, pending)
+        _log_prefilter_blocked(key, atr_reason, interval_sec=60.0)
+        return
 
     if not _reserve_ai_ticker(key):
         _cancel_pending_bbo_candidate(key, pending)
@@ -1692,10 +1697,14 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                             _trade_flow_guard_block(evidence_reason)
                             _log_prefilter_blocked(ticker, evidence_reason)
                     else:
-                        atr_ready, _atr_reason = validate_atr_readiness(metrics_payload)
+                        atr_ready, atr_reason = validate_atr_readiness(metrics_payload)
                         if not atr_ready:
+                            # ATR is a hard pre-LLM prerequisite. Re-evaluate on a
+                            # later fresh tick instead of spending inference only to
+                            # reject an APPROVE after the model has answered.
                             _trade_flow_inc("atr_unready_candidates")
-                        if not _reserve_ai_ticker(ticker):
+                            _log_prefilter_blocked(ticker, atr_reason, interval_sec=60.0)
+                        elif not _reserve_ai_ticker(ticker):
                             _trade_flow_inc("candidate_deduplicated")
                         else:
                             event_payload = {
