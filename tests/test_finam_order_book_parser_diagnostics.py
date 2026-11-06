@@ -79,9 +79,12 @@ class FinamOrderBookParserDiagnosticsTests(unittest.TestCase):
         self.assertTrue(crossed_updates[0]["crossed_started"])
         self.assertAlmostEqual(crossed_updates[0]["crossed_duration_sec"], 0.0, places=2)
 
+        # Remove the crossed 102.0 bid level. Adding a higher ask alone
+        # cannot recover the book while the old best ask at 101.0 remains
+        # crossed by the 102.0 bid.
         recovered = {
             "symbol": "SBER@MISX",
-            "rows": [{"price": 103.0, "sellSize": 8.0}],
+            "rows": [{"price": 102.0, "buySize": 0.0}],
         }
         recovered_updates = self.client._extract_order_book_updates(
             self.envelope(self.now, recovered, base_mono + 2.0)
