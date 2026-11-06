@@ -1622,7 +1622,7 @@ class FinamBrokerClient:
                                                 "cross=%.2f bps; previous Bid/Ask=%s/%s; "
                                                 "side-touched Bid/Ask=%s/%s; best-level-touched=%s/%s; "
                                                 "delta-levels Bid=%s Ask=%s; top3 Bid=%s Ask=%s; "
-                                                "event_timestamp=%s; timestamp_source=%s.",
+                                                "event_timestamp=%s; timestamp_source=%s; crossed_age=%.3fs.",
                                                 invalid_ticker,
                                                 bid_price,
                                                 book_update.get("bid_size"),
@@ -1641,6 +1641,7 @@ class FinamBrokerClient:
                                                 ask_top,
                                                 book_update.get("order_book_timestamp"),
                                                 book_update.get("timestamp_source", "UNKNOWN"),
+                                                float(book_update.get("crossed_duration_sec") or 0.0),
                                             )
                                 else:
                                     if book_update.get("crossed_recovered"):
