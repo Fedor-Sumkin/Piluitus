@@ -1475,6 +1475,10 @@ class FinamBrokerClient:
                             }
                             observed_tickers = symbol_hints | update_tickers
                             parse_missing_tickers = symbol_hints - update_tickers
+                            if not self._last_order_book_payload_valid:
+                                self._last_order_book_unrecognized_tickers.update(
+                                    parse_missing_tickers - self._last_order_book_out_of_order_tickers
+                                )
                             if not observed_tickers:
                                 order_book_unattributed_messages += 1
                                 if not order_book_unattributed_sample:
