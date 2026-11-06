@@ -945,8 +945,11 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "quotes_received", "selected_quotes", "selected_anomalies", "anomalies_queued",
         "queue_dropped", "direction_prefilter_skipped", "prefilter_blocked", "candidate_deduplicated",
         "bbo_deferred", "bbo_resumed", "bbo_expired",
-        "direction_candidate_buy", "direction_candidate_sell",
-        "llm_calls", "llm_approve_buy", "llm_approve_sell", "llm_hold", "llm_contract_violation", "guard_blocked",
+        "local_candidate_buy", "local_candidate_sell",
+        "prefilter_pass_buy", "prefilter_pass_sell",
+        "llm_calls", "llm_approve_buy", "llm_approve_sell",
+        "llm_hold", "llm_hold_buy", "llm_hold_sell", "llm_contract_violation",
+        "orders_opened_buy", "orders_opened_sell", "guard_blocked",
         "guard_quotes", "guard_spread", "guard_volume", "guard_direction", "guard_size",
         "guard_text", "guard_other", "confidence_blocked", "risk_blocked", "zero_lot",
         "orders_scheduled", "orderbook_updates", "orderbook_unusable",
@@ -959,9 +962,11 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "📊 [TRADE FLOW 60s] котировки=%(quotes_received)d, котировки_top15=%(selected_quotes)d, "
         "аномалии_top15=%(selected_anomalies)d, в_очереди=%(anomalies_queued)d, очередь_потери=%(queue_dropped)d; "
         "направление_не_совпало=%(direction_prefilter_skipped)d, prefilter_block=%(prefilter_blocked)d, "
-        "duplicate=%(candidate_deduplicated)d; кандидаты(BUY=%(direction_candidate_buy)d,SELL=%(direction_candidate_sell)d); "
+        "duplicate=%(candidate_deduplicated)d; локально(BUY=%(local_candidate_buy)d,SELL=%(local_candidate_sell)d), "
+        "до_LLM(BUY=%(prefilter_pass_buy)d,SELL=%(prefilter_pass_sell)d); "
         "LLM=%(llm_calls)d, APPROVE(BUY=%(llm_approve_buy)d,SELL=%(llm_approve_sell)d), "
-        "HOLD=%(llm_hold)d, contract_error=%(llm_contract_violation)d; "
+        "HOLD(BUY-кандидат=%(llm_hold_buy)d,SELL-кандидат=%(llm_hold_sell)d), "
+        "contract_error=%(llm_contract_violation)d; открыто(BUY=%(orders_opened_buy)d,SELL=%(orders_opened_sell)d); "
         "Guard=%(guard_blocked)d (BBO=%(guard_quotes)d, спред=%(guard_spread)d, объём=%(guard_volume)d, "
         "направление=%(guard_direction)d, размер=%(guard_size)d, текст=%(guard_text)d, прочее=%(guard_other)d); "
         "ORDER_BOOK: принятых_состояний=%(orderbook_updates)d, затронуто_сторон_BBO=%(orderbook_side_touches)d, "
@@ -1185,7 +1190,7 @@ async def _resume_pending_bbo_candidate(ticker: str) -> None:
         _drop_pending_bbo_candidate(key, pending)
         _trade_flow_inc("bbo_resumed")
         _trade_flow_inc("anomalies_queued")
-        _trade_flow_inc("direction_candidate_buy" if direction == "BUY" else "direction_candidate_sell")
+        _trade_flow_inc("prefilter_pass_buy" if direction == "BUY" else "prefilter_pass_sell")
         logger.info("✅ [PRE-LLM RESUME] %s: свежий BBO подтверждён, кандидат %s передан в LLM-очередь.", key, direction)
         update_numpy_impulse_status(key)
     except asyncio.QueueFull:
@@ -1613,6 +1618,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                         "Направление не подтверждено: краткосрочное изменение цены и отклонение от VWAP не совпадают по знаку.",
                     )
                 else:
+                    _trade_flow_inc("local_candidate_buy" if candidate_direction == "BUY" else "local_candidate_sell")
                     evidence_ok, evidence_reason = validate_signal_evidence(candidate_direction, metrics_payload)
                     if not evidence_ok:
                         if _guard_reason_bucket(evidence_reason) == "quotes":
@@ -1666,7 +1672,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                             try:
                                 anomaly_queue.put_nowait(_make_priority_item(1, "MARKET_TICK", event_payload))
                                 _trade_flow_inc("anomalies_queued")
-                                _trade_flow_inc("direction_candidate_buy" if candidate_direction == "BUY" else "direction_candidate_sell")
+                                _trade_flow_inc("prefilter_pass_buy" if candidate_direction == "BUY" else "prefilter_pass_sell")
                                 update_numpy_impulse_status(ticker)
                             except asyncio.QueueFull:
                                 _release_ai_ticker(ticker)
@@ -1748,6 +1754,7 @@ class MarketWorker:
         if execution_status in {"OPENED", "ACCEPTED"}:
             # Count actual executor outcomes, not merely queued AI decisions.
             _trade_flow_inc("orders_scheduled")
+            _trade_flow_inc("orders_opened_buy" if side == "BUY" else "orders_opened_sell")
         order_id = str(result.get("orderId") or result.get("order_id") or "")
         raw_actual_lots = result.get("lots")
         raw_actual_shares = result.get("shares")
@@ -2044,6 +2051,10 @@ class MarketWorker:
                     _trade_flow_inc("llm_approve_sell")
                 else:
                     _trade_flow_inc("llm_hold")
+                    if candidate_direction == "BUY":
+                        _trade_flow_inc("llm_hold_buy")
+                    elif candidate_direction == "SELL":
+                        _trade_flow_inc("llm_hold_sell")
                 # Независимый численный фильтр: свободный текст и confidence LLM
                 # не заменяют обязательную проверку измеряемых условий входа.
                 evidence = metrics if isinstance(metrics, dict) else {}
