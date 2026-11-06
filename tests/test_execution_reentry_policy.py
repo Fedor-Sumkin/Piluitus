@@ -37,6 +37,28 @@ class ExecutionReentryPolicyTests(unittest.TestCase):
         self.assertEqual(cooldown, 180.0)
         self.assertEqual(count, 1)
 
+    def test_paper_commission_is_charged_on_entry_and_exit_for_long(self) -> None:
+        gross, exit_fee, total_fee, net = BaseExecutionEngine._calculate_paper_pnl(
+            100.0, 101.0, 10, "BUY", 0.1, entry_commission=1.0
+        )
+        self.assertAlmostEqual(gross, 10.0)
+        self.assertAlmostEqual(exit_fee, 1.01)
+        self.assertAlmostEqual(total_fee, 2.01)
+        self.assertAlmostEqual(net, 7.99)
+
+    def test_paper_commission_is_charged_on_entry_and_exit_for_short(self) -> None:
+        gross, exit_fee, total_fee, net = BaseExecutionEngine._calculate_paper_pnl(
+            100.0, 99.0, 10, "SELL", 0.1, entry_commission=1.0
+        )
+        self.assertAlmostEqual(gross, 10.0)
+        self.assertAlmostEqual(exit_fee, 0.99)
+        self.assertAlmostEqual(total_fee, 1.99)
+        self.assertAlmostEqual(net, 8.01)
+
+    def test_paper_commission_rejects_invalid_inputs(self) -> None:
+        with self.assertRaises(ValueError):
+            BaseExecutionEngine._calculate_paper_pnl(100.0, 99.0, 10, "BUY", -0.1)
+
     def test_shadow_break_even_threshold_has_correct_side_and_costs(self) -> None:
         long_free = BaseExecutionEngine._calculate_shadow_be_raw_trigger_price(
             100.0, "BUY", 10, 0.0, 0.0, 0.0

@@ -868,6 +868,25 @@ class BaseExecutionEngine:
         except Exception as exc:
             return f"diagnostic_error={type(exc).__name__}: {exc}"
 
+    @staticmethod
+    def _calculate_paper_pnl(
+        entry_price: float, exit_price: float, share_qty: int, side: str,
+        commission_pct_per_side: float, entry_commission: float = 0.0,
+    ) -> tuple[float, float, float, float]:
+        """Return gross PnL, exit fee, total fees and net PnL after both sides."""
+        values = (entry_price, exit_price, commission_pct_per_side, entry_commission)
+        if side not in {"BUY", "SELL"} or share_qty <= 0:
+            raise ValueError("Для PAPER PnL нужны BUY/SELL и положительное количество акций.")
+        if not all(math.isfinite(float(value)) for value in values):
+            raise ValueError("Параметры PAPER PnL должны быть конечными числами.")
+        if entry_price <= 0.0 or exit_price <= 0.0 or commission_pct_per_side < 0.0 or entry_commission < 0.0:
+            raise ValueError("Цена должна быть положительной, комиссия — неотрицательной.")
+        sign = 1 if side == "BUY" else -1
+        gross_pnl = (exit_price - entry_price) * share_qty * sign
+        exit_commission = exit_price * share_qty * commission_pct_per_side / 100.0
+        total_commission = entry_commission + exit_commission
+        return gross_pnl, exit_commission, total_commission, gross_pnl - total_commission
+
     def _apply_paper_slippage(self, price: float, transaction_side: str) -> float:
         """Apply optional adverse slippage after selecting the executable BBO side."""
         if not self.paper_mode or self.paper_slippage_bps <= 0.0:
@@ -947,6 +966,7 @@ class BaseExecutionEngine:
             if int(lots) <= 0 or float(price) <= 0:
                 return {"status": "FAILED", "message": "Количество лотов и цена должны быть положительными."}
             lots = int(lots)
+            requested_lots = lots
             price = float(price)
             signal_reference_price = price
 
@@ -1077,6 +1097,19 @@ class BaseExecutionEngine:
 
             # The validated SL/TP has already been included in the portfolio stop-risk reservation.
             logger.info("📊 [ATR ENFORCER] Уровни: SL=%s₽ TP=%s₽; %s", stop_loss, take_profit, reservation_info)
+            if approved_lots != requested_lots:
+                logger.warning(
+                    "📉 [POSITION SIZE FINAL] %s %s: requested=%d lots/%d shares; approved=%d lots/%d shares; notional=%.2f ₽; reduction_reason=PORTFOLIO_CAP; %s",
+                    side, ticker, requested_lots, requested_lots * lot_multiplier,
+                    approved_lots, approved_lots * lot_multiplier,
+                    approved_lots * lot_multiplier * price, reservation_info,
+                )
+            else:
+                logger.info(
+                    "📐 [POSITION SIZE FINAL] %s %s: requested=approved=%d lots/%d shares; notional=%.2f ₽; %s",
+                    side, ticker, approved_lots, approved_lots * lot_multiplier,
+                    approved_lots * lot_multiplier * price, reservation_info,
+                )
 
             # Recheck immediately before creating a PAPER position or sending a LIVE order.
             # This catches a session boundary crossed during inference/BBO/size preparation.
@@ -1224,6 +1257,7 @@ class BaseExecutionEngine:
             return {
                 "status": "SUCCESS",
                 "orderId": order_id,
+                "requested_lots": requested_lots,
                 "lots": lots,
                 "shares": lots * lot_multiplier,
                 "lot_size": lot_multiplier,
@@ -1376,16 +1410,13 @@ class BaseExecutionEngine:
             raise ValueError("В BBO отсутствует положительная исполнимая цена выхода.")
         exit_transaction_side = "SELL" if side == "BUY" else "BUY"
         exit_price = self._apply_paper_slippage(raw_exit_price, exit_transaction_side)
-        sign = 1 if side == "BUY" else -1
-        gross_pnl = (exit_price - entry_price) * share_qty * sign
         entry_commission = _finite_or_default(trade.get("entry_commission_rub"), 0.0)
         commission_pct = _finite_or_default(
             trade.get("commission_pct_per_side"), self.paper_commission_pct
         )
-        exit_notional = exit_price * share_qty
-        exit_commission = exit_notional * commission_pct / 100.0
-        total_commission = entry_commission + exit_commission
-        net_pnl = gross_pnl - total_commission
+        gross_pnl, exit_commission, total_commission, net_pnl = self._calculate_paper_pnl(
+            entry_price, exit_price, share_qty, side, commission_pct, entry_commission
+        )
         entry_notional = _finite_or_default(
             trade.get("notional_entry_rub"), entry_price * share_qty
         )
@@ -1775,11 +1806,11 @@ class BaseExecutionEngine:
             exit_transaction_side = "SELL" if side == "BUY" else "BUY"
             estimated_exit_price = self._apply_paper_slippage(executable_exit_price, exit_transaction_side)
             mark_pct = ((estimated_exit_price - entry_price) / entry_price) * 100.0 * sign
-            mark_rub = (estimated_exit_price - entry_price) * share_qty * sign
             entry_fee = _finite_or_default(trade.get("entry_commission_rub"), 0.0)
             fee_pct = _finite_or_default(trade.get("commission_pct_per_side"), self.paper_commission_pct)
-            estimated_exit_fee = estimated_exit_price * share_qty * fee_pct / 100.0
-            mark_net = mark_rub - entry_fee - estimated_exit_fee
+            mark_rub, estimated_exit_fee, _mark_total_fees, mark_net = self._calculate_paper_pnl(
+                entry_price, estimated_exit_price, share_qty, side, fee_pct, entry_fee
+            )
             entry_notional = _finite_or_default(trade.get("notional_entry_rub"), entry_price * share_qty)
             trade["current_price"] = executable_exit_price
             trade["estimated_exit_price"] = estimated_exit_price

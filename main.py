@@ -977,7 +977,8 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "orders_scheduled", "orderbook_updates", "orderbook_unusable",
         "orderbook_side_touches", "orderbook_heartbeats", "orderbook_invalid",
         "orderbook_out_of_order", "active_position_skipped", "atr_unready_candidates",
-        "execution_bbo_blocked", "atr_history_blocked",
+        "execution_bbo_blocked", "atr_history_blocked", "portfolio_cap_blocked",
+        "portfolio_size_reduced", "entry_session_blocked", "execution_other_blocked",
     )
     values = {key: counts.get(key, 0) for key in names}
     with _pending_bbo_lock:
@@ -1008,8 +1009,12 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "блок ATR после APPROVE=%(atr_history_blocked)d; "
         "BBO wait=%(bbo_deferred)d, resumed=%(bbo_resumed)d, expired=%(bbo_expired)d, "
         "superseded=%(bbo_superseded)d, cancelled=%(bbo_cancelled)d, pending_now=%(bbo_pending)d; "
-        "confidence=%(confidence_blocked)d, risk=%(risk_blocked)d, lots=0:%(zero_lot)d, "
-        "BBO_exec_block=%(execution_bbo_blocked)d, ордеров_принято/открыто=%(orders_scheduled)d",
+        "после_LLM_исполнение: portfolio_cap_block=%(portfolio_cap_blocked)d, "
+        "portfolio_size_reduced=%(portfolio_size_reduced)d, entry_session_block=%(entry_session_blocked)d, "
+        "other_block=%(execution_other_blocked)d; "
+        "confidence=%(confidence_blocked)d, RiskManager_pre_LLM=%(risk_blocked)d, "
+        "минимальный_лот_по_риску=%(zero_lot)d, BBO_entry_block=%(execution_bbo_blocked)d, "
+        "ордеров_принято/открыто=%(orders_scheduled)d",
         values,
     )
     _log_open_position_bbo_diagnostics()
@@ -1788,7 +1793,8 @@ class MarketWorker:
         raw_status = str(result.get("status", "FAILED")).upper()
         result_mode = str(result.get("mode") or ("PAPER" if getattr(execution_engine, "paper_mode", True) else "LIVE")).upper()
         execution_status = normalise_execution_status(raw_status, result_mode)
-        if "BBO_ENTRY_BLOCK" in str(result.get("message", "")):
+        result_message = str(result.get("message", ""))
+        if "BBO_ENTRY_BLOCK" in result_message:
             _trade_flow_inc("execution_bbo_blocked")
         if execution_status in {"OPENED", "ACCEPTED"}:
             # Count actual executor outcomes, not merely queued AI decisions.
@@ -1801,8 +1807,31 @@ class MarketWorker:
         actual_lots = nonnegative_int(raw_actual_lots)
         actual_shares = nonnegative_int(raw_actual_shares)
         actual_notional = finite_float(raw_actual_notional)
+        requested_lots_from_executor = nonnegative_int(result.get("requested_lots"))
+        if execution_status in {"SKIPPED", "BLOCKED", "FAILED"}:
+            if "Лимиты портфеля:" in result_message:
+                _trade_flow_inc("portfolio_cap_blocked")
+            elif "ENTRY_SESSION_BLOCK" in result_message:
+                _trade_flow_inc("entry_session_blocked")
+            elif "BBO_ENTRY_BLOCK" not in result_message and "AI Decision is HOLD" not in result_message:
+                _trade_flow_inc("execution_other_blocked")
+        if (
+            execution_status in {"OPENED", "ACCEPTED"}
+            and requested_lots_from_executor is not None
+            and actual_lots is not None
+            and actual_lots < requested_lots_from_executor
+        ):
+            _trade_flow_inc("portfolio_size_reduced")
         if execution_status in {"OPENED", "ACCEPTED"} and raw_actual_lots is None:
             actual_lots = int(lots)
+        if execution_status in {"OPENED", "ACCEPTED"}:
+            logger.info(
+                "📌 [EXECUTION RESULT] %s %s: requested=%s lots; actual=%s lots/%s shares; notional=%.2f ₽; status=%s",
+                side, ticker, requested_lots_from_executor if requested_lots_from_executor is not None else lots,
+                actual_lots if actual_lots is not None else lots,
+                actual_shares if actual_shares is not None else 0,
+                actual_notional if actual_notional is not None else 0.0, execution_status,
+            )
         if (
             execution_status in {"OPENED", "ACCEPTED"}
             and raw_actual_shares is None
