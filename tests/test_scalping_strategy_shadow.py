@@ -39,7 +39,7 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
         with patch.dict(os.environ, {"PILUITUS_ATR_MIN_PERIODS": "5"}):
             result = evaluate_scalping_candidate("BUY", strong_buy_metrics())
         self.assertTrue(result["eligible"], result)
-        self.assertGreaterEqual(result["score"], 70.0)
+        self.assertGreaterEqual(result["score"], 85.0)
         self.assertEqual(result["mode"], "SHADOW_ONLY")
         self.assertEqual(result["regime"], "TREND_ALIGNED")
 
