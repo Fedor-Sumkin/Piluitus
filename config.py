@@ -117,10 +117,10 @@ class Settings:
         "VLLM_MODEL",
         "/home/sumkin/models/deepseek-r1-7b"
     )
-    # Общий таймаут (сек) для запросов к vLLM (можно переопределять в отдельных вызовах)
+    # Таймаут одной попытки vLLM; AIEngine выполняет один ограниченный сетевой повтор.
     VLLM_TIMEOUT: int = int(os.getenv("VLLM_TIMEOUT", "30"))
-    # Бюджет генерации задаётся в .env; AIEngine применяет общий диапазон 768..1536.
-    VLLM_MAX_TOKENS: int = int(os.getenv("VLLM_MAX_TOKENS", "1280"))
+    # Короткий JSON-контракт: эффективный max_tokens ограничен диапазоном 384..768.
+    VLLM_MAX_TOKENS: int = int(os.getenv("VLLM_MAX_TOKENS", "768"))
 
     # ---------- Finam ----------
     FINAM_TOKEN: str = os.getenv("FINAM_TOKEN", "")

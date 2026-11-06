@@ -15,10 +15,22 @@ thought_log = logging.getLogger("Piluitus.EvolutionThoughts")
 class AIEngine:
     @staticmethod
     def _effective_max_tokens() -> int:
+        """Keep the short APPROVE/HOLD response within a bounded generation budget."""
         try:
-            return max(768, min(1536, int(getattr(Settings, "VLLM_MAX_TOKENS", 1280))))
+            return max(384, min(768, int(getattr(Settings, "VLLM_MAX_TOKENS", 768))))
         except (TypeError, ValueError, OverflowError):
-            return 1280
+            return 768
+
+    @staticmethod
+    def _request_timeout_seconds() -> float:
+        """Return a finite, positive per-attempt timeout for vLLM requests."""
+        try:
+            configured = float(getattr(Settings, "VLLM_TIMEOUT", 30))
+        except (TypeError, ValueError, OverflowError):
+            configured = 30.0
+        if not math.isfinite(configured):
+            return 30.0
+        return max(1.0, configured)
 
     def __init__(self):
         endpoint = Settings.VLLM_ENDPOINT.rstrip("/")
@@ -52,13 +64,43 @@ class AIEngine:
             self._effective_max_tokens(),
         )
 
-    async def _post_with_retry(self, path: str, *, json: dict) -> httpx.Response:
-        """Retry one transient transport failure once; never retry HTTP responses."""
-        for attempt in range(2):
+    async def _post_with_retry(
+        self,
+        path: str,
+        *,
+        json: dict,
+        retries: int = 1,
+        retry_timeouts: bool = True,
+    ) -> httpx.Response:
+        """Retry one transient request failure without swallowing task cancellation."""
+        timeout_seconds = self._request_timeout_seconds()
+        retry_limit = max(0, min(1, int(retries)))
+        for attempt in range(retry_limit + 1):
             try:
-                return await self.client.post(path, json=json)
+                async with asyncio.timeout(timeout_seconds):
+                    return await self.client.post(
+                        path,
+                        json=json,
+                        timeout=timeout_seconds,
+                    )
+            except (httpx.TimeoutException, TimeoutError) as exc:
+                if attempt >= retry_limit or not retry_timeouts:
+                    log.error(
+                        "[vLLM TIMEOUT] Запрос не завершился за %.1fs; attempts=%d/%d; retry_timeouts=%s",
+                        timeout_seconds, attempt + 1, retry_limit + 1, retry_timeouts,
+                    )
+                    raise
+                log.warning(
+                    "[vLLM RETRY] Тайм-аут запроса (%s, %.1fs); повтор 1/1 через 0.4s",
+                    type(exc).__name__, timeout_seconds,
+                )
+                await asyncio.sleep(0.4)
             except httpx.TransportError as exc:
-                if attempt >= 1:
+                if attempt >= retry_limit:
+                    log.error(
+                        "[vLLM REQUEST FAILED] Транспортная ошибка после %d попыток: %s",
+                        attempt + 1, type(exc).__name__,
+                    )
                     raise
                 log.warning(
                     "[vLLM RETRY] Временный сетевой сбой (%s); повтор запроса 1/1 через 0.4s",
@@ -694,9 +736,11 @@ class AIEngine:
         )
 
         start_inference_time = time.time()
+        request_timeout = self._request_timeout_seconds()
 
         try:
-            async with asyncio.timeout(float(Settings.VLLM_TIMEOUT)):
+            # Two request attempts plus the retry delay fit inside this bounded phase.
+            async with asyncio.timeout(request_timeout * 2.0 + 0.5):
                 configured_max_tokens = self._effective_max_tokens()
                 request_body = {
                     "model": self.model_name,
@@ -760,6 +804,26 @@ class AIEngine:
                     )
                     resp.raise_for_status()
                 raw = resp.json()
+        except (httpx.TimeoutException, TimeoutError) as exc:
+            log.exception(
+                "[AIEngine v34] Тайм-аут запроса к vLLM (%s) после ограниченного повтора: %r",
+                self.api_path, exc,
+            )
+            return {
+                "final_decision": "HOLD",
+                "model_decision": "HOLD",
+                "model_raw_decision": "INVALID_RESPONSE",
+                "model_contract_violation": False,
+                "contract_error_type": None,
+                "error_type": "timeout",
+                "request_error": True,
+                "request_error_type": "timeout",
+                "confidence_score": 0.0,
+                "confidence_valid": False,
+                "tactic_opinion": "vLLM не ответил в отведённое время; вход заблокирован.",
+                "critic_opinion": self._compact_opinion(str(exc), max_chars=165),
+                "latency": round(time.time() - start_inference_time, 3),
+            }
         except HTTPStatusError as exc:
             status = exc.response.status_code if exc.response is not None else "?"
             detail = self._http_error_detail(exc.response) if exc.response is not None else str(exc)
@@ -771,27 +835,48 @@ class AIEngine:
                 "final_decision": "HOLD",
                 "model_decision": "HOLD",
                 "model_raw_decision": "INVALID_RESPONSE",
-                "model_contract_violation": True,
-                "contract_error_type": "http_error",
-                "error_type": "request_error",
+                "model_contract_violation": False,
+                "contract_error_type": None,
+                "error_type": "http_error",
+                "request_error": True,
+                "request_error_type": "http_error",
                 "confidence_score": 0.0,
                 "confidence_valid": False,
                 "tactic_opinion": "vLLM отклонил запрос; торговый вход заблокирован.",
                 "critic_opinion": self._compact_opinion(f"HTTP {status}: {detail}", max_chars=165),
                 "latency": round(time.time() - start_inference_time, 3),
             }
-        except Exception as exc:
-            log.exception("[AIEngine v34] Ошибка запроса к vLLM (%s): %r", self.api_path, exc)
+        except httpx.TransportError as exc:
+            log.exception("[AIEngine v34] Сетевая ошибка запроса к vLLM (%s): %r", self.api_path, exc)
             return {
                 "final_decision": "HOLD",
                 "model_decision": "HOLD",
                 "model_raw_decision": "INVALID_RESPONSE",
-                "model_contract_violation": True,
-                "contract_error_type": "transport_error",
-                "error_type": "request_error",
+                "model_contract_violation": False,
+                "contract_error_type": None,
+                "error_type": "transport_error",
+                "request_error": True,
+                "request_error_type": "transport_error",
                 "confidence_score": 0.0,
                 "confidence_valid": False,
-                "tactic_opinion": "Сбой соединения с vLLM; торговый вход заблокирован.",
+                "tactic_opinion": "Сбой сетевого соединения с vLLM; вход заблокирован.",
+                "critic_opinion": self._compact_opinion(str(exc), max_chars=165),
+                "latency": round(time.time() - start_inference_time, 3),
+            }
+        except Exception as exc:
+            log.exception("[AIEngine v34] Ошибка запроса/ответа vLLM (%s): %r", self.api_path, exc)
+            return {
+                "final_decision": "HOLD",
+                "model_decision": "HOLD",
+                "model_raw_decision": "INVALID_RESPONSE",
+                "model_contract_violation": False,
+                "contract_error_type": None,
+                "error_type": "request_error",
+                "request_error": True,
+                "request_error_type": "request_error",
+                "confidence_score": 0.0,
+                "confidence_valid": False,
+                "tactic_opinion": "Ошибка запроса к vLLM; вход заблокирован.",
                 "critic_opinion": self._compact_opinion(str(exc), max_chars=165),
                 "latency": round(time.time() - start_inference_time, 3),
             }
@@ -829,18 +914,22 @@ class AIEngine:
             )
             retry_started = time.time()
             try:
-                async with asyncio.timeout(float(Settings.VLLM_TIMEOUT)):
-                    retry_resp = await self._post_with_retry(self.api_path, json=retry_body)
+                async with asyncio.timeout(request_timeout + 0.5):
+                    retry_resp = await self._post_with_retry(
+                        self.api_path,
+                        json=retry_body,
+                        retry_timeouts=False,
+                    )
                     if retry_resp.status_code in (400, 422):
                         retry_detail = self._http_error_detail(retry_resp)
                         if self._is_response_format_error(retry_detail):
                             retry_body.pop("response_format", None)
-                            retry_resp = await self._post_with_retry(self.api_path, json=retry_body)
+                            retry_resp = await self._post_with_retry(self.api_path, json=retry_body, retry_timeouts=False)
                     if retry_resp.status_code in (400, 422):
                         retry_detail = self._http_error_detail(retry_resp)
                         if self._is_sampling_parameter_error(retry_detail) and "temperature" in retry_body:
                             retry_body.pop("temperature", None)
-                            retry_resp = await self._post_with_retry(self.api_path, json=retry_body)
+                            retry_resp = await self._post_with_retry(self.api_path, json=retry_body, retry_timeouts=False)
                     if retry_resp.status_code >= 400:
                         raise RuntimeError(
                             f"contract-retry HTTP {retry_resp.status_code}: "

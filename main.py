@@ -967,6 +967,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "local_candidate_buy", "local_candidate_sell",
         "prefilter_pass_buy", "prefilter_pass_sell",
         "llm_calls", "llm_model_approve", "llm_model_hold",
+        "llm_request_error", "llm_timeout",
         "post_llm_evidence_blocked", "post_llm_confidence_blocked",
         "llm_approve_buy", "llm_approve_sell",
         "llm_hold", "llm_hold_buy", "llm_hold_sell", "llm_contract_violation",
@@ -996,6 +997,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "после_LLM(guard_block=%(post_llm_evidence_blocked)d,confidence_block=%(post_llm_confidence_blocked)d), "
         "итог(APPROVE_BUY=%(llm_approve_buy)d,APPROVE_SELL=%(llm_approve_sell)d,"
         "HOLD_BUY-кандидат=%(llm_hold_buy)d,HOLD_SELL-кандидат=%(llm_hold_sell)d), "
+        "request_error=%(llm_request_error)d (timeout=%(llm_timeout)d); "
         "contract_error=%(llm_contract_violation)d (retry=%(llm_contract_retry)d,"
         "recovered=%(llm_contract_retry_recovered)d,failed=%(llm_contract_retry_failed)d); "
         "открыто(BUY=%(orders_opened_buy)d,SELL=%(orders_opened_sell)d); "
@@ -2053,17 +2055,34 @@ class MarketWorker:
                         self.ai.analyze_market_state(event_payload),
                         timeout=float(Settings.VLLM_TIMEOUT) * 2.0 + 1.0,
                     )
+                except asyncio.TimeoutError as exc:
+                    ai_response = {
+                        "final_decision": "HOLD",
+                        "model_decision": "HOLD",
+                        "model_raw_decision": "INVALID_RESPONSE",
+                        "model_contract_violation": False,
+                        "contract_error_type": None,
+                        "error_type": "worker_timeout",
+                        "request_error": True,
+                        "request_error_type": "worker_timeout",
+                        "confidence_score": 0.0,
+                        "confidence_valid": False,
+                        "tactic_opinion": "Превышено общее время ожидания ИИ; торговый вход заблокирован.",
+                        "critic_opinion": str(exc),
+                    }
                 except Exception as exc:
                     ai_response = {
                         "final_decision": "HOLD",
                         "model_decision": "HOLD",
                         "model_raw_decision": "INVALID_RESPONSE",
-                        "model_contract_violation": True,
-                        "contract_error_type": "worker_timeout",
-                        "error_type": "request_error",
+                        "model_contract_violation": False,
+                        "contract_error_type": None,
+                        "error_type": "worker_error",
+                        "request_error": True,
+                        "request_error_type": "worker_error",
                         "confidence_score": 0.0,
                         "confidence_valid": False,
-                        "tactic_opinion": "Превышено время ожидания ИИ / Сбой инференса сервера vLLM.",
+                        "tactic_opinion": "Ошибка обработки запроса ИИ; торговый вход заблокирован.",
                         "critic_opinion": str(exc),
                     }
 
@@ -2088,6 +2107,13 @@ class MarketWorker:
                 if ai_analysis.get("contract_retry_failed"):
                     _trade_flow_inc("llm_contract_retry_failed")
 
+                request_error = bool(ai_analysis.get("request_error", False))
+                request_error_type = str(ai_analysis.get("request_error_type") or "request_error")
+                if request_error:
+                    _trade_flow_inc("llm_request_error")
+                    if "timeout" in request_error_type:
+                        _trade_flow_inc("llm_timeout")
+
                 # LLM returns only APPROVE/HOLD. Trade direction comes exclusively
                 # from the deterministic local candidate and cannot be changed by the model.
                 model_decision = str(
@@ -2096,23 +2122,31 @@ class MarketWorker:
                 candidate_direction = str(event_payload.get("candidate_direction", "")).strip().upper()
                 candidate_decision = candidate_direction if candidate_direction in {"BUY", "SELL"} else "HOLD"
                 model_contract_violation = bool(ai_analysis.get("model_contract_violation", False))
+                if not request_error:
+                    if (
+                        model_decision == "APPROVE"
+                        and candidate_direction in {"BUY", "SELL"}
+                        and not model_contract_violation
+                    ):
+                        _trade_flow_inc("llm_model_approve")
+                    elif model_decision == "HOLD" and not model_contract_violation:
+                        _trade_flow_inc("llm_model_hold")
                 if (
                     model_decision == "APPROVE"
                     and candidate_direction in {"BUY", "SELL"}
                     and not model_contract_violation
-                ):
-                    _trade_flow_inc("llm_model_approve")
-                elif model_decision == "HOLD" and not model_contract_violation:
-                    _trade_flow_inc("llm_model_hold")
-                if (
-                    model_decision == "APPROVE"
-                    and candidate_direction in {"BUY", "SELL"}
-                    and not model_contract_violation
+                    and not request_error
                 ):
                     decision = candidate_direction
                 else:
                     decision = "HOLD"
-                    if model_decision != "HOLD" or model_contract_violation:
+                    if request_error:
+                        logger.error(
+                            "🛑 [LLM REQUEST ERROR] %s: запрос к vLLM не завершён; "
+                            "type=%s candidate=%s; вход запрещён.",
+                            ticker, request_error_type, candidate_direction or "NONE",
+                        )
+                    elif model_decision != "HOLD" or model_contract_violation:
                         model_contract_violation = True
                         _trade_flow_inc("llm_contract_violation")
                         logger.error(
@@ -2145,11 +2179,12 @@ class MarketWorker:
                 elif decision == "SELL":
                     _trade_flow_inc("llm_approve_sell")
                 else:
-                    _trade_flow_inc("llm_hold")
-                    if candidate_direction == "BUY":
-                        _trade_flow_inc("llm_hold_buy")
-                    elif candidate_direction == "SELL":
-                        _trade_flow_inc("llm_hold_sell")
+                    if not request_error:
+                        _trade_flow_inc("llm_hold")
+                        if candidate_direction == "BUY":
+                            _trade_flow_inc("llm_hold_buy")
+                        elif candidate_direction == "SELL":
+                            _trade_flow_inc("llm_hold_sell")
                 # Независимый численный фильтр: свободный текст и confidence LLM
                 # не заменяют обязательную проверку измеряемых условий входа.
                 evidence = metrics if isinstance(metrics, dict) else {}
@@ -2164,6 +2199,8 @@ class MarketWorker:
                 elif decision in {"BUY", "SELL"}:
                     valid_evidence, block_reason = validate_signal_evidence(decision, evidence)
                 signal_reason = (
+                    f"Ошибка запроса к vLLM ({request_error_type}); вход запрещён."
+                    if request_error else
                     "LLM нарушила контракт APPROVE/HOLD; вход запрещён."
                     if model_contract_violation else ""
                 )
