@@ -213,6 +213,10 @@ class HFTMemoryScreener:
             "last_ask_size_seen": 0.0,
             "bid_size_drop_pct": 0.0,
             "ask_size_drop_pct": 0.0,
+            "bid_size_baseline": 0.0,
+            "ask_size_baseline": 0.0,
+            "bid_size_current": 0.0,
+            "ask_size_current": 0.0,
             "bid_size_drop_at": 0.0,
             "ask_size_drop_at": 0.0,
             "top_bid_history_samples": 0,
@@ -460,6 +464,11 @@ class HFTMemoryScreener:
 
         if size <= 0.0:
             quote[size_key] = 0.0
+            quote[f"{side}_size_current"] = 0.0
+            quote[f"{side}_size_baseline"] = float(np.median([
+                float(value) for ts, value in history
+                if now - float(ts) <= 60.0 and float(value) > 0.0
+            ])) if history else 0.0
             quote[seen_key] = 0.0
             quote[drop_key] = 0.0
             quote[drop_at_key] = 0.0
@@ -467,6 +476,12 @@ class HFTMemoryScreener:
             return
 
         drop, samples = self._top_size_drop_pct(history, size, now)
+        prior_sizes = [
+            float(value) for ts, value in list(history)[-5:]
+            if now - float(ts) <= 60.0 and float(value) > 0.0
+        ]
+        quote[f"{side}_size_baseline"] = float(np.median(prior_sizes)) if prior_sizes else 0.0
+        quote[f"{side}_size_current"] = size
         quote[size_key] = size
         quote[seen_key] = now
         quote[samples_key] = int(samples)
@@ -1012,6 +1027,10 @@ class HFTMemoryScreener:
                 "price_vs_vwap_pct": float(price_vs_vwap_pct),
                 "bid_size_drop_pct": float(bid_size_drop_pct),
                 "ask_size_drop_pct": float(ask_size_drop_pct),
+                "bid_size_baseline": float(quote.get("bid_size_baseline", 0.0) or 0.0),
+                "ask_size_baseline": float(quote.get("ask_size_baseline", 0.0) or 0.0),
+                "bid_size_current": float(quote.get("bid_size_current", current_bid_size) or 0.0),
+                "ask_size_current": float(quote.get("ask_size_current", current_ask_size) or 0.0),
                 "top_bid_history_samples": int(bid_size_history_samples),
                 "top_ask_history_samples": int(ask_size_history_samples),
                 "bid_size_drop_age_sec": round(bid_drop_age, 3) if bid_drop_age >= 0.0 else -1.0,
