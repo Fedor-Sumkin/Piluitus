@@ -291,7 +291,7 @@ class TechnicalKnowledgeParser:
             return "Ошибка чтения RAG; направленный сигнал не подтверждён, выбрать HOLD."
 
     @staticmethod
-    async def auto_scan_import_dir(db: DBManager, directory_path: str = "data/knowledge/sources")
+    async def auto_scan_import_dir(db: DBManager, directory_path: str = "data/knowledge/sources"):
         """Автоматически сканирует папку импорта, импортирует TXT/PDF напрямую в ОЗУ Redis"""
         if not os.path.isabs(directory_path):
             directory_path = str(PROJECT_ROOT / directory_path)
