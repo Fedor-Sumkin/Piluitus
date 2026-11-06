@@ -4,7 +4,8 @@ import random
 import logging
 import math
 import os
-from datetime import datetime, date
+import time
+from datetime import datetime, date, timedelta
 from collections.abc import Callable
 import websockets
 import httpx
@@ -141,24 +142,42 @@ class RealMarketSimulator:
 # LOT_SIZES импортирован из config.py и остаётся единым справочником проекта.
 
 class RiskManager:
-    def __init__(self, max_risk_per_trade=0.005, daily_loss_limit=0.10, initial_deposit=100000.0):
+    def __init__(
+        self,
+        max_risk_per_trade=0.005,
+        daily_loss_limit=0.015,
+        initial_deposit=100000.0,
+        drawdown_warning_pct=0.03,
+        max_drawdown_pct=0.05,
+        loss_streak_3_pause_sec=600,
+        loss_streak_5_pause_sec=1800,
+    ):
         self.initial_deposit = initial_deposit
-        
-        # Контур ОЗУ-метрик, которые теперь восстанавливаются из Redis
         self.current_equity = initial_deposit
         self.free_margin = initial_deposit
         self.total_session_pnl = 0.0
         self.realized_pnl = 0.0
         self.open_pnl = 0.0
-        
+        self.high_water_mark = max(0.0, float(initial_deposit))
+        self.current_drawdown_pct = 0.0
         self.max_risk_per_trade = max_risk_per_trade
         self.daily_loss_limit = daily_loss_limit
+        self.drawdown_warning_pct = max(0.0, min(float(drawdown_warning_pct), 0.50))
+        self.max_drawdown_pct = max(
+            self.drawdown_warning_pct, min(float(max_drawdown_pct), 0.50)
+        )
+        self.loss_streak_3_pause_sec = max(0, int(loss_streak_3_pause_sec))
+        self.loss_streak_5_pause_sec = max(
+            self.loss_streak_3_pause_sec, int(loss_streak_5_pause_sec)
+        )
         self.block_trading = False
-        
-        # Флаг, указывающий, прогрет ли баланс историческими данными из Redis
+        self._drawdown_warning_active = False
+        self._loss_streak_count = 0
+        self._loss_pause_signature: str | None = None
+        self._last_risk_snapshot_monotonic = 0.0
+        self._cached_trading_allowed: bool | None = None
         self._balance_initialized = False
         self._blocked_date: date | None = None
-        # Optional in-process unrealized PnL provider (wired to PAPER positions by main.py).
         self.open_pnl_provider: Callable[[], float] | None = None
         self.open_assets_cost_provider: Callable[[], float] | None = None
 
@@ -189,156 +208,276 @@ class RiskManager:
             return self.initial_deposit
 
     async def is_trading_allowed(self, db: DBManager) -> bool:
-        """
-        Проверяет текущую дневную просадку и обеспечивает ПЕРСИСТЕНТНОСТЬ баланса.
-        Данные сохраняются в Redis и выдерживают перезагрузку ПК.
-        """
+        """Apply daily loss, high-water drawdown and global loss-streak safeguards."""
         risk_logger = logging.getLogger("Piluitus.RiskManager")
-        today = datetime.now().date()
+        now = datetime.now()
+        today = now.date()
+        now_monotonic = time.monotonic()
+
+        # Full journal scans are cached briefly to avoid one SCAN per market tick.
+        if (
+            self._cached_trading_allowed is not None
+            and now_monotonic - self._last_risk_snapshot_monotonic < 1.0
+            and self._blocked_date in (None, today)
+        ):
+            return self._cached_trading_allowed
+
+        def _cache_result(allowed: bool) -> bool:
+            self._cached_trading_allowed = allowed
+            self._last_risk_snapshot_monotonic = time.monotonic()
+            return allowed
+
         if self._blocked_date is not None and self._blocked_date != today:
             self.block_trading = False
             self._blocked_date = None
-            risk_logger.warning("🌅 Новая календарная дата: дневная блокировка риска снята; расчёт PnL начат заново.")
+            risk_logger.warning(
+                "🌅 Новая календарная дата: дневная блокировка снята; "
+                "HWM и история последовательных результатов сохраняются."
+            )
         if self.block_trading:
-            return False
+            return _cache_result(False)
+
+        def _parse_trade_datetime(trade: dict) -> datetime | None:
+            for field in (
+                "exit_timestamp", "closed_at", "timestamp",
+                "entry_timestamp", "created_at",
+            ):
+                raw = trade.get(field)
+                if not raw:
+                    continue
+                try:
+                    parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                    if parsed.tzinfo is not None:
+                        parsed = parsed.astimezone().replace(tzinfo=None)
+                    return parsed
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            return None
 
         try:
-            # Извлекаем защищенный инстанс Redis
             redis_inst = getattr(db, "redis", getattr(db, "_redis", None))
             if redis_inst is None:
-                risk_logger.critical("🛑 Хранилище риска недоступно: новые сделки заблокированы (fail-closed).")
-                self.block_trading = True
-                self._blocked_date = today
-                return False
+                raise RuntimeError("Redis/Memurai недоступен при проверке риска.")
 
-            # 1. ПЕРСИСТЕНТНАЯ ИНИЦИАЛИЗАЦИЯ: Восстановление баланса при старте сессии
             if not self._balance_initialized:
                 saved_balance = await redis_inst.get("piluitus:risk:persistent_balance")
                 if saved_balance is not None:
                     self.initial_deposit = float(saved_balance)
-                    risk_logger.info(f"💾 [PERSISTENCE] Баланс восстановлен из Redis после перезагрузки: {self.initial_deposit:.2f} ₽")
+                    risk_logger.info("💾 [PERSISTENCE] Баланс восстановлен из Redis: %.2f ₽", self.initial_deposit)
                 else:
-                    # Если запускаемся впервые в истории — берем дефолтный депозит и фиксируем его в базу
                     await redis_inst.set("piluitus:risk:persistent_balance", str(self.initial_deposit))
-                    risk_logger.info(f"🆕 [PERSISTENCE] Зафиксирован стартовый депозит сессии: {self.initial_deposit:.2f} ₽")
-                
+                    risk_logger.info("🆕 [PERSISTENCE] Зафиксирован стартовый депозит: %.2f ₽", self.initial_deposit)
                 self._balance_initialized = True
 
-            # 2. Считаем PnL только за сегодняшнюю календарную дату, а не за всю
-            # историю из Redis/AOF. Это важно для корректного дневного стоп-лимита.
-            journal = await db.get_active_positions()
+            get_all_trades = getattr(db, "get_all_daily_trades", None)
+            if not callable(get_all_trades):
+                raise RuntimeError("DBManager не предоставляет полный индекс сделок.")
+            all_trade_rows = await get_all_trades()
+            if not isinstance(all_trade_rows, dict):
+                raise RuntimeError("Полный индекс сделок имеет некорректный формат.")
+
+            expected_mode = (
+                "PAPER"
+                if os.getenv("PAPER_TRADING", "True").strip().lower() in {"1", "true", "yes", "on"}
+                else "LIVE"
+            )
+            trades_by_id: dict[str, dict] = {}
+            for order_id, trade in all_trade_rows.items():
+                if not isinstance(trade, dict):
+                    continue
+                mode = str(trade.get("mode", "")).upper()
+                if mode and mode != expected_mode:
+                    continue
+                identity = str(trade.get("id") or order_id).strip()
+                if identity:
+                    trades_by_id[identity] = dict(trade)
+
+            # Merge bounded history only for legacy records absent from the per-order ledger.
             history = await redis_inst.lrange("piluitus:trade_history", 0, -1)
+            for index, raw_trade in enumerate(history or []):
+                try:
+                    trade = json.loads(raw_trade) if isinstance(raw_trade, (str, bytes, bytearray)) else raw_trade
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    risk_logger.warning("Пропущена некорректная строка trade_history[%d].", index)
+                    continue
+                if not isinstance(trade, dict):
+                    continue
+                mode = str(trade.get("mode", "")).upper()
+                if mode and mode != expected_mode:
+                    continue
+                identity = str(trade.get("id") or trade.get("order_id") or "").strip()
+                if not identity:
+                    identity = "legacy:" + "|".join(
+                        str(trade.get(field, ""))
+                        for field in ("exit_timestamp", "ticker", "side", "entry_price", "exit_price", "pnl")
+                    )
+                trades_by_id.setdefault(identity, dict(trade))
+
+            closed_trades: list[tuple[datetime, dict]] = []
             total_daily_pnl_rub = 0.0
-            total_open_pnl_rub = 0.0
             total_realized_pnl_rub = 0.0
+            for trade in trades_by_id.values():
+                if str(trade.get("status", "")).upper() != "CLOSED":
+                    continue
+                try:
+                    trade_pnl = float(trade.get("pnl", 0.0) or 0.0)
+                except (TypeError, ValueError, OverflowError) as pnl_exc:
+                    raise RuntimeError("В закрытой сделке обнаружен некорректный PnL.") from pnl_exc
+                if not math.isfinite(trade_pnl):
+                    raise RuntimeError("В закрытой сделке обнаружен нечисловой PnL.")
+                total_realized_pnl_rub += trade_pnl
+                closed_at = _parse_trade_datetime(trade)
+                if closed_at is not None:
+                    closed_trades.append((closed_at, trade))
+                    if closed_at.date() == today:
+                        total_daily_pnl_rub += trade_pnl
 
-            def _trade_date(trade: dict) -> date | None:
-                for field in ("exit_timestamp", "entry_timestamp", "timestamp", "closed_at", "created_at"):
-                    raw = trade.get(field)
-                    if not raw:
-                        continue
-                    try:
-                        parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-                        return parsed.date()
-                    except (TypeError, ValueError):
-                        continue
-                return None
-
-            # PAPER: in-memory monitor is authoritative for floating PnL. Redis
-            # OPEN rows describe the same positions and must not be added again.
-            # Other modes retain the journal-based open-PnL path.
-            if self.open_pnl_provider is None and journal and isinstance(journal, dict):
+            journal = await db.get_active_positions()
+            total_open_pnl_rub = 0.0
+            if self.open_pnl_provider is None and isinstance(journal, dict):
                 for trade in journal.values():
                     if not isinstance(trade, dict):
                         continue
-                    trade_date = _trade_date(trade)
-                    try:
-                        position_pnl = float(trade.get("pnl", 0.0) or 0.0)
-                    except (TypeError, ValueError):
-                        position_pnl = 0.0
+                    position_pnl = float(trade.get("pnl", 0.0) or 0.0)
+                    if not math.isfinite(position_pnl):
+                        raise RuntimeError("Нечисловой плавающий PnL открытой позиции.")
                     total_open_pnl_rub += position_pnl
-                    if trade_date is None or trade_date == today:
+                    opened_at = _parse_trade_datetime(trade)
+                    if opened_at is None or opened_at.date() == today:
                         total_daily_pnl_rub += position_pnl
 
             if self.open_pnl_provider is not None:
                 try:
                     open_pnl = float(self.open_pnl_provider())
-                    if math.isfinite(open_pnl):
-                        total_open_pnl_rub += open_pnl
-                        total_daily_pnl_rub += open_pnl
+                    if not math.isfinite(open_pnl):
+                        raise ValueError("open PnL is not finite")
+                    total_open_pnl_rub += open_pnl
+                    total_daily_pnl_rub += open_pnl
                 except Exception as provider_exc:
-                    risk_logger.warning("Не удалось получить текущий PnL открытых PAPER-позиций: %s", provider_exc)
+                    raise RuntimeError(f"Не удалось получить плавающий PnL: {provider_exc}") from provider_exc
 
-            # PnL истории участвует в суммарной оценке капитала на всём доступном
-            # участке журнала, но в daily-loss cutoff входит только сегодняшняя дата.
-            if history:
-                for raw_trade in history:
-                    try:
-                        trade = json.loads(raw_trade) if isinstance(raw_trade, str) else raw_trade
-                        if not isinstance(trade, dict):
-                            continue
-                        trade_pnl = float(trade.get("pnl", 0.0) or 0.0)
-                        total_realized_pnl_rub += trade_pnl
-                        if _trade_date(trade) == today:
-                            total_daily_pnl_rub += trade_pnl
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        continue
-
-            # 3. Разделяем реализованный и плавающий PnL.
-            # Свободные средства = стартовый депозит + реализованный PnL
-            # минус себестоимость открытых позиций. Плавающий PnL входит
-            # в equity/общую доходность, но не изменяет денежный остаток
-            # до фактического закрытия позиции.
             self.realized_pnl = round(total_realized_pnl_rub, 2)
             self.open_pnl = round(total_open_pnl_rub, 2)
-            total_session_pnl_rub = total_realized_pnl_rub + total_open_pnl_rub
-            self.total_session_pnl = round(total_session_pnl_rub, 2)
-            self.current_equity = round(self.initial_deposit + total_session_pnl_rub, 2)
+            self.total_session_pnl = round(total_realized_pnl_rub + total_open_pnl_rub, 2)
+            self.current_equity = round(self.initial_deposit + total_realized_pnl_rub + total_open_pnl_rub, 2)
+
             if self.open_assets_cost_provider is not None:
                 try:
                     assets_cost = float(self.open_assets_cost_provider())
-                    if math.isfinite(assets_cost) and assets_cost >= 0.0:
-                        self.free_margin = round(
-                            self.initial_deposit + self.realized_pnl - assets_cost, 2
-                        )
-                    else:
-                        self.free_margin = 0.0
+                    self.free_margin = (
+                        round(self.initial_deposit + self.realized_pnl - assets_cost, 2)
+                        if math.isfinite(assets_cost) and assets_cost >= 0.0 else 0.0
+                    )
                 except Exception as provider_exc:
                     risk_logger.warning("Не удалось получить себестоимость открытых PAPER-позиций: %s", provider_exc)
                     self.free_margin = 0.0
             else:
                 self.free_margin = self.current_equity
 
-            # Каждую миллисекунду перезаписываем стейт баланса в Redis (защита от выключения ПК)
-            # Этот ключ main.py также считывает при INIT_DATA фронтенда
-            balance_state_payload = {
-                "equity": self.current_equity,
-                "free_margin": self.free_margin,
-                "pnl": self.total_session_pnl,
-                "realized_pnl": self.realized_pnl,
-                "open_pnl": self.open_pnl
-            }
-            await redis_inst.set("piluitus:risk:balance_state", json.dumps(balance_state_payload))
+            await redis_inst.set(
+                "piluitus:risk:balance_state",
+                json.dumps({
+                    "equity": self.current_equity,
+                    "free_margin": self.free_margin,
+                    "pnl": self.total_session_pnl,
+                    "realized_pnl": self.realized_pnl,
+                    "open_pnl": self.open_pnl,
+                }),
+            )
 
-            # Предельный лимит потерь в рублях от стартовой точки
-            max_allowed_loss_money = self.initial_deposit * self.daily_loss_limit
+            hwm_key = f"piluitus:risk:high_water_mark:{expected_mode}"
+            raw_hwm = await redis_inst.get(hwm_key)
+            if raw_hwm is None:
+                high_water_mark = max(self.initial_deposit, self.current_equity)
+            else:
+                high_water_mark = float(raw_hwm)
+                if not math.isfinite(high_water_mark) or high_water_mark <= 0.0:
+                    raise RuntimeError("Некорректный equity high-water mark.")
+            high_water_mark = max(high_water_mark, self.current_equity)
+            self.high_water_mark = round(high_water_mark, 2)
+            self.current_drawdown_pct = max(0.0, (high_water_mark - self.current_equity) / high_water_mark)
+            await redis_inst.set(hwm_key, f"{self.high_water_mark:.2f}")
 
-            if total_daily_pnl_rub < 0 and abs(total_daily_pnl_rub) >= max_allowed_loss_money:
+            if self.current_drawdown_pct >= self.drawdown_warning_pct:
+                if not self._drawdown_warning_active:
+                    risk_logger.warning(
+                        "⚠️ [EQUITY DRAWDOWN] Просадка от HWM %.2f ₽ достигла %.2f%% "
+                        "(equity=%.2f ₽, порог=%.2f%%).",
+                        self.high_water_mark, self.current_drawdown_pct * 100.0,
+                        self.current_equity, self.drawdown_warning_pct * 100.0,
+                    )
+                self._drawdown_warning_active = True
+            else:
+                self._drawdown_warning_active = False
+
+            if self.current_drawdown_pct >= self.max_drawdown_pct:
                 risk_logger.critical(
-                    f"🛑 [РИСК МЕНЕДЖЕР] ДОСТИГНУТ ЛИМИТ ДНЕВНОЙ ПРОСАДКИ! "
-                    f"Чистый убыток сессии: {total_daily_pnl_rub:.2f}₽ >= Лимит: -{max_allowed_loss_money:.2f}₽. БЛОКИРОВКА ТОРГОВ."
+                    "🛑 [EQUITY DRAWDOWN GUARD] Просадка %.2f%% от HWM достигла лимита %.2f%%; "
+                    "новые входы заблокированы, открытые позиции продолжают сопровождаться.",
+                    self.current_drawdown_pct * 100.0, self.max_drawdown_pct * 100.0,
+                )
+                return _cache_result(False)
+
+            closed_trades.sort(key=lambda row: row[0])
+            loss_streak = 0
+            latest_loss_at: datetime | None = None
+            for closed_at, trade in reversed(closed_trades):
+                pnl = float(trade.get("pnl", 0.0) or 0.0)
+                if pnl >= 0.0:
+                    break
+                loss_streak += 1
+                if latest_loss_at is None:
+                    latest_loss_at = closed_at
+            self._loss_streak_count = loss_streak
+
+            pause_sec = (
+                self.loss_streak_5_pause_sec if loss_streak >= 5
+                else self.loss_streak_3_pause_sec if loss_streak >= 3
+                else 0
+            )
+            if pause_sec > 0 and latest_loss_at is not None:
+                pause_until = latest_loss_at + timedelta(seconds=pause_sec)
+                if now < pause_until:
+                    signature = f"{loss_streak}:{latest_loss_at.isoformat()}:{pause_sec}"
+                    if signature != self._loss_pause_signature:
+                        risk_logger.critical(
+                            "🧊 [GLOBAL LOSS STREAK] %d убыточных сделок подряд; "
+                            "новые входы на паузе ещё %.0f сек.",
+                            loss_streak, max(0.0, (pause_until - now).total_seconds()),
+                        )
+                        self._loss_pause_signature = signature
+                    return _cache_result(False)
+            self._loss_pause_signature = None
+
+            max_allowed_loss_money = self.initial_deposit * self.daily_loss_limit
+            if total_daily_pnl_rub < 0.0 and abs(total_daily_pnl_rub) >= max_allowed_loss_money:
+                risk_logger.critical(
+                    "🛑 [РИСК МЕНЕДЖЕР] Достигнут дневной лимит убытка: PnL=%.2f ₽, "
+                    "лимит=-%.2f ₽. Новые входы заблокированы до следующей даты.",
+                    total_daily_pnl_rub, max_allowed_loss_money,
                 )
                 self.block_trading = True
                 self._blocked_date = today
-                return False
+                return _cache_result(False)
 
-            return True
+            risk_logger.debug(
+                "[MONEY MANAGEMENT] equity=%.2f ₽ HWM=%.2f ₽ drawdown=%.2f%% "
+                "realized=%.2f ₽ open=%.2f ₽ daily=%.2f ₽ loss_streak=%d.",
+                self.current_equity, self.high_water_mark,
+                self.current_drawdown_pct * 100.0, self.realized_pnl,
+                self.open_pnl, total_daily_pnl_rub, self._loss_streak_count,
+            )
+            return _cache_result(True)
 
-        except Exception as e:
-            risk_logger.critical("Ошибка проверки риска/хранилища: %s. Новые сделки блокируются.", e, exc_info=True)
+        except Exception as exc:
+            risk_logger.critical(
+                "Ошибка проверки Money Management/полного журнала: %s. "
+                "Новые входы заблокированы (fail-closed).",
+                exc, exc_info=True,
+            )
             self.block_trading = True
-            self._blocked_date = datetime.now().date()
-            return False
+            self._blocked_date = today
+            return _cache_result(False)
 
     def calculate_lot_size(self, ticker: str, current_price: float, atr_stop: float) -> int:
         """Return affordable lots under the risk cap; return 0 if even one lot exceeds it."""

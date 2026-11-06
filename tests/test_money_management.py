@@ -1,4 +1,4 @@
-""""Regression tests for portfolio-wide Money Management limits."""
+"""Regression tests for portfolio-wide Money Management limits."""
 from __future__ import annotations
 
 import asyncio

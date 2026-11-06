@@ -140,6 +140,11 @@ class Settings:
     # Values from older .env files are clamped again in ExecutionLayer.
     MAX_GROSS_EXPOSURE_PCT: float = min(float(os.getenv("PILUITUS_MAX_GROSS_EXPOSURE_PCT", "0.10")), 0.15)
     MAX_SINGLE_POSITION_PCT: float = min(float(os.getenv("PILUITUS_MAX_SINGLE_POSITION_PCT", "0.05")), 0.05)
+    MAX_OPEN_STOP_RISK_PCT: float = min(float(os.getenv("PILUITUS_MAX_OPEN_STOP_RISK_PCT", "0.01")), 0.05)
+    DRAWDOWN_WARNING_PCT: float = min(float(os.getenv("PILUITUS_DRAWDOWN_WARNING_PCT", "0.03")), 0.50)
+    MAX_DRAWDOWN_PCT: float = min(float(os.getenv("PILUITUS_MAX_DRAWDOWN_PCT", "0.05")), 0.50)
+    LOSS_STREAK_3_PAUSE_SEC: int = max(0, int(os.getenv("PILUITUS_LOSS_STREAK_3_PAUSE_SEC", "600")))
+    LOSS_STREAK_5_PAUSE_SEC: int = max(0, int(os.getenv("PILUITUS_LOSS_STREAK_5_PAUSE_SEC", "1800")))
     ATR_MULTIPLIER: float = float(os.getenv("ATR_MULTIPLIER", "1.5"))
     TRADE_DEPOSIT: float = float(os.getenv("TRADE_DEPOSIT", "100000.0"))
 

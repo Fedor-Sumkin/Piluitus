@@ -709,6 +709,7 @@ execution_engine = BaseExecutionEngine(
     finam_broker_client=broker,
     screener=screener,
     initial_capital=DEPOSIT,
+    max_open_stop_risk_pct=Settings.MAX_OPEN_STOP_RISK_PCT,
 )
 # Keep Finam ORDER_BOOK subscriptions for every active PAPER position, even
 # when its ticker rotates out of the screener's Top-N list.
@@ -717,6 +718,10 @@ risk_manager = RiskManager(
     max_risk_per_trade=Settings.MAX_RISK_PCT,
     daily_loss_limit=Settings.DAILY_LOSS_LIMIT_PCT,
     initial_deposit=DEPOSIT,
+    drawdown_warning_pct=Settings.DRAWDOWN_WARNING_PCT,
+    max_drawdown_pct=Settings.MAX_DRAWDOWN_PCT,
+    loss_streak_3_pause_sec=Settings.LOSS_STREAK_3_PAUSE_SEC,
+    loss_streak_5_pause_sec=Settings.LOSS_STREAK_5_PAUSE_SEC,
 )
 
 
@@ -2752,6 +2757,13 @@ async def clear_paper_session(payload: dict[str, object] = Body(...)):
         risk_manager.total_session_pnl = 0.0
         risk_manager.current_equity = DEPOSIT
         risk_manager.free_margin = DEPOSIT
+        risk_manager.high_water_mark = DEPOSIT
+        risk_manager.current_drawdown_pct = 0.0
+        risk_manager._drawdown_warning_active = False
+        risk_manager._loss_streak_count = 0
+        risk_manager._loss_pause_signature = None
+        risk_manager._cached_trading_allowed = None
+        risk_manager._last_risk_snapshot_monotonic = 0.0
 
         last_ai_verdicts_cache.clear()
         with _trade_flow_lock:

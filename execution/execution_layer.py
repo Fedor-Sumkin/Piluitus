@@ -163,6 +163,7 @@ class BaseExecutionEngine:
         max_gross_exposure_pct: float | None = None,
         max_single_position_pct: float | None = None,
         stop_loss_cooldown_sec: float | None = None,
+        max_open_stop_risk_pct: float | None = None,
     ):
         self.broker = finam_broker_client
         self.screener = screener
@@ -196,6 +197,14 @@ class BaseExecutionEngine:
             requested_single_pct,
             default=MAX_ALLOWED_SINGLE_POSITION_PCT,
             maximum=min(self.max_gross_exposure_pct, MAX_ALLOWED_SINGLE_POSITION_PCT),
+        )
+        requested_open_stop_risk_pct = (
+            max_open_stop_risk_pct
+            if max_open_stop_risk_pct is not None
+            else os.getenv("PILUITUS_MAX_OPEN_STOP_RISK_PCT", "0.01")
+        )
+        self.max_open_stop_risk_pct = self._bounded_pct(
+            requested_open_stop_risk_pct, default=0.01, maximum=0.05
         )
         try:
             cooldown = float(
@@ -242,6 +251,7 @@ class BaseExecutionEngine:
         self._lock_closing: set[str] = set()
         self._opening_tickers: set[str] = set()
         self._reserved_notional: dict[str, float] = {}
+        self._reserved_stop_risk: dict[str, float] = {}
         self._portfolio_lock = asyncio.Lock()
         # Cooldowns are side-specific: a short stop does not suppress a valid long setup.
         self._ticker_cooldowns: dict[tuple[str, str], float] = {}
@@ -262,10 +272,11 @@ class BaseExecutionEngine:
 
         logger.info(
             "🛡️ [PORTFOLIO GUARD] capital=%.2f ₽ gross_cap=%.0f%% single_position_cap=%.0f%% "
-            "stop_cooldown=%.0fs repeat_SL=%d/%.0fs->%.0fs shadow_BE=%s@%.2fR",
+            "open_stop_risk_cap=%.0f%% stop_cooldown=%.0fs repeat_SL=%d/%.0fs->%.0fs shadow_BE=%s@%.2fR",
             self.initial_capital,
             self.max_gross_exposure_pct * 100,
             self.max_single_position_pct * 100,
+            self.max_open_stop_risk_pct * 100,
             self.stop_loss_cooldown_sec,
             self.repeat_stop_limit, self.repeat_stop_window_sec,
             self.repeat_stop_cooldown_sec, self.shadow_be_enabled, self.shadow_be_arm_r,
@@ -401,8 +412,46 @@ class BaseExecutionEngine:
 
         return round(total, 2)
 
+    def _open_stop_risk(self, positions: object) -> float:
+        """Sum downside from entry to stop for every OPEN position; fail closed on unknown data."""
+        if isinstance(positions, Mapping):
+            iterable: Iterable[object] = positions.values()
+        elif isinstance(positions, (list, tuple)):
+            iterable = positions
+        else:
+            return math.inf
+
+        total = 0.0
+        for trade_obj in iterable:
+            trade = _as_string_mapping(trade_obj)
+            if trade is None:
+                return math.inf
+            if str(trade.get("status", "OPEN")).upper() != "OPEN":
+                continue
+            ticker = str(trade.get("ticker", "")).strip().upper().split("@")[0]
+            side = str(trade.get("side", "")).strip().upper()
+            qty = self._share_quantity(ticker, trade)
+            entry = _finite_or_default(trade.get("entry_price"), 0.0)
+            stop = _finite_or_default(trade.get("stop_loss"), 0.0)
+            if not ticker or side not in {"BUY", "SELL"} or qty <= 0 or entry <= 0 or stop <= 0:
+                logger.error(
+                    "[MONEY MANAGEMENT] Не удалось определить риск открытой позиции %s; "
+                    "новые входы заблокированы.", ticker or "<unknown>"
+                )
+                return math.inf
+            distance = entry - stop if side == "BUY" else stop - entry
+            if not math.isfinite(distance) or distance <= 0:
+                logger.error(
+                    "[MONEY MANAGEMENT] Некорректное направление SL у %s (%s, entry=%.6f, SL=%.6f); "
+                    "новые входы заблокированы.", ticker, side, entry, stop
+                )
+                return math.inf
+            total += distance * qty
+        return round(total, 2)
+
     async def _reserve_order_size(
-        self, ticker: str, requested_lots: int, price: float, db: DBManager, *, side: str
+        self, ticker: str, requested_lots: int, price: float, db: DBManager, *,
+        side: str, stop_loss: float
     ) -> tuple[int, str]:
         """Atomically cap order by risk-independent notional budget and reserve it against races."""
         async with self._portfolio_lock:
@@ -444,29 +493,48 @@ class BaseExecutionEngine:
             open_notional = self._gross_exposure(positions)
             if not math.isfinite(open_notional):
                 return 0, "Не удалось достоверно определить себестоимость всех открытых позиций; новый ордер заблокирован."
-            already_reserved = sum(self._reserved_notional.values())
-            gross_cap = self.initial_capital * self.max_gross_exposure_pct
-            single_cap = self.initial_capital * self.max_single_position_pct
-            headroom = max(0.0, min(gross_cap - open_notional - already_reserved, single_cap))
+            open_stop_risk = self._open_stop_risk(positions)
+            if not math.isfinite(open_stop_risk):
+                return 0, "Не удалось достоверно определить суммарный риск открытых стопов; новый ордер заблокирован."
+
             lot_size = max(int(LOT_SIZES.get(ticker, 1) or 1), 1)
             notional_per_lot = price * lot_size
             if notional_per_lot <= 0 or not math.isfinite(notional_per_lot):
                 return 0, "Некорректная стоимость лота."
+            stop_distance = price - stop_loss if side == "BUY" else stop_loss - price
+            if not math.isfinite(stop_distance) or stop_distance <= 0:
+                return 0, "Некорректный стоп-уровень: риск нового ордера не рассчитан."
+            risk_per_lot = stop_distance * lot_size
+
+            already_reserved = sum(self._reserved_notional.values())
+            already_reserved_risk = sum(self._reserved_stop_risk.values())
+            gross_cap = self.initial_capital * self.max_gross_exposure_pct
+            single_cap = self.initial_capital * self.max_single_position_pct
+            stop_risk_cap = self.initial_capital * self.max_open_stop_risk_pct
+            headroom = max(0.0, min(gross_cap - open_notional - already_reserved, single_cap))
+            risk_headroom = max(0.0, stop_risk_cap - open_stop_risk - already_reserved_risk)
             affordable_lots = int(math.floor((headroom + 1e-9) / notional_per_lot))
-            approved_lots = min(int(requested_lots), affordable_lots)
+            risk_lots = int(math.floor((risk_headroom + 1e-9) / risk_per_lot))
+            approved_lots = min(int(requested_lots), affordable_lots, risk_lots)
             if approved_lots <= 0:
                 return 0, (
-                    f"Лимит экспозиции исчерпан/недостаточен: доступно {headroom:.2f} ₽, "
-                    f"минимальный лот стоит {notional_per_lot:.2f} ₽; текущая экспозиция {open_notional:.2f} ₽ "
-                    f"из лимита {gross_cap:.2f} ₽."
+                    f"Лимиты портфеля: капитал доступен {headroom:.2f} ₽ "
+                    f"(экспозиция {open_notional:.2f}/{gross_cap:.2f} ₽), "
+                    f"риск до стопов доступен {risk_headroom:.2f} ₽ "
+                    f"(открытый риск {open_stop_risk:.2f}/{stop_risk_cap:.2f} ₽), "
+                    f"лот {notional_per_lot:.2f} ₽, риск лота {risk_per_lot:.2f} ₽."
                 )
 
             notional_reserved = approved_lots * notional_per_lot
+            risk_reserved = approved_lots * risk_per_lot
             self._opening_tickers.add(ticker)
             self._reserved_notional[ticker] = notional_reserved
+            self._reserved_stop_risk[ticker] = risk_reserved
             return approved_lots, (
                 f"notional={notional_reserved:.2f} ₽; gross_before={open_notional:.2f} ₽; "
-                f"gross_cap={gross_cap:.2f} ₽; single_cap={single_cap:.2f} ₽"
+                f"gross_cap={gross_cap:.2f} ₽; single_cap={single_cap:.2f} ₽; "
+                f"open_stop_risk={open_stop_risk:.2f}/{stop_risk_cap:.2f} ₽; "
+                f"new_stop_risk={risk_reserved:.2f} ₽"
             )
 
     # ------------------------------------------------------------------
@@ -964,28 +1032,9 @@ class BaseExecutionEngine:
                     _finite_or_default(entry_bbo.get("ask_age_sec"), math.inf),
                 )
 
-            # Учитываем уже открытые и параллельно резервируемые позиции.
-            approved_lots, reservation_info = await self._reserve_order_size(ticker, lots, price, db, side=side)
-            if approved_lots <= 0:
-                # Keep a single-line console readable if many candidates hit the
-                # same capital guard during a fast market.
-                now_mono = time.monotonic()
-                if now_mono - self._last_portfolio_guard_log_at >= 15.0:
-                    logger.warning("🛑 [PORTFOLIO GUARD] Ордер %s %s заблокирован: %s", side, ticker, reservation_info)
-                    self._last_portfolio_guard_log_at = now_mono
-                return {"status": "SKIPPED", "message": reservation_info}
-            if approved_lots != lots:
-                logger.warning(
-                    "🛡️ [PORTFOLIO GUARD] Размер %s %s сокращён: requested=%d lots, approved=%d lots; %s",
-                    side, ticker, lots, approved_lots, reservation_info,
-                )
-            lots = approved_lots
-            reserved_ticker = True
-
-            # Используем тот же стоп, по которому RiskManager рассчитывал объём.
-            # Это исключает расхождение между sizing и фактическим стопом из-за нового тика.
-            stop_loss = float(ai_analysis.get("stop_loss") or 0.0)
-            take_profit = float(ai_analysis.get("take_profit") or 0.0)
+            # Validate the final SL/TP from the executable entry before reserving portfolio risk.
+            stop_loss = _finite_or_default(ai_analysis.get("stop_loss"), 0.0)
+            take_profit = _finite_or_default(ai_analysis.get("take_profit"), 0.0)
             valid_levels = (
                 stop_loss > 0 and take_profit > 0
                 and ((side == "BUY" and stop_loss < price < take_profit)
@@ -1005,6 +1054,28 @@ class BaseExecutionEngine:
                 }
             ai_analysis["stop_loss"] = stop_loss
             ai_analysis["take_profit"] = take_profit
+
+            # Atomically reserve both committed capital and downside to the final SL.
+            approved_lots, reservation_info = await self._reserve_order_size(
+                ticker, lots, price, db, side=side, stop_loss=stop_loss
+            )
+            if approved_lots <= 0:
+                # Keep a single-line console readable if many candidates hit the
+                # same capital guard during a fast market.
+                now_mono = time.monotonic()
+                if now_mono - self._last_portfolio_guard_log_at >= 15.0:
+                    logger.warning("🛑 [PORTFOLIO GUARD] Ордер %s %s заблокирован: %s", side, ticker, reservation_info)
+                    self._last_portfolio_guard_log_at = now_mono
+                return {"status": "SKIPPED", "message": reservation_info}
+            if approved_lots != lots:
+                logger.warning(
+                    "🛡️ [PORTFOLIO GUARD] Размер %s %s сокращён: requested=%d lots, approved=%d lots; %s",
+                    side, ticker, lots, approved_lots, reservation_info,
+                )
+            lots = approved_lots
+            reserved_ticker = True
+
+            # The validated SL/TP has already been included in the portfolio stop-risk reservation.
             logger.info("📊 [ATR ENFORCER] Уровни: SL=%s₽ TP=%s₽; %s", stop_loss, take_profit, reservation_info)
 
             # Recheck immediately before creating a PAPER position or sending a LIVE order.
@@ -1172,6 +1243,7 @@ class BaseExecutionEngine:
                 async with self._portfolio_lock:
                     self._opening_tickers.discard(ticker)
                     self._reserved_notional.pop(ticker, None)
+                    self._reserved_stop_risk.pop(ticker, None)
 
     def schedule_paper_position_monitor(
         self, ticker: str, current_price: float | None, db: DBManager

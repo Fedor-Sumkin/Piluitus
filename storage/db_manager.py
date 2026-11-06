@@ -459,7 +459,11 @@ class DBManager:
             verdict_keys = await self._scan_matching_keys(client, "piluitus:verdict:execution:*")
             deleted_verdict_history_keys = await client.delete("piluitus:verdicts:history")
             deleted_verdict_execution_keys = await client.delete(*verdict_keys) if verdict_keys else 0
-            risk_keys = ["piluitus:risk:persistent_balance", "piluitus:risk:balance_state"]
+            risk_keys = [
+                "piluitus:risk:persistent_balance",
+                "piluitus:risk:balance_state",
+                "piluitus:risk:high_water_mark:PAPER",
+            ]
             deleted_risk_state_keys = await client.delete(*risk_keys)
 
             aof_compacted = False
