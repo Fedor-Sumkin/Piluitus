@@ -1,5 +1,0 @@
-2026-11-06 20:23:51,136 [CRITICAL] [RUN=20261106_202350_16588_69b2f906] Piluitus.ExecutionLayer: 🛑 [PAPER RECONCILIATION GUARD] Найдено 3 не сверенных PAPER-позиций (себестоимость 3078.70 ₽). Новые входы заблокированы, пока позиции не будут проверены оператором.
-2026-11-06 20:23:52,286 [CRITICAL] [RUN=20261106_202350_16588_69b2f906] Piluitus.Main: 🛑 [PAPER RECONCILIATION GUARD] 3 старых PAPER-позиций на сверке; их себестоимость 3078.70 ₽ учтена в активах. Новые входы заблокированы.
-2026-11-06 20:23:56,778 [ERROR] [RUN=20261106_202350_16588_69b2f906] Piluitus.Main: ❌ Telegram‑бот не смог запуститься: HTTP Client says - ClientConnectorError: Cannot connect to host api.telegram.org:443 ssl:default [Указанное сетевое имя более недоступно]
-2026-11-06 20:34:37,350 [CRITICAL] [RUN=20261106_202350_16588_69b2f906] Piluitus.RiskManager: 🧊 [GLOBAL LOSS STREAK] 6 убыточных сделок подряд; новые входы на паузе ещё 1774 сек.
-2026-11-06 20:34:53,544 [CRITICAL] [RUN=20261106_202350_16588_69b2f906] Piluitus.RiskManager: 🧊 [GLOBAL LOSS STREAK] 7 убыточных сделок подряд; новые входы на паузе ещё 1798 сек.
