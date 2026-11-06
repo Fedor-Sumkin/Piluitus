@@ -91,7 +91,7 @@ class RiskManagerMoneyManagementTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(allowed)
         self.assertAlmostEqual(manager.current_drawdown_pct, 0.05)
-        self.assertEqual(db.redis.values["piluitus:risk:high_water_mark"], "20000.00")
+        self.assertEqual(db.redis.values["piluitus:risk:high_water_mark:PAPER"], "20000.00")
 
     async def test_three_consecutive_losses_start_global_pause(self) -> None:
         now = datetime.now()

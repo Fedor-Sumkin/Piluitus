@@ -2750,6 +2750,7 @@ async def clear_paper_session(payload: dict[str, object] = Body(...)):
         execution_engine._unreconciled_paper_positions.clear()
         execution_engine._ticker_cooldowns.clear()
         execution_engine._reserved_notional.clear()
+        execution_engine._reserved_stop_risk.clear()
 
         risk_manager._balance_initialized = False
         risk_manager.block_trading = False

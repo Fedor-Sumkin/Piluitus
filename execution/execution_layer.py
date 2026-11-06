@@ -453,7 +453,7 @@ class BaseExecutionEngine:
         self, ticker: str, requested_lots: int, price: float, db: DBManager, *,
         side: str, stop_loss: float
     ) -> tuple[int, str]:
-        """Atomically cap order by risk-independent notional budget and reserve it against races."""
+        """Atomically reserve notional exposure and aggregate downside-to-stop budget."""
         async with self._portfolio_lock:
             if self._maintenance_active:
                 return 0, self._maintenance_reason or "PAPER-торговля приостановлена для обслуживания сессии."
