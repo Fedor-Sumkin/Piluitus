@@ -388,7 +388,23 @@ class RiskManager:
             hwm_key = f"piluitus:risk:high_water_mark:{expected_mode}"
             raw_hwm = await redis_inst.get(hwm_key)
             if raw_hwm is None:
-                high_water_mark = max(self.initial_deposit, self.current_equity)
+                # On first deployment, rebuild the realized equity peak from the
+                # full close sequence instead of treating current equity as the peak.
+                reconstructed_equity = float(self.initial_deposit)
+                reconstructed_high_water_mark = reconstructed_equity
+                for closed_at, closed_trade in sorted(closed_trades, key=lambda row: row[0]):
+                    historical_pnl = float(closed_trade.get("pnl", 0.0) or 0.0)
+                    reconstructed_equity += historical_pnl
+                    reconstructed_high_water_mark = max(
+                        reconstructed_high_water_mark, reconstructed_equity
+                    )
+                high_water_mark = max(
+                    reconstructed_high_water_mark, self.current_equity
+                )
+                risk_logger.info(
+                    "[EQUITY DRAWDOWN] HWM впервые восстановлен из полного журнала: %.2f ₽.",
+                    high_water_mark,
+                )
             else:
                 high_water_mark = float(raw_hwm)
                 if not math.isfinite(high_water_mark) or high_water_mark <= 0.0:

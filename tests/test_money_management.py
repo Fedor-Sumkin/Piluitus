@@ -93,6 +93,31 @@ class RiskManagerMoneyManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(manager.current_drawdown_pct, 0.05)
         self.assertEqual(db.redis.values["piluitus:risk:high_water_mark:PAPER"], "20000.00")
 
+    async def test_hwm_reconstructs_previous_realized_equity_peak(self) -> None:
+        now = datetime.now()
+        two_days_ago = now - timedelta(days=2)
+        yesterday = now - timedelta(days=1)
+        rows = {
+            "historical-win": closed_trade("historical-win", 1_200.0, two_days_ago),
+            "historical-loss": closed_trade("historical-loss", -1_200.0, yesterday),
+        }
+        db = FakeDB(rows)
+        manager = RiskManager(
+            initial_deposit=20_000.0,
+            daily_loss_limit=0.015,
+            drawdown_warning_pct=0.03,
+            max_drawdown_pct=0.05,
+        )
+        manager.open_pnl_provider = lambda: 0.0
+
+        allowed = await manager.is_trading_allowed(db)
+
+        self.assertFalse(allowed)
+        self.assertAlmostEqual(manager.high_water_mark, 21_200.0)
+        self.assertAlmostEqual(manager.current_equity, 20_000.0)
+        self.assertAlmostEqual(manager.current_drawdown_pct, 1_200.0 / 21_200.0)
+
+
     async def test_three_consecutive_losses_start_global_pause(self) -> None:
         now = datetime.now()
         rows = {
