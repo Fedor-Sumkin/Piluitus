@@ -213,6 +213,7 @@ class RiskManager:
         TRADING_DEPOSIT is authoritative for this run. Only the deposit metadata key
         is synchronized; trades, positions, verdicts, and risk history are untouched.
         """
+        risk_logger = logging.getLogger("Piluitus.RiskManager")
         key = "piluitus:risk:persistent_balance"
         try:
             configured = float(self.initial_deposit)

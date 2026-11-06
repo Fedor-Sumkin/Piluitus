@@ -80,7 +80,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         engine = object.__new__(AIEngine)
         result = engine._cpu_intensive_processing({
             "choices": [{
-                "message": {"content": '{"final_decision":"APPROVE","confidence_score":"unknown",}'},
+                "message": {"content": '{"final_decision":"APPROVE","confidence_score":"unknown"}'},
                 "finish_reason": "stop",
             }]
         })
@@ -94,8 +94,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         result = object.__new__(AIEngine)._cpu_intensive_processing({
             "choices": [{
                 "message": {"content": (
-                    '{"final_decision":"APPROVE","confidence_score":89,'
-                    '}'
+                    '{"final_decision":"APPROVE","confidence_score":89}'
                 )},
                 "finish_reason": "stop",
             }]
@@ -114,7 +113,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
     def test_valid_hold_is_not_a_contract_violation(self) -> None:
         result = object.__new__(AIEngine)._cpu_intensive_processing({
             "choices": [{
-                "message": {"content": '{"final_decision":"HOLD","confidence_score":0.8,}'},
+                "message": {"content": '{"final_decision":"HOLD","confidence_score":0.8}'},
                 "finish_reason": "stop",
             }]
         })
@@ -128,7 +127,6 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             "choices": [{
                 "message": {"content": (
                     '{"final_decision":"APPROVE","confidence_score":0.9,'
-                    ','
                     '"candidate":"BUY"}'
                 )},
                 "finish_reason": "stop",
@@ -142,22 +140,19 @@ class AIEngineDirectionContractTests(unittest.TestCase):
     def test_json_extractor_prefers_object_with_final_decision(self) -> None:
         parsed = AIEngine._extract_json_object(
             '{"candidate":"BUY","ticker":"SBER"} '
-            '{"final_decision":"HOLD","confidence_score":0.8,'
-            '}'
+            '{"final_decision":"HOLD","confidence_score":0.8}'
         )
         self.assertEqual(parsed.get("final_decision"), "HOLD")
 
     def test_nested_payload_cannot_hide_extra_top_level_fields(self) -> None:
         parsed = AIEngine._extract_json_object(
-            '{"payload":{"final_decision":"HOLD","confidence_score":0.8,'
-            '},'
+            '{"payload":{"final_decision":"HOLD","confidence_score":0.8},'
             '"unexpected":true}'
         )
         result = object.__new__(AIEngine)._cpu_intensive_processing({
             "choices": [{
                 "message": {"content": (
-                    '{"payload":{"final_decision":"HOLD","confidence_score":0.8,'
-                    '},'
+                    '{"payload":{"final_decision":"HOLD","confidence_score":0.8},'
                     '"unexpected":true}'
                 )},
                 "finish_reason": "stop",
@@ -285,8 +280,7 @@ class AIEngineContractRetryTests(unittest.IsolatedAsyncioTestCase):
         engine.client = SimpleNamespace(post=AsyncMock(side_effect=[
             self._response('{"candidate":"BUY","ticker":"SBER","price":"100"}'),
             self._response(
-                '{"final_decision":"HOLD","confidence_score":0.8,'
-                '}'
+                '{"final_decision":"HOLD","confidence_score":0.8}'
             ),
         ]))
         result = await engine.analyze_market_anomaly({
