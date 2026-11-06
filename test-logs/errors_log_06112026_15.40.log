@@ -1,3 +1,0 @@
-2026-11-06 15:47:37,666 [ERROR] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🛑 [LLM CONTRACT] ENPG: модель вернула INVALID_RESPONSE вместо APPROVE/HOLD; локальный кандидат=SELL, вход запрещён.
-2026-11-06 15:50:40,779 [ERROR] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🛑 [LLM CONTRACT] RENI: модель вернула INVALID_RESPONSE вместо APPROVE/HOLD; локальный кандидат=BUY, вход запрещён.
-2026-11-06 16:01:07,863 [ERROR] [RUN=20261106_154039_12500_aae4c0e4] aiogram.dispatcher: Failed to fetch updates - TelegramNetworkError: HTTP Client says - ServerDisconnectedError: Server disconnected
