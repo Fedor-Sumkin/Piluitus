@@ -44,7 +44,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertLessEqual(len(prompt), 980)
 
     def test_missing_final_decision_is_flagged_as_contract_violation(self) -> None:
-        result = AIEngine._cpu_intensive_processing({
+        result = object.__new__(AIEngine)._cpu_intensive_processing({
             "choices": [{
                 "message": {"content": '{"candidate":"BUY","confidence_score":0.91}'},
                 "finish_reason": "stop",
