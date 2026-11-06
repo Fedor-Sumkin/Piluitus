@@ -393,16 +393,14 @@ class AIEngine:
 
         direction_rules = {
             "BUY": (
-                "The local system has already selected BUY. APPROVE only if the supplied "
-                "positive price change, price above VWAP, Ask-size reduction or confirmed "
-                "bullish M1 pattern are internally consistent. Otherwise HOLD."
+                "BUY: approve only if positive change, price>VWAP and Ask reduction "
+                "or bullish M1 pattern agree; else HOLD."
             ),
             "SELL": (
-                "The local system has already selected SELL. APPROVE only if the supplied "
-                "negative price change, price below VWAP, Bid-size reduction or confirmed "
-                "bearish M1 pattern are internally consistent. Otherwise HOLD."
+                "SELL: approve only if negative change, price<VWAP and Bid reduction "
+                "or bearish M1 pattern agree; else HOLD."
             ),
-            "NONE": "No locally confirmed direction: HOLD.",
+            "NONE": "No local direction: MUST HOLD.",
         }[direction]
 
         rule_text = ""
@@ -412,23 +410,19 @@ class AIEngine:
             rule_text = select_prompt_rules(direction, rag_context, max_chars=420)
 
         base = (
-            'Return ONLY one compact JSON object; no Markdown, no chain-of-thought, no extra keys. '
-            'Required keys: final_decision (APPROVE/HOLD), confidence_score (number 0..1), '
-            'tactic_opinion (Russian, <=80 chars), critic_opinion (Russian, <=80 chars). '
-            'Each opinion must be one short complete sentence. Never describe causes, news, macro events, '
-            'Bitcoin, or other external facts unless explicitly present in Metrics or Rule. '
-            'Do not invent explanations, order-book events, or price drivers. State only what supplied metrics prove. '
-            'Confidence is evidence strength, NOT probability of profit: 0.90-1.00 exceptionally clear; '
-            '0.75-0.89 all required entry checks confirmed; 0.50-0.74 mixed; below 0.50 weak. '
+            'JSON only; no Markdown, reasoning, or extra keys. Keys: final_decision (APPROVE/HOLD), '
+            'confidence_score (0..1), tactic_opinion and critic_opinion '
+            '(Russian, one complete sentence <=80 chars each). '
+            'Candidate side is fixed by deterministic code. Never select, change, invert, or output BUY/SELL. '
+            'APPROVE permits only the exact candidate BUY/SELL; HOLD rejects. '
+            'candidate=NONE => final_decision MUST be HOLD. '
+            'Entry checks: volume_spike>=1.5, valid BBO, spread<=0.5%; missing/conflicting evidence => HOLD. '
+            'Confidence is evidence strength, not profit probability: 0.90-1.00 exceptional; '
+            '0.75-0.89 all checks; 0.50-0.74 mixed; below 0.50 weak. '
+            'Use only supplied Metrics/Rule; invent no causes or external facts. '
             f'candidate={direction}; ticker={str(ticker)[:10]}; price={cls._prompt_value(price, 12)}; '
             f'last_size={cls._prompt_value(volume, 10)}. '
-            'The local candidate side is immutable and already selected by deterministic code. '
-            'You must NOT choose, change, invert, or output BUY/SELL. Return APPROVE to authorize exactly '
-            'the candidate side supplied here, or HOLD to reject it. NONE requires HOLD. '
-            'Required common checks: volume_spike>=1.5, valid BBO, spread<=0.5%. '
-            f'{direction_rules} '
-            'volume_spike=last trade size/prior mean. Missing or conflicting evidence means HOLD. '
-            'Use short factual wording; do not repeat the prompt.'
+            f'{direction_rules} volume_spike=last trade size/prior mean.'
         )
         rule_part = f" Rules: {rule_text}." if rule_text else ""
         metric_part = f" Metrics: {metrics_text}." if metrics_text else " Metrics: нет подтверждённых значений."
@@ -445,7 +439,11 @@ class AIEngine:
             trimmed_rule = rule_text[:keep].rsplit(" ", 1)[0].rstrip() + "..." if keep >= 24 else ""
             rule_part = f" Rules: {trimmed_rule}." if trimmed_rule else ""
             prompt = base + rule_part + metric_part
-        # Last-resort bound for unusually long ticker/metric values.
+        # Never truncate the mandatory decision contract. The dynamic fields above are
+        # bounded, but keep this guard in case a caller supplies a smaller custom limit.
+        if len(base) > max_chars:
+            max_chars = len(base)
+        # Optional RAG/metrics may be shortened; the mandatory contract always survives.
         return prompt[:max_chars]
 
     @classmethod
