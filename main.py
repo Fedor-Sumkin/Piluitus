@@ -1995,7 +1995,7 @@ class MarketWorker:
                     _trade_flow_inc("llm_calls")
                     ai_response = await asyncio.wait_for(
                         self.ai.analyze_market_state(event_payload),
-                        timeout=float(Settings.VLLM_TIMEOUT),
+                        timeout=float(Settings.VLLM_TIMEOUT) * 2.0 + 1.0,
                     )
                 except Exception as exc:
                     ai_response = {

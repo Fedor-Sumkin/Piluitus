@@ -30,7 +30,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertIn("APPROVE authorizes only the exact local candidate side", prompt)
         self.assertIn("supporting evidence, not mandatory", prompt)
         self.assertIn("candidate=BUY", prompt)
-        self.assertIn("BUY: approve only if positive change", prompt)
+        self.assertIn("BUY requires positive signed price_change_pct", prompt)
         self.assertLessEqual(len(prompt), 1400)
 
     def test_sell_candidate_requests_approval_not_direction_choice(self) -> None:
@@ -40,7 +40,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertIn("APPROVE authorizes only the exact local candidate side", prompt)
         self.assertIn("supporting evidence, not mandatory", prompt)
         self.assertIn("candidate=SELL", prompt)
-        self.assertIn("SELL: approve only if negative change", prompt)
+        self.assertIn("SELL requires negative signed price_change_pct", prompt)
         self.assertLessEqual(len(prompt), 1400)
 
     def test_missing_candidate_requires_hold(self) -> None:
@@ -90,6 +90,20 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertTrue(result["model_contract_violation"])
         self.assertFalse(result["confidence_valid"])
 
+    def test_numeric_confidence_above_one_is_rejected_not_percent_normalized(self) -> None:
+        result = object.__new__(AIEngine)._cpu_intensive_processing({
+            "choices": [{
+                "message": {"content": (
+                    '{"final_decision":"APPROVE","confidence_score":89,'
+                    '"tactic_opinion":"Сигнал подтверждён.","critic_opinion":"Данные согласованы."}'
+                )},
+                "finish_reason": "stop",
+            }]
+        })
+        self.assertEqual(result["final_decision"], "HOLD")
+        self.assertTrue(result["model_contract_violation"])
+        self.assertEqual(result["contract_error_type"], "invalid_confidence")
+
     def test_valid_hold_is_not_a_contract_violation(self) -> None:
         result = object.__new__(AIEngine)._cpu_intensive_processing({
             "choices": [{
@@ -125,6 +139,26 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             '"tactic_opinion":"Недостаточно данных.","critic_opinion":"Нет подтверждения."}'
         )
         self.assertEqual(parsed.get("final_decision"), "HOLD")
+
+    def test_nested_payload_cannot_hide_extra_top_level_fields(self) -> None:
+        parsed = AIEngine._extract_json_object(
+            '{"payload":{"final_decision":"HOLD","confidence_score":0.8,'
+            '"tactic_opinion":"Недостаточно данных.","critic_opinion":"Нет подтверждения."},'
+            '"unexpected":true}'
+        )
+        result = object.__new__(AIEngine)._cpu_intensive_processing({
+            "choices": [{
+                "message": {"content": (
+                    '{"payload":{"final_decision":"HOLD","confidence_score":0.8,'
+                    '"tactic_opinion":"Недостаточно данных.","critic_opinion":"Нет подтверждения."},'
+                    '"unexpected":true}'
+                )},
+                "finish_reason": "stop",
+            }]
+        })
+        self.assertNotIn("final_decision", parsed)
+        self.assertTrue(result["model_contract_violation"])
+        self.assertEqual(result["contract_error_type"], "schema")
 
     def test_retry_prompt_is_short_and_requires_only_approval_contract(self) -> None:
         prompt = AIEngine._build_contract_retry_prompt(

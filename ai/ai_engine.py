@@ -138,7 +138,7 @@ class AIEngine:
 
     @staticmethod
     def _extract_json_object(text: str) -> dict:
-        """Find a JSON object; prefer one with the complete decision schema."""
+        """Find a top-level JSON object; prefer one with the complete decision schema."""
         if not isinstance(text, str) or not text.strip():
             raise ValueError("vLLM вернул пустой текст вместо JSON")
 
@@ -146,49 +146,59 @@ class AIEngine:
         cleaned = re.sub(r"^\s*```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"\s*```\s*$", "", cleaned)
         required = {"final_decision", "confidence_score", "tactic_opinion", "critic_opinion"}
-        first_final = None
+        complete_object = None
+        decision_object = None
         first_object = None
 
-        # Some reasoning models emit an input-like metrics object before the verdict.
-        for start_idx, char in enumerate(cleaned):
-            if char != "{":
-                continue
-            depth = 0
-            in_string = False
-            escaped = False
-            for idx in range(start_idx, len(cleaned)):
-                current = cleaned[idx]
-                if in_string:
-                    if escaped:
-                        escaped = False
-                    elif current == "\\":
-                        escaped = True
-                    elif current == '"':
-                        in_string = False
+        depth = 0
+        root_start = None
+        in_string = False
+        escaped = False
+        for index, current in enumerate(cleaned):
+            if root_start is None:
+                if current != "{":
                     continue
-                if current == '"':
-                    in_string = True
-                elif current == "{":
-                    depth += 1
-                elif current == "}":
-                    depth -= 1
-                    if depth == 0:
-                        candidate = cleaned[start_idx:idx + 1]
-                        try:
-                            parsed = json.loads(candidate)
-                        except json.JSONDecodeError:
-                            break
-                        if isinstance(parsed, dict):
-                            if required.issubset(parsed):
-                                return parsed
-                            if "final_decision" in parsed and first_final is None:
-                                first_final = parsed
-                            if first_object is None:
-                                first_object = parsed
-                        break
+                root_start = index
+                depth = 1
+                in_string = False
+                escaped = False
+                continue
 
-        if first_final is not None:
-            return first_final
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif current == "\\":
+                    escaped = True
+                elif current == '"':
+                    in_string = False
+                continue
+
+            if current == '"':
+                in_string = True
+            elif current == "{":
+                depth += 1
+            elif current == "}":
+                depth -= 1
+                if depth == 0 and root_start is not None:
+                    candidate = cleaned[root_start:index + 1]
+                    try:
+                        parsed = json.loads(candidate)
+                    except json.JSONDecodeError:
+                        parsed = None
+                    if isinstance(parsed, dict):
+                        if required.issubset(parsed):
+                            complete_object = parsed
+                            break
+                        if "final_decision" in parsed and decision_object is None:
+                            decision_object = parsed
+                        if first_object is None:
+                            first_object = parsed
+                    root_start = None
+
+        if complete_object is not None:
+            return complete_object
+        if decision_object is not None:
+            return decision_object
         if first_object is not None:
             return first_object
         preview = re.sub(r"\s+", " ", cleaned)[:240] or "<пустой ответ>"
@@ -261,16 +271,16 @@ class AIEngine:
             raw_confidence = parsed.get("confidence_score")
             if isinstance(raw_confidence, bool) or not isinstance(raw_confidence, (int, float)):
                 raise ValueError("Поле confidence_score должно быть JSON-числом от 0 до 1")
-            confidence = self._parse_confidence_score(raw_confidence)
-            if confidence is None or not 0.0 <= confidence <= 1.0:
+            confidence = float(raw_confidence)
+            if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
                 raise ValueError("Поле confidence_score должно находиться в диапазоне 0..1")
 
             tactic = parsed.get("tactic_opinion")
             critic = parsed.get("critic_opinion")
-            if not isinstance(tactic, str) or not tactic.strip():
-                raise ValueError("Поле tactic_opinion должно быть непустой строкой")
-            if not isinstance(critic, str) or not critic.strip():
-                raise ValueError("Поле critic_opinion должно быть непустой строкой")
+            if not isinstance(tactic, str) or not tactic.strip() or len(tactic.strip()) > 80:
+                raise ValueError("Поле tactic_opinion должно быть непустой строкой до 80 символов")
+            if not isinstance(critic, str) or not critic.strip() or len(critic.strip()) > 80:
+                raise ValueError("Поле critic_opinion должно быть непустой строкой до 80 символов")
 
             usage = raw_response_data.get("usage", {})
             return {
