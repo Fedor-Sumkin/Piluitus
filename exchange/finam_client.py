@@ -94,6 +94,9 @@ class FinamBrokerClient:
         # from a malformed/unrecognized payload.
         self._last_order_book_payload_valid = False
         self._last_order_book_out_of_order = False
+        self._last_order_book_out_of_order_tickers: set[str] = set()
+        self._last_order_book_unrecognized_tickers: set[str] = set()
+        self._last_order_book_out_of_order_details: dict[str, dict[str, Any]] = {}
         # Optional synchronous callback supplied by main.py. It returns tickers
         # with live positions that must retain BBO even after leaving the screener.
         self.open_positions_provider: Callable[[], Iterable[str]] | None = None
@@ -538,6 +541,9 @@ class FinamBrokerClient:
         """
         self._last_order_book_payload_valid = False
         self._last_order_book_out_of_order = False
+        self._last_order_book_out_of_order_tickers.clear()
+        self._last_order_book_unrecognized_tickers.clear()
+        self._last_order_book_out_of_order_details.clear()
         try:
             received_monotonic = float(envelope.get("_received_monotonic", time.monotonic()))
         except (TypeError, ValueError, OverflowError):
@@ -604,6 +610,7 @@ class FinamBrokerClient:
             # unlike a malformed/empty delta which must remain unrecognized.
             empty_snapshot = bool(snapshot_flag and not has_level_payload)
             if not has_level_payload and not empty_snapshot:
+                self._last_order_book_unrecognized_tickers.add(ticker)
                 continue
             self._last_order_book_payload_valid = True
             state = self._order_book_state.setdefault(
@@ -634,6 +641,13 @@ class FinamBrokerClient:
             prior_message_seen = float(state.get("last_event_monotonic", 0.0) or 0.0)
             if prior_message_seen > 0.0 and message_event_seen + 0.001 < prior_message_seen:
                 self._last_order_book_out_of_order = True
+                self._last_order_book_out_of_order_tickers.add(ticker)
+                self._last_order_book_out_of_order_details[ticker] = {
+                    "event_timestamp": str(message_timestamp or ""),
+                    "event_monotonic": message_event_seen,
+                    "prior_monotonic": prior_message_seen,
+                    "age_delta_ms": round((prior_message_seen - message_event_seen) * 1000.0, 1),
+                }
                 continue
             state["last_event_monotonic"] = max(prior_message_seen, message_event_seen)
             bids: dict[float, float] = state["bids"]
@@ -1470,7 +1484,23 @@ class FinamBrokerClient:
                                     )[:1200]
                             elif parse_missing_tickers and not order_book_parser_sample:
                                 safe_payload = self._redact_for_log(payload)
+                                out_of_order_symbols = parse_missing_tickers & self._last_order_book_out_of_order_tickers
+                                unrecognized_symbols = parse_missing_tickers & self._last_order_book_unrecognized_tickers
+                                classifications = []
+                                if out_of_order_symbols:
+                                    classifications.append("OUT_OF_ORDER=" + ",".join(sorted(out_of_order_symbols)))
+                                if unrecognized_symbols:
+                                    classifications.append("UNRECOGNIZED=" + ",".join(sorted(unrecognized_symbols)))
+                                if not classifications:
+                                    classifications.append("NO_UPDATE=unknown")
+                                detail = {
+                                    symbol: self._last_order_book_out_of_order_details[symbol]
+                                    for symbol in sorted(out_of_order_symbols)
+                                    if symbol in self._last_order_book_out_of_order_details
+                                }
                                 order_book_parser_sample = (
+                                    f"classification={'/'.join(classifications)}; "
+                                    f"out_of_order_detail={json.dumps(detail, ensure_ascii=False, default=str)}; "
                                     f"symbols={','.join(sorted(parse_missing_tickers))}; payload="
                                     + json.dumps(safe_payload, ensure_ascii=False, default=str)[:1000]
                                 )
@@ -1480,15 +1510,18 @@ class FinamBrokerClient:
                                 symbol_stats["last_wire_monotonic"] = message_received_monotonic
                                 if observed_ticker not in update_tickers:
                                     symbol_stats["window_parse_no_update"] += 1
-                                    if self._last_order_book_out_of_order:
+                                    if observed_ticker in self._last_order_book_out_of_order_tickers:
                                         symbol_stats["window_parse_out_of_order"] += 1
-                                    elif not self._last_order_book_payload_valid:
+                                    elif (
+                                        observed_ticker in self._last_order_book_unrecognized_tickers
+                                        or not self._last_order_book_payload_valid
+                                    ):
                                         symbol_stats["window_parse_unrecognized"] += 1
-                            if not book_updates:
-                                if self._last_order_book_out_of_order:
-                                    order_book_out_of_order += 1
-                                if not self._last_order_book_payload_valid:
-                                    order_book_decode_failures += 1
+                            # Count per-symbol drops even when another symbol in the
+                            # same envelope produced a valid update.
+                            order_book_out_of_order += len(self._last_order_book_out_of_order_tickers)
+                            order_book_decode_failures += len(self._last_order_book_unrecognized_tickers)
+                            if not book_updates and not self._last_order_book_payload_valid:
                                     if not order_book_decode_warned:
                                         safe_envelope = self._redact_for_log(envelope)
                                         logger.warning(
