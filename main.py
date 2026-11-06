@@ -2024,11 +2024,15 @@ class MarketWorker:
                 ).strip().upper()
                 candidate_direction = str(event_payload.get("candidate_direction", "")).strip().upper()
                 candidate_decision = candidate_direction if candidate_direction in {"BUY", "SELL"} else "HOLD"
-                if model_decision == "APPROVE" and candidate_direction in {"BUY", "SELL"}:
-                    _trade_flow_inc("llm_model_approve")
-                elif model_decision == "HOLD":
-                    _trade_flow_inc("llm_model_hold")
                 model_contract_violation = bool(ai_analysis.get("model_contract_violation", False))
+                if (
+                    model_decision == "APPROVE"
+                    and candidate_direction in {"BUY", "SELL"}
+                    and not model_contract_violation
+                ):
+                    _trade_flow_inc("llm_model_approve")
+                elif model_decision == "HOLD" and not model_contract_violation:
+                    _trade_flow_inc("llm_model_hold")
                 if (
                     model_decision == "APPROVE"
                     and candidate_direction in {"BUY", "SELL"}
