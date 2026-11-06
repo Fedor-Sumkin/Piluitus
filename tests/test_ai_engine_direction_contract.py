@@ -104,6 +104,13 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertTrue(result["model_contract_violation"])
         self.assertEqual(result["contract_error_type"], "invalid_confidence")
 
+    def test_compact_opinion_works_without_constructor_initialization(self) -> None:
+        engine = object.__new__(AIEngine)
+        self.assertEqual(
+            engine._compact_opinion("Импульс недостаточен."),
+            "Импульс недостаточен.",
+        )
+
     def test_valid_hold_is_not_a_contract_violation(self) -> None:
         result = object.__new__(AIEngine)._cpu_intensive_processing({
             "choices": [{
