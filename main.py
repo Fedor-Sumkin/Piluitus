@@ -945,7 +945,8 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "quotes_received", "selected_quotes", "selected_anomalies", "anomalies_queued",
         "queue_dropped", "direction_prefilter_skipped", "prefilter_blocked", "candidate_deduplicated",
         "bbo_deferred", "bbo_resumed", "bbo_expired",
-        "llm_calls", "llm_directional", "llm_hold", "guard_blocked",
+        "direction_candidate_buy", "direction_candidate_sell",
+        "llm_calls", "llm_approve_buy", "llm_approve_sell", "llm_hold", "llm_contract_violation", "guard_blocked",
         "guard_quotes", "guard_spread", "guard_volume", "guard_direction", "guard_size",
         "guard_text", "guard_other", "confidence_blocked", "risk_blocked", "zero_lot",
         "orders_scheduled", "orderbook_updates", "orderbook_unusable",
@@ -958,7 +959,9 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "📊 [TRADE FLOW 60s] котировки=%(quotes_received)d, котировки_top15=%(selected_quotes)d, "
         "аномалии_top15=%(selected_anomalies)d, в_очереди=%(anomalies_queued)d, очередь_потери=%(queue_dropped)d; "
         "направление_не_совпало=%(direction_prefilter_skipped)d, prefilter_block=%(prefilter_blocked)d, "
-        "duplicate=%(candidate_deduplicated)d; LLM=%(llm_calls)d, BUY_SELL=%(llm_directional)d, HOLD=%(llm_hold)d; "
+        "duplicate=%(candidate_deduplicated)d; кандидаты(BUY=%(direction_candidate_buy)d,SELL=%(direction_candidate_sell)d); "
+        "LLM=%(llm_calls)d, APPROVE(BUY=%(llm_approve_buy)d,SELL=%(llm_approve_sell)d), "
+        "HOLD=%(llm_hold)d, contract_error=%(llm_contract_violation)d; "
         "Guard=%(guard_blocked)d (BBO=%(guard_quotes)d, спред=%(guard_spread)d, объём=%(guard_volume)d, "
         "направление=%(guard_direction)d, размер=%(guard_size)d, текст=%(guard_text)d, прочее=%(guard_other)d); "
         "ORDER_BOOK: принятых_состояний=%(orderbook_updates)d, затронуто_сторон_BBO=%(orderbook_side_touches)d, "
@@ -1182,7 +1185,8 @@ async def _resume_pending_bbo_candidate(ticker: str) -> None:
         _drop_pending_bbo_candidate(key, pending)
         _trade_flow_inc("bbo_resumed")
         _trade_flow_inc("anomalies_queued")
-        logger.info("✅ [PRE-LLM RESUME] %s: свежий BBO подтверждён, кандидат передан в LLM-очередь.", key)
+        _trade_flow_inc("direction_candidate_buy" if direction == "BUY" else "direction_candidate_sell")
+        logger.info("✅ [PRE-LLM RESUME] %s: свежий BBO подтверждён, кандидат %s передан в LLM-очередь.", key, direction)
         update_numpy_impulse_status(key)
     except asyncio.QueueFull:
         _release_ai_ticker(key)
@@ -1662,6 +1666,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                             try:
                                 anomaly_queue.put_nowait(_make_priority_item(1, "MARKET_TICK", event_payload))
                                 _trade_flow_inc("anomalies_queued")
+                                _trade_flow_inc("direction_candidate_buy" if candidate_direction == "BUY" else "direction_candidate_sell")
                                 update_numpy_impulse_status(ticker)
                             except asyncio.QueueFull:
                                 _release_ai_ticker(ticker)
@@ -1996,8 +2001,28 @@ class MarketWorker:
                 elif isinstance(ai_response, dict):
                     ai_analysis = ai_response
 
-                decision = str(ai_analysis.get("final_decision", "HOLD")).upper()
-                candidate_decision = decision if decision in {"BUY", "SELL", "HOLD"} else "HOLD"
+                # LLM returns only APPROVE/HOLD. Trade direction comes exclusively
+                # from the deterministic local candidate and cannot be changed by the model.
+                model_decision = str(
+                    ai_analysis.get("model_decision", ai_analysis.get("final_decision", "HOLD"))
+                ).strip().upper()
+                candidate_direction = str(event_payload.get("candidate_direction", "")).strip().upper()
+                candidate_decision = candidate_direction if candidate_direction in {"BUY", "SELL"} else "HOLD"
+                model_contract_violation = bool(ai_analysis.get("model_contract_violation", False))
+                if model_decision == "APPROVE" and candidate_direction in {"BUY", "SELL"}:
+                    decision = candidate_direction
+                else:
+                    decision = "HOLD"
+                    if model_decision in {"BUY", "SELL"} or model_contract_violation:
+                        model_contract_violation = True
+                        _trade_flow_inc("llm_contract_violation")
+                        logger.error(
+                            "🛑 [LLM CONTRACT] %s: модель вернула %s вместо APPROVE/HOLD; "
+                            "локальный кандидат=%s, вход запрещён.",
+                            ticker, model_decision, candidate_direction or "NONE",
+                        )
+                ai_analysis["model_decision"] = model_decision
+                ai_analysis["final_decision"] = decision
                 confidence_valid = bool(ai_analysis.get("confidence_valid", "confidence_score" in ai_analysis))
                 try:
                     confidence = float(ai_analysis.get("confidence_score", 0.0)) * 100.0
@@ -2012,8 +2037,10 @@ class MarketWorker:
                     decision = "HOLD"
                     confidence = 0.0
                 candidate_confidence = confidence if confidence_valid else None
-                if decision in {"BUY", "SELL"}:
-                    _trade_flow_inc("llm_directional")
+                if decision == "BUY":
+                    _trade_flow_inc("llm_approve_buy")
+                elif decision == "SELL":
+                    _trade_flow_inc("llm_approve_sell")
                 else:
                     _trade_flow_inc("llm_hold")
                 # Независимый численный фильтр: свободный текст и confidence LLM
@@ -2021,7 +2048,6 @@ class MarketWorker:
                 evidence = metrics if isinstance(metrics, dict) else {}
                 valid_evidence = True
                 block_reason = ""
-                candidate_direction = str(event_payload.get("candidate_direction", "")).upper()
                 if decision in {"BUY", "SELL"} and candidate_direction in {"BUY", "SELL"} and decision != candidate_direction:
                     valid_evidence = False
                     block_reason = (
@@ -2030,7 +2056,10 @@ class MarketWorker:
                     )
                 elif decision in {"BUY", "SELL"}:
                     valid_evidence, block_reason = validate_signal_evidence(decision, evidence)
-                signal_reason = ""
+                signal_reason = (
+                    "LLM нарушила контракт APPROVE/HOLD; вход запрещён."
+                    if model_contract_violation else ""
+                )
                 if decision in {"BUY", "SELL"} and not valid_evidence:
                     requested_decision = decision
                     signal_reason = block_reason or "Измеряемые условия входа не пройдены."
@@ -2149,6 +2178,7 @@ class MarketWorker:
                     "price": price,
                     "decision": decision,
                     "candidate_decision": candidate_decision,
+                    "model_decision": model_decision,
                     "confidence": round(candidate_confidence, 1) if candidate_confidence is not None else None,
                     "signal_status": signal_status,
                     "signal_reason": signal_reason,

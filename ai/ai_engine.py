@@ -228,10 +228,11 @@ class AIEngine:
             if "final_decision" not in parsed:
                 raise ValueError("В JSON отсутствует обязательное поле final_decision")
 
-            decision = str(parsed.get("final_decision", "HOLD")).strip().upper()
-            if decision not in {"BUY", "SELL", "HOLD"}:
-                # Не угадываем BUY/SELL по тексту — неизвестное действие блокируется.
-                decision = "HOLD"
+            raw_decision = str(parsed.get("final_decision", "HOLD")).strip().upper()
+            # The model is an approval critic, never the owner of trade direction.
+            # BUY/SELL responses are legacy contract violations and fail closed.
+            model_contract_violation = raw_decision in {"BUY", "SELL"}
+            decision = raw_decision if raw_decision in {"APPROVE", "HOLD"} else "HOLD"
 
             raw_confidence = parsed.get("confidence_score")
             confidence = self._parse_confidence_score(raw_confidence)
@@ -252,6 +253,8 @@ class AIEngine:
             return {
                 "error_type": None,
                 "final_decision": decision,
+                "model_decision": decision,
+                "model_contract_violation": model_contract_violation,
                 "confidence_score": confidence,
                 "confidence_valid": confidence_valid,
                 "confidence_raw": raw_confidence,
@@ -389,14 +392,14 @@ class AIEngine:
 
         direction_rules = {
             "BUY": (
-                "BUY requires price_change_pct>0 and price_vs_vwap_pct>0; "
-                "ask_size_drop_pct>=50 with top_ask_history_samples>=3 and age<=2s; "
-                "or confirmed bullish bar_pattern with breakout_up/pullback_buy."
+                "The local system has already selected BUY. APPROVE only if the supplied "
+                "positive price change, price above VWAP, Ask-size reduction or confirmed "
+                "bullish M1 pattern are internally consistent. Otherwise HOLD."
             ),
             "SELL": (
-                "SELL requires price_change_pct<0 and price_vs_vwap_pct<0; "
-                "bid_size_drop_pct>=50 with top_bid_history_samples>=3 and age<=2s; "
-                "or confirmed bearish bar_pattern with breakout_down/pullback_sell."
+                "The local system has already selected SELL. APPROVE only if the supplied "
+                "negative price change, price below VWAP, Bid-size reduction or confirmed "
+                "bearish M1 pattern are internally consistent. Otherwise HOLD."
             ),
             "NONE": "No locally confirmed direction: HOLD.",
         }[direction]
@@ -409,7 +412,7 @@ class AIEngine:
 
         base = (
             'Return ONLY one compact JSON object; no Markdown, no chain-of-thought, no extra keys. '
-            'Required keys: final_decision (BUY/SELL/HOLD), confidence_score (number 0..1), '
+            'Required keys: final_decision (APPROVE/HOLD), confidence_score (number 0..1), '
             'tactic_opinion (Russian, <=80 chars), critic_opinion (Russian, <=80 chars). '
             'Each opinion must be one short complete sentence. Never describe causes, news, macro events, '
             'Bitcoin, or other external facts unless explicitly present in Metrics or Rule. '
@@ -418,7 +421,9 @@ class AIEngine:
             '0.75-0.89 all required entry checks confirmed; 0.50-0.74 mixed; below 0.50 weak. '
             f'candidate={direction}; ticker={str(ticker)[:10]}; price={cls._prompt_value(price, 12)}; '
             f'last_size={cls._prompt_value(volume, 10)}. '
-            'Candidate side is binding: BUY candidate allows BUY or HOLD only; SELL candidate allows SELL or HOLD only; NONE requires HOLD. Never invert the candidate. '
+            'The local candidate side is immutable and already selected by deterministic code. '
+            'You must NOT choose, change, invert, or output BUY/SELL. Return APPROVE to authorize exactly '
+            'the candidate side supplied here, or HOLD to reject it. NONE requires HOLD. '
             'Required common checks: volume_spike>=1.5, valid BBO, spread<=0.5%. '
             f'{direction_rules} '
             'volume_spike=last trade size/prior mean. Missing or conflicting evidence means HOLD. '
@@ -689,11 +694,15 @@ class AIEngine:
             res["latency"] = round(inference_latency, 3)
             return res
         
+        model_decision = str(processed.get("model_decision", processed.get("final_decision", "HOLD"))).upper()
+        processed["model_decision"] = model_decision
+        processed["candidate_direction"] = candidate_direction
         processed["latency"] = round(inference_latency, 3)
         log.debug(
-            "[vLLM SCORE] ticker=%s decision=%s score=%s valid=%s raw=%r",
-            ticker, processed.get("final_decision"), processed.get("confidence_score"),
-            processed.get("confidence_valid"), processed.get("confidence_raw"),
+            "[vLLM SCORE] ticker=%s model_decision=%s candidate=%s contract_violation=%s score=%s valid=%s raw=%r",
+            ticker, model_decision, candidate_direction,
+            processed.get("model_contract_violation", False),
+            processed.get("confidence_score"), processed.get("confidence_valid"), processed.get("confidence_raw"),
         )
         return processed
 

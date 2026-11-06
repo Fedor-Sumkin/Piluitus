@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import inspect
+from collections import deque
 from collections.abc import Iterable, Mapping
 from typing import Any, Protocol, TypedDict, cast
 import math
@@ -201,9 +202,29 @@ class BaseExecutionEngine:
                 stop_loss_cooldown_sec if stop_loss_cooldown_sec is not None
                 else os.getenv("PILUITUS_STOP_LOSS_COOLDOWN_SEC", "60")
             )
-            self.stop_loss_cooldown_sec = max(0.0, cooldown) if math.isfinite(cooldown) else 60.0
+            self.stop_loss_cooldown_sec = max(0.0, cooldown) if math.isfinite(cooldown) else 180.0
         except (TypeError, ValueError):
-            self.stop_loss_cooldown_sec = 60.0
+            self.stop_loss_cooldown_sec = 180.0
+        try:
+            self.repeat_stop_window_sec = max(
+                60.0, _finite_or_default(os.getenv("PILUITUS_REPEAT_SL_WINDOW_SEC", "1800"), 1800.0)
+            )
+            self.repeat_stop_limit = max(2, int(os.getenv("PILUITUS_REPEAT_SL_LIMIT", "2")))
+            self.repeat_stop_cooldown_sec = max(
+                60.0, _finite_or_default(os.getenv("PILUITUS_REPEAT_SL_COOLDOWN_SEC", "900"), 900.0)
+            )
+        except (TypeError, ValueError):
+            self.repeat_stop_window_sec = 1800.0
+            self.repeat_stop_limit = 2
+            self.repeat_stop_cooldown_sec = 900.0
+        try:
+            self.shadow_be_enabled = os.getenv("PILUITUS_SHADOW_BE_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+            self.shadow_be_arm_r = min(
+                3.0, max(0.25, _finite_or_default(os.getenv("PILUITUS_SHADOW_BE_ARM_R", "1.0"), 1.0))
+            )
+        except (TypeError, ValueError):
+            self.shadow_be_enabled = True
+            self.shadow_be_arm_r = 1.0
 
         # Fees are explicit configuration: never guess the user's Finam tariff.
         # Percentage is charged on each side (entry and exit). Slippage is an
@@ -222,7 +243,9 @@ class BaseExecutionEngine:
         self._opening_tickers: set[str] = set()
         self._reserved_notional: dict[str, float] = {}
         self._portfolio_lock = asyncio.Lock()
-        self._ticker_cooldowns: dict[str, float] = {}
+        # Cooldowns are side-specific: a short stop does not suppress a valid long setup.
+        self._ticker_cooldowns: dict[tuple[str, str], float] = {}
+        self._recent_stop_losses: dict[tuple[str, str], deque[float]] = {}
         self._pending_monitor_prices: dict[str, float] = {}
         self._monitor_worker_task: asyncio.Task | None = None
         self._last_bbo_exit_warning_at: dict[str, float] = {}
@@ -238,11 +261,14 @@ class BaseExecutionEngine:
         self.session_id = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
 
         logger.info(
-            "🛡️ [PORTFOLIO GUARD] capital=%.2f ₽ gross_cap=%.0f%% single_position_cap=%.0f%% stop_cooldown=%.0fs",
+            "🛡️ [PORTFOLIO GUARD] capital=%.2f ₽ gross_cap=%.0f%% single_position_cap=%.0f%% "
+            "stop_cooldown=%.0fs repeat_SL=%d/%0.fs->%.0fs shadow_BE=%s@%.2fR",
             self.initial_capital,
             self.max_gross_exposure_pct * 100,
             self.max_single_position_pct * 100,
             self.stop_loss_cooldown_sec,
+            self.repeat_stop_limit, self.repeat_stop_window_sec,
+            self.repeat_stop_cooldown_sec, self.shadow_be_enabled, self.shadow_be_arm_r,
         )
         if self.paper_mode:
             logger.info("🛡️ РЕЖИМ АГЕНТА: [PAPER TRADING] — Симуляция ордеров через Redis ОЗУ.")
@@ -375,17 +401,20 @@ class BaseExecutionEngine:
 
         return round(total, 2)
 
-    async def _reserve_order_size(self, ticker: str, requested_lots: int, price: float, db: DBManager) -> tuple[int, str]:
+    async def _reserve_order_size(
+        self, ticker: str, requested_lots: int, price: float, db: DBManager, *, side: str
+    ) -> tuple[int, str]:
         """Atomically cap order by risk-independent notional budget and reserve it against races."""
         async with self._portfolio_lock:
             if self._maintenance_active:
                 return 0, self._maintenance_reason or "PAPER-торговля приостановлена для обслуживания сессии."
             now = time.monotonic()
-            cooldown_until = self._ticker_cooldowns.get(ticker, 0.0)
+            cooldown_key = (str(ticker).strip().upper().split("@")[0], str(side).strip().upper())
+            cooldown_until = self._ticker_cooldowns.get(cooldown_key, 0.0)
             if cooldown_until > now:
                 remaining = cooldown_until - now
-                return 0, f"STOP_LOSS cooldown ещё {remaining:.0f} сек."
-            self._ticker_cooldowns.pop(ticker, None)
+                return 0, f"STOP_LOSS cooldown для {cooldown_key[1]} ещё {remaining:.0f} сек."
+            self._ticker_cooldowns.pop(cooldown_key, None)
 
             if ticker in self._opening_tickers:
                 return 0, "По тикеру уже создаётся позиция."
@@ -779,6 +808,48 @@ class BaseExecutionEngine:
         adjusted = price * (1.0 + factor if transaction_side == "BUY" else 1.0 - factor)
         return adjusted if math.isfinite(adjusted) and adjusted > 0.0 else price
 
+    @staticmethod
+    def _calculate_shadow_be_raw_trigger_price(
+        entry_price: float,
+        side: str,
+        share_qty: int,
+        entry_commission: float,
+        commission_pct_per_side: float,
+        slippage_bps: float,
+    ) -> float:
+        """Raw executable BBO threshold whose simulated fill is net break-even."""
+        if entry_price <= 0.0 or share_qty <= 0 or side not in {"BUY", "SELL"}:
+            return 0.0
+        fee_rate = max(0.0, commission_pct_per_side) / 100.0
+        slip_rate = max(0.0, slippage_bps) / 10_000.0
+        entry_fee_per_share = max(0.0, entry_commission) / share_qty
+        if side == "BUY":
+            if fee_rate >= 1.0 or slip_rate >= 1.0:
+                return 0.0
+            required_fill = (entry_price + entry_fee_per_share) / (1.0 - fee_rate)
+            raw_bbo = required_fill / (1.0 - slip_rate)
+        else:
+            required_fill = (entry_price - entry_fee_per_share) / (1.0 + fee_rate)
+            raw_bbo = required_fill / (1.0 + slip_rate)
+        return raw_bbo if math.isfinite(raw_bbo) and raw_bbo > 0.0 else 0.0
+
+    def _register_stop_loss_cooldown(
+        self, ticker: str, side: str, *, now: float | None = None
+    ) -> tuple[float, int]:
+        """Apply a short first-stop pause and a longer pause after repeated same-side stops."""
+        current = time.monotonic() if now is None else float(now)
+        key = (str(ticker).strip().upper().split("@")[0], str(side).strip().upper())
+        history = self._recent_stop_losses.setdefault(key, deque())
+        cutoff = current - self.repeat_stop_window_sec
+        while history and history[0] < cutoff:
+            history.popleft()
+        history.append(current)
+        repeated = len(history) >= self.repeat_stop_limit
+        cooldown = self.repeat_stop_cooldown_sec if repeated else self.stop_loss_cooldown_sec
+        if cooldown > 0.0:
+            self._ticker_cooldowns[key] = current + cooldown
+        return cooldown, len(history)
+
     # ------------------------------------------------------------------
     # 3️⃣  EXECUTE_ORDER (Единая точка входа исполнения)
     # ------------------------------------------------------------------
@@ -894,7 +965,7 @@ class BaseExecutionEngine:
                 )
 
             # Учитываем уже открытые и параллельно резервируемые позиции.
-            approved_lots, reservation_info = await self._reserve_order_size(ticker, lots, price, db)
+            approved_lots, reservation_info = await self._reserve_order_size(ticker, lots, price, db, side=side)
             if approved_lots <= 0:
                 # Keep a single-line console readable if many candidates hit the
                 # same capital guard during a fast market.
@@ -1042,6 +1113,19 @@ class BaseExecutionEngine:
                 "max_adverse_excursion_r": 0.0,
                 "max_favorable_excursion_rub": 0.0,
                 "max_adverse_excursion_rub": 0.0,
+                "max_favorable_bbo_excursion_pct": 0.0,
+                "max_adverse_bbo_excursion_pct": 0.0,
+                "max_favorable_bbo_excursion_rub": 0.0,
+                "max_adverse_bbo_excursion_rub": 0.0,
+                "shadow_be_enabled": self.shadow_be_enabled,
+                "shadow_be_arm_r": self.shadow_be_arm_r,
+                "shadow_be_armed": False,
+                "shadow_be_triggered": False,
+                "shadow_be_trigger_price": None,
+                "shadow_be_trigger_timestamp": None,
+                "shadow_be_trigger_bbo_price": None,
+                "shadow_be_estimated_net_pnl_rub": None,
+                "shadow_be_favorable_r_at_arm": None,
                 "pnl": 0.0,
                 "pnl_percent": 0.0,
                 "final_outcome": "PENDING",
@@ -1284,12 +1368,24 @@ class BaseExecutionEngine:
             ),
         })
 
-        if exit_reason == "STOP_LOSS" and self.stop_loss_cooldown_sec > 0:
-            self._ticker_cooldowns[ticker] = time.monotonic() + self.stop_loss_cooldown_sec
+        if exit_reason == "STOP_LOSS":
+            cooldown, recent_count = self._register_stop_loss_cooldown(ticker, side)
+            closed_trade["same_side_stop_losses_in_window"] = recent_count
+            closed_trade["same_side_stop_window_sec"] = self.repeat_stop_window_sec
+            closed_trade["reentry_cooldown_sec"] = cooldown
             logger.warning(
-                "🧊 [STOP COOLDOWN] %s заблокирован для повторного входа на %.0f сек. после Stop Loss.",
-                ticker, self.stop_loss_cooldown_sec,
+                "🧊 [STOP COOLDOWN] %s %s: стопов=%d за %.0f сек.; повторный вход этой стороной "
+                "заблокирован на %.0f сек.",
+                ticker, side, recent_count, self.repeat_stop_window_sec, cooldown,
             )
+        else:
+            closed_trade["same_side_stop_losses_in_window"] = None
+            closed_trade["reentry_cooldown_sec"] = 0.0
+        closed_trade["shadow_be_outcome"] = (
+            "TRIGGERED" if bool(trade.get("shadow_be_triggered"))
+            else "ARMED_NOT_TRIGGERED" if bool(trade.get("shadow_be_armed"))
+            else "NOT_ARMED"
+        )
 
         await db.set_json(f"piluitus:trade:{order_id}", closed_trade)
         trade.update(closed_trade)
@@ -1522,6 +1618,78 @@ class BaseExecutionEngine:
             executable_exit_price = float(bbo["executable_price"])
             if not math.isfinite(executable_exit_price) or executable_exit_price <= 0.0:
                 return
+
+            # BBO-based excursions are separate from legacy last-trade MFE/MAE.
+            bbo_signed_pct = ((executable_exit_price - entry_price) / entry_price) * 100.0 * sign
+            bbo_signed_rub = (executable_exit_price - entry_price) * share_qty * sign
+            trade["max_favorable_bbo_excursion_pct"] = round(max(
+                _finite_or_default(trade.get("max_favorable_bbo_excursion_pct"), 0.0),
+                bbo_signed_pct,
+            ), 6)
+            trade["max_adverse_bbo_excursion_pct"] = round(min(
+                _finite_or_default(trade.get("max_adverse_bbo_excursion_pct"), 0.0),
+                bbo_signed_pct,
+            ), 6)
+            trade["max_favorable_bbo_excursion_rub"] = round(max(
+                _finite_or_default(trade.get("max_favorable_bbo_excursion_rub"), 0.0),
+                bbo_signed_rub,
+            ), 4)
+            trade["max_adverse_bbo_excursion_rub"] = round(min(
+                _finite_or_default(trade.get("max_adverse_bbo_excursion_rub"), 0.0),
+                bbo_signed_rub,
+            ), 4)
+
+            # Shadow-only break-even: track whether a stop moved to net BE after
+            # the configured R threshold would have triggered. Fixed SL/TP is untouched.
+            if self.shadow_be_enabled:
+                stop_distance = abs(entry_price - stop_loss)
+                favorable_r = bbo_signed_rub / (share_qty * stop_distance) if stop_distance > 0.0 else 0.0
+                if not bool(trade.get("shadow_be_armed")) and favorable_r >= self.shadow_be_arm_r:
+                    shadow_trigger = self._calculate_shadow_be_raw_trigger_price(
+                        entry_price,
+                        side,
+                        share_qty,
+                        _finite_or_default(trade.get("entry_commission_rub"), 0.0),
+                        _finite_or_default(trade.get("commission_pct_per_side"), self.paper_commission_pct),
+                        self.paper_slippage_bps,
+                    )
+                    if shadow_trigger > 0.0:
+                        trade["shadow_be_armed"] = True
+                        trade["shadow_be_trigger_price"] = round(shadow_trigger, 6)
+                        trade["shadow_be_favorable_r_at_arm"] = round(favorable_r, 4)
+                        trade["shadow_be_armed_timestamp"] = datetime.now().astimezone().isoformat(timespec="milliseconds")
+                        logger.info(
+                            "🧪 [SHADOW BE ARMED] %s %s: BBO достиг %.2fR; гипотетический net-BE stop=%.6f; "
+                            "фактические SL/TP не изменены.",
+                            ticker, side, favorable_r, shadow_trigger,
+                        )
+                if bool(trade.get("shadow_be_armed")) and not bool(trade.get("shadow_be_triggered")):
+                    shadow_trigger = _finite_or_default(trade.get("shadow_be_trigger_price"), 0.0)
+                    shadow_hit = (
+                        shadow_trigger > 0.0 and (
+                            (side == "BUY" and executable_exit_price <= shadow_trigger)
+                            or (side == "SELL" and executable_exit_price >= shadow_trigger)
+                        )
+                    )
+                    if shadow_hit:
+                        exit_transaction_side = "SELL" if side == "BUY" else "BUY"
+                        shadow_fill = self._apply_paper_slippage(executable_exit_price, exit_transaction_side)
+                        shadow_gross = (shadow_fill - entry_price) * share_qty * sign
+                        shadow_fee = shadow_fill * share_qty * (
+                            _finite_or_default(trade.get("commission_pct_per_side"), self.paper_commission_pct) / 100.0
+                        )
+                        shadow_net = shadow_gross - _finite_or_default(
+                            trade.get("entry_commission_rub"), 0.0
+                        ) - shadow_fee
+                        trade["shadow_be_triggered"] = True
+                        trade["shadow_be_trigger_timestamp"] = datetime.now().astimezone().isoformat(timespec="milliseconds")
+                        trade["shadow_be_trigger_bbo_price"] = round(executable_exit_price, 6)
+                        trade["shadow_be_estimated_net_pnl_rub"] = round(shadow_net, 4)
+                        logger.info(
+                            "🧪 [SHADOW BE TRIGGERED] %s %s: BBO=%.6f, гипотетический net PnL=%+.4f ₽; "
+                            "позиция продолжает жить по исходным SL/TP.",
+                            ticker, side, executable_exit_price, shadow_net,
+                        )
 
             if side == "BUY":
                 exit_reason = "STOP_LOSS" if executable_exit_price <= stop_loss else (

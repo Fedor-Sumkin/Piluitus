@@ -19,15 +19,18 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             include_rule_text=False,
         )
 
-    def test_buy_candidate_allows_only_buy_or_hold(self) -> None:
+    def test_buy_candidate_requests_approval_not_direction_choice(self) -> None:
         prompt = self._prompt("BUY")
-        self.assertIn("Candidate side is binding", prompt)
-        self.assertIn("BUY candidate allows BUY or HOLD only", prompt)
+        self.assertIn("final_decision (APPROVE/HOLD)", prompt)
+        self.assertIn("candidate side is immutable", prompt)
+        self.assertIn("Do NOT choose, change, invert, or output BUY/SELL", prompt)
+        self.assertIn("local system has already selected BUY", prompt)
 
-    def test_sell_candidate_allows_only_sell_or_hold(self) -> None:
+    def test_sell_candidate_requests_approval_not_direction_choice(self) -> None:
         prompt = self._prompt("SELL")
-        self.assertIn("Candidate side is binding", prompt)
-        self.assertIn("SELL candidate allows SELL or HOLD only", prompt)
+        self.assertIn("final_decision (APPROVE/HOLD)", prompt)
+        self.assertIn("candidate side is immutable", prompt)
+        self.assertIn("local system has already selected SELL", prompt)
 
     def test_missing_candidate_requires_hold(self) -> None:
         prompt = self._prompt("NONE")
