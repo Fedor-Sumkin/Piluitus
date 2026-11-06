@@ -81,7 +81,6 @@ class ShadowForwardTracker:
         valid = (
             _number(metrics, "bid_ask_available") >= 0.5
             and _number(metrics, "spread_available") >= 0.5
-            and _number(metrics, "order_book_valid") >= 0.5
             and bid > 0.0
             and ask >= bid
             and ask > 0.0

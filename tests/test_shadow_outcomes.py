@@ -93,10 +93,21 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(outcomes[0]["commission_pct_per_side"], 0.10)
         self.assertEqual(outcomes[0]["slippage_bps"], 1.0)
 
-    def test_candidate_without_confirmed_order_book_is_not_recorded(self) -> None:
+    def test_fresh_bbo_can_label_candidate_even_without_full_book_confirmation(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
         metrics = quote_metrics(100.0, 100.1)
         metrics["order_book_valid"] = 0.0
+        candidate_id = tracker.record_candidate(
+            "SBER", "BUY", metrics,
+            {"score": 0.0, "eligible": False, "regime": "UNKNOWN"},
+        )
+        self.assertIsNotNone(candidate_id)
+        self.assertEqual(tracker.pending_count(), 1)
+
+    def test_stale_bbo_is_not_recorded_as_a_candidate_entry(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,))
+        metrics = quote_metrics(100.0, 100.1)
+        metrics["bid_quote_age_sec"] = 3.0
         candidate_id = tracker.record_candidate(
             "SBER", "BUY", metrics,
             {"score": 90.0, "eligible": True, "regime": "TREND_ALIGNED"},
