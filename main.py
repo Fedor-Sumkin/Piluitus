@@ -2983,7 +2983,7 @@ async def websocket_frontend_endpoint(websocket: WebSocket):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "main:app",
+        app,
         host="127.0.0.1",
         port=8080,
         reload=False,
