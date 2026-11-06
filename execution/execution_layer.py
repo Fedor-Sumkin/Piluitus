@@ -147,7 +147,7 @@ def _extract_order_id(response: object) -> str:
 
 # Hard safety ceilings: legacy .env values such as 1.0/0.20 are clamped to these.
 MAX_ALLOWED_GROSS_EXPOSURE_PCT = 0.15
-MAX_ALLOWED_SINGLE_POSITION_PCT = 0.05
+MAX_ALLOWED_SINGLE_POSITION_PCT = 0.03
 
 
 class BaseExecutionEngine:
@@ -191,7 +191,7 @@ class BaseExecutionEngine:
         requested_single_pct = (
             max_single_position_pct
             if max_single_position_pct is not None
-            else os.getenv("PILUITUS_MAX_SINGLE_POSITION_PCT", "0.05")
+            else os.getenv("PILUITUS_MAX_SINGLE_POSITION_PCT", "0.03")
         )
         self.max_single_position_pct = self._bounded_pct(
             requested_single_pct,
