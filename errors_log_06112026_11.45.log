@@ -1,4 +1,0 @@
-2026-11-06 11:48:57,083 [ERROR] [RUN=20261106_114513_22900_8647ae33] aiogram.dispatcher: Failed to fetch updates - TelegramNetworkError: HTTP Client says - ClientOSError: [WinError 1236] Подключение к сети было разорвано локальной системой
-2026-11-06 11:48:57,103 [ERROR] [RUN=20261106_114513_22900_8647ae33] Piluitus.FinamGateway: Finam WebSocket отключён/не подключён: no close frame received or sent. Повтор через 1 сек.
-2026-11-06 11:49:19,146 [ERROR] [RUN=20261106_114513_22900_8647ae33] aiogram.dispatcher: Failed to fetch updates - TelegramNetworkError: HTTP Client says - ClientConnectorError: Cannot connect to host api.telegram.org:443 ssl:default [Превышен таймаут семафора]
-2026-11-06 12:25:53,068 [ERROR] [RUN=20261106_114513_22900_8647ae33] aiogram.dispatcher: Failed to fetch updates - TelegramNetworkError: HTTP Client says - ServerDisconnectedError: Server disconnected
