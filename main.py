@@ -952,7 +952,9 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "bbo_deferred", "bbo_resumed", "bbo_expired",
         "local_candidate_buy", "local_candidate_sell",
         "prefilter_pass_buy", "prefilter_pass_sell",
-        "llm_calls", "llm_approve_buy", "llm_approve_sell",
+        "llm_calls", "llm_model_approve", "llm_model_hold",
+        "post_llm_evidence_blocked", "post_llm_confidence_blocked",
+        "llm_approve_buy", "llm_approve_sell",
         "llm_hold", "llm_hold_buy", "llm_hold_sell", "llm_contract_violation",
         "orders_opened_buy", "orders_opened_sell", "guard_blocked",
         "guard_quotes", "guard_spread", "guard_volume", "guard_direction", "guard_size",
@@ -969,8 +971,10 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "направление_не_совпало=%(direction_prefilter_skipped)d, prefilter_block=%(prefilter_blocked)d, "
         "duplicate=%(candidate_deduplicated)d; локально(BUY=%(local_candidate_buy)d,SELL=%(local_candidate_sell)d), "
         "до_LLM(BUY=%(prefilter_pass_buy)d,SELL=%(prefilter_pass_sell)d); "
-        "LLM=%(llm_calls)d, APPROVE(BUY=%(llm_approve_buy)d,SELL=%(llm_approve_sell)d), "
-        "HOLD(BUY-кандидат=%(llm_hold_buy)d,SELL-кандидат=%(llm_hold_sell)d), "
+        "LLM=%(llm_calls)d, model(APPROVE=%(llm_model_approve)d,HOLD=%(llm_model_hold)d), "
+        "после_LLM(guard_block=%(post_llm_evidence_blocked)d,confidence_block=%(post_llm_confidence_blocked)d), "
+        "итог(APPROVE_BUY=%(llm_approve_buy)d,APPROVE_SELL=%(llm_approve_sell)d,"
+        "HOLD_BUY-кандидат=%(llm_hold_buy)d,HOLD_SELL-кандидат=%(llm_hold_sell)d), "
         "contract_error=%(llm_contract_violation)d; открыто(BUY=%(orders_opened_buy)d,SELL=%(orders_opened_sell)d); "
         "Guard=%(guard_blocked)d (BBO=%(guard_quotes)d, спред=%(guard_spread)d, объём=%(guard_volume)d, "
         "направление=%(guard_direction)d, размер=%(guard_size)d, текст=%(guard_text)d, прочее=%(guard_other)d); "
@@ -2020,6 +2024,10 @@ class MarketWorker:
                 ).strip().upper()
                 candidate_direction = str(event_payload.get("candidate_direction", "")).strip().upper()
                 candidate_decision = candidate_direction if candidate_direction in {"BUY", "SELL"} else "HOLD"
+                if model_decision == "APPROVE" and candidate_direction in {"BUY", "SELL"}:
+                    _trade_flow_inc("llm_model_approve")
+                elif model_decision == "HOLD":
+                    _trade_flow_inc("llm_model_hold")
                 model_contract_violation = bool(ai_analysis.get("model_contract_violation", False))
                 if model_decision == "APPROVE" and candidate_direction in {"BUY", "SELL"}:
                     decision = candidate_direction
@@ -2080,6 +2088,7 @@ class MarketWorker:
                 if decision in {"BUY", "SELL"} and not valid_evidence:
                     requested_decision = decision
                     signal_reason = block_reason or "Измеряемые условия входа не пройдены."
+                    _trade_flow_inc("post_llm_evidence_blocked")
                     _trade_flow_guard_block(signal_reason)
                     logger.warning(
                         "🛑 [SIGNAL GUARD] Заблокирован кандидат %s по %s: %s",
@@ -2092,6 +2101,7 @@ class MarketWorker:
 
                 if decision in {"BUY", "SELL"} and (not confidence_valid or confidence < 75.0):
                     _trade_flow_inc("confidence_blocked")
+                    _trade_flow_inc("post_llm_confidence_blocked")
                     requested_decision = decision
                     if not confidence_valid:
                         reason = "Модель не вернула корректную числовую confidence_score; вход заблокирован."
@@ -2173,12 +2183,26 @@ class MarketWorker:
                 if decision == "HOLD" and not signal_reason:
                     if not confidence_valid:
                         signal_reason = "Ответ модели не содержит корректной числовой оценки; вход запрещён."
+                    elif model_decision == "HOLD" and candidate_decision in {"BUY", "SELL"}:
+                        signal_reason = "Модель отклонила локальный кандидат: вердикт HOLD."
                     elif candidate_decision in {"BUY", "SELL"}:
                         signal_reason = "Кандидат ИИ не прошёл локальные проверки входа."
                     else:
                         signal_reason = "Модель не предложила направленный вход."
                 tactic_text, critic_text = build_verdict_explanation(
                     decision, candidate_decision, evidence, signal_reason
+                )
+                logger.info(
+                    "[LLM DECISION] %s candidate=%s model=%s final=%s confidence=%s "
+                    "confidence_valid=%s contract_violation=%s reason=%s",
+                    ticker,
+                    candidate_direction or "NONE",
+                    model_decision,
+                    decision,
+                    f"{confidence:.1f}%" if confidence_valid else "invalid",
+                    confidence_valid,
+                    model_contract_violation,
+                    signal_reason or "APPROVED",
                 )
 
                 signal_status = (
