@@ -1,6 +1,7 @@
 import re
 import json
 import logging
+import math
 import asyncio
 import time
 from httpx import AsyncClient, HTTPStatusError
@@ -73,8 +74,8 @@ class AIEngine:
         text = re.sub(r"<think>.*?(?:</think>|$)", " ", str(text), flags=re.DOTALL | re.IGNORECASE)
         text = re.sub(r"```(?:json)?|```", " ", text, flags=re.IGNORECASE)
         text = text.replace("—", "-").replace("–", "-").replace("…", "...")
-        cleaned = self.clean_cyrillic_pattern.sub(" ", text)
-        cleaned = self.spaces_pattern.sub(" ", cleaned).strip(" \t\r\n,;:-")
+        cleaned = re.sub(r"[^a-zA-Zа-яА-ЯёЁ0-9_\s\.,;:\-\(\)%₽?!+=/\'\"<>]", " ", text)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" \t\r\n,;:-")
         return cleaned or "Нет краткого вывода."
 
     def _compact_opinion(self, value: object, max_chars: int = 160) -> str:
