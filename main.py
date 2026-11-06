@@ -2278,13 +2278,12 @@ async def background_broker_init():
             )
 
         bridge_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=10000)
-        asyncio.create_task(
-            broker.start_market_data_stream(
+        async def _run_market_stream():
+            await broker.start_market_data_stream(
                 tickers=TICKERS_TO_TRADE,
                 queue=bridge_queue,
                 screener=screener,
             )
-        )
 
         async def _bridge_worker():
             while True:
@@ -2298,8 +2297,11 @@ async def background_broker_init():
                     logger.error("❌ Ошибка моста WebSocket-котировок: %s", bridge_err, exc_info=True)
                     await asyncio.sleep(0.1)
 
-        asyncio.create_task(_bridge_worker())
-        logger.info("⏳ Задача Finam WebSocket запущена; ожидаем HANDSHAKE_SUCCESS.")
+        # TaskGroup ties both stream tasks to this parent task.
+        async with asyncio.TaskGroup() as task_group:
+            task_group.create_task(_run_market_stream(), name="finam-market-stream")
+            task_group.create_task(_bridge_worker(), name="finam-bridge-worker")
+            logger.info("⏳ Задача Finam WebSocket запущена; ожидаем HANDSHAKE_SUCCESS.")
     except Exception as exc:
         logger.error("❌ Ошибка инициализации API Finam: %s", exc, exc_info=True)
 
@@ -2340,6 +2342,13 @@ async def _start_tables_sync_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global bg_market_task, last_ai_verdicts_cache
+    background_tasks: set[asyncio.Task] = set()
+
+    def _spawn_background(coro, *, name: str) -> asyncio.Task:
+        task = asyncio.create_task(coro, name=name)
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+        return task
     gross_exposure_pct = execution_engine.max_gross_exposure_pct * 100.0
     single_position_pct = execution_engine.max_single_position_pct * 100.0
     logger.info(
@@ -2396,9 +2405,9 @@ async def lifespan(app: FastAPI):
             logger.critical(f"❌ КРИТИЧЕСКОЕ ПАДЕНИЕ MarketWorker В ЦИКЛЕ ТОРГОВЛИ: {e}", exc_info=True)
 
     # Запускаем строго по одной асинхронной задаче на каждый воркер (дублирование удалено)
-    asyncio.create_task(_run_worker_safely())
-    asyncio.create_task(_start_news_updater())
-    asyncio.create_task(_start_tables_sync_loop())
+    _spawn_background(_run_worker_safely(), name="market-worker")
+    _spawn_background(_start_news_updater(), name="news-updater")
+    _spawn_background(_start_tables_sync_loop(), name="tables-sync")
 
     import tg_bot as tb
     tb.global_broker_ref = broker
@@ -2415,19 +2424,31 @@ async def lifespan(app: FastAPI):
             except Exception as exc:
                 logger.error(f"❌ Telegram‑бот не смог запуститься: {exc}")
 
-        asyncio.create_task(_start_bot_safely())
+        _spawn_background(_start_bot_safely(), name="telegram-polling")
         logger.info("🟢 Telegram‑бот успешно инициализирован.")
     else:
         logger.warning("⚠️ Токен Telegram не найден – режим управления отключён.")
 
-    bg_market_task = asyncio.create_task(background_broker_init())
+    bg_market_task = _spawn_background(background_broker_init(), name="broker-init-and-streams")
 
-    yield
+    try:
+        yield
+    finally:
+        logger.info("🛑 Начинаем штатную остановку фоновых задач PILUITUS...")
+        for task in tuple(background_tasks):
+            if not task.done():
+                task.cancel()
+        if background_tasks:
+            results = await asyncio.gather(*tuple(background_tasks), return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                    logger.warning("Ошибка при завершении фоновой задачи: %r", result)
 
-    if bg_market_task and not bg_market_task.done():
-        bg_market_task.cancel()
-    await ai_engine.close()
-    logger.info("🛑 ОЗУ‑контур робота PILUITUS полностью обесточен.")
+        try:
+            await ai_engine.close()
+        except Exception as close_err:
+            logger.warning("Ошибка закрытия AIEngine: %s", close_err, exc_info=True)
+        logger.info("🛑 Фоновые задачи остановлены; AIEngine закрыт.")
 
 
 app = FastAPI(title="PILUITUS v35.2 — AI Trading Core", lifespan=lifespan)
@@ -2982,12 +3003,16 @@ async def websocket_frontend_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        app,
-        # Keep Uvicorn from reconfiguring/closing PILUITUS' durable file handlers.
-        log_config=None,
-        host="127.0.0.1",
-        port=8080,
-        reload=False,
-        workers=1,
-    )
+    try:
+        uvicorn.run(
+            app,
+            # Keep Uvicorn from reconfiguring/closing PILUITUS' durable file handlers.
+            log_config=None,
+            host="127.0.0.1",
+            port=8080,
+            reload=False,
+            workers=1,
+        )
+    except KeyboardInterrupt:
+        # Ctrl+C is an expected operator shutdown, not an application failure.
+        logger.info("🛑 PILUITUS остановлен оператором (Ctrl+C).")
