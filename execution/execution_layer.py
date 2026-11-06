@@ -869,6 +869,15 @@ class BaseExecutionEngine:
             return f"diagnostic_error={type(exc).__name__}: {exc}"
 
     @staticmethod
+    def _lot_multiplier_for(ticker: str) -> int:
+        """Return a safe share multiplier for one exchange lot."""
+        symbol = str(ticker).strip().upper().split("@")[0]
+        try:
+            return max(int(LOT_SIZES.get(symbol, 1) or 1), 1)
+        except (TypeError, ValueError, OverflowError):
+            return 1
+
+    @staticmethod
     def _calculate_paper_pnl(
         entry_price: float, exit_price: float, share_qty: int, side: str,
         commission_pct_per_side: float, entry_commission: float = 0.0,
@@ -953,6 +962,7 @@ class BaseExecutionEngine:
         """Единая точка входа; PAPER-позиция создаётся только после успешной записи в журнал."""
         ticker = str(ticker).strip().upper().split("@")[0]
         side = str(side).strip().upper()
+        lot_multiplier = self._lot_multiplier_for(ticker)
         reserved_ticker = False
 
         try:
@@ -1147,7 +1157,6 @@ class BaseExecutionEngine:
             if not order_id:
                 return {"status": "FAILED", "message": "В ответе Finam отсутствует ID заявки."}
 
-            lot_multiplier = max(int(LOT_SIZES.get(ticker, 1)), 1)
             now = datetime.now()
             atr_at_entry = _finite_or_default(ai_analysis.get("atr_at_entry"), 0.0)
             try:

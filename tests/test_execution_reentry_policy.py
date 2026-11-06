@@ -37,6 +37,10 @@ class ExecutionReentryPolicyTests(unittest.TestCase):
         self.assertEqual(cooldown, 180.0)
         self.assertEqual(count, 1)
 
+    def test_lot_multiplier_is_available_before_execution_diagnostics(self) -> None:
+        self.assertGreater(BaseExecutionEngine._lot_multiplier_for("IRKT"), 0)
+        self.assertEqual(BaseExecutionEngine._lot_multiplier_for("__UNKNOWN__"), 1)
+
     def test_paper_commission_is_charged_on_entry_and_exit_for_long(self) -> None:
         gross, exit_fee, total_fee, net = BaseExecutionEngine._calculate_paper_pnl(
             100.0, 101.0, 10, "BUY", 0.1, entry_commission=1.0
