@@ -23,7 +23,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         prompt = self._prompt("BUY")
         self.assertIn("final_decision (APPROVE/HOLD)", prompt)
         self.assertIn("candidate side is immutable", prompt)
-        self.assertIn("Do NOT choose, change, invert, or output BUY/SELL", prompt)
+        self.assertIn("You must NOT choose, change, invert, or output BUY/SELL", prompt)
         self.assertIn("local system has already selected BUY", prompt)
 
     def test_sell_candidate_requests_approval_not_direction_choice(self) -> None:
