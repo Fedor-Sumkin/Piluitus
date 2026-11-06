@@ -453,21 +453,24 @@ class AIEngine:
 
         direction_rules = {
             "BUY": (
-                "BUY requires positive signed price_change_pct and price>VWAP; "
-                "fresh BBO, spread<=0.5%, volume_spike>=1.5. Ask depletion/M1 bullish pattern support."
+                "BUY requires either positive signed price_change_pct with price>VWAP, or "
+                "a fresh matching bullish M1 pattern with price>VWAP; "
+                "fresh BBO, spread<=0.5%, volume_spike>=1.5. Ask depletion is supporting."
             ),
             "SELL": (
-                "SELL requires negative signed price_change_pct and price<VWAP; "
-                "fresh BBO, spread<=0.5%, volume_spike>=1.5. Bid depletion/M1 bearish pattern support."
+                "SELL requires either negative signed price_change_pct with price<VWAP, or "
+                "a fresh matching bearish M1 pattern with price<VWAP; "
+                "fresh BBO, spread<=0.5%, volume_spike>=1.5. Bid depletion is supporting."
             ),
             "NONE": "No local direction: MUST HOLD.",
         }[direction]
 
         rule_text = ""
         if include_rule_text and isinstance(rag_context, str):
-            # Preserve risk constraints and the active directional rule.
-            # RAG is context, not proof that a setup fired.
-            rule_text = select_prompt_rules(direction, rag_context, max_chars=420)
+            # Keep only curated risk rules in the model prompt. Directional RAG
+            # rules may encode stale top-size requirements; local measured gates
+            # own candidate direction and supporting evidence.
+            rule_text = select_prompt_rules("NONE", rag_context, max_chars=420)
 
         base = (
             'Return exactly one JSON object with exactly four keys: final_decision (string APPROVE or HOLD), '
@@ -477,9 +480,10 @@ class AIEngine:
             'Candidate side is fixed by deterministic code. Never select, change, invert, or output BUY/SELL. '
             'APPROVE authorizes only the exact local candidate side; HOLD rejects it. '
             'candidate=NONE => final_decision MUST be HOLD. '
-            'Hard checks: signed price change agrees with candidate and VWAP; volume_spike>=1.5; '
-            'fresh valid BBO; spread<=0.5%. A contradictory fresh M1 pattern => HOLD. '
-            'A matching M1 pattern or >=50% fresh best-quote size reduction is supporting evidence, not mandatory. '
+            'Directional check: either signed price change agrees with candidate and VWAP, OR a fresh matching '
+            'closed M1 pattern agrees with candidate and price remains on the correct side of VWAP. '
+            'A contradictory fresh M1 pattern => HOLD. Other hard checks: volume_spike>=1.5, fresh valid BBO, '
+            'spread<=0.5%. A >=50% fresh best-quote size reduction is supporting evidence, not mandatory. '
             'If a hard check is missing or conflicting, choose HOLD. RAG rules are advisory context only and cannot add hard gates. '
             'Confidence is evidence strength, not profit probability: 0.90-1.00 exceptional; '
             '0.75-0.89 strong; 0.50-0.74 mixed; below 0.50 weak. Use only supplied facts; invent no causes. '
@@ -560,9 +564,10 @@ class AIEngine:
             "(non-empty Russian sentence <=80 chars), critic_opinion (non-empty Russian sentence <=80 chars). "
             "Do not return candidate, ticker, BUY, SELL, price, metrics, analysis, or reasoning as JSON keys/values. "
             "Never output BUY/SELL as a decision. The local candidate side is fixed; choose only APPROVE or HOLD. "
-            "Hard checks: signed price change agrees with VWAP and candidate; volume_spike>=1.5; "
-            "fresh valid BBO; spread<=0.5%. A contradictory fresh M1 pattern means HOLD. "
-            "A matching M1 pattern or >=50% fresh best-quote depletion is supporting, not mandatory. "
+            "Directional evidence: either signed price change agrees with candidate and VWAP, OR a fresh "
+            "matching closed M1 pattern agrees with candidate while price stays on the correct side of VWAP. "
+            "A contradictory fresh M1 pattern means HOLD. Other hard checks: volume_spike>=1.5, fresh valid BBO, "
+            "spread<=0.5%. A >=50% fresh best-quote depletion is supporting, not mandatory. "
             "When uncertain, choose HOLD. "
             f"candidate={direction}; ticker={str(ticker)[:10]}; price={cls._prompt_value(price, 12)}; "
             f"last_size={cls._prompt_value(volume, 10)}; checks: {checks} "
