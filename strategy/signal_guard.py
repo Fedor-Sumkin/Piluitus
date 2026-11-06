@@ -103,11 +103,12 @@ def infer_candidate_direction(metrics: dict[str, Any]) -> str | None:
 
 
 def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bool, str]:
-    """Allow BUY/SELL only with a fresh measured setup and market-quality evidence.
+    """Validate independent entry evidence; top-size depletion is supporting, not mandatory.
 
-    A valid closed 1m breakout/EMA pullback can replace the top-quote size-drop
-    trigger, but never the fresh BBO, spread, relative last-trade-size, VWAP and
-    risk checks. Top-quote sizes are not full depth-of-book.
+    Required: signed price/VWAP alignment (or a fresh matching M1 pattern), volume
+    spike, coherent fresh BBO and bounded spread. Best-quote depletion is retained
+    as an optional strengthening metric because a single top-level size change is
+    not a reliable proxy for the full order book.
     """
     decision = str(decision or "HOLD").strip().upper()
     if decision not in {"BUY", "SELL"}:
@@ -144,9 +145,11 @@ def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bo
                 f"лимит BBO {max_age:.2f}s. Вход заблокирован."
             )
         return False, "Bid/Ask отсутствуют в потоке; вход заблокирован."
+
     spread_pct = _num(metrics, "spread_pct", -1.0)
     if spread_pct < 0.0 or spread_pct > MAX_SPREAD_PCT:
         return False, f"Спред не проходит фильтр: {spread_pct:.3f}% при лимите {MAX_SPREAD_PCT:.2f}%."
+
     volume_spike = _num(metrics, "volume_spike")
     if volume_spike < MIN_VOLUME_SPIKE:
         return False, f"Всплеск размера последней сделки {volume_spike:.2f}× ниже порога {MIN_VOLUME_SPIKE:.1f}×."
@@ -156,74 +159,57 @@ def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bo
     pattern_direction = _fresh_bar_pattern_direction(metrics)
     if pattern_direction is not None:
         if pattern_direction != decision:
-            return False, f"Направление 1-минутного паттерна {pattern_direction} не совпадает с решением {decision}."
+            return False, (
+                f"Направление свежего 1-минутного паттерна {pattern_direction} "
+                f"не совпадает с решением {decision}."
+            )
         if decision == "BUY" and price_vs_vwap <= 0.0:
             return False, "BUY по 1-минутному паттерну заблокирован: цена не выше VWAP."
         if decision == "SELL" and price_vs_vwap >= 0.0:
             return False, "SELL по 1-минутному паттерну заблокирован: цена не ниже VWAP."
-        # The measured candle setup is an alternative to a top-quote size drop.
-        # Fresh BBO, a narrow spread and the current last-trade-size spike are
-        # still mandatory; OHLC alone never overrides those protections.
-        return True, (
-            f"Подтверждён минутный паттерн {str(metrics.get('bar_pattern_name', '')).strip()}; "
-            "VWAP, всплеск размера последней сделки, свежий BBO и спред прошли проверку."
-        )
-
-    if decision == "BUY":
-        if price_change <= 0.0 or price_vs_vwap <= 0.0:
-            return False, "BUY заблокирован: цена не растёт одновременно с положительным отклонением от VWAP."
-        drop_key, samples_key, available_key, side_name = (
-            "ask_size_drop_pct", "top_ask_history_samples", "ask_size_available", "Ask"
-        )
+        direction_evidence = f"свежий M1-паттерн {str(metrics.get('bar_pattern_name', '')).strip()}"
     else:
-        if price_change >= 0.0 or price_vs_vwap >= 0.0:
+        if decision == "BUY" and (price_change <= 0.0 or price_vs_vwap <= 0.0):
+            return False, "BUY заблокирован: цена не растёт одновременно с положительным отклонением от VWAP."
+        if decision == "SELL" and (price_change >= 0.0 or price_vs_vwap >= 0.0):
             return False, "SELL заблокирован: нет одновременно отрицательного импульса и цены ниже VWAP."
-        drop_key, samples_key, available_key, side_name = (
-            "bid_size_drop_pct", "top_bid_history_samples", "bid_size_available", "Bid"
+        direction_evidence = "согласованный импульс цены и VWAP"
+
+    side = "ask" if decision == "BUY" else "bid"
+    side_name = "Ask" if decision == "BUY" else "Bid"
+    available = _num(metrics, f"{side}_size_available") >= 0.5
+    samples = int(_num(metrics, f"top_{side}_history_samples"))
+    drop_pct = _num(metrics, f"{side}_size_drop_pct")
+    drop_age = _num(metrics, f"{side}_size_drop_age_sec", -1.0)
+    size_confirmed = (
+        available
+        and samples >= MIN_SIZE_HISTORY_SAMPLES
+        and drop_pct >= MIN_TOP_SIZE_DROP_PCT
+        and 0.0 <= drop_age <= MAX_SIZE_SIGNAL_AGE_SEC
+    )
+    if size_confirmed:
+        size_evidence = f"свежая разгрузка лучшего {side_name} {drop_pct:.1f}%"
+    else:
+        baseline = _num(metrics, f"{side}_size_baseline")
+        current_size = _num(metrics, f"{side}_size_current")
+        observed = (
+            max(0.0, min(100.0, (baseline - current_size) / baseline * 100.0))
+            if baseline > 0.0 and current_size >= 0.0 else None
+        )
+        observed_text = (
+            f"наблюдаемое изменение размера {observed:.1f}%"
+            if observed is not None else "наблюдение размера отсутствует"
+        )
+        size_evidence = (
+            f"разгрузка лучшего {side_name} не подтверждена "
+            f"(подтверждено={drop_pct:.1f}%, {observed_text}, история={samples}, "
+            f"возраст={drop_age:.2f}s); размер — дополнительный, не обязательный признак"
         )
 
-    if _num(metrics, available_key) < 0.5:
-        return False, f"Размер лучшей заявки {side_name} недоступен; вход заблокирован."
-    samples = int(_num(metrics, samples_key))
-    if samples < MIN_SIZE_HISTORY_SAMPLES:
-        return False, f"Недостаточно истории размера лучшей заявки {side_name}: {samples}/{MIN_SIZE_HISTORY_SAMPLES} наблюдений."
-    drop_pct = _num(metrics, drop_key)
-    baseline = _num(metrics, "ask_size_baseline" if decision == "BUY" else "bid_size_baseline")
-    current_size = _num(metrics, "ask_size_current" if decision == "BUY" else "bid_size_current")
-    drop_age_key = "ask_size_drop_age_sec" if decision == "BUY" else "bid_size_drop_age_sec"
-    drop_age = _num(metrics, drop_age_key, -1.0)
-    observed_drop_pct = (
-        max(0.0, min(100.0, (baseline - current_size) / baseline * 100.0))
-        if baseline > 0.0 and current_size >= 0.0 else None
+    return True, (
+        f"Обязательные условия пройдены: {direction_evidence}, volume_spike={volume_spike:.2f}×, "
+        f"свежий BBO и спред={spread_pct:.3f}%; {size_evidence}."
     )
-    observed_drop_text = (
-        f"фактическое изменение размера={observed_drop_pct:.1f}%"
-        if observed_drop_pct is not None else
-        "фактическое изменение размера недоступно"
-    )
-    diagnostic = (
-        f"текущий размер={current_size:.2f}, медиана предыдущих={baseline:.2f}, "
-        f"{observed_drop_text}, подтверждённое сокращение={drop_pct:.1f}%, "
-        f"история={samples}, возраст сигнала={drop_age:.2f}s"
-        if baseline > 0.0 else
-        f"текущий размер={current_size:.2f}, предыдущая медиана недоступна, "
-        f"{observed_drop_text}, подтверждённое сокращение={drop_pct:.1f}%, "
-        f"история={samples}, возраст сигнала={drop_age:.2f}s"
-    )
-    if drop_pct < MIN_TOP_SIZE_DROP_PCT:
-        return False, (
-            f"Сокращение объёма лучшей заявки {side_name}: подтверждённое событие "
-            f"{drop_pct:.1f}% меньше порога {MIN_TOP_SIZE_DROP_PCT:.0f}% ({diagnostic})."
-        )
-    if drop_age < 0.0 or drop_age > MAX_SIZE_SIGNAL_AGE_SEC:
-        age_label = f"{drop_age:.2f}s" if drop_age >= 0.0 else "не зафиксировано"
-        return False, (
-            f"Сокращение размера лучшей заявки {side_name} не подтверждено как свежее: "
-            f"возраст={age_label}, лимит {MAX_SIZE_SIGNAL_AGE_SEC:.2f}s."
-        )
-
-    return True, "Проверяемые условия направления, всплеска объёма, спреда и недавнего сокращения размера выполнены."
-
 
 _CORRUPT_MARKERS = re.compile(
     r"\bregex\b|vendorsky|на\s*-\s*[a-zа-яё]+|на[a-z]{5,}|"

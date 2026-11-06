@@ -12,6 +12,13 @@ log = logging.getLogger("Piluitus.AIEngine")
 thought_log = logging.getLogger("Piluitus.EvolutionThoughts")
 
 class AIEngine:
+    @staticmethod
+    def _effective_max_tokens() -> int:
+        try:
+            return max(768, min(1536, int(getattr(Settings, "VLLM_MAX_TOKENS", 1280))))
+        except (TypeError, ValueError, OverflowError):
+            return 1280
+
     def __init__(self):
         endpoint = Settings.VLLM_ENDPOINT.rstrip("/")
         scheme_end = endpoint.find("://") + 3
@@ -41,7 +48,7 @@ class AIEngine:
         log.info(
             "🧠 AIEngine v34 загружен: файл=ai_engine.py | API=%s | модель=%s | max_tokens=%s",
             self.api_path, model_label,
-            min(1024, max(768, int(getattr(Settings, "VLLM_MAX_TOKENS", 768)))) ,
+            self._effective_max_tokens(),
         )
 
     async def _post_with_retry(self, path: str, *, json: dict) -> httpx.Response:
@@ -131,17 +138,18 @@ class AIEngine:
 
     @staticmethod
     def _extract_json_object(text: str) -> dict:
-        """Находит первый корректный JSON-объект даже внутри Markdown/пояснений."""
+        """Find a JSON object; prefer one with the complete decision schema."""
         if not isinstance(text, str) or not text.strip():
             raise ValueError("vLLM вернул пустой текст вместо JSON")
 
         cleaned = text.strip().lstrip("\ufeff")
-        # Убираем распространённые Markdown-ограждения, но не полагаемся только на них.
         cleaned = re.sub(r"^\s*```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"\s*```\s*$", "", cleaned)
+        required = {"final_decision", "confidence_score", "tactic_opinion", "critic_opinion"}
+        first_final = None
+        first_object = None
 
-        # Сканируем баланс фигурных скобок с учётом кавычек и escape-последовательностей.
-        # Это не ломается, если в tactic_opinion/critic_opinion есть символы { или }.
+        # Some reasoning models emit an input-like metrics object before the verdict.
         for start_idx, char in enumerate(cleaned):
             if char != "{":
                 continue
@@ -171,11 +179,19 @@ class AIEngine:
                         except json.JSONDecodeError:
                             break
                         if isinstance(parsed, dict):
-                            return parsed
+                            if required.issubset(parsed):
+                                return parsed
+                            if "final_decision" in parsed and first_final is None:
+                                first_final = parsed
+                            if first_object is None:
+                                first_object = parsed
                         break
-        preview = re.sub(r"\s+", " ", cleaned)[:240]
-        if not preview:
-            preview = "<пустой ответ>"
+
+        if first_final is not None:
+            return first_final
+        if first_object is not None:
+            return first_object
+        preview = re.sub(r"\s+", " ", cleaned)[:240] or "<пустой ответ>"
         raise ValueError(f"В ответе модели нет корректного JSON-объекта; начало ответа: {preview!r}")
 
     @staticmethod
@@ -208,6 +224,7 @@ class AIEngine:
         return number
 
     def _cpu_intensive_processing(self, raw_response_data: dict) -> dict:
+        """Validate the complete four-field approval contract; malformed output fails closed."""
         try:
             choices = raw_response_data.get("choices") if isinstance(raw_response_data, dict) else None
             if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -225,48 +242,51 @@ class AIEngine:
                 )
 
             parsed = self._extract_json_object(generated_text)
-            if "final_decision" not in parsed:
-                raise ValueError("В JSON отсутствует обязательное поле final_decision")
+            required = {"final_decision", "confidence_score", "tactic_opinion", "critic_opinion"}
+            actual = set(parsed)
+            missing = sorted(required - actual)
+            extra = sorted(actual - required)
+            if missing or extra:
+                raise ValueError(
+                    f"Нарушена схема JSON: missing={missing or '-'}; extra={extra or '-'}"
+                )
 
-            raw_decision = str(parsed.get("final_decision", "HOLD")).strip().upper()
-            # The model is an approval critic, never the owner of trade direction.
-            # BUY/SELL responses are legacy contract violations and fail closed.
-            model_contract_violation = raw_decision not in {"APPROVE", "HOLD"}
-            decision = raw_decision if raw_decision in {"APPROVE", "HOLD"} else "HOLD"
+            raw_decision_value = parsed.get("final_decision")
+            if not isinstance(raw_decision_value, str):
+                raise ValueError("Поле final_decision должно быть строкой APPROVE или HOLD")
+            raw_decision = raw_decision_value.strip().upper()
+            if raw_decision not in {"APPROVE", "HOLD"}:
+                raise ValueError("Недопустимое final_decision: разрешены только APPROVE/HOLD")
 
             raw_confidence = parsed.get("confidence_score")
+            if isinstance(raw_confidence, bool) or not isinstance(raw_confidence, (int, float)):
+                raise ValueError("Поле confidence_score должно быть JSON-числом от 0 до 1")
             confidence = self._parse_confidence_score(raw_confidence)
-            confidence_valid = confidence is not None
-            if confidence is None:
-                confidence = 0.0
-            # confidence_score is part of the mandatory response schema. An
-            # APPROVE without a valid numeric score must not be counted as a
-            # model approval; it is a malformed contract and fails closed.
-            model_contract_violation = model_contract_violation or not confidence_valid
-            if model_contract_violation:
-                decision = "HOLD"
+            if confidence is None or not 0.0 <= confidence <= 1.0:
+                raise ValueError("Поле confidence_score должно находиться в диапазоне 0..1")
 
-            # У HOLD может быть уверенность в решении не открывать позицию.
-            # Не обнуляем её только из-за класса решения.
+            tactic = parsed.get("tactic_opinion")
+            critic = parsed.get("critic_opinion")
+            if not isinstance(tactic, str) or not tactic.strip():
+                raise ValueError("Поле tactic_opinion должно быть непустой строкой")
+            if not isinstance(critic, str) or not critic.strip():
+                raise ValueError("Поле critic_opinion должно быть непустой строкой")
 
-            tactic = parsed.get("tactic_opinion", "")
-            critic = parsed.get("critic_opinion", "")
-            if isinstance(tactic, (dict, list)):
-                tactic = json.dumps(tactic, ensure_ascii=False)
-            if isinstance(critic, (dict, list)):
-                critic = json.dumps(critic, ensure_ascii=False)
-
+            usage = raw_response_data.get("usage", {})
             return {
                 "error_type": None,
-                "final_decision": decision,
-                "model_decision": decision,
+                "final_decision": raw_decision,
+                "model_decision": raw_decision,
                 "model_raw_decision": raw_decision,
-                "model_contract_violation": model_contract_violation,
+                "model_contract_violation": False,
+                "contract_error_type": None,
                 "confidence_score": confidence,
-                "confidence_valid": confidence_valid,
+                "confidence_valid": True,
                 "confidence_raw": raw_confidence,
                 "tactic_opinion": self._compact_opinion(tactic, max_chars=150),
                 "critic_opinion": self._compact_opinion(critic, max_chars=165),
+                "finish_reason": choice.get("finish_reason", "не указан"),
+                "usage": usage if isinstance(usage, dict) else {},
             }
         except Exception as exc:
             try:
@@ -277,15 +297,28 @@ class AIEngine:
                 raw_preview = ""
                 finish_reason = "не указан"
             usage = raw_response_data.get("usage", {}) if isinstance(raw_response_data, dict) else {}
+            error_text = str(exc)
+            lowered = error_text.lower()
+            if finish_reason == "length":
+                error_type = "truncated"
+            elif "схем" in lowered or "missing=" in lowered or "extra=" in lowered:
+                error_type = "schema"
+            elif "final_decision" in lowered:
+                error_type = "invalid_decision"
+            elif "confidence_score" in lowered:
+                error_type = "invalid_confidence"
+            elif "tactic_opinion" in lowered or "critic_opinion" in lowered:
+                error_type = "invalid_opinion"
+            elif "json" in lowered:
+                error_type = "invalid_json"
+            else:
+                error_type = "invalid_response"
             return {
                 "error_type": "text_parsing",
-                "exc": str(exc),
+                "exc": error_text,
                 "raw_preview": raw_preview,
                 "finish_reason": finish_reason,
                 "usage": usage if isinstance(usage, dict) else {},
-                # A malformed/truncated response is a contract violation, not a
-                # normal HOLD. Keep the explicit decision fields so callers and
-                # diagnostics can fail closed without losing the cause.
                 "final_decision": "HOLD",
                 "model_decision": "HOLD",
                 "model_raw_decision": "INVALID_RESPONSE",
@@ -293,7 +326,7 @@ class AIEngine:
                 "confidence_score": 0.0,
                 "confidence_valid": False,
                 "confidence_raw": None,
-                "contract_error_type": "text_parsing",
+                "contract_error_type": error_type,
             }
 
     @staticmethod
@@ -410,12 +443,12 @@ class AIEngine:
 
         direction_rules = {
             "BUY": (
-                "BUY: approve only if positive change, price>VWAP and Ask reduction "
-                "or bullish M1 pattern agree; else HOLD."
+                "BUY requires positive signed price_change_pct and price>VWAP; "
+                "fresh BBO, spread<=0.5%, volume_spike>=1.5. Ask depletion/M1 bullish pattern support."
             ),
             "SELL": (
-                "SELL: approve only if negative change, price<VWAP and Bid reduction "
-                "or bearish M1 pattern agree; else HOLD."
+                "SELL requires negative signed price_change_pct and price<VWAP; "
+                "fresh BBO, spread<=0.5%, volume_spike>=1.5. Bid depletion/M1 bearish pattern support."
             ),
             "NONE": "No local direction: MUST HOLD.",
         }[direction]
@@ -427,21 +460,24 @@ class AIEngine:
             rule_text = select_prompt_rules(direction, rag_context, max_chars=420)
 
         base = (
-            'JSON only; no Markdown, reasoning, or extra keys. Keys: final_decision (APPROVE/HOLD), '
-            'confidence_score (0..1), tactic_opinion and critic_opinion '
-            '(Russian, one complete sentence <=80 chars each). '
+            'Return exactly one JSON object with exactly four keys: final_decision (string APPROVE or HOLD), '
+            'confidence_score (JSON number from 0 to 1), tactic_opinion (Russian string), '
+            'critic_opinion (Russian string). No extra keys, no Markdown, no reasoning, no text outside JSON. '
+            'Each opinion is one complete sentence of at most 80 characters. '
             'Candidate side is fixed by deterministic code. Never select, change, invert, or output BUY/SELL. '
-            'APPROVE permits only the exact candidate BUY/SELL; HOLD rejects. '
+            'APPROVE authorizes only the exact local candidate side; HOLD rejects it. '
             'candidate=NONE => final_decision MUST be HOLD. '
-            'Entry checks: volume_spike>=1.5, valid BBO, spread<=0.5%; missing/conflicting evidence => HOLD. '
+            'Hard checks: signed price change agrees with candidate and VWAP; volume_spike>=1.5; '
+            'fresh valid BBO; spread<=0.5%. A contradictory fresh M1 pattern => HOLD. '
+            'A matching M1 pattern or >=50% fresh best-quote size reduction is supporting evidence, not mandatory. '
+            'If a hard check is missing or conflicting, choose HOLD. RAG rules are advisory context only and cannot add hard gates. '
             'Confidence is evidence strength, not profit probability: 0.90-1.00 exceptional; '
-            '0.75-0.89 all checks; 0.50-0.74 mixed; below 0.50 weak. '
-            'Use only supplied Metrics/Rule; invent no causes or external facts. '
+            '0.75-0.89 strong; 0.50-0.74 mixed; below 0.50 weak. Use only supplied facts; invent no causes. '
             f'candidate={direction}; ticker={str(ticker)[:10]}; price={cls._prompt_value(price, 12)}; '
             f'last_size={cls._prompt_value(volume, 10)}. '
             f'{direction_rules} volume_spike=last trade size/prior mean.'
         )
-        rule_part = f" Rules: {rule_text}." if rule_text else ""
+        rule_part = f" Advisory RAG context (never overrides hard checks): {rule_text}." if rule_text else ""
         metric_part = f" Metrics: {metrics_text}." if metrics_text else " Metrics: нет подтверждённых значений."
         prompt = base + rule_part + metric_part
         if len(prompt) > max_chars:
@@ -477,6 +513,50 @@ class AIEngine:
         return cls._build_live_prompt(
             ticker, price, volume, candidate_direction, metrics, rag_context,
             max_chars=980, include_rule_text=False,
+        )
+
+    @classmethod
+    def _build_contract_retry_prompt(
+        cls,
+        ticker: object,
+        price: object,
+        volume: object,
+        candidate_direction: str,
+        metrics: object,
+    ) -> str:
+        """Compact schema-repair prompt without RAG or free-form reasoning."""
+        direction = candidate_direction if candidate_direction in {"BUY", "SELL"} else "NONE"
+        keys = (
+            "price_change_pct", "price_vs_vwap_pct", "volume_spike", "spread_pct",
+            "bid_ask_available", "spread_available", "bar_pattern_confirmed",
+            "bar_pattern_direction_code", "bar_pattern_name", "bid_size_drop_pct",
+            "ask_size_drop_pct", "bar_atr_periods",
+        )
+        facts = []
+        if isinstance(metrics, dict):
+            for key in keys:
+                value = metrics.get(key)
+                if value is not None:
+                    facts.append(f"{key}={cls._prompt_value(value, 14)}")
+        checks = {
+            "BUY": "BUY needs positive price_change_pct and price_vs_vwap_pct.",
+            "SELL": "SELL needs negative price_change_pct and price_vs_vwap_pct.",
+            "NONE": "No valid candidate; final_decision must be HOLD.",
+        }[direction]
+        return (
+            "Repair the previous invalid response. Return ONLY one valid JSON object. "
+            "It must have exactly these four keys and no others: final_decision (string exactly "
+            "APPROVE or HOLD), confidence_score (JSON number 0.0..1.0), tactic_opinion "
+            "(non-empty Russian sentence <=80 chars), critic_opinion (non-empty Russian sentence <=80 chars). "
+            "Do not return candidate, ticker, BUY, SELL, price, metrics, analysis, or reasoning as JSON keys/values. "
+            "Never output BUY/SELL as a decision. The local candidate side is fixed; choose only APPROVE or HOLD. "
+            "Hard checks: signed price change agrees with VWAP and candidate; volume_spike>=1.5; "
+            "fresh valid BBO; spread<=0.5%. A contradictory fresh M1 pattern means HOLD. "
+            "A matching M1 pattern or >=50% fresh best-quote depletion is supporting, not mandatory. "
+            "When uncertain, choose HOLD. "
+            f"candidate={direction}; ticker={str(ticker)[:10]}; price={cls._prompt_value(price, 12)}; "
+            f"last_size={cls._prompt_value(volume, 10)}; checks: {checks} "
+            f"Measured facts: {';'.join(facts) if facts else 'not available'}."
         )
 
     @staticmethod
@@ -580,7 +660,7 @@ class AIEngine:
 
         try:
             async with asyncio.timeout(float(Settings.VLLM_TIMEOUT)):
-                configured_max_tokens = max(768, min(1536, int(getattr(Settings, "VLLM_MAX_TOKENS", 1280))))
+                configured_max_tokens = self._effective_max_tokens()
                 request_body = {
                     "model": self.model_name,
                     "messages": [{"role": "user", "content": user_prompt}],
@@ -652,6 +732,11 @@ class AIEngine:
             )
             return {
                 "final_decision": "HOLD",
+                "model_decision": "HOLD",
+                "model_raw_decision": "INVALID_RESPONSE",
+                "model_contract_violation": True,
+                "contract_error_type": "http_error",
+                "error_type": "request_error",
                 "confidence_score": 0.0,
                 "confidence_valid": False,
                 "tactic_opinion": "vLLM отклонил запрос; торговый вход заблокирован.",
@@ -662,6 +747,11 @@ class AIEngine:
             log.exception("[AIEngine v34] Ошибка запроса к vLLM (%s): %r", self.api_path, exc)
             return {
                 "final_decision": "HOLD",
+                "model_decision": "HOLD",
+                "model_raw_decision": "INVALID_RESPONSE",
+                "model_contract_violation": True,
+                "contract_error_type": "transport_error",
+                "error_type": "request_error",
                 "confidence_score": 0.0,
                 "confidence_valid": False,
                 "tactic_opinion": "Сбой соединения с vLLM; торговый вход заблокирован.",
@@ -670,21 +760,119 @@ class AIEngine:
             }
         
         inference_latency = time.time() - start_inference_time
-        log.warning(f"⏱️ [vLLM RAW LATENCY] Время обработки тензоров: {inference_latency:.3f} сек.")
-
-        # 🔥 ВЫНОС ТЯЖЕЛОЙ ОБРАБОТКИ СТРОК И РЕГУЛЯРОК В ПОТОК ОС
         processed = await asyncio.to_thread(self._cpu_intensive_processing, raw)
+
+        # One bounded repair attempt for malformed or contract-invalid model output.
+        retry_attempted = False
+        retry_recovered = False
+        retry_failed = False
+        retry_error_detail = ""
+        if processed.get("error_type") == "text_parsing" or processed.get("model_contract_violation"):
+            retry_attempted = True
+            first_error_type = str(processed.get("contract_error_type") or "invalid_response")
+            first_error = str(processed.get("exc") or "Нарушен контракт ответа")
+            retry_prompt = self._build_contract_retry_prompt(
+                ticker, price, volume, candidate_direction, metrics_dict
+            )
+            retry_body = {
+                "model": self.model_name,
+                "messages": [{"role": "user", "content": retry_prompt}],
+                "response_format": {"type": "json_object"},
+                "temperature": 0.0,
+                "max_tokens": min(configured_max_tokens, 384),
+            }
+            log.warning(
+                "[LLM CONTRACT RETRY] ticker=%s candidate=%s error_type=%s finish_reason=%s "
+                "completion_tokens=%s max_tokens=%s prompt_chars=%d",
+                ticker, candidate_direction, first_error_type,
+                processed.get("finish_reason", "не указан"),
+                (processed.get("usage") or {}).get("completion_tokens")
+                if isinstance(processed.get("usage"), dict) else None,
+                retry_body["max_tokens"], len(retry_prompt),
+            )
+            retry_started = time.time()
+            try:
+                async with asyncio.timeout(float(Settings.VLLM_TIMEOUT)):
+                    retry_resp = await self._post_with_retry(self.api_path, json=retry_body)
+                    if retry_resp.status_code in (400, 422):
+                        retry_detail = self._http_error_detail(retry_resp)
+                        if self._is_response_format_error(retry_detail):
+                            retry_body.pop("response_format", None)
+                            retry_resp = await self._post_with_retry(self.api_path, json=retry_body)
+                    if retry_resp.status_code in (400, 422):
+                        retry_detail = self._http_error_detail(retry_resp)
+                        if self._is_sampling_parameter_error(retry_detail) and "temperature" in retry_body:
+                            retry_body.pop("temperature", None)
+                            retry_resp = await self._post_with_retry(self.api_path, json=retry_body)
+                    if retry_resp.status_code >= 400:
+                        raise RuntimeError(
+                            f"contract-retry HTTP {retry_resp.status_code}: "
+                            f"{self._http_error_detail(retry_resp)}"
+                        )
+                    retry_raw = retry_resp.json()
+                retry_processed = await asyncio.to_thread(self._cpu_intensive_processing, retry_raw)
+                retry_latency = time.time() - retry_started
+                retry_valid = (
+                    retry_processed.get("error_type") != "text_parsing"
+                    and not retry_processed.get("model_contract_violation", False)
+                )
+                if retry_valid:
+                    processed = retry_processed
+                    retry_recovered = True
+                else:
+                    processed = retry_processed
+                    retry_failed = True
+                    retry_error_detail = str(processed.get("exc") or "Повторный ответ также нарушил контракт")
+                log.warning(
+                    "[LLM CONTRACT RESULT] ticker=%s status=%s first_error=%s retry_error=%s "
+                    "retry_finish_reason=%s retry_completion_tokens=%s retry_latency=%.3fs",
+                    ticker, "RECOVERED" if retry_recovered else "FAILED", first_error_type,
+                    processed.get("contract_error_type") if retry_failed else "-",
+                    retry_processed.get("finish_reason", "не указан"),
+                    (retry_processed.get("usage") or {}).get("completion_tokens")
+                    if isinstance(retry_processed.get("usage"), dict) else None,
+                    retry_latency,
+                )
+            except Exception as retry_exc:
+                retry_failed = True
+                retry_error_detail = str(retry_exc)
+                log.error(
+                    "[LLM CONTRACT RESULT] ticker=%s status=FAILED first_error=%s retry_error=%s",
+                    ticker, first_error_type, retry_error_detail,
+                )
+                processed = dict(processed)
+                processed["first_contract_error_type"] = first_error_type
+                processed["first_contract_error"] = first_error
+            processed["contract_retry_attempted"] = True
+            processed["contract_retry_recovered"] = retry_recovered
+            processed["contract_retry_failed"] = retry_failed
+            if retry_failed:
+                processed["contract_retry_error"] = retry_error_detail
+                processed["first_contract_error_type"] = first_error_type
+                processed["first_contract_error"] = first_error
+
+        inference_latency = time.time() - start_inference_time
+        log.info(
+            "[vLLM RAW LATENCY] ticker=%s total=%.3fs max_tokens=%d retry=%s finish_reason=%s completion_tokens=%s",
+            ticker, inference_latency, configured_max_tokens, retry_attempted,
+            processed.get("finish_reason", "stop"),
+            (processed.get("usage") or {}).get("completion_tokens")
+            if isinstance(processed.get("usage"), dict) else None,
+        )
 
         if processed.get("error_type") == "text_parsing":
             finish_reason = str(processed.get("finish_reason", "не указан"))
             usage = processed.get("usage", {})
             completion_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
             log.warning(
-                "[AIEngine v34] JSON-разбор не удался: %s | finish_reason=%s | "
-                "completion_tokens=%s | preview=%r",
+                "[AIEngine v34] Контракт ответа не пройден: %s | error_type=%s | finish_reason=%s | "
+                "completion_tokens=%s | retry_attempted=%s | retry_failed=%s | preview=%r",
                 processed.get("exc", "неизвестная ошибка"),
+                processed.get("contract_error_type", "unknown"),
                 finish_reason,
                 completion_tokens,
+                processed.get("contract_retry_attempted", False),
+                processed.get("contract_retry_failed", False),
                 self._diagnostic_preview(processed.get("raw_preview", "")),
             )
             if finish_reason == "length":
@@ -709,7 +897,10 @@ class AIEngine:
                 "confidence_raw": None,
                 "tactic_opinion": "Ответ модели не прошёл проверку формата; вход заблокирован.",
                 "critic_opinion": self._compact_opinion(critic, max_chars=165),
-                "latency": round(inference_latency, 3)
+                "latency": round(inference_latency, 3),
+                "contract_retry_attempted": retry_attempted,
+                "contract_retry_recovered": retry_recovered,
+                "contract_retry_failed": retry_failed,
             }
         elif processed.get("error_type") == "emergency_fallback":
             res = processed["fallback_data"]
@@ -720,6 +911,9 @@ class AIEngine:
         processed["model_decision"] = model_decision
         processed["candidate_direction"] = candidate_direction
         processed["latency"] = round(inference_latency, 3)
+        processed.setdefault("contract_retry_attempted", retry_attempted)
+        processed.setdefault("contract_retry_recovered", retry_recovered)
+        processed.setdefault("contract_retry_failed", retry_failed)
         log.debug(
             "[vLLM SCORE] ticker=%s model_decision=%s candidate=%s contract_violation=%s score=%s valid=%s raw=%r",
             ticker, model_decision, candidate_direction,

@@ -956,33 +956,40 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "post_llm_evidence_blocked", "post_llm_confidence_blocked",
         "llm_approve_buy", "llm_approve_sell",
         "llm_hold", "llm_hold_buy", "llm_hold_sell", "llm_contract_violation",
+        "llm_contract_retry", "llm_contract_retry_recovered", "llm_contract_retry_failed",
         "orders_opened_buy", "orders_opened_sell", "guard_blocked",
         "guard_quotes", "guard_spread", "guard_volume", "guard_direction", "guard_size",
         "guard_text", "guard_other", "confidence_blocked", "risk_blocked", "zero_lot",
         "orders_scheduled", "orderbook_updates", "orderbook_unusable",
         "orderbook_side_touches", "orderbook_heartbeats", "orderbook_invalid",
-        "orderbook_out_of_order", "active_position_skipped", "atr_history_prefilter_skipped",
-        "execution_bbo_blocked",
+        "orderbook_out_of_order", "active_position_skipped", "atr_unready_candidates",
+        "execution_bbo_blocked", "atr_history_blocked",
     )
     values = {key: counts.get(key, 0) for key in names}
+    local_total = counts.get("local_candidate_buy", 0) + counts.get("local_candidate_sell", 0)
+    pass_total = counts.get("prefilter_pass_buy", 0) + counts.get("prefilter_pass_sell", 0)
+    values["prefilter_pass_pct"] = round(100.0 * pass_total / local_total, 1) if local_total else 0.0
     logger.info(
         "📊 [TRADE FLOW 60s] котировки=%(quotes_received)d, котировки_top15=%(selected_quotes)d, "
         "аномалии_top15=%(selected_anomalies)d, в_очереди=%(anomalies_queued)d, очередь_потери=%(queue_dropped)d; "
         "направление_не_совпало=%(direction_prefilter_skipped)d, prefilter_block=%(prefilter_blocked)d, "
         "duplicate=%(candidate_deduplicated)d; локально(BUY=%(local_candidate_buy)d,SELL=%(local_candidate_sell)d), "
-        "до_LLM(BUY=%(prefilter_pass_buy)d,SELL=%(prefilter_pass_sell)d); "
+        "до_LLM(BUY=%(prefilter_pass_buy)d,SELL=%(prefilter_pass_sell)d;доля=%(prefilter_pass_pct).1f%%); "
         "LLM=%(llm_calls)d, model(APPROVE=%(llm_model_approve)d,HOLD=%(llm_model_hold)d), "
         "после_LLM(guard_block=%(post_llm_evidence_blocked)d,confidence_block=%(post_llm_confidence_blocked)d), "
         "итог(APPROVE_BUY=%(llm_approve_buy)d,APPROVE_SELL=%(llm_approve_sell)d,"
         "HOLD_BUY-кандидат=%(llm_hold_buy)d,HOLD_SELL-кандидат=%(llm_hold_sell)d), "
-        "contract_error=%(llm_contract_violation)d; открыто(BUY=%(orders_opened_buy)d,SELL=%(orders_opened_sell)d); "
+        "contract_error=%(llm_contract_violation)d (retry=%(llm_contract_retry)d,"
+        "recovered=%(llm_contract_retry_recovered)d,failed=%(llm_contract_retry_failed)d); "
+        "открыто(BUY=%(orders_opened_buy)d,SELL=%(orders_opened_sell)d); "
         "Guard=%(guard_blocked)d (BBO=%(guard_quotes)d, спред=%(guard_spread)d, объём=%(guard_volume)d, "
         "направление=%(guard_direction)d, размер=%(guard_size)d, текст=%(guard_text)d, прочее=%(guard_other)d); "
         "ORDER_BOOK: принятых_состояний=%(orderbook_updates)d, затронуто_сторон_BBO=%(orderbook_side_touches)d, "
         "heartbeat_без_движения_BBO=%(orderbook_heartbeats)d, некорректных_состояний=%(orderbook_invalid)d, "
         "событий_не_по_порядку=%(orderbook_out_of_order)d, ошибок_обработки=%(orderbook_unusable)d; "
         "повторные кандидаты по открытым позициям=%(active_position_skipped)d; "
-        "ATR без истории до LLM=%(atr_history_prefilter_skipped)d; "
+        "ATR не готов перед LLM (не блокирует)=%(atr_unready_candidates)d; "
+        "блок ATR после APPROVE=%(atr_history_blocked)d; "
         "BBO wait=%(bbo_deferred)d, resumed=%(bbo_resumed)d, expired=%(bbo_expired)d; "
         "confidence=%(confidence_blocked)d, risk=%(risk_blocked)d, lots=0:%(zero_lot)d, "
         "BBO_exec_block=%(execution_bbo_blocked)d, ордеров_принято/открыто=%(orders_scheduled)d",
@@ -1178,12 +1185,9 @@ async def _resume_pending_bbo_candidate(ticker: str) -> None:
         _log_prefilter_blocked(key, evidence_reason)
         return
 
-    atr_ready, atr_reason = validate_atr_readiness(metrics)
+    atr_ready, _atr_reason = validate_atr_readiness(metrics)
     if not atr_ready:
-        _drop_pending_bbo_candidate(key, pending)
-        _trade_flow_inc("atr_history_prefilter_skipped")
-        _log_prefilter_blocked(key, atr_reason)
-        return
+        _trade_flow_inc("atr_unready_candidates")
 
     if not _reserve_ai_ticker(key):
         _drop_pending_bbo_candidate(key, pending)
@@ -1654,11 +1658,10 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                             _trade_flow_guard_block(evidence_reason)
                             _log_prefilter_blocked(ticker, evidence_reason)
                     else:
-                        atr_ready, atr_reason = validate_atr_readiness(metrics_payload)
+                        atr_ready, _atr_reason = validate_atr_readiness(metrics_payload)
                         if not atr_ready:
-                            _trade_flow_inc("atr_history_prefilter_skipped")
-                            _log_prefilter_blocked(ticker, atr_reason)
-                        elif not _reserve_ai_ticker(ticker):
+                            _trade_flow_inc("atr_unready_candidates")
+                        if not _reserve_ai_ticker(ticker):
                             _trade_flow_inc("candidate_deduplicated")
                         else:
                             event_payload = {
@@ -1997,6 +2000,11 @@ class MarketWorker:
                 except Exception as exc:
                     ai_response = {
                         "final_decision": "HOLD",
+                        "model_decision": "HOLD",
+                        "model_raw_decision": "INVALID_RESPONSE",
+                        "model_contract_violation": True,
+                        "contract_error_type": "worker_timeout",
+                        "error_type": "request_error",
                         "confidence_score": 0.0,
                         "confidence_valid": False,
                         "tactic_opinion": "Превышено время ожидания ИИ / Сбой инференса сервера vLLM.",
@@ -2016,6 +2024,13 @@ class MarketWorker:
                         ai_analysis = first_item
                 elif isinstance(ai_response, dict):
                     ai_analysis = ai_response
+
+                if ai_analysis.get("contract_retry_attempted"):
+                    _trade_flow_inc("llm_contract_retry")
+                if ai_analysis.get("contract_retry_recovered"):
+                    _trade_flow_inc("llm_contract_retry_recovered")
+                if ai_analysis.get("contract_retry_failed"):
+                    _trade_flow_inc("llm_contract_retry_failed")
 
                 # LLM returns only APPROVE/HOLD. Trade direction comes exclusively
                 # from the deterministic local candidate and cannot be changed by the model.
@@ -2045,9 +2060,12 @@ class MarketWorker:
                         model_contract_violation = True
                         _trade_flow_inc("llm_contract_violation")
                         logger.error(
-                            "🛑 [LLM CONTRACT] %s: модель вернула %s вместо APPROVE/HOLD; "
-                            "локальный кандидат=%s, вход запрещён.",
+                            "🛑 [LLM CONTRACT] %s: ответ не прошёл контракт APPROVE/HOLD; "
+                            "raw=%s error_type=%s retry_attempted=%s retry_failed=%s candidate=%s; вход запрещён.",
                             ticker, ai_analysis.get("model_raw_decision", model_decision),
+                            ai_analysis.get("contract_error_type", "unknown"),
+                            ai_analysis.get("contract_retry_attempted", False),
+                            ai_analysis.get("contract_retry_failed", False),
                             candidate_direction or "NONE",
                         )
                 ai_analysis["model_decision"] = model_decision
@@ -2158,8 +2176,10 @@ class MarketWorker:
                             "новая позиция не открыта."
                         )
                         _trade_flow_inc("atr_history_blocked")
-                        logger.warning("Сигнал %s по %s заблокирован: %s", decision, ticker, execution_message)
+                        ai_analysis["atr_entry_ready"] = False
+                        logger.warning("Сигнал %s по %s заблокирован после LLM: %s", decision, ticker, execution_message)
                     else:
+                        ai_analysis["atr_entry_ready"] = True
                         ai_analysis["stop_loss"] = stop_loss
                         ai_analysis["take_profit"] = take_profit
                         ai_analysis["atr_at_entry"] = atr_value
