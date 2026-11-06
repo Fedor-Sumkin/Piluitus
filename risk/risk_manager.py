@@ -516,7 +516,7 @@ class RiskManager:
         except (TypeError, ValueError, OverflowError):
             max_single_pct = 0.03
         if not math.isfinite(max_single_pct) or max_single_pct <= 0:
-            max_single_pct = 0.05
+            max_single_pct = 0.03
         max_single_pct = min(max_single_pct, 0.03)
         lots_by_notional = int((self.initial_deposit * max_single_pct) // notional_per_lot)
         return max(0, min(lots_by_risk, lots_by_notional))
