@@ -1084,7 +1084,6 @@ def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -
     result = evaluate_scalping_candidate(direction, metrics)
     _trade_flow_inc("strategy_shadow_evaluated")
     _trade_flow_inc("strategy_shadow_pass" if result.get("eligible") else "strategy_shadow_reject")
-    components = result.get("components", {})
     logger.info(
         "🧪 [STRATEGY SHADOW] %s side=%s eligible=%s score=%.1f/%.0f regime=%s "
         "queue_imbalance=%s spread_ATR=%s hard_blocks=%s reasons=%s",

@@ -206,7 +206,7 @@ def evaluate_scalping_candidate(
         regime = "TRANSITION_OR_RANGE"
 
     score = round(sum(components.values()), 2)
-    eligible = not hard_blocks and score >= 70.0
+    eligible = not hard_blocks and score >= 85.0
     return {
         "schema_version": 1,
         "side": side,
@@ -218,6 +218,6 @@ def evaluate_scalping_candidate(
         "hard_blocks": hard_blocks,
         "queue_imbalance": round(queue_imbalance, 4) if queue_available else None,
         "spread_atr_ratio": round(spread_atr_ratio, 4) if math.isfinite(spread_atr_ratio) else None,
-        "threshold": 70.0,
+        "threshold": 85.0,
         "mode": "SHADOW_ONLY",
     }
