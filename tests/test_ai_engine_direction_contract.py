@@ -43,6 +43,44 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertIn("No local direction: MUST HOLD.", prompt)
         self.assertLessEqual(len(prompt), 980)
 
+    def test_missing_final_decision_is_flagged_as_contract_violation(self) -> None:
+        result = AIEngine._cpu_intensive_processing({
+            "choices": [{
+                "message": {"content": '{"candidate":"BUY","confidence_score":0.91}'},
+                "finish_reason": "stop",
+            }]
+        })
+
+        self.assertEqual(result["final_decision"], "HOLD")
+        self.assertEqual(result["model_decision"], "HOLD")
+        self.assertEqual(result["model_raw_decision"], "INVALID_RESPONSE")
+        self.assertTrue(result["model_contract_violation"])
+        self.assertFalse(result["confidence_valid"])
+
+    def test_truncated_json_is_flagged_as_contract_violation(self) -> None:
+        result = AIEngine._cpu_intensive_processing({
+            "choices": [{
+                "message": {"content": '{"final_decision":"APPROVE"'},
+                "finish_reason": "length",
+            }]
+        })
+
+        self.assertEqual(result["final_decision"], "HOLD")
+        self.assertTrue(result["model_contract_violation"])
+        self.assertEqual(result["finish_reason"], "length")
+
+    def test_valid_hold_is_not_a_contract_violation(self) -> None:
+        result = AIEngine._cpu_intensive_processing({
+            "choices": [{
+                "message": {"content": '{"final_decision":"HOLD","confidence_score":0.8}'},
+                "finish_reason": "stop",
+            }]
+        })
+
+        self.assertEqual(result["final_decision"], "HOLD")
+        self.assertFalse(result["model_contract_violation"])
+        self.assertTrue(result["confidence_valid"])
+
     def test_contract_survives_metric_overflow_at_compact_limit(self) -> None:
         metrics = {
             key: "x" * 200
