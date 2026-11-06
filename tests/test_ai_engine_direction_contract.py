@@ -273,6 +273,40 @@ class AIEngineContractRetryTests(unittest.IsolatedAsyncioTestCase):
             request=httpx.Request("POST", "http://localhost/v1/chat/completions"),
         )
 
+    async def test_failed_retry_preserves_specific_error_type_without_model_opinion(self) -> None:
+        engine = object.__new__(AIEngine)
+        engine.api_path = "/v1/chat/completions"
+        engine.model_name = "test-model"
+        engine.client = SimpleNamespace(post=AsyncMock(side_effect=[
+            self._response(
+                '{"final_decision":"APPROVE","confidence_score":0.9,"unexpected":true}'
+            ),
+            self._response(
+                '{"final_decision":"APPROVE","confidence_score":1.2}'
+            ),
+        ]))
+        result = await engine.analyze_market_anomaly({
+            "ticker": "SBER",
+            "price": 100.0,
+            "volume": 500,
+            "candidate_direction": "BUY",
+            "metrics": {
+                "price_change_pct": 0.2,
+                "price_vs_vwap_pct": 0.1,
+                "volume_spike": 2.0,
+                "spread_pct": 0.1,
+                "spread_available": 1.0,
+                "bid_ask_available": 1.0,
+            },
+        })
+        self.assertEqual(result["final_decision"], "HOLD")
+        self.assertTrue(result["model_contract_violation"])
+        self.assertEqual(result["contract_error_type"], "invalid_confidence")
+        self.assertEqual(result["first_contract_error_type"], "schema")
+        self.assertTrue(result["contract_retry_failed"])
+        self.assertIn("Повторная проверка не восстановила", result["critic_opinion"])
+        self.assertNotIn("unexpected", result["critic_opinion"])
+
     async def test_malformed_first_response_is_retried_and_recovered(self) -> None:
         engine = object.__new__(AIEngine)
         engine.api_path = "/v1/chat/completions"

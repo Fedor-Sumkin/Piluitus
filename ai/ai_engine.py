@@ -358,8 +358,6 @@ class AIEngine:
                 error_type = "invalid_decision"
             elif "confidence_score" in lowered:
                 error_type = "invalid_confidence"
-            elif "tactic_opinion" in lowered or "critic_opinion" in lowered:
-                error_type = "invalid_opinion"
             elif "json" in lowered:
                 error_type = "invalid_json"
             else:
@@ -913,32 +911,33 @@ class AIEngine:
                 processed.get("contract_retry_failed", False),
                 self._diagnostic_preview(processed.get("raw_preview", "")),
             )
-            if finish_reason == "length":
-                critic = (
-                    "Ответ был обрезан лимитом токенов до появления JSON "
-                    f"(finish_reason=length, completion_tokens={completion_tokens}). "
-                    "Ответ не помещается в лимит генерации; проверьте фактический VLLM_MAX_TOKENS и длину reasoning."
-                )
-            elif not processed.get("raw_preview", "").strip():
-                critic = "vLLM вернул пустое поле content; проверьте ответ сервера и reasoning parser."
-            else:
-                critic = str(processed["exc"])
+            specific_error_type = str(
+                processed.get("contract_error_type")
+                or processed.get("first_contract_error_type")
+                or "invalid_response"
+            )
             return {
                 "error_type": "text_parsing",
                 "final_decision": "HOLD",
                 "model_decision": "HOLD",
                 "model_raw_decision": "INVALID_RESPONSE",
                 "model_contract_violation": True,
-                "contract_error_type": "text_parsing",
+                "contract_error_type": specific_error_type,
                 "confidence_score": 0.0,
                 "confidence_valid": False,
                 "confidence_raw": None,
-                "tactic_opinion": "Ответ модели не прошёл проверку формата; вход заблокирован.",
-                "critic_opinion": self._compact_opinion(critic, max_chars=165),
+                "tactic_opinion": "Ответ модели не соответствует JSON-контракту; вход заблокирован.",
+                "critic_opinion": (
+                    "Повторная проверка не восстановила корректный ответ. "
+                    "Подробности сохранены в диагностическом журнале."
+                ),
                 "latency": round(inference_latency, 3),
                 "contract_retry_attempted": retry_attempted,
                 "contract_retry_recovered": retry_recovered,
                 "contract_retry_failed": retry_failed,
+                "first_contract_error_type": processed.get("first_contract_error_type"),
+                "first_contract_error": processed.get("first_contract_error"),
+                "contract_retry_error": processed.get("contract_retry_error"),
             }
         elif processed.get("error_type") == "emergency_fallback":
             res = processed["fallback_data"]
