@@ -211,7 +211,7 @@ class ShadowForwardTracker:
 
             remaining: list[int] = []
             for horizon in row["remaining_horizons"]:
-                if elapsed >= horizon and fresh:
+                if elapsed >= horizon and fresh and elapsed <= horizon + self.max_label_lag_sec:
                     sign = 1.0 if side == "BUY" else -1.0
                     mid_return_pct = (
                         (mid / float(row["entry_mid"]) - 1.0) * 100.0 * sign

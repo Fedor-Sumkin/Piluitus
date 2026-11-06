@@ -64,9 +64,20 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(outcomes[0]["result"], "NO_FRESH_BBO")
         self.assertNotIn("net_executable_return_pct", outcomes[0])
 
+    def test_fresh_quote_after_allowed_label_lag_is_not_mislabelled_as_on_time(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,), max_label_lag_sec=30)
+        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 191.0]):
+            tracker.record_candidate(
+                "SBER", "BUY", quote_metrics(100.0, 100.1),
+                {"score": 90.0, "eligible": True, "regime": "TREND_ALIGNED"},
+            )
+            outcomes = tracker.observe_market_tick("SBER", quote_metrics(101.0, 101.1))
+        self.assertEqual(outcomes[0]["result"], "NO_FRESH_BBO")
+        self.assertNotIn("net_executable_return_pct", outcomes[0])
+
     def test_each_horizon_is_emitted_once_and_tracker_is_bounded(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60, 180), max_pending_per_ticker=1)
-        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[0.0, 1.0, 60.0, 180.0]):
+        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[0.0, 1.0, 61.0, 181.0]):
             tracker.record_candidate("SBER", "BUY", quote_metrics(100.0, 100.1), {"score": 90.0})
             tracker.record_candidate("SBER", "BUY", quote_metrics(100.0, 100.1), {"score": 90.0})
             self.assertEqual(tracker.pending_count("SBER"), 1)
