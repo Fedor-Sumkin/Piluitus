@@ -923,11 +923,16 @@ class FinamBrokerClient:
             if ask_present:
                 state["published_ask"] = current_ask
                 state["published_ask_timestamp"] = ask_timestamp
-            crossed_since = self._crossed_bbo_since.pop(ticker, None)
+            crossed_since = self._crossed_bbo_since.get(ticker)
+            coherent_bbo = bool(
+                current_bid and current_ask and current_ask[0] >= current_bid[0]
+            )
             crossed_recovered_after = (
                 max(0.0, received_monotonic - crossed_since)
-                if crossed_since is not None else None
+                if crossed_since is not None and coherent_bbo else None
             )
+            if crossed_recovered_after is not None:
+                self._crossed_bbo_since.pop(ticker, None)
             # Retain current full depth for diagnostics and later execution-model
             # calibration. The quantity unit must be verified before using it to
             # simulate multi-level fills.
@@ -960,7 +965,7 @@ class FinamBrokerClient:
                     "OK" if current_bid and current_ask and current_ask[0] >= current_bid[0]
                     else "MISSING_BBO_SIDE"
                 ),
-                "crossed_recovered": crossed_since is not None,
+                "crossed_recovered": crossed_recovered_after is not None,
                 "crossed_recovered_after_sec": (
                     round(crossed_recovered_after, 3)
                     if crossed_recovered_after is not None else None
