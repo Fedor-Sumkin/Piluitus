@@ -2984,6 +2984,8 @@ if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
         app,
+        # Keep Uvicorn from reconfiguring/closing PILUITUS' durable file handlers.
+        log_config=None,
         host="127.0.0.1",
         port=8080,
         reload=False,
