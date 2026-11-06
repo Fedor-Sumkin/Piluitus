@@ -168,7 +168,7 @@ class ExecutionStopRiskTests(unittest.IsolatedAsyncioTestCase):
         self.engine._reserved_stop_risk = {}
         self.engine.initial_capital = 20_000.0
         self.engine.max_gross_exposure_pct = 0.10
-        self.engine.max_single_position_pct = 0.05
+        self.engine.max_single_position_pct = 0.03
         self.engine.max_open_stop_risk_pct = 0.01
         self.engine.paper_positions = {
             "EXIST": {
@@ -180,6 +180,18 @@ class ExecutionStopRiskTests(unittest.IsolatedAsyncioTestCase):
                 "stop_loss": 1.60,
             }
         }
+
+    async def test_single_position_cap_limits_each_order_to_three_percent(self) -> None:
+        self.engine.paper_positions = {}
+
+        approved, reason = await self.engine._reserve_order_size(
+            "LSRG", 10, 100.0, object(), side="BUY", stop_loss=99.0
+        )
+
+        # 3% of 20,000 ₽ is 600 ₽. LSRG has a one-share lot.
+        self.assertEqual(approved, 6)
+        self.assertIn("single_cap=600.00 ₽", reason)
+        self.assertAlmostEqual(self.engine._reserved_notional["LSRG"], 600.0)
 
     async def test_order_size_is_reduced_by_aggregate_stop_risk_budget(self) -> None:
         approved, reason = await self.engine._reserve_order_size(
