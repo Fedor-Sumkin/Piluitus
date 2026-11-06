@@ -1526,15 +1526,15 @@ class FinamBrokerClient:
                             order_book_out_of_order += len(self._last_order_book_out_of_order_tickers)
                             order_book_decode_failures += len(self._last_order_book_unrecognized_tickers)
                             if not book_updates and not self._last_order_book_payload_valid:
-                                    if not order_book_decode_warned:
-                                        safe_envelope = self._redact_for_log(envelope)
-                                        logger.warning(
-                                            "Finam ORDER_BOOK: не удалось разобрать структуру стакана: "
-                                            "payload_keys=%s, sample=%s",
-                                            list(payload.keys()) if isinstance(payload, dict) else [],
-                                            json.dumps(safe_envelope, ensure_ascii=False, default=str)[:1800],
-                                        )
-                                        order_book_decode_warned = True
+                                if not order_book_decode_warned:
+                                    safe_envelope = self._redact_for_log(envelope)
+                                    logger.warning(
+                                        "Finam ORDER_BOOK: не удалось разобрать структуру стакана: "
+                                        "payload_keys=%s, sample=%s",
+                                        list(payload.keys()) if isinstance(payload, dict) else [],
+                                        json.dumps(safe_envelope, ensure_ascii=False, default=str)[:1800],
+                                    )
+                                    order_book_decode_warned = True
                             if book_updates and not first_order_book_logged:
                                 sample = next(
                                     (item for item in book_updates if item.get("book_valid", True)),
