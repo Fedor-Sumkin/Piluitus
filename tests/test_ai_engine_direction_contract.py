@@ -58,7 +58,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertFalse(result["confidence_valid"])
 
     def test_truncated_json_is_flagged_as_contract_violation(self) -> None:
-        result = AIEngine._cpu_intensive_processing({
+        result = object.__new__(AIEngine)._cpu_intensive_processing({
             "choices": [{
                 "message": {"content": '{"final_decision":"APPROVE"'},
                 "finish_reason": "length",
@@ -84,7 +84,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertFalse(result["confidence_valid"])
 
     def test_valid_hold_is_not_a_contract_violation(self) -> None:
-        result = AIEngine._cpu_intensive_processing({
+        result = object.__new__(AIEngine)._cpu_intensive_processing({
             "choices": [{
                 "message": {"content": '{"final_decision":"HOLD","confidence_score":0.8}'},
                 "finish_reason": "stop",
