@@ -192,17 +192,28 @@ def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bo
     current_size = _num(metrics, "ask_size_current" if decision == "BUY" else "bid_size_current")
     drop_age_key = "ask_size_drop_age_sec" if decision == "BUY" else "bid_size_drop_age_sec"
     drop_age = _num(metrics, drop_age_key, -1.0)
+    observed_drop_pct = (
+        max(0.0, min(100.0, (baseline - current_size) / baseline * 100.0))
+        if baseline > 0.0 and current_size >= 0.0 else None
+    )
+    observed_drop_text = (
+        f"фактическое изменение размера={observed_drop_pct:.1f}%"
+        if observed_drop_pct is not None else
+        "фактическое изменение размера недоступно"
+    )
     diagnostic = (
         f"текущий размер={current_size:.2f}, медиана предыдущих={baseline:.2f}, "
+        f"{observed_drop_text}, подтверждённое сокращение={drop_pct:.1f}%, "
         f"история={samples}, возраст сигнала={drop_age:.2f}s"
         if baseline > 0.0 else
         f"текущий размер={current_size:.2f}, предыдущая медиана недоступна, "
+        f"{observed_drop_text}, подтверждённое сокращение={drop_pct:.1f}%, "
         f"история={samples}, возраст сигнала={drop_age:.2f}s"
     )
     if drop_pct < MIN_TOP_SIZE_DROP_PCT:
         return False, (
-            f"Сокращение объёма лучшей заявки {side_name} {drop_pct:.1f}% меньше порога "
-            f"{MIN_TOP_SIZE_DROP_PCT:.0f}% ({diagnostic})."
+            f"Сокращение объёма лучшей заявки {side_name}: подтверждённое событие "
+            f"{drop_pct:.1f}% меньше порога {MIN_TOP_SIZE_DROP_PCT:.0f}% ({diagnostic})."
         )
     if drop_age < 0.0 or drop_age > MAX_SIZE_SIGNAL_AGE_SEC:
         age_label = f"{drop_age:.2f}s" if drop_age >= 0.0 else "не зафиксировано"
