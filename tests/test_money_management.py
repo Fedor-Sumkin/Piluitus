@@ -164,7 +164,7 @@ class ExecutionStopRiskTests(unittest.IsolatedAsyncioTestCase):
         # Existing downside risk is 190 ₽ of a 200 ₽ budget.
         # One SBER lot adds 10 ₽ risk; two would exceed the portfolio cap.
         self.assertEqual(approved, 1)
-        self.assertIn("open_stop_risk=190.00 ₽/200.00 ₽", reason)
+        self.assertIn("open_stop_risk=190.00/200.00 ₽", reason)
         self.assertAlmostEqual(self.engine._reserved_stop_risk["SBER"], 10.0)
 
     async def test_unknown_existing_stop_risk_blocks_new_order(self) -> None:
