@@ -207,6 +207,53 @@ class RiskManager:
         except Exception:
             return self.initial_deposit
 
+    async def _sync_configured_deposit(self, redis_inst) -> None:
+        """Keep persisted start capital aligned with configured account capital.
+
+        TRADING_DEPOSIT is authoritative for this run. Only the deposit metadata key
+        is synchronized; trades, positions, verdicts, and risk history are untouched.
+        """
+        key = "piluitus:risk:persistent_balance"
+        try:
+            configured = float(self.initial_deposit)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError("Некорректный стартовый депозит в конфигурации.") from exc
+        if not math.isfinite(configured) or configured < 0.0:
+            raise RuntimeError("Стартовый депозит должен быть конечным неотрицательным числом.")
+
+        saved_raw = await redis_inst.get(key)
+        if saved_raw is None:
+            await redis_inst.set(key, f"{configured:.2f}")
+            risk_logger.info(
+                "🆕 [PERSISTENCE] Зафиксирован стартовый депозит из конфигурации: %.2f ₽",
+                configured,
+            )
+            return
+
+        try:
+            saved = float(saved_raw)
+        except (TypeError, ValueError, OverflowError):
+            saved = float("nan")
+
+        if not math.isfinite(saved) or saved < 0.0 or not math.isclose(
+            saved, configured, rel_tol=0.0, abs_tol=0.01
+        ):
+            await redis_inst.set(key, f"{configured:.2f}")
+            risk_logger.warning(
+                "⚠️ [PERSISTENCE] Сохранённый депозит (%r ₽) отличается от конфигурации "
+                "(%.2f ₽); используем TRADING_DEPOSIT и синхронизируем только ключ %s. "
+                "Журнал сделок и остальные данные Redis сохранены.",
+                saved_raw,
+                configured,
+                key,
+            )
+            return
+
+        risk_logger.info(
+            "💾 [PERSISTENCE] Депозит Redis согласован с конфигурацией: %.2f ₽",
+            configured,
+        )
+
     async def is_trading_allowed(self, db: DBManager) -> bool:
         """Apply daily loss, high-water drawdown and global loss-streak safeguards."""
         risk_logger = logging.getLogger("Piluitus.RiskManager")
@@ -260,13 +307,7 @@ class RiskManager:
                 raise RuntimeError("Redis/Memurai недоступен при проверке риска.")
 
             if not self._balance_initialized:
-                saved_balance = await redis_inst.get("piluitus:risk:persistent_balance")
-                if saved_balance is not None:
-                    self.initial_deposit = float(saved_balance)
-                    risk_logger.info("💾 [PERSISTENCE] Баланс восстановлен из Redis: %.2f ₽", self.initial_deposit)
-                else:
-                    await redis_inst.set("piluitus:risk:persistent_balance", str(self.initial_deposit))
-                    risk_logger.info("🆕 [PERSISTENCE] Зафиксирован стартовый депозит: %.2f ₽", self.initial_deposit)
+                await self._sync_configured_deposit(redis_inst)
                 self._balance_initialized = True
 
             get_all_trades = getattr(db, "get_all_daily_trades", None)

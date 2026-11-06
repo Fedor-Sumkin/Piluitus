@@ -724,6 +724,20 @@ risk_manager = RiskManager(
     loss_streak_5_pause_sec=Settings.LOSS_STREAK_5_PAUSE_SEC,
 )
 
+if not math.isclose(
+    float(execution_engine.initial_capital),
+    float(risk_manager.initial_deposit),
+    rel_tol=0.0,
+    abs_tol=0.01,
+):
+    raise RuntimeError(
+        "Несогласованный стартовый капитал: ExecutionLayer и RiskManager должны использовать TRADING_DEPOSIT."
+    )
+logger.info(
+    "💰 [CAPITAL SYNC] TRADING_DEPOSIT=%.2f ₽; ExecutionLayer=%.2f ₽; RiskManager=%.2f ₽.",
+    DEPOSIT, execution_engine.initial_capital, risk_manager.initial_deposit,
+)
+
 
 def _current_paper_open_pnl() -> float:
     """PnL of in-memory PAPER positions, updated on every monitored market tick."""
@@ -949,7 +963,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
     names = (
         "quotes_received", "selected_quotes", "selected_anomalies", "anomalies_queued",
         "queue_dropped", "direction_prefilter_skipped", "prefilter_blocked", "candidate_deduplicated",
-        "bbo_deferred", "bbo_resumed", "bbo_expired",
+        "bbo_deferred", "bbo_resumed", "bbo_expired", "bbo_superseded", "bbo_cancelled",
         "local_candidate_buy", "local_candidate_sell",
         "prefilter_pass_buy", "prefilter_pass_sell",
         "llm_calls", "llm_model_approve", "llm_model_hold",
@@ -966,6 +980,8 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "execution_bbo_blocked", "atr_history_blocked",
     )
     values = {key: counts.get(key, 0) for key in names}
+    with _pending_bbo_lock:
+        values["bbo_pending"] = len(_pending_bbo_candidates)
     local_total = counts.get("local_candidate_buy", 0) + counts.get("local_candidate_sell", 0)
     pass_total = counts.get("prefilter_pass_buy", 0) + counts.get("prefilter_pass_sell", 0)
     values["prefilter_pass_pct"] = round(100.0 * pass_total / local_total, 1) if local_total else 0.0
@@ -990,7 +1006,8 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "повторные кандидаты по открытым позициям=%(active_position_skipped)d; "
         "ATR не готов перед LLM (не блокирует)=%(atr_unready_candidates)d; "
         "блок ATR после APPROVE=%(atr_history_blocked)d; "
-        "BBO wait=%(bbo_deferred)d, resumed=%(bbo_resumed)d, expired=%(bbo_expired)d; "
+        "BBO wait=%(bbo_deferred)d, resumed=%(bbo_resumed)d, expired=%(bbo_expired)d, "
+        "superseded=%(bbo_superseded)d, cancelled=%(bbo_cancelled)d, pending_now=%(bbo_pending)d; "
         "confidence=%(confidence_blocked)d, risk=%(risk_blocked)d, lots=0:%(zero_lot)d, "
         "BBO_exec_block=%(execution_bbo_blocked)d, ордеров_принято/открыто=%(orders_scheduled)d",
         values,
@@ -1077,12 +1094,21 @@ def _release_ai_ticker(ticker: str) -> None:
         _ai_ticker_pending.discard(str(ticker).upper())
 
 
-def _drop_pending_bbo_candidate(ticker: str, expected: dict[str, Any] | None = None) -> None:
+def _drop_pending_bbo_candidate(ticker: str, expected: dict[str, Any] | None = None) -> bool:
     key = str(ticker or "").strip().upper()
     with _pending_bbo_lock:
         current = _pending_bbo_candidates.get(key)
         if current is not None and (expected is None or current is expected):
             _pending_bbo_candidates.pop(key, None)
+            return True
+    return False
+
+
+def _cancel_pending_bbo_candidate(ticker: str, expected: dict[str, Any] | None = None) -> bool:
+    removed = _drop_pending_bbo_candidate(ticker, expected)
+    if removed:
+        _trade_flow_inc("bbo_cancelled")
+    return removed
 
 
 def _expire_pending_bbo_candidates(now: float | None = None) -> None:
@@ -1138,28 +1164,28 @@ async def _resume_pending_bbo_candidate(ticker: str) -> None:
 
     payload = pending.get("payload")
     if not isinstance(payload, dict):
-        _drop_pending_bbo_candidate(key, pending)
+        _cancel_pending_bbo_candidate(key, pending)
         return
     if (
         getattr(execution_engine, "_maintenance_active", False)
         or payload.get("paper_session_generation") != _paper_session_generation
     ):
-        _drop_pending_bbo_candidate(key, pending)
+        _cancel_pending_bbo_candidate(key, pending)
         return
 
     funnel_status = screener.get_status()
     if not funnel_status.get("ready") or key not in set(funnel_status.get("selected_tickers", [])):
-        _drop_pending_bbo_candidate(key, pending)
+        _cancel_pending_bbo_candidate(key, pending)
         return
     active_tickers = execution_engine.get_open_position_tickers()
     if key in active_tickers or key in getattr(execution_engine, "_opening_tickers", set()):
-        _drop_pending_bbo_candidate(key, pending)
+        _cancel_pending_bbo_candidate(key, pending)
         _trade_flow_inc("active_position_skipped")
         return
 
     metrics = payload.get("metrics")
     if not isinstance(metrics, dict):
-        _drop_pending_bbo_candidate(key, pending)
+        _cancel_pending_bbo_candidate(key, pending)
         return
     book_ready, book_reason = refresh_candidate_bbo_metrics(screener, key, metrics, now=now)
     if not book_ready:
@@ -1171,7 +1197,7 @@ async def _resume_pending_bbo_candidate(ticker: str) -> None:
     direction = infer_candidate_direction(metrics)
     original_direction = str(payload.get("candidate_direction", "")).upper()
     if direction not in {"BUY", "SELL"} or direction != original_direction:
-        _drop_pending_bbo_candidate(key, pending)
+        _cancel_pending_bbo_candidate(key, pending)
         _trade_flow_inc("direction_prefilter_skipped")
         return
 
@@ -1179,7 +1205,7 @@ async def _resume_pending_bbo_candidate(ticker: str) -> None:
     if not evidence_ok:
         if _guard_reason_bucket(evidence_reason) == "quotes":
             return
-        _drop_pending_bbo_candidate(key, pending)
+        _cancel_pending_bbo_candidate(key, pending)
         _trade_flow_inc("prefilter_blocked")
         _trade_flow_guard_block(evidence_reason)
         _log_prefilter_blocked(key, evidence_reason)
@@ -1190,7 +1216,7 @@ async def _resume_pending_bbo_candidate(ticker: str) -> None:
         _trade_flow_inc("atr_unready_candidates")
 
     if not _reserve_ai_ticker(key):
-        _drop_pending_bbo_candidate(key, pending)
+        _cancel_pending_bbo_candidate(key, pending)
         _trade_flow_inc("candidate_deduplicated")
         return
 
@@ -1545,7 +1571,8 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
         if price <= 0.0 or not ticker or volume < 0.0:
             return
         # A newer trade supersedes any older deferred impulse for this ticker.
-        _drop_pending_bbo_candidate(ticker)
+        if _drop_pending_bbo_candidate(ticker):
+            _trade_flow_inc("bbo_superseded")
 
         tick_counter += 1
         current_frame = spinner_frames[tick_counter % len(spinner_frames)]
@@ -2543,6 +2570,7 @@ async def lifespan(app: FastAPI):
                 if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
                     logger.warning("Ошибка при завершении фоновой задачи: %r", result)
 
+        _trade_flow_maybe_log(force=True)
         try:
             await ai_engine.close()
         except Exception as close_err:

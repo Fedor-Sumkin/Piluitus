@@ -25,7 +25,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
 
     def test_buy_candidate_requests_approval_not_direction_choice(self) -> None:
         prompt = self._prompt("BUY")
-        self.assertIn("exactly four keys: final_decision", prompt)
+        self.assertIn("exactly two keys: final_decision", prompt)
         self.assertIn("Never select, change, invert, or output BUY/SELL", prompt)
         self.assertIn("APPROVE authorizes only the exact local candidate side", prompt)
         self.assertIn("supporting evidence, not mandatory", prompt)
@@ -35,7 +35,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
 
     def test_sell_candidate_requests_approval_not_direction_choice(self) -> None:
         prompt = self._prompt("SELL")
-        self.assertIn("exactly four keys: final_decision", prompt)
+        self.assertIn("exactly two keys: final_decision", prompt)
         self.assertIn("Never select, change, invert, or output BUY/SELL", prompt)
         self.assertIn("APPROVE authorizes only the exact local candidate side", prompt)
         self.assertIn("supporting evidence, not mandatory", prompt)
@@ -80,7 +80,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         engine = object.__new__(AIEngine)
         result = engine._cpu_intensive_processing({
             "choices": [{
-                "message": {"content": '{"final_decision":"APPROVE","confidence_score":"unknown","tactic_opinion":"Сигнал есть.","critic_opinion":"Оценка неоднозначна."}'},
+                "message": {"content": '{"final_decision":"APPROVE","confidence_score":"unknown",}'},
                 "finish_reason": "stop",
             }]
         })
@@ -95,7 +95,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             "choices": [{
                 "message": {"content": (
                     '{"final_decision":"APPROVE","confidence_score":89,'
-                    '"tactic_opinion":"Сигнал подтверждён.","critic_opinion":"Данные согласованы."}'
+                    '}'
                 )},
                 "finish_reason": "stop",
             }]
@@ -114,7 +114,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
     def test_valid_hold_is_not_a_contract_violation(self) -> None:
         result = object.__new__(AIEngine)._cpu_intensive_processing({
             "choices": [{
-                "message": {"content": '{"final_decision":"HOLD","confidence_score":0.8,"tactic_opinion":"Недостаточно данных.","critic_opinion":"Вход не подтверждён."}'},
+                "message": {"content": '{"final_decision":"HOLD","confidence_score":0.8,}'},
                 "finish_reason": "stop",
             }]
         })
@@ -128,7 +128,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             "choices": [{
                 "message": {"content": (
                     '{"final_decision":"APPROVE","confidence_score":0.9,'
-                    '"tactic_opinion":"Импульс подтверждён.","critic_opinion":"Риски проверены.",'
+                    ','
                     '"candidate":"BUY"}'
                 )},
                 "finish_reason": "stop",
@@ -143,21 +143,21 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         parsed = AIEngine._extract_json_object(
             '{"candidate":"BUY","ticker":"SBER"} '
             '{"final_decision":"HOLD","confidence_score":0.8,'
-            '"tactic_opinion":"Недостаточно данных.","critic_opinion":"Нет подтверждения."}'
+            '}'
         )
         self.assertEqual(parsed.get("final_decision"), "HOLD")
 
     def test_nested_payload_cannot_hide_extra_top_level_fields(self) -> None:
         parsed = AIEngine._extract_json_object(
             '{"payload":{"final_decision":"HOLD","confidence_score":0.8,'
-            '"tactic_opinion":"Недостаточно данных.","critic_opinion":"Нет подтверждения."},'
+            '},'
             '"unexpected":true}'
         )
         result = object.__new__(AIEngine)._cpu_intensive_processing({
             "choices": [{
                 "message": {"content": (
                     '{"payload":{"final_decision":"HOLD","confidence_score":0.8,'
-                    '"tactic_opinion":"Недостаточно данных.","critic_opinion":"Нет подтверждения."},'
+                    '},'
                     '"unexpected":true}'
                 )},
                 "finish_reason": "stop",
@@ -190,10 +190,44 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             "SBER", 100.0, 500, "BUY",
             {"price_change_pct": 0.2, "price_vs_vwap_pct": 0.1, "volume_spike": 2.0},
         )
-        self.assertIn("exactly these four keys", prompt)
+        self.assertIn("exactly two keys", prompt)
         self.assertIn("APPROVE or HOLD", prompt)
         self.assertIn("Never output BUY/SELL as a decision", prompt)
         self.assertNotIn("RAG", prompt)
+
+    def test_retry_prompt_uses_the_same_m1_alternative_as_primary_prompt(self) -> None:
+        prompt = AIEngine._build_contract_retry_prompt(
+            "SBER",
+            100.0,
+            500,
+            "SELL",
+            {
+                "price_change_pct": 0.2,
+                "price_vs_vwap_pct": -0.1,
+                "volume_spike": 2.0,
+                "bar_pattern_confirmed": 1,
+                "bar_pattern_direction_code": -1,
+            },
+        )
+        self.assertIn("Directional check: either signed price change agrees with candidate and VWAP, OR a fresh matching", prompt)
+        self.assertIn("closed M1 pattern agrees with candidate and price remains on the correct side of VWAP", prompt)
+        self.assertNotIn("SELL needs negative price_change_pct and price_vs_vwap_pct", prompt)
+
+    def test_local_opinions_are_built_from_structured_result_and_metrics(self) -> None:
+        tactic, critic = AIEngine._build_local_opinions(
+            "APPROVE",
+            "BUY",
+            {
+                "price_change_pct": 0.12,
+                "price_vs_vwap_pct": 0.08,
+                "volume_spike": 2.5,
+                "spread_pct": 0.1,
+            },
+        )
+        self.assertIn("одобрила локальный кандидат BUY", tactic)
+        self.assertIn("изменение цены +0.120%", critic)
+        self.assertIn("всплеск размера сделки 2.500x", critic)
+        self.assertIn("ATR и портфельный риск проверяются кодом", critic)
 
     def test_contract_survives_metric_overflow_at_compact_limit(self) -> None:
         metrics = {
@@ -252,7 +286,7 @@ class AIEngineContractRetryTests(unittest.IsolatedAsyncioTestCase):
             self._response('{"candidate":"BUY","ticker":"SBER","price":"100"}'),
             self._response(
                 '{"final_decision":"HOLD","confidence_score":0.8,'
-                '"tactic_opinion":"Импульс недостаточен.","critic_opinion":"Вход не подтверждён."}'
+                '}'
             ),
         ]))
         result = await engine.analyze_market_anomaly({

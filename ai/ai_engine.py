@@ -118,6 +118,55 @@ class AIEngine:
         # Нельзя надёжно сжать длинное незавершённое предложение без изменения смысла.
         return fallback
 
+    @staticmethod
+    def _build_local_opinions(
+        model_decision: str,
+        candidate_direction: str,
+        metrics: object,
+    ) -> tuple[str, str]:
+        """Build UI/evolution explanations from structured verdict and measured metrics only."""
+        side = candidate_direction if candidate_direction in {"BUY", "SELL"} else "NONE"
+        decision = str(model_decision or "HOLD").upper()
+        if side == "NONE":
+            tactic = "Направленный локальный кандидат отсутствует."
+        elif decision == "APPROVE":
+            tactic = f"Модель одобрила локальный кандидат {side}."
+        else:
+            tactic = f"Модель отклонила локальный кандидат {side}."
+
+        values: list[str] = []
+        if isinstance(metrics, dict):
+            specifications = (
+                ("price_change_pct", "изменение цены", "%", True),
+                ("price_vs_vwap_pct", "отклонение от VWAP", "%", True),
+                ("volume_spike", "всплеск размера сделки", "x", False),
+                ("spread_pct", "спред", "%", False),
+            )
+            for key, label, suffix, signed in specifications:
+                raw = metrics.get(key)
+                if isinstance(raw, bool):
+                    continue
+                try:
+                    number = float(raw)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if not math.isfinite(number):
+                    continue
+                formatted = f"{number:+.3f}" if signed else f"{number:.3f}"
+                values.append(f"{label} {formatted}{suffix}")
+
+        if values:
+            critic = "Измерения: " + "; ".join(values) + "."
+        elif side == "NONE":
+            critic = "Вход не запрашивался: отсутствует направленный кандидат."
+        else:
+            critic = "Свободное пояснение модели не используется; решение принято по JSON-вердикту."
+        if decision == "APPROVE" and side in {"BUY", "SELL"}:
+            critic += " ATR и портфельный риск проверяются кодом."
+        elif decision == "HOLD" and side in {"BUY", "SELL"}:
+            critic += " Вердикт модели — HOLD."
+        return tactic, critic
+
     def _extract_message_text(self, choice: dict) -> str:
         """Извлекает текст финального ответа из OpenAI-compatible ответа vLLM."""
         message = choice.get("message")
@@ -146,7 +195,7 @@ class AIEngine:
         cleaned = text.strip().lstrip("\ufeff")
         cleaned = re.sub(r"^\s*```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
         cleaned = re.sub(r"\s*```\s*$", "", cleaned)
-        required = {"final_decision", "confidence_score", "tactic_opinion", "critic_opinion"}
+        required = {"final_decision", "confidence_score"}
         complete_object = None
         decision_object = None
         first_object = None
@@ -235,7 +284,7 @@ class AIEngine:
         return number
 
     def _cpu_intensive_processing(self, raw_response_data: dict) -> dict:
-        """Validate the complete four-field approval contract; malformed output fails closed."""
+        """Validate the strict two-field APPROVE/HOLD contract; malformed output fails closed."""
         try:
             choices = raw_response_data.get("choices") if isinstance(raw_response_data, dict) else None
             if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -253,7 +302,7 @@ class AIEngine:
                 )
 
             parsed = self._extract_json_object(generated_text)
-            required = {"final_decision", "confidence_score", "tactic_opinion", "critic_opinion"}
+            required = {"final_decision", "confidence_score"}
             actual = set(parsed)
             missing = sorted(required - actual)
             extra = sorted(actual - required)
@@ -276,13 +325,6 @@ class AIEngine:
             if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
                 raise ValueError("Поле confidence_score должно находиться в диапазоне 0..1")
 
-            tactic = parsed.get("tactic_opinion")
-            critic = parsed.get("critic_opinion")
-            if not isinstance(tactic, str) or not tactic.strip() or len(tactic.strip()) > 80:
-                raise ValueError("Поле tactic_opinion должно быть непустой строкой до 80 символов")
-            if not isinstance(critic, str) or not critic.strip() or len(critic.strip()) > 80:
-                raise ValueError("Поле critic_opinion должно быть непустой строкой до 80 символов")
-
             usage = raw_response_data.get("usage", {})
             return {
                 "error_type": None,
@@ -294,8 +336,6 @@ class AIEngine:
                 "confidence_score": confidence,
                 "confidence_valid": True,
                 "confidence_raw": raw_confidence,
-                "tactic_opinion": self._compact_opinion(tactic, max_chars=150),
-                "critic_opinion": self._compact_opinion(critic, max_chars=165),
                 "finish_reason": choice.get("finish_reason", "не указан"),
                 "usage": usage if isinstance(usage, dict) else {},
             }
@@ -474,10 +514,9 @@ class AIEngine:
             rule_text = select_prompt_rules("NONE", rag_context, max_chars=420)
 
         base = (
-            'Return exactly one JSON object with exactly four keys: final_decision (string APPROVE or HOLD), '
-            'confidence_score (JSON number from 0 to 1), tactic_opinion (Russian string), '
-            'critic_opinion (Russian string). No extra keys, no Markdown, no reasoning, no text outside JSON. '
-            'Each opinion is one complete sentence of at most 80 characters. '
+            'Return exactly one JSON object with exactly two keys: final_decision (string APPROVE or HOLD) '
+            'and confidence_score (JSON number from 0 to 1). No extra keys, no Markdown, no reasoning, '
+            'no opinion fields, and no text outside JSON. '
             'Candidate side is fixed by deterministic code. Never select, change, invert, or output BUY/SELL. '
             'APPROVE authorizes only the exact local candidate side; HOLD rejects it. '
             'candidate=NONE => final_decision MUST be HOLD. '
@@ -539,40 +578,23 @@ class AIEngine:
         candidate_direction: str,
         metrics: object,
     ) -> str:
-        """Compact schema-repair prompt without RAG or free-form reasoning."""
-        direction = candidate_direction if candidate_direction in {"BUY", "SELL"} else "NONE"
-        keys = (
-            "price_change_pct", "price_vs_vwap_pct", "volume_spike", "spread_pct",
-            "bid_ask_available", "spread_available", "bar_pattern_confirmed",
-            "bar_pattern_direction_code", "bar_pattern_name", "bid_size_drop_pct",
-            "ask_size_drop_pct", "bar_atr_periods",
+        """Repair the JSON shape while reusing the exact primary evidence rules."""
+        shared_rules = cls._build_live_prompt(
+            ticker,
+            price,
+            volume,
+            candidate_direction,
+            metrics,
+            "",
+            max_chars=1350,
+            include_rule_text=False,
         )
-        facts = []
-        if isinstance(metrics, dict):
-            for key in keys:
-                value = metrics.get(key)
-                if value is not None:
-                    facts.append(f"{key}={cls._prompt_value(value, 14)}")
-        checks = {
-            "BUY": "BUY needs positive price_change_pct and price_vs_vwap_pct.",
-            "SELL": "SELL needs negative price_change_pct and price_vs_vwap_pct.",
-            "NONE": "No valid candidate; final_decision must be HOLD.",
-        }[direction]
         return (
-            "Repair the previous invalid response. Return ONLY one valid JSON object. "
-            "It must have exactly these four keys and no others: final_decision (string exactly "
-            "APPROVE or HOLD), confidence_score (JSON number 0.0..1.0), tactic_opinion "
-            "(non-empty Russian sentence <=80 chars), critic_opinion (non-empty Russian sentence <=80 chars). "
-            "Do not return candidate, ticker, BUY, SELL, price, metrics, analysis, or reasoning as JSON keys/values. "
-            "Never output BUY/SELL as a decision. The local candidate side is fixed; choose only APPROVE or HOLD. "
-            "Directional evidence: either signed price change agrees with candidate and VWAP, OR a fresh "
-            "matching closed M1 pattern agrees with candidate while price stays on the correct side of VWAP. "
-            "A contradictory fresh M1 pattern means HOLD. Other hard checks: volume_spike>=1.5, fresh valid BBO, "
-            "spread<=0.5%. A >=50% fresh best-quote depletion is supporting, not mandatory. "
-            "When uncertain, choose HOLD. "
-            f"candidate={direction}; ticker={str(ticker)[:10]}; price={cls._prompt_value(price, 12)}; "
-            f"last_size={cls._prompt_value(volume, 10)}; checks: {checks} "
-            f"Measured facts: {';'.join(facts) if facts else 'not available'}."
+            "Repair the previous response. Return ONLY one JSON object with exactly two keys: "
+            "final_decision (APPROVE or HOLD) and confidence_score (JSON number 0.0..1.0). "
+            "Do not add any other keys, reasoning, Markdown, or text outside JSON. "
+            "Apply the same candidate-side and evidence rules below; do not introduce stricter checks. "
+            + shared_rules
         )
 
     @staticmethod
@@ -926,6 +948,9 @@ class AIEngine:
         model_decision = str(processed.get("model_decision", processed.get("final_decision", "HOLD"))).upper()
         processed["model_decision"] = model_decision
         processed["candidate_direction"] = candidate_direction
+        processed["tactic_opinion"], processed["critic_opinion"] = self._build_local_opinions(
+            model_decision, candidate_direction, metrics_dict
+        )
         processed["latency"] = round(inference_latency, 3)
         processed.setdefault("contract_retry_attempted", retry_attempted)
         processed.setdefault("contract_retry_recovered", retry_recovered)

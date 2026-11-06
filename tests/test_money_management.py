@@ -54,6 +54,18 @@ def closed_trade(order_id: str, pnl: float, when: datetime) -> dict:
 
 
 class RiskManagerMoneyManagementTests(unittest.IsolatedAsyncioTestCase):
+    async def test_configured_deposit_overrides_stale_redis_balance(self) -> None:
+        db = FakeDB({})
+        db.redis.values["piluitus:risk:persistent_balance"] = "20000.00"
+        manager = RiskManager(initial_deposit=40_000.0, daily_loss_limit=0.015)
+        manager.open_pnl_provider = lambda: 0.0
+
+        allowed = await manager.is_trading_allowed(db)
+
+        self.assertTrue(allowed)
+        self.assertEqual(manager.initial_deposit, 40_000.0)
+        self.assertEqual(db.redis.values["piluitus:risk:persistent_balance"], "40000.00")
+
     async def test_daily_loss_uses_full_ledger_not_only_last_100_history_rows(self) -> None:
         now = datetime.now()
         rows = {
