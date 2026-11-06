@@ -239,6 +239,12 @@ class AIEngine:
             confidence_valid = confidence is not None
             if confidence is None:
                 confidence = 0.0
+            # confidence_score is part of the mandatory response schema. An
+            # APPROVE without a valid numeric score must not be counted as a
+            # model approval; it is a malformed contract and fails closed.
+            model_contract_violation = model_contract_violation or not confidence_valid
+            if model_contract_violation:
+                decision = "HOLD"
 
             # У HOLD может быть уверенность в решении не открывать позицию.
             # Не обнуляем её только из-за класса решения.
