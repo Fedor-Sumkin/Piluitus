@@ -1,0 +1,131 @@
+2026-11-06 15:40:39,693 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🧾 [RUN START] id=20261106_154039_12500_aae4c0e4; session=session_06112026_15.40.log; diagnostic=diagnostic_06112026_15.40.log; errors=errors_log_06112026_15.40.log
+2026-11-06 15:40:39,696 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🛡️ [LOG DURABILITY] session/diagnostic fsync interval=1.00s; errors=fsync per record
+2026-11-06 15:40:39,902 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.AIEngine: 🧠 AIEngine v34 загружен: файл=ai_engine.py | API=/v1/chat/completions | модель=deepseek-r1-7b | max_tokens=1024
+2026-11-06 15:40:39,904 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.ExecutionLayer: 🛡️ [PORTFOLIO GUARD] capital=40000.00 ₽ gross_cap=10% single_position_cap=3% open_stop_risk_cap=1% stop_cooldown=180s repeat_SL=2/1800s->900s shadow_BE=True@1.00R
+2026-11-06 15:40:39,904 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.ExecutionLayer: 🛡️ РЕЖИМ АГЕНТА: [PAPER TRADING] — Симуляция ордеров через Redis ОЗУ.
+2026-11-06 15:40:39,904 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.ExecutionLayer: 🧪 [PAPER EXECUTION MODEL] Вход BUY=Ask/SELL=Bid, выход long=Bid/short=Ask; спред учитывается через стороны BBO; полное исполнение на top-of-book предполагается, а объём стакана не ограничивает fill, т.к. единицы Finam ещё не подтверждены.
+2026-11-06 15:40:39,904 [WARNING] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.ExecutionLayer: ⚠️ [PAPER COST SETTINGS] комиссия=0.0000% за сторону, доп.проскальзывание=0.00 bps. Нулевые параметры не учитываются в PnL; укажите собственный тариф Finam и модель дополнительного проскальзывания в .env. Спред уже включён в Ask/Bid.
+2026-11-06 15:40:39,905 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Screener: 🎯 Локальная воронка инициализирована: universe=88, top_n=15, min_samples=8, coverage=60%
+2026-11-06 15:40:40,025 [INFO] [RUN=20261106_154039_12500_aae4c0e4] uvicorn.error: Started server process [12500]
+2026-11-06 15:40:40,026 [INFO] [RUN=20261106_154039_12500_aae4c0e4] uvicorn.error: Waiting for application startup.
+2026-11-06 15:40:40,026 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🚀 Запуск PILUITUS v35.2 | депозит=40000.00 ₽ | общий лимит активов=10.0% (4000.00 ₽), одна позиция=3.0% (1200.00 ₽).
+2026-11-06 15:40:40,026 [INFO] [RUN=20261106_154039_12500_aae4c0e4] storage.db_manager: 🔌 Попытка подключения к Redis localhost:6379
+2026-11-06 15:40:40,033 [INFO] [RUN=20261106_154039_12500_aae4c0e4] storage.db_manager: ✅ Redis‑соединение успешно установлено
+2026-11-06 15:40:40,034 [INFO] [RUN=20261106_154039_12500_aae4c0e4] storage.db_manager: ✅ DBManager: соединение с Redis готово
+2026-11-06 15:40:40,102 [INFO] [RUN=20261106_154039_12500_aae4c0e4] storage.db_manager: 💾 RAG‑rules saved (13 items)
+2026-11-06 15:40:40,102 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.KnowledgeParser: 🧠 RAG готов: JSON-записей=13, правил ScalpingRules=13, активных=7, отключённых из-за требований к данным=6, отвергнуто JSON=0, старых/непригодных записей Redis удалено=13
+2026-11-06 15:40:40,115 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 📚 Из Redis успешно восстановлено 100 вердиктов.
+2026-11-06 15:40:40,115 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.RiskManager: 📦 [STATIC CONTOUR] Лотность загружена из config.py: 88 инструментов.
+2026-11-06 15:40:40,115 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🤖 Подключаем Telegram‑бот к API...
+2026-11-06 15:40:40,115 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🟢 Telegram‑бот успешно инициализирован.
+2026-11-06 15:40:40,116 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🤖 ИИ‑конвейер воркеров Piluitus v35.2 успешно запущен.
+2026-11-06 15:40:40,116 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.NewsParser: 📰 Запуск фонового цикла парсинга новостей Мосбиржи...
+2026-11-06 15:40:40,265 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 📊 Воркер синхронизации таблиц и капитала запущен.
+2026-11-06 15:40:40,265 [INFO] [RUN=20261106_154039_12500_aae4c0e4] aiogram.dispatcher: Start polling
+2026-11-06 15:40:40,266 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🔌 Проверка брокерского соединения Finam; календарь сессий будет проверяться по каждому инструменту...
+2026-11-06 15:40:40,434 [INFO] [RUN=20261106_154039_12500_aae4c0e4] uvicorn.error: Application startup complete.
+2026-11-06 15:40:40,441 [INFO] [RUN=20261106_154039_12500_aae4c0e4] uvicorn.error: Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)
+2026-11-06 15:40:40,874 [INFO] [RUN=20261106_154039_12500_aae4c0e4] uvicorn.error: ('127.0.0.1', 61345) - "WebSocket /ws/frontend" [accepted]
+2026-11-06 15:40:40,877 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🔌 К WS‑шлюзу подключился веб-интерфейс. Отправка стартового пакета...
+2026-11-06 15:40:40,879 [INFO] [RUN=20261106_154039_12500_aae4c0e4] uvicorn.error: connection open
+2026-11-06 15:40:40,923 [INFO] [RUN=20261106_154039_12500_aae4c0e4] aiogram.dispatcher: Run polling for bot @AI_TRAID_FEDOR_BOT id=<REDACTED> - 'AI_TRAID_FEDOR'
+2026-11-06 15:40:40,995 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: Авторизация Finam Trade API подтверждена.
+2026-11-06 15:40:41,667 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: 📅 Finam schedule загружено: SBER, интервалов=23, кэш=300s.
+2026-11-06 15:40:41,668 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 📅 [SESSION CALENDAR PROBE] SBER@MISX: known=True, open=True, entry_allowed=True, reason=active_session, next_session=-; actual entries are checked per instrument.
+2026-11-06 15:40:41,668 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: ⏳ Задача Finam WebSocket запущена; ожидаем HANDSHAKE_SUCCESS.
+2026-11-06 15:40:41,670 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: Подготовлено 88 уникальных инструментов Finam; подписка будет отправлена 9 запросами по не более 10 символов.
+2026-11-06 15:40:42,067 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: TCP/TLS WebSocket Finam установлен; ожидаем HANDSHAKE_SUCCESS (websockets 12.0).
+2026-11-06 15:40:42,113 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: ✅ Finam WS: авторизация успешна (HANDSHAKE_SUCCESS)
+2026-11-06 15:40:42,113 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 1/9, символов 10 (SBER@MISX, SBERP@MISX, GAZP@MISX…).
+2026-11-06 15:40:42,159 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 2/9, символов 10 (CHMF@MISX, NLMK@MISX, MOEX@MISX…).
+2026-11-06 15:40:42,212 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 3/9, символов 10 (HYDR@MISX, FEES@MISX, CBOM@MISX…).
+2026-11-06 15:40:42,256 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 4/9, символов 10 (GCHE@MISX, LSRG@MISX, SMLT@MISX…).
+2026-11-06 15:40:42,316 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 5/9, символов 10 (RNFT@MISX, UWGN@MISX, VKCO@MISX…).
+2026-11-06 15:40:42,376 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 6/9, символов 10 (MDMG@MISX, WUSH@MISX, CARM@MISX…).
+2026-11-06 15:40:42,428 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 7/9, символов 10 (FESH@MISX, NMTP@MISX, FLOT@MISX…).
+2026-11-06 15:40:42,490 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 8/9, символов 10 (IRKT@MISX, KAZT@MISX, KAZTP@MISX…).
+2026-11-06 15:40:42,539 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: Подписка QUOTES отправлена: пакет 9/9, символов 8 (NKNC@MISX, NKNCP@MISX, TGKA@MISX…).
+2026-11-06 15:40:42,539 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: Все 9 запросов подписки отправлены; ожидаем поток котировок.
+2026-11-06 15:40:42,541 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: Получено первое DATA от Finam: subscription_type=QUOTES, payload_type=dict, payload_keys=['quote']
+2026-11-06 15:40:42,541 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: ✅ Первая котировка Finam передана в очередь: SBER price=294.03 volume=1.0 bid=294.03 ask=294.04 bid_size=7207.0 ask_size=36.0 presence=(True,True,True,True) timestamp=2026-11-06T12:40:41.088092337Z
+2026-11-06 15:40:42,543 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 Воронка прогревается: котировки получены по 1/88 инструментам; пригодны для рейтинга 0; цель top-15.
+2026-11-06 15:40:42,974 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.NewsParser: 📰 [NEWS] Успешно сохранено и обновлено 1 новостей в Redis.
+2026-11-06 15:40:44,381 [INFO] [RUN=20261106_154039_12500_aae4c0e4] uvicorn.access: 127.0.0.1:53608 - "GET /maintenance HTTP/1.1" 200
+2026-11-06 15:40:44,426 [INFO] [RUN=20261106_154039_12500_aae4c0e4] uvicorn.access: 127.0.0.1:53608 - "GET /api/v1/paper/reconciliation HTTP/1.1" 200
+2026-11-06 15:40:46,223 [INFO] [RUN=20261106_154039_12500_aae4c0e4] uvicorn.error: ('127.0.0.1', 53610) - "WebSocket /ws/frontend" [accepted]
+2026-11-06 15:40:46,224 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🔌 К WS‑шлюзу подключился веб-интерфейс. Отправка стартового пакета...
+2026-11-06 15:40:46,225 [INFO] [RUN=20261106_154039_12500_aae4c0e4] uvicorn.error: connection open
+2026-11-06 15:41:12,662 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 Воронка прогревается: котировки получены по 88/88 инструментам; пригодны для рейтинга 29; цель top-15.
+2026-11-06 15:41:42,779 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 Воронка прогревается: котировки получены по 88/88 инструментам; пригодны для рейтинга 42; цель top-15.
+2026-11-06 15:42:10,556 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: RENI, ALRS, FEES, MVID, SFIN, IRAO, AFKS, BSPB, SNGS, ENPG, POSI, HYDR, SVCB, MOEX, WUSH
+2026-11-06 15:42:10,682 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.FinamGateway: ✅ Finam ORDER_BOOK активен: AFKS Bid=9.021×12.0 Ask=9.025×106.0; timestamp_source=ENVELOPE.
+2026-11-06 15:42:40,681 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: SFIN, RENI, MVID, FEES, ALRS, FLOT, AFKS, IRAO, SNGS, MTLR, ENPG, MAGN, RUAL, HYDR, POSI
+2026-11-06 15:43:10,689 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MVID, HYDR, MTLR, RENI, FLOT, TATNP, LSRG, TGKA, SNGS, SOFL, FEES, WUSH, SFIN, CHMF, ALRS
+2026-11-06 15:43:40,809 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MVID, DELI, ALRS, HYDR, ENPG, SOFL, RASP, SNGS, SFIN, FEES, TGKA, MTLR, LSRG, MTLRP, TATNP
+2026-11-06 15:44:10,798 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MVID, FEES, NKNC, DELI, SOFL, RASP, SFIN, MTLRP, IRAO, RENI, LSRG, TGKA, ENPG, WUSH, MTLR
+2026-11-06 15:44:40,965 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: NKNC, ALRS, TGKA, ABIO, GECO, SOFL, MTLRP, MVID, LSRG, WUSH, MTSS, SVCB, SFIN, MTLR, HYDR
+2026-11-06 15:45:11,021 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: NKNC, TGKA, GECO, SVCB, SOFL, ABIO, MTLRP, MVID, IRAO, UPRO, HYDR, LSRG, WUSH, SFIN, DELI
+2026-11-06 15:45:41,031 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: LSRG, TGKA, KAZTP, GTRK, CARM, DELI, ABIO, GECO, POSI, RENI, NKNC, HYDR, SOFL, FEES, IRAO
+2026-11-06 15:45:46,079 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.NewsParser: 📰 [NEWS] Успешно сохранено и обновлено 1 новостей в Redis.
+2026-11-06 15:46:11,039 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: TGKA, KAZTP, GECO, ABIO, CARM, NKNC, SOFL, RENI, GCHE, LSRG, FEES, DELI, SVCB, IRAO, NMTP
+2026-11-06 15:46:41,069 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: ABIO, MAGEP, GECO, KROT, KAZTP, NKNC, WUSH, CARM, TTLK, SOFL, TGKA, GCHE, FEES, RENI, MVID
+2026-11-06 15:47:11,065 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MAGEP, GECO, LSRG, CARM, MVID, KROT, KAZTP, NKNC, SVCB, TTLK, TGKA, GCHE, SOFL, ABIO, RENI
+2026-11-06 15:47:31,014 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🔌 WS‑клиент отключён
+2026-11-06 15:47:31,021 [INFO] [RUN=20261106_154039_12500_aae4c0e4] uvicorn.error: connection closed
+2026-11-06 15:47:31,654 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.RiskManager: 💾 [PERSISTENCE] Баланс восстановлен из Redis: 20000.00 ₽
+2026-11-06 15:47:34,828 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: [LLM DECISION] SVCB candidate=SELL model=HOLD final=HOLD confidence=89.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 15:47:37,664 [WARNING] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.AIEngine: [AIEngine v34] JSON-разбор не удался: В JSON отсутствует обязательное поле final_decision | finish_reason=stop | completion_tokens=176 | preview='{"candidate": "SELL", "ticker": "ENPG", "price": "322.2", "last_size": "76", "volume_spike": "2.908", "spread_pct": "0.1551", "bid_ask_available": "1", "spread_available": "1", "ba'
+2026-11-06 15:47:37,669 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: [LLM DECISION] ENPG candidate=SELL model=HOLD final=HOLD confidence=invalid confidence_valid=False contract_violation=True reason=LLM нарушила контракт APPROVE/HOLD; вход запрещён.
+2026-11-06 15:47:41,108 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: TGKA, NKNC, GECO, MVID, KROT, CARM, ABIO, ENPG, LSRG, TTLK, SFIN, GCHE, MAGEP, HYDR, CBOM
+2026-11-06 15:48:01,756 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: [LLM DECISION] CBOM candidate=SELL model=HOLD final=HOLD confidence=75.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 15:48:11,216 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: TGKA, NKNC, GECO, SFIN, IRKT, ABIO, LSRG, MTLRP, TTLK, CARM, KROT, MTLR, CBOM, FEES, WUSH
+2026-11-06 15:48:41,309 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: ABIO, TGKA, NKNC, SFIN, IRKT, MTLRP, KROT, UPRO, CARM, FEES, RENI, LSRG, MVID, WUSH, TATNP
+2026-11-06 15:48:55,774 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: [LLM DECISION] SMLT candidate=SELL model=HOLD final=HOLD confidence=75.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 15:49:11,627 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: ABIO, TGKA, GTRK, NKNC, KROT, SFIN, IRKT, UPRO, CARM, DELI, MVID, FEES, ALRS, HYDR, BLNG
+2026-11-06 15:49:38,613 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: [LLM DECISION] TATNP candidate=BUY model=HOLD final=HOLD confidence=65.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 15:49:41,697 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: GTRK, BLNG, ABIO, UPRO, TGKA, NKNC, IRKT, KROT, CARM, GCHE, WUSH, MVID, RENI, TATNP, FEES
+2026-11-06 15:50:11,746 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: BLNG, ABIO, TGKA, NKNC, KROT, IRKT, MAGEP, UPRO, MTLRP, GCHE, WUSH, SFIN, GTRK, CARM, MVID
+2026-11-06 15:50:37,531 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: ✅ [PRE-LLM RESUME] MVID: свежий BBO подтверждён, кандидат BUY передан в LLM-очередь.
+2026-11-06 15:50:39,338 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: [LLM DECISION] MVID candidate=BUY model=HOLD final=HOLD confidence=75.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 15:50:40,180 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: ✅ [PRE-LLM RESUME] RENI: свежий BBO подтверждён, кандидат BUY передан в LLM-очередь.
+2026-11-06 15:50:40,777 [WARNING] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.AIEngine: [AIEngine v34] JSON-разбор не удался: В JSON отсутствует обязательное поле final_decision | finish_reason=stop | completion_tokens=32 | preview='{"candidate": "BUY", "ticker": "RENI", "price": "69.6", "last_size": "58."}'
+2026-11-06 15:50:40,783 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: [LLM DECISION] RENI candidate=BUY model=HOLD final=HOLD confidence=invalid confidence_valid=False contract_violation=True reason=LLM нарушила контракт APPROVE/HOLD; вход запрещён.
+2026-11-06 15:50:41,767 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: ABIO, BLNG, MVID, TGKA, NKNC, MTLRP, UPRO, MAGEP, DELI, GCHE, GTRK, NKNCP, SMLT, RENI, ALRS
+2026-11-06 15:50:53,042 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.NewsParser: 📰 [NEWS] Успешно сохранено и обновлено 1 новостей в Redis.
+2026-11-06 15:51:00,698 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: [LLM DECISION] RENI candidate=BUY model=HOLD final=HOLD confidence=75.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 15:51:11,826 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: ABIO, BLNG, TGKA, NKNC, UPRO, MAGEP, GCHE, MTLRP, WUSH, GTRK, NKNCP, MVID, RENI, ENPG, POSI
+2026-11-06 15:51:41,986 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: ABIO, GTRK, UWGN, OKEY, NKNC, SVCB, UPRO, DELI, MAGEP, TGKA, RENI, GCHE, MTLRP, CARM, CHMF
+2026-11-06 15:52:12,092 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: CARM, OKEY, ABIO, UWGN, NKNC, LSRG, MTLRP, MAGEP, SVCB, GCHE, DVEC, GTRK, RENI, TGKA, CHMF
+2026-11-06 15:52:42,119 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: LSRG, CARM, IRKT, UWGN, MTLRP, MAGEP, ABIO, GTRK, SVCB, DVEC, DELI, GCHE, SOFL, OKEY, TGKA
+2026-11-06 15:53:12,138 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MVID, CARM, IRKT, SVCB, MTLRP, ABIO, MAGEP, LSRG, GTRK, GCHE, DELI, DVEC, SOFL, UWGN, SFIN
+2026-11-06 15:53:42,150 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: CARM, TGKA, MVID, IRKT, ABIO, MTLRP, GTRK, NKNC, TTLK, DELI, SFIN, LSRG, GCHE, DVEC, SVCB
+2026-11-06 15:54:12,148 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MVID, CARM, TGKA, ABIO, MTLRP, NMTP, DELI, IRKT, SVCB, GTRK, TTLK, NKNC, DVEC, BLNG, SOFL
+2026-11-06 15:54:42,234 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: CARM, DELI, SVCB, BLNG, NMTP, ABIO, MVID, GTRK, NKNC, TTLK, GECO, GCHE, DVEC, IRKT, MTLRP
+2026-11-06 15:55:12,511 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: CARM, TGKA, DELI, BLNG, NKNC, TTLK, GTRK, GCHE, GECO, MVID, ABIO, HYDR, DVEC, IRKT, MTLRP
+2026-11-06 15:55:42,549 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: RENI, DELI, MVID, BLNG, TGKA, CARM, KAZTP, GTRK, TTLK, GECO, GCHE, DVEC, ABIO, IRKT, NKNC
+2026-11-06 15:55:59,465 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.NewsParser: 📰 [NEWS] Успешно сохранено и обновлено 1 новостей в Redis.
+2026-11-06 15:56:12,575 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: GTRK, BLNG, KROT, TTLK, KAZTP, DELI, ABIO, CARM, TGKA, GECO, GCHE, IRKT, DVEC, NKNC, RENI
+2026-11-06 15:56:42,600 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: GCHE, BLNG, KROT, KAZTP, CARM, RENI, DELI, LSRG, MVID, GECO, KBSB, TGKA, NKNC, DVEC, IRKT
+2026-11-06 15:57:12,659 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: KROT, CARM, GCHE, MVID, GTRK, BLNG, KAZTP, GECO, DELI, TGKA, KBSB, NKNC, DVEC, IRKT, ELFV
+2026-11-06 15:57:42,813 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: ELFV, UWGN, KROT, GCHE, CARM, MVID, NKNC, SFIN, KAZTP, GECO, DELI, KBSB, TGKA, DVEC, KAZT
+2026-11-06 15:58:12,920 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: UWGN, ELFV, KROT, MVID, RENI, CARM, KAZTP, NKNC, GCHE, GECO, TGKA, KBSB, DVEC, KAZT, NLMK
+2026-11-06 15:58:43,262 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: ELFV, UWGN, CARM, KAZTP, KROT, ENPG, TTLK, GCHE, GECO, RENI, KBSB, NKNC, DVEC, KAZT, MVID
+2026-11-06 15:59:13,531 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: TGKA, DELI, ELFV, TTLK, CARM, KAZTP, KROT, GCHE, ENPG, GECO, NKNC, KBSB, RENI, DVEC, KAZT
+2026-11-06 15:59:43,575 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: TGKA, ELFV, GCHE, KROT, TTLK, ENPG, DELI, MTSS, KBSB, RENI, SFIN, RASP, DVEC, CARM, FLOT
+2026-11-06 16:00:13,677 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MVID, TGKA, ELFV, KROT, GCHE, TTLK, ENPG, DELI, RENI, LSRG, KBSB, RASP, DVEC, SFIN, CARM
+2026-11-06 16:00:40,893 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: [LLM DECISION] RENI candidate=BUY model=HOLD final=HOLD confidence=75.0% confidence_valid=True contract_violation=False reason=Модель отклонила локальный кандидат: вердикт HOLD.
+2026-11-06 16:00:44,481 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🎯 ВОРОНКА ГОТОВА: 88 → 15 тикеров для LLM: MVID, RENI, GTRK, ELFV, TGKA, DELI, TTLK, LSRG, CBOM, SFIN, UWGN, GCHE, KROT, ENPG, FLOT
+2026-11-06 16:01:07,626 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.NewsParser: 📰 [NEWS] Успешно сохранено и обновлено 1 новостей в Redis.
+2026-11-06 16:01:07,750 [INFO] [RUN=20261106_154039_12500_aae4c0e4] uvicorn.error: Shutting down
+2026-11-06 16:01:07,753 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🔌 WS‑клиент отключён
+2026-11-06 16:01:07,754 [INFO] [RUN=20261106_154039_12500_aae4c0e4] uvicorn.error: connection closed
+2026-11-06 16:01:07,860 [INFO] [RUN=20261106_154039_12500_aae4c0e4] uvicorn.error: Waiting for application shutdown.
+2026-11-06 16:01:07,860 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🛑 Начинаем штатную остановку фоновых задач PILUITUS...
+2026-11-06 16:01:07,861 [INFO] [RUN=20261106_154039_12500_aae4c0e4] aiogram.dispatcher: Polling stopped
+2026-11-06 16:01:07,868 [WARNING] [RUN=20261106_154039_12500_aae4c0e4] aiogram.dispatcher: Sleep for 1.000000 seconds and try again... (tryings = 0, bot id = <REDACTED>)
+2026-11-06 16:01:08,942 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.AIEngine: [AIEngine] HTTP‑клиент закрыт
+2026-11-06 16:01:08,943 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🛑 Фоновые задачи остановлены; AIEngine закрыт.
+2026-11-06 16:01:08,943 [INFO] [RUN=20261106_154039_12500_aae4c0e4] uvicorn.error: Application shutdown complete.
+2026-11-06 16:01:08,944 [INFO] [RUN=20261106_154039_12500_aae4c0e4] uvicorn.error: Finished server process [12500]
+2026-11-06 16:01:08,944 [INFO] [RUN=20261106_154039_12500_aae4c0e4] aiogram.dispatcher: Polling stopped for bot @AI_TRAID_FEDOR_BOT id=<REDACTED> - 'AI_TRAID_FEDOR'
+2026-11-06 16:01:08,945 [INFO] [RUN=20261106_154039_12500_aae4c0e4] Piluitus.Main: 🛑 PILUITUS остановлен оператором (Ctrl+C).
