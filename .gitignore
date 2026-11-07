@@ -8,4 +8,7 @@ trading_logs/
 live_market_logs/
 /import_knowledge/
 /data/knowledge/sources/
+/data/historical_trades/
+/data/historical_bars/
+/data/historical_download_manifest.json
 data/historical_ticks/
