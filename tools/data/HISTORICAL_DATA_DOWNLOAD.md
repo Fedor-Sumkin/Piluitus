@@ -8,7 +8,7 @@ prints (TICKS).
 ## What is downloaded
 
 - Individual trade prints into data/historical_trades/<TICKER>/<YYYYMMDD>.csv.
-  Normalized fields: ticker, datetime_msk, date, time, price, volume, period.
+  Normalized fields: ticker, datetime_msk, date, time, price, volume, trade_id, operation, period.
 - OHLCV bars into data/historical_bars/<TIMEFRAME>/<TICKER>.csv.
   Default timeframes: m1,m5,m15,d1. Optional: m10,m30,h1,w1,mn1.
 
@@ -17,9 +17,9 @@ is kept in datetime_msk. Trade volume is preserved as returned by Finam; the
 downloader does not convert shares to lots.
 
 The TICKS export provides transaction time, price and volume. It does not
-provide historical Bid/Ask depth or a verified aggressor-side field. The
-downloader therefore does not fabricate bid, ask, queue imbalance, OFI or
-BUY/SELL aggressor labels. Historical order-book reconstruction requires a
+provide historical Bid/Ask depth. The optional OPER field is preserved as a raw
+operation code; its semantics are not assumed to mean BUY/SELL aggressor side.
+The downloader therefore does not fabricate bid, ask, queue imbalance or OFI. Historical order-book reconstruction requires a
 separate historical market-data source (for example, MOEX order-book archive).
 
 ## Usage

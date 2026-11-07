@@ -15,15 +15,17 @@ from tools.data.historical_downloader import (
 class HistoricalDownloaderTests(unittest.TestCase):
     def test_tick_export_is_parsed_as_individual_trades_without_invented_side(self) -> None:
         raw = (
-            "<TICKER>;<PER>;<DATE>;<TIME>;<LAST>;<VOL>\n"
-            "SBER;1;20261106;10:00:01;301.25;10\n"
-            "SBER;1;20261106;10:00:03;301.30;5\n"
+            "<DATE>;<TIME>;<LAST>;<VOL>;<ID>;<OPER>\n"
+            "20261106;10:00:01;301.25;10;987654;1\n"
+            "20261106;10:00:03;301.30;5;987655;2\n"
         )
         frame = parse_export_csv(raw, "ticks", "SBER")
         self.assertEqual(len(frame), 2)
         self.assertEqual(frame.iloc[0]["ticker"], "SBER")
         self.assertEqual(frame.iloc[0]["price"], 301.25)
         self.assertEqual(frame.iloc[0]["volume"], 10)
+        self.assertEqual(frame.iloc[0]["trade_id"], "987654")
+        self.assertEqual(frame.iloc[0]["operation"], "1")
         self.assertEqual(frame.iloc[0]["datetime_msk"], "2026-11-06T10:00:01+03:00")
         self.assertNotIn("aggressor_side", frame.columns)
         self.assertNotIn("bid", frame.columns)
@@ -48,7 +50,7 @@ class HistoricalDownloaderTests(unittest.TestCase):
         self.assertTrue(frame.empty)
         self.assertEqual(
             list(frame.columns),
-            ["ticker", "datetime_msk", "date", "time", "price", "volume", "period"],
+            ["ticker", "datetime_msk", "date", "time", "price", "volume", "trade_id", "operation", "period"],
         )
 
     def test_export_catalog_resolves_only_moex_share_contracts(self) -> None:
@@ -67,7 +69,7 @@ class HistoricalDownloaderTests(unittest.TestCase):
         instrument = {"id": 3, "code": "SBER", "market": 1}
         params = build_export_params(instrument, date(2026, 11, 6), date(2026, 11, 6), "ticks")
         self.assertEqual(params["p"], 1)
-        self.assertEqual(params["datf"], 6)
+        self.assertEqual(params["datf"], 12)
         self.assertEqual(params["market"], 1)
         self.assertEqual(params["em"], 3)
         self.assertEqual(params["mstime"], "on")

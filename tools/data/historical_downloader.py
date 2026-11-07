@@ -13,7 +13,6 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
-from zoneinfo import ZoneInfo
 
 import httpx
 import pandas as pd
@@ -27,7 +26,7 @@ from config import TICKERS_TO_TRADE  # noqa: E402
 LOGGER = logging.getLogger("Piluitus.HistoricalDownloader")
 EXPORT_PAGE_URL = "https://www.finam.ru/profile/moex-akcii/gazprom/export/"
 EXPORT_BASE_URL = "https://export.finam.ru/table.csv"
-MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
 SHARES_MARKET_ID = 1
 
 BAR_TIMEFRAMES: dict[str, int] = {
@@ -134,7 +133,7 @@ def build_export_params(
     """Build Finam website-export query parameters for TICKS or OHLC bars."""
     timeframe = timeframe.lower()
     if timeframe == "ticks":
-        period_code, data_format = TICK_TIMEFRAME_CODE, 6
+        period_code, data_format = TICK_TIMEFRAME_CODE, 12  # DATE, TIME, LAST, VOL, ID, OPER
     elif timeframe in BAR_TIMEFRAMES:
         period_code, data_format = BAR_TIMEFRAMES[timeframe], 5
     else:
@@ -209,7 +208,7 @@ def parse_export_csv(raw_text: str, dataset: str, ticker: str) -> pd.DataFrame:
         return frame[column]
 
     output_columns = (
-        ["ticker", "datetime_msk", "date", "time", "price", "volume", "period"]
+        ["ticker", "datetime_msk", "date", "time", "price", "volume", "trade_id", "operation", "period"]
         if dataset == "ticks"
         else ["ticker", "datetime_msk", "date", "time", "open", "high", "low", "close", "volume", "period"]
     )
@@ -235,6 +234,8 @@ def parse_export_csv(raw_text: str, dataset: str, ticker: str) -> pd.DataFrame:
 
     if dataset == "ticks":
         result["price"] = _numeric_column(source_column("LAST"))
+        result["trade_id"] = source_column("ID").astype(str).str.strip() if "ID" in headers else ""
+        result["operation"] = source_column("OPER").astype(str).str.strip() if "OPER" in headers else ""
     else:
         for field in ("OPEN", "HIGH", "LOW", "CLOSE"):
             result[field.lower()] = _numeric_column(source_column(field))
