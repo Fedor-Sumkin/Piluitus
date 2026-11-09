@@ -34,6 +34,20 @@ class FinamOrderBookResyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("SBER", client._order_book_snapshot_required)
         client.get_ticker_order_book.assert_awaited_once_with("SBER")
 
+    async def test_wide_rest_spread_is_logged_but_never_used_for_execution(self):
+        client = FinamBrokerClient(token="test-token")
+        client.get_ticker_order_book = AsyncMock(return_value={
+            "bids": [{"price": 100.0, "volume": 10}],
+            "asks": [{"price": 102.0, "volume": 12}],
+        })
+        queue = asyncio.Queue()
+
+        refreshed = await client.refresh_order_book_snapshot("SBER", queue)
+
+        self.assertTrue(refreshed)
+        self.assertTrue(queue.empty())
+        self.assertEqual(client._order_book_state, {})
+
     async def test_crossed_or_incomplete_rest_snapshot_is_rejected(self):
         client = FinamBrokerClient(token="test-token")
         client.get_ticker_order_book = AsyncMock(return_value={
