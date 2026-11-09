@@ -571,10 +571,10 @@ class AIEngine:
 
         rule_text = ""
         if include_rule_text and isinstance(rag_context, str):
-            # Keep only curated risk rules in the model prompt. Directional RAG
-            # rules may encode stale top-size requirements; local measured gates
-            # own candidate direction and supporting evidence.
-            rule_text = select_prompt_rules("NONE", rag_context, max_chars=420)
+            # Include only always-on risk rules and rules matching the already
+            # selected local candidate side. The opposite side is excluded.
+            # RAG remains advisory: deterministic code owns every hard gate.
+            rule_text = select_prompt_rules(direction, rag_context, max_chars=420)
 
         base = (
             'Return exactly one JSON object with exactly three keys: final_decision (APPROVE or HOLD), '
