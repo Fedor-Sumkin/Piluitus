@@ -267,7 +267,7 @@ class BaseExecutionEngine:
         # Cooldowns are side-specific: a short stop does not suppress a valid long setup.
         self._ticker_cooldowns: dict[tuple[str, str], float] = {}
         self._recent_stop_losses: dict[tuple[str, str], deque[float]] = {}
-        self._pending_monitor_prices: dict[str, tuple[float, str]] = {}
+        self._pending_monitor_prices: dict[str, tuple[float, str, object]] = {}
         self._monitor_worker_task: asyncio.Task | None = None
         self._last_bbo_exit_warning_at: dict[str, float] = {}
         # Old PAPER positions cannot be resumed safely after restart because the
@@ -1514,7 +1514,7 @@ class BaseExecutionEngine:
             self._capture_paper_exit_trigger(
                 ticker, trade, price, source=source, market_timestamp=event_timestamp
             )
-        self._pending_monitor_prices[ticker] = (price, source)
+        self._pending_monitor_prices[ticker] = (price, source, event_timestamp)
         if self._monitor_worker_task is None or self._monitor_worker_task.done():
             self._monitor_worker_task = asyncio.create_task(self._drain_monitor_prices(db))
 
@@ -1525,12 +1525,19 @@ class BaseExecutionEngine:
                 pending = self._pending_monitor_prices
                 self._pending_monitor_prices = {}
                 for ticker, pending_value in pending.items():
-                    if isinstance(pending_value, tuple) and len(pending_value) == 2:
+                    if isinstance(pending_value, tuple) and len(pending_value) == 3:
+                        price, source, event_timestamp = pending_value
+                    elif isinstance(pending_value, tuple) and len(pending_value) == 2:
                         price, source = pending_value
+                        event_timestamp = None
                     else:
-                        price, source = pending_value, "LAST_TRADE"
+                        price, source, event_timestamp = pending_value, "LAST_TRADE", None
                     await self.monitor_paper_positions(
-                        ticker, float(price), db, event_source=str(source)
+                        ticker,
+                        float(price),
+                        db,
+                        event_source=str(source),
+                        event_timestamp=event_timestamp,
                     )
         except asyncio.CancelledError:
             raise
@@ -1830,6 +1837,7 @@ class BaseExecutionEngine:
         db: DBManager,
         *,
         event_source: str = "LAST_TRADE",
+        event_timestamp: object = None,
     ):
         """Latch SL/TP on market events; execute only against a fresh executable BBO."""
         if not self.paper_mode:
@@ -2133,7 +2141,8 @@ class BaseExecutionEngine:
 
             if not str(trade.get("pending_exit_reason") or "").upper() in {"STOP_LOSS", "TAKE_PROFIT"}:
                 self._capture_paper_exit_trigger(
-                    ticker, trade, executable_exit_price, source="EXECUTABLE_BBO"
+                    ticker, trade, executable_exit_price,
+                    source="EXECUTABLE_BBO", market_timestamp=event_timestamp,
                 )
             exit_reason = str(trade.get("pending_exit_reason") or "").upper()
             if exit_reason not in {"STOP_LOSS", "TAKE_PROFIT"}:
