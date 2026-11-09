@@ -96,7 +96,7 @@ class PaperExitTriggerTests(unittest.TestCase):
         self.assertNotIn("pending_exit_reason", self.engine.paper_positions["TEST"])
         self.assertEqual(
             self.engine._pending_monitor_prices["TEST"],
-            (98.0, "ORDER_BOOK"),
+            (98.0, "ORDER_BOOK", None),
         )
 
     def test_last_trade_trigger_is_latched_before_monitor_queue_coalescing(self):
