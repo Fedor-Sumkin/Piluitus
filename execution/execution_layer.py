@@ -15,7 +15,7 @@ import asyncio
 from uuid import uuid4
 
 # Единый справочник лотности хранится в config.py.
-from config import LOT_SIZES
+from config import LOT_SIZES, Settings
 
 logger = logging.getLogger("Piluitus.ExecutionLayer")
 
@@ -247,11 +247,13 @@ class BaseExecutionEngine:
         # Depth-based partial fills stay disabled until the Finam ORDER_BOOK size
         # unit is explicitly confirmed. The official schema exposes Decimal sizes
         # but does not define shares-vs-lots semantics.
-        configured_book_unit = os.getenv("PILUITUS_PAPER_BOOK_SIZE_UNIT", "unknown").strip().lower()
+        configured_book_unit = str(getattr(Settings, "PAPER_BOOK_SIZE_UNIT", "unknown")).strip().lower()
         self.paper_book_size_unit = configured_book_unit if configured_book_unit in {"shares", "lots"} else "unknown"
         self.paper_max_book_participation_pct = min(
             100.0,
-            max(1.0, _finite_or_default(os.getenv("PILUITUS_PAPER_MAX_BOOK_PARTICIPATION_PCT", "10"), 10.0)),
+            max(1.0, _finite_or_default(
+                getattr(Settings, "PAPER_MAX_BOOK_PARTICIPATION_PCT", 10.0), 10.0
+            )),
         )
 
         # ОЗУ-структуры PAPER-позиций.
