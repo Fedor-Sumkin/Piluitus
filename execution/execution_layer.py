@@ -244,6 +244,15 @@ class BaseExecutionEngine:
         self.paper_slippage_bps = min(
             100.0, max(0.0, _finite_or_default(os.getenv("PILUITUS_PAPER_SLIPPAGE_BPS", "0"), 0.0))
         )
+        # Depth-based partial fills stay disabled until the Finam ORDER_BOOK size
+        # unit is explicitly confirmed. The official schema exposes Decimal sizes
+        # but does not define shares-vs-lots semantics.
+        configured_book_unit = os.getenv("PILUITUS_PAPER_BOOK_SIZE_UNIT", "unknown").strip().lower()
+        self.paper_book_size_unit = configured_book_unit if configured_book_unit in {"shares", "lots"} else "unknown"
+        self.paper_max_book_participation_pct = min(
+            100.0,
+            max(1.0, _finite_or_default(os.getenv("PILUITUS_PAPER_MAX_BOOK_PARTICIPATION_PCT", "10"), 10.0)),
+        )
 
         # ОЗУ-структуры PAPER-позиций.
         self.paper_positions: dict[str, TradeRecord] = {}
@@ -256,7 +265,7 @@ class BaseExecutionEngine:
         # Cooldowns are side-specific: a short stop does not suppress a valid long setup.
         self._ticker_cooldowns: dict[tuple[str, str], float] = {}
         self._recent_stop_losses: dict[tuple[str, str], deque[float]] = {}
-        self._pending_monitor_prices: dict[str, float] = {}
+        self._pending_monitor_prices: dict[str, tuple[float, str]] = {}
         self._monitor_worker_task: asyncio.Task | None = None
         self._last_bbo_exit_warning_at: dict[str, float] = {}
         # Old PAPER positions cannot be resumed safely after restart because the
@@ -946,6 +955,116 @@ class BaseExecutionEngine:
             self._ticker_cooldowns[key] = current + cooldown
         return cooldown, len(history)
 
+    @staticmethod
+    def _simulate_paper_depth_fill(
+        levels: object,
+        requested_lots: int,
+        lot_size: int,
+        size_unit: str,
+        max_participation_pct: float,
+    ) -> dict[str, Any] | None:
+        """Simulate a conservative top-to-deeper-book fill when size units are known.
+
+        Finam's published OrderBook schema does not document whether row sizes are
+        shares or lots. Callers must therefore opt in with an explicit unit.
+        """
+        unit = str(size_unit or "").strip().lower()
+        if unit not in {"shares", "lots"}:
+            return None
+        requested = max(0, int(requested_lots))
+        lot = max(1, int(lot_size))
+        participation = min(100.0, max(1.0, _finite_or_default(max_participation_pct, 10.0)))
+        if requested <= 0 or not isinstance(levels, (list, tuple)):
+            return {"filled_lots": 0, "filled_shares": 0, "requested_shares": requested * lot,
+                    "average_price": 0.0, "levels_used": 0, "fill_ratio": 0.0}
+
+        remaining_shares = requested * lot
+        filled_shares = 0
+        filled_notional = 0.0
+        levels_used = 0
+        for level in levels:
+            if isinstance(level, Mapping):
+                raw_price = level.get("price")
+                raw_size = level.get("size", level.get("quantity"))
+            elif isinstance(level, (list, tuple)) and len(level) >= 2:
+                raw_price, raw_size = level[0], level[1]
+            else:
+                continue
+            level_price = _finite_or_default(raw_price, 0.0)
+            level_size = _finite_or_default(raw_size, 0.0)
+            if level_price <= 0.0 or level_size <= 0.0:
+                continue
+            available_shares = level_size * lot if unit == "lots" else level_size
+            participation_shares = int(math.floor(available_shares * participation / 100.0))
+            fillable_lots = participation_shares // lot
+            level_fill_shares = min(remaining_shares, fillable_lots * lot)
+            if level_fill_shares <= 0:
+                continue
+            filled_shares += level_fill_shares
+            filled_notional += level_fill_shares * level_price
+            remaining_shares -= level_fill_shares
+            levels_used += 1
+            if remaining_shares <= 0:
+                break
+
+        average_price = filled_notional / filled_shares if filled_shares > 0 else 0.0
+        return {
+            "filled_lots": filled_shares // lot,
+            "filled_shares": filled_shares,
+            "requested_shares": requested * lot,
+            "average_price": average_price,
+            "levels_used": levels_used,
+            "fill_ratio": filled_shares / (requested * lot) if requested > 0 else 0.0,
+        }
+
+    def _capture_paper_exit_trigger(
+        self,
+        ticker: str,
+        trade: TradeRecord,
+        observed_price: float,
+        *,
+        source: str,
+        market_timestamp: object = None,
+    ) -> str:
+        """Latch the first SL/TP trigger independently from executable BBO availability."""
+        existing = str(trade.get("pending_exit_reason") or "").upper()
+        if existing in {"STOP_LOSS", "TAKE_PROFIT"}:
+            return existing
+        side = str(trade.get("side", "BUY")).upper()
+        entry = _finite_or_default(trade.get("entry_price"), 0.0)
+        if side not in {"BUY", "SELL"} or entry <= 0.0:
+            return ""
+        stop = _finite_or_default(trade.get("stop_loss"), entry * (0.995 if side == "BUY" else 1.005))
+        target = _finite_or_default(trade.get("take_profit"), entry * (1.015 if side == "BUY" else 0.985))
+        price = _finite_or_default(observed_price, 0.0)
+        if price <= 0.0:
+            return ""
+        if side == "BUY":
+            reason = "STOP_LOSS" if price <= stop else "TAKE_PROFIT" if price >= target else ""
+            trigger_price = stop if reason == "STOP_LOSS" else target
+        else:
+            reason = "STOP_LOSS" if price >= stop else "TAKE_PROFIT" if price <= target else ""
+            trigger_price = stop if reason == "STOP_LOSS" else target
+        if not reason:
+            return ""
+        now = datetime.now().astimezone()
+        trade.update({
+            "pending_exit_reason": reason,
+            "pending_exit_trigger_price": trigger_price,
+            "exit_trigger_source": str(source or "UNKNOWN").upper(),
+            "exit_trigger_observed_price": price,
+            "exit_trigger_timestamp": now.isoformat(timespec="milliseconds"),
+            "exit_trigger_monotonic": time.monotonic(),
+            "exit_trigger_market_timestamp": str(market_timestamp) if market_timestamp not in (None, "") else None,
+            "exit_trigger_wait_logged": False,
+        })
+        logger.warning(
+            "🚨 [PAPER EXIT TRIGGER] %s %s: %s; source=%s observed=%.6f trigger=%.6f; "
+            "закрытие ожидает свежую исполнимую сторону BBO.",
+            ticker, side, reason, str(source or "UNKNOWN").upper(), price, trigger_price,
+        )
+        return reason
+
     # ------------------------------------------------------------------
     # 3️⃣  EXECUTE_ORDER (Единая точка входа исполнения)
     # ------------------------------------------------------------------
@@ -1034,6 +1153,36 @@ class BaseExecutionEngine:
                 executable_price = _finite_or_default(entry_bbo.get("executable_price"), 0.0)
                 if executable_price <= 0.0:
                     return {"status": "SKIPPED", "message": "Некорректная исполнимая цена BBO для PAPER-входа."}
+                paper_depth_fill: dict[str, Any] | None = None
+                if self.paper_book_size_unit in {"shares", "lots"}:
+                    depth_key = "ask_levels" if side == "BUY" else "bid_levels"
+                    paper_depth_fill = self._simulate_paper_depth_fill(
+                        entry_bbo.get(depth_key, []),
+                        lots,
+                        lot_multiplier,
+                        self.paper_book_size_unit,
+                        self.paper_max_book_participation_pct,
+                    )
+                    if not paper_depth_fill or int(paper_depth_fill.get("filled_lots", 0)) <= 0:
+                        return {
+                            "status": "SKIPPED",
+                            "message": (
+                                "PAPER_DEPTH_FILL_BLOCK: подтверждённой глубины недостаточно "
+                                "для минимального лота при заданной доле участия."
+                            ),
+                        }
+                    filled_lots = int(paper_depth_fill["filled_lots"])
+                    if filled_lots < lots:
+                        logger.warning(
+                            "🧩 [PAPER PARTIAL ENTRY] %s %s: requested=%d lots, filled=%d lots "
+                            "(%.1f%%); depth_unit=%s participation=%.1f%% levels=%d.",
+                            ticker, side, lots, filled_lots,
+                            float(paper_depth_fill["fill_ratio"]) * 100.0,
+                            self.paper_book_size_unit, self.paper_max_book_participation_pct,
+                            int(paper_depth_fill["levels_used"]),
+                        )
+                    lots = filled_lots
+                    executable_price = _finite_or_default(paper_depth_fill.get("average_price"), executable_price)
                 price = self._apply_paper_slippage(executable_price, side)
                 entry_bid_value = _finite_or_default(entry_bbo.get("bid"), 0.0)
                 entry_ask_value = _finite_or_default(entry_bbo.get("ask"), 0.0)
@@ -1086,6 +1235,7 @@ class BaseExecutionEngine:
             ai_analysis["take_profit"] = take_profit
 
             # Atomically reserve both committed capital and downside to the final SL.
+            pre_risk_lots = lots
             approved_lots, reservation_info = await self._reserve_order_size(
                 ticker, lots, price, db, side=side, stop_loss=stop_loss
             )
@@ -1107,10 +1257,10 @@ class BaseExecutionEngine:
 
             # The validated SL/TP has already been included in the portfolio stop-risk reservation.
             logger.info("📊 [ATR ENFORCER] Уровни: SL=%s₽ TP=%s₽; %s", stop_loss, take_profit, reservation_info)
-            if approved_lots != requested_lots:
+            if approved_lots != pre_risk_lots:
                 logger.warning(
-                    "📉 [POSITION SIZE FINAL] %s %s: requested=%d lots/%d shares; approved=%d lots/%d shares; notional=%.2f ₽; reduction_reason=PORTFOLIO_CAP; %s",
-                    side, ticker, requested_lots, requested_lots * lot_multiplier,
+                    "📉 [POSITION SIZE FINAL] %s %s: before_risk=%d lots/%d shares; approved=%d lots/%d shares; notional=%.2f ₽; reduction_reason=PORTFOLIO_CAP; %s",
+                    side, ticker, pre_risk_lots, pre_risk_lots * lot_multiplier,
                     approved_lots, approved_lots * lot_multiplier,
                     approved_lots * lot_multiplier * price, reservation_info,
                 )
@@ -1187,8 +1337,27 @@ class BaseExecutionEngine:
                 "id": order_id,
                 "status": "OPEN",
                 "mode": "PAPER" if self.paper_mode else "LIVE",
-                "paper_execution_model": "BBO_V8" if self.paper_mode else None,
-                "paper_fill_assumption": "FULL_FILL_AT_TOP_OF_BOOK_NO_DEPTH_CHECK" if self.paper_mode else None,
+                "paper_execution_model": (
+                    "BBO_DEPTH_PARTIAL_ENTRY_V1"
+                    if self.paper_mode and self.paper_book_size_unit in {"shares", "lots"}
+                    else "BBO_V8" if self.paper_mode else None
+                ),
+                "paper_fill_assumption": (
+                    "DEPTH_LIMITED_PARTIAL_ENTRY_FILL"
+                    if self.paper_mode and self.paper_book_size_unit in {"shares", "lots"}
+                    else "FULL_FILL_AT_TOP_OF_BOOK_DEPTH_UNIT_UNCONFIRMED" if self.paper_mode else None
+                ),
+                "entry_requested_lots": requested_lots if self.paper_mode else None,
+                "entry_filled_lots": lots if self.paper_mode else None,
+                "entry_fill_ratio": round(lots / requested_lots, 4) if self.paper_mode and requested_lots > 0 else None,
+                "entry_depth_fill_vwap": (
+                    round(float(paper_depth_fill["average_price"]), 6)
+                    if self.paper_mode and paper_depth_fill is not None else None
+                ),
+                "entry_depth_levels_used": (
+                    int(paper_depth_fill["levels_used"])
+                    if self.paper_mode and paper_depth_fill is not None else None
+                ),
                 "session_id": self.session_id,
                 "ticker": ticker,
                 "entry_time": now.strftime("%H:%M:%S"),
@@ -1206,8 +1375,16 @@ class BaseExecutionEngine:
                 "paper_slippage_bps": self.paper_slippage_bps if self.paper_mode else 0.0,
                 "entry_executable_side": entry_bbo.get("executable_side") if entry_bbo is not None else None,
                 "entry_top_size_raw": entry_quote_size,
-                "entry_top_size_unit": "FINAM_UNCONFIRMED",
-                "entry_depth_units_note": "Finam ORDER_BOOK size unit not confirmed; raw quantity is informational only",
+                "entry_top_size_unit": (
+                    self.paper_book_size_unit
+                    if self.paper_mode and self.paper_book_size_unit in {"shares", "lots"}
+                    else "FINAM_UNCONFIRMED"
+                ),
+                "entry_depth_units_note": (
+                    "Configured by operator; depth participation is capped and applied to entry fills."
+                    if self.paper_mode and self.paper_book_size_unit in {"shares", "lots"}
+                    else "Finam ORDER_BOOK size unit not confirmed; raw quantity is informational only."
+                ),
                 "stop_loss": stop_loss,
                 "take_profit": take_profit,
                 "atr_at_entry": atr_at_entry,
@@ -1254,12 +1431,15 @@ class BaseExecutionEngine:
                 self.paper_positions[ticker] = trade_log
             if self.paper_mode and entry_bbo is not None:
                 logger.info(
-                    "🧾 [PAPER FILL] %s %s: last_reference=%.4f, executable_%s=%.4f, fill=%.4f, "
-                    "top_size_raw=%.2f (unit unconfirmed), commission=%.4f ₽, slippage=%.2f bps.",
-                    ticker, side, signal_reference_price,
+                    "🧾 [PAPER FILL] %s %s: requested=%d lots, filled=%d lots; last_reference=%.4f, "
+                    "executable_%s=%.4f, fill=%.4f, top_size_raw=%.2f unit=%s, "
+                    "commission=%.4f ₽, slippage=%.2f bps.",
+                    ticker, side, requested_lots, lots, signal_reference_price,
                     str(entry_bbo.get("executable_side", "BBO")),
                     _finite_or_default(entry_bbo.get("executable_price"), 0.0), price,
-                    entry_quote_size, entry_commission, self.paper_slippage_bps,
+                    entry_quote_size,
+                    self.paper_book_size_unit if self.paper_book_size_unit in {"shares", "lots"} else "unconfirmed",
+                    entry_commission, self.paper_slippage_bps,
                 )
             logger.info("✅ [EXECUTION] Позиция %s по %s записана; mode=%s.",
                         order_id, ticker, trade_log["mode"])
@@ -1289,9 +1469,15 @@ class BaseExecutionEngine:
                     self._reserved_stop_risk.pop(ticker, None)
 
     def schedule_paper_position_monitor(
-        self, ticker: str, current_price: float | None, db: DBManager
+        self,
+        ticker: str,
+        current_price: float | None,
+        db: DBManager,
+        *,
+        event_source: str = "LAST_TRADE",
+        event_timestamp: object = None,
     ) -> None:
-        """Coalesce ticks and valid BBO refreshes into one PAPER exit-monitor worker."""
+        """Coalesce market events while latching last-trade SL/TP triggers immediately."""
         if not self.paper_mode or self._maintenance_active or ticker not in self.paper_positions:
             return
         try:
@@ -1306,7 +1492,15 @@ class BaseExecutionEngine:
         if not math.isfinite(price) or price <= 0.0:
             return
 
-        self._pending_monitor_prices[ticker] = price
+        source = str(event_source or "LAST_TRADE").strip().upper()
+        if source not in {"LAST_TRADE", "ORDER_BOOK"}:
+            source = "LAST_TRADE"
+        trade = self.paper_positions.get(ticker)
+        if source == "LAST_TRADE" and isinstance(trade, dict):
+            self._capture_paper_exit_trigger(
+                ticker, trade, price, source=source, market_timestamp=event_timestamp
+            )
+        self._pending_monitor_prices[ticker] = (price, source)
         if self._monitor_worker_task is None or self._monitor_worker_task.done():
             self._monitor_worker_task = asyncio.create_task(self._drain_monitor_prices(db))
 
@@ -1316,8 +1510,14 @@ class BaseExecutionEngine:
             while self._pending_monitor_prices:
                 pending = self._pending_monitor_prices
                 self._pending_monitor_prices = {}
-                for ticker, price in pending.items():
-                    await self.monitor_paper_positions(ticker, price, db)
+                for ticker, pending_value in pending.items():
+                    if isinstance(pending_value, tuple) and len(pending_value) == 2:
+                        price, source = pending_value
+                    else:
+                        price, source = pending_value, "LAST_TRADE"
+                    await self.monitor_paper_positions(
+                        ticker, float(price), db, event_source=str(source)
+                    )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -1443,6 +1643,19 @@ class BaseExecutionEngine:
             bbo.get("bid_size" if side == "BUY" else "ask_size"), 0.0
         )
         now = datetime.now()
+        trigger_monotonic = _finite_or_default(trade.get("exit_trigger_monotonic"), 0.0)
+        trigger_to_bbo_delay = (
+            max(0.0, time.monotonic() - trigger_monotonic)
+            if trigger_monotonic > 0.0 else None
+        )
+        trigger_source = str(trade.get("exit_trigger_source") or "EXECUTABLE_BBO").upper()
+        market_move_after_trigger_rub = (
+            (raw_exit_price - trigger_price) * share_qty * (1 if side == "BUY" else -1)
+            if trigger_price > 0.0 else None
+        )
+        configured_slippage_rub = (
+            (exit_price - raw_exit_price) * share_qty * (1 if side == "BUY" else -1)
+        )
         closed_trade = dict(trade)
         closed_trade.update({
             "status": "CLOSED",
@@ -1452,6 +1665,25 @@ class BaseExecutionEngine:
             "current_price": exit_price,
             "exit_raw_bbo_price": raw_exit_price,
             "trigger_price": trigger_price if trigger_price > 0.0 else None,
+            "exit_trigger_source": trigger_source,
+            "exit_trigger_timestamp": trade.get("exit_trigger_timestamp"),
+            "exit_trigger_market_timestamp": trade.get("exit_trigger_market_timestamp"),
+            "exit_trigger_observed_price": _finite_or_default(
+                trade.get("exit_trigger_observed_price"), observed_last_price
+            ),
+            "trigger_to_executable_bbo_delay_sec": (
+                round(trigger_to_bbo_delay, 3) if trigger_to_bbo_delay is not None else None
+            ),
+            "executable_bbo_confirmed_at": now.astimezone().isoformat(timespec="milliseconds"),
+            "market_move_after_trigger_rub": (
+                round(market_move_after_trigger_rub, 4)
+                if market_move_after_trigger_rub is not None else None
+            ),
+            "configured_exit_slippage_rub": round(configured_slippage_rub, 4),
+            "fill_vs_trigger_rub": (
+                round(market_move_after_trigger_rub + configured_slippage_rub, 4)
+                if market_move_after_trigger_rub is not None else None
+            ),
             "observed_exit_price": observed_last_price,
             "exit_reason": exit_reason,
             "exit_price_source": "BBO_BID" if side == "BUY" else "BBO_ASK",
@@ -1549,8 +1781,15 @@ class BaseExecutionEngine:
             pass
         return closed_trade
 
-    async def monitor_paper_positions(self, ticker: str, current_price: float, db: DBManager):
-        """Monitor PAPER risk using executable BBO; track excursions on every quote."""
+    async def monitor_paper_positions(
+        self,
+        ticker: str,
+        current_price: float,
+        db: DBManager,
+        *,
+        event_source: str = "LAST_TRADE",
+    ):
+        """Latch SL/TP on market events; execute only against a fresh executable BBO."""
         if not self.paper_mode:
             # This monitor never places a LIVE exit order.
             return
@@ -1598,6 +1837,11 @@ class BaseExecutionEngine:
                 logger.error("Некорректные SL/TP в PAPER-позиции %s; монитор закрытия остановлен.", order_id)
                 return
 
+            if str(event_source or "LAST_TRADE").upper() == "LAST_TRADE":
+                self._capture_paper_exit_trigger(
+                    ticker, trade, observed_last_price, source="LAST_TRADE"
+                )
+
             # Excursion stats use every observed last trade; exit decisions below
             # use the executable side of a fresh two-sided BBO.
             observed_signed_pct = ((observed_last_price - entry_price) / entry_price) * 100.0 * sign
@@ -1633,7 +1877,11 @@ class BaseExecutionEngine:
             bbo = self._latest_fresh_exit_quote(ticker, side)
             if bbo is None:
                 market_state = await self._market_session_status(ticker)
-                if market_state.get("known") and not market_state.get("is_open"):
+                pending_exit = str(trade.get("pending_exit_reason") or "").upper()
+                if pending_exit in {"STOP_LOSS", "TAKE_PROFIT"}:
+                    wait_state = "EXIT_TRIGGERED_WAITING_FOR_BBO"
+                    wait_reason = f"{pending_exit}: триггер зафиксирован; ожидается свежая исполнимая сторона BBO"
+                elif market_state.get("known") and not market_state.get("is_open"):
                     wait_state = "MARKET_CLOSED"
                     wait_reason = "биржевая сессия закрыта; позиция сохранена до следующего доступного BBO"
                 elif not market_state.get("known"):
@@ -1669,6 +1917,17 @@ class BaseExecutionEngine:
                 trade["estimated_exit_commission_rub"] = round(estimated_exit_commission, 4)
                 trade["pnl_percent"] = round(estimated_net_pnl / entry_notional * 100.0, 4) if entry_notional > 0 else 0.0
                 trade["current_pnl_source"] = "LAST_TRADE_ESTIMATE"
+                if pending_exit in {"STOP_LOSS", "TAKE_PROFIT"}:
+                    if not bool(trade.get("exit_trigger_wait_logged")):
+                        trigger_at = _finite_or_default(trade.get("exit_trigger_monotonic"), 0.0)
+                        delay = max(0.0, time.monotonic() - trigger_at) if trigger_at > 0.0 else 0.0
+                        logger.warning(
+                            "⏳ [PAPER EXIT TRIGGER WAIT] %s %s: %s; wait=%.3fs; "
+                            "last_trade=%.6f; execution is deferred until fresh BBO.",
+                            ticker, side, pending_exit, delay, observed_last_price,
+                        )
+                        trade["exit_trigger_wait_logged"] = True
+                    await db.set_json(f"piluitus:trade:{order_id}", trade)
                 now_mono = time.monotonic()
                 last_warn = self._last_bbo_exit_warning_at.get(ticker, 0.0)
                 if now_mono - last_warn >= 60.0:
@@ -1830,14 +2089,13 @@ class BaseExecutionEngine:
                             ticker, side, executable_exit_price, shadow_net,
                         )
 
-            if side == "BUY":
-                exit_reason = "STOP_LOSS" if executable_exit_price <= stop_loss else (
-                    "TAKE_PROFIT" if executable_exit_price >= take_profit else ""
+            if not str(trade.get("pending_exit_reason") or "").upper() in {"STOP_LOSS", "TAKE_PROFIT"}:
+                self._capture_paper_exit_trigger(
+                    ticker, trade, executable_exit_price, source="EXECUTABLE_BBO"
                 )
-            else:
-                exit_reason = "STOP_LOSS" if executable_exit_price >= stop_loss else (
-                    "TAKE_PROFIT" if executable_exit_price <= take_profit else ""
-                )
+            exit_reason = str(trade.get("pending_exit_reason") or "").upper()
+            if exit_reason not in {"STOP_LOSS", "TAKE_PROFIT"}:
+                exit_reason = ""
 
             exit_transaction_side = "SELL" if side == "BUY" else "BUY"
             estimated_exit_price = self._apply_paper_slippage(executable_exit_price, exit_transaction_side)
@@ -1860,7 +2118,10 @@ class BaseExecutionEngine:
             if not exit_reason:
                 return
 
-            trigger_price = stop_loss if exit_reason == "STOP_LOSS" else take_profit
+            trigger_price = _finite_or_default(
+                trade.get("pending_exit_trigger_price"),
+                stop_loss if exit_reason == "STOP_LOSS" else take_profit,
+            )
             self._lock_closing.add(order_id)
             try:
                 await self._finalize_paper_close(
