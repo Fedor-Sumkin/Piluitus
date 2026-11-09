@@ -1931,29 +1931,26 @@ class FinamBrokerClient:
             )
             return False
 
-        event_time = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
-        envelope = {
-            "type": "DATA", "subscription_type": "ORDER_BOOK", "timestamp": event_time,
-            "_received_monotonic": time.monotonic(),
-            "payload": {"order_book": [{
-                "symbol": f"{symbol}@MISX", "is_data_snapshot": True,
-                "bids": bids, "asks": asks,
-            }]},
-        }
-        updates = self._extract_order_book_updates(envelope)
-        if not updates or not updates[0].get("book_valid"):
-            return False
-        update = updates[0]
-        update["timestamp_source"] = "REST_SNAPSHOT"
-        update["snapshot_source"] = "REST_CONTROL_REFRESH"
-        try:
-            queue.put_nowait(update)
-        except asyncio.QueueFull:
-            logger.warning("Finam REST snapshot %s не помещён в очередь: очередь заполнена.", symbol)
-            return False
+        # REST does not expose a trustworthy exchange-event timestamp in this
+        # adapter. Its receive time must never be promoted to a fresh WS event:
+        # doing so would mutate the delta chain and could manufacture an
+        # executable BBO. Keep this snapshot strictly diagnostic.
+        mid = (best_bid + best_ask) / 2.0
+        spread_pct = ((best_ask - best_bid) / mid * 100.0) if mid > 0.0 else math.inf
+        state = self._order_book_state.get(symbol, {})
+        ws_bids = state.get("bids", {}) if isinstance(state, dict) else {}
+        ws_asks = state.get("asks", {}) if isinstance(state, dict) else {}
+        ws_bid = max(ws_bids) if isinstance(ws_bids, dict) and ws_bids else 0.0
+        ws_ask = min(ws_asks) if isinstance(ws_asks, dict) and ws_asks else 0.0
+        ws_text = (
+            f"WS Bid={ws_bid:.6f} Ask={ws_ask:.6f}"
+            if ws_bid > 0.0 and ws_ask > 0.0 else "WS BBO=нет"
+        )
         logger.warning(
-            "📚 [ORDER_BOOK REST SNAPSHOT] %s: BBO восстановлен контрольным снимком; Bid=%.6f Ask=%.6f.",
-            symbol, float(update["bid"]), float(update["ask"]),
+            "📚 [ORDER_BOOK REST CONTROL] %s: REST Bid=%.6f Ask=%.6f spread=%.3f%%; %s; "
+            "снимок только диагностический: не помещён в торговую очередь, "
+            "не изменяет WS delta-chain, подтверждения BBO или таймеры свежести.",
+            symbol, best_bid, best_ask, spread_pct, ws_text,
         )
         return True
 
