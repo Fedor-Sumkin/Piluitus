@@ -5,12 +5,14 @@ import logging
 import math
 import os
 import time
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from collections.abc import Callable
 import websockets
 import httpx
 from db_manager import DBManager
 from config import LOT_SIZES
+
+_MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -259,7 +261,7 @@ class RiskManager:
     async def is_trading_allowed(self, db: DBManager) -> bool:
         """Apply daily loss, high-water drawdown and global loss-streak safeguards."""
         risk_logger = logging.getLogger("Piluitus.RiskManager")
-        now = datetime.now()
+        now = datetime.now(_MOSCOW_TZ).replace(tzinfo=None)
         today = now.date()
         now_monotonic = time.monotonic()
 
@@ -280,8 +282,8 @@ class RiskManager:
             self.block_trading = False
             self._blocked_date = None
             risk_logger.warning(
-                "🌅 Новая календарная дата: дневная блокировка снята; "
-                "HWM и история последовательных результатов сохраняются."
+                "🌅 Новая торговая дата MSK: дневная блокировка и серия убытков текущей сессии "
+                "сбрасываются; долгосрочный HWM и накопленная просадка сохраняются."
             )
         if self.block_trading:
             return _cache_result(False)
@@ -297,7 +299,9 @@ class RiskManager:
                 try:
                     parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
                     if parsed.tzinfo is not None:
-                        parsed = parsed.astimezone().replace(tzinfo=None)
+                        parsed = parsed.astimezone(_MOSCOW_TZ).replace(tzinfo=None)
+                    # Naive legacy timestamps were produced by the trading process;
+                    # interpret them in Moscow exchange time, not the host PC timezone.
                     return parsed
                 except (TypeError, ValueError, OverflowError):
                     continue
@@ -478,10 +482,16 @@ class RiskManager:
                 return _cache_result(False)
 
             closed_trades.sort(key=lambda row: row[0])
+            # Consecutive-loss pauses are scoped to the current Moscow trading
+            # date. Older losses remain in realized PnL and HWM drawdown, but a
+            # Friday streak must not automatically pause Monday's first entry.
+            session_closed_trades = [
+                row for row in closed_trades if row[0].date() == today
+            ]
             loss_streak = 0
             latest_loss_at: datetime | None = None
             recent_loss_rows: list[tuple[datetime, dict]] = []
-            for closed_at, trade in reversed(closed_trades):
+            for closed_at, trade in reversed(session_closed_trades):
                 pnl = float(trade.get("pnl", 0.0) or 0.0)
                 if pnl >= 0.0:
                     break
@@ -494,7 +504,7 @@ class RiskManager:
             # Keep the global pause policy unchanged, but make its provenance
             # auditable: show the exact latest losses and their persisted mode/IDs.
             diagnostic_signature = (
-                f"{expected_mode}:{loss_streak}:"
+                f"{today.isoformat()}:{expected_mode}:{loss_streak}:"
                 f"{latest_loss_at.isoformat() if latest_loss_at is not None else 'none'}"
             )
             if diagnostic_signature != self._last_loss_streak_diagnostic_signature:
@@ -509,9 +519,10 @@ class RiskManager:
                         f"id={str(trade.get('id') or trade.get('order_id') or '?')[:16]}]"
                     )
                 risk_logger.info(
-                    "[LOSS STREAK AUDIT] mode=%s; consecutive_losses=%d; "
-                    "latest_loss=%s; recent_losses_newest_first=%s",
-                    expected_mode, loss_streak,
+                    "[SESSION LOSS STREAK AUDIT] session_date=%s mode=%s; consecutive_losses=%d; "
+                    "latest_loss=%s; recent_losses_newest_first=%s; "
+                    "historical_drawdown_uses_full_closed_journal=true",
+                    today.isoformat(), expected_mode, loss_streak,
                     latest_loss_at.isoformat(timespec="seconds") if latest_loss_at else "нет",
                     " | ".join(recent_details) if recent_details else "нет",
                 )
@@ -525,12 +536,14 @@ class RiskManager:
             if pause_sec > 0 and latest_loss_at is not None:
                 pause_until = latest_loss_at + timedelta(seconds=pause_sec)
                 if now < pause_until:
-                    signature = f"{loss_streak}:{latest_loss_at.isoformat()}:{pause_sec}"
+                    signature = f"{today.isoformat()}:{loss_streak}:{latest_loss_at.isoformat()}:{pause_sec}"
                     if signature != self._loss_pause_signature:
                         risk_logger.critical(
-                            "🧊 [GLOBAL LOSS STREAK] mode=%s; %d убыточных сделок подряд; "
-                            "последний убыток=%s; новые входы на паузе ещё %.0f сек.",
-                            expected_mode, loss_streak, latest_loss_at.isoformat(timespec="seconds"),
+                            "🧊 [SESSION LOSS STREAK] session_date=%s mode=%s; %d убыточных сделок подряд "
+                            "в текущей торговой сессии; последний убыток=%s; "
+                            "новые входы на паузе ещё %.0f сек.",
+                            today.isoformat(), expected_mode, loss_streak,
+                            latest_loss_at.isoformat(timespec="seconds"),
                             max(0.0, (pause_until - now).total_seconds()),
                         )
                         self._loss_pause_signature = signature
