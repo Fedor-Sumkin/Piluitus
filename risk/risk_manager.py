@@ -501,8 +501,8 @@ class RiskManager:
                     latest_loss_at = closed_at
             self._loss_streak_count = loss_streak
 
-            # Keep the global pause policy unchanged, but make its provenance
-            # auditable: show the exact latest losses and their persisted mode/IDs.
+            # Keep the pause durations unchanged, but scope the consecutive-loss
+            # trigger to this Moscow trading date and audit the exact source trades.
             diagnostic_signature = (
                 f"{today.isoformat()}:{expected_mode}:{loss_streak}:"
                 f"{latest_loss_at.isoformat() if latest_loss_at is not None else 'none'}"
