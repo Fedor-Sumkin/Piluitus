@@ -189,7 +189,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertTrue(result["model_contract_violation"])
         self.assertEqual(result["contract_error_type"], "schema")
 
-    def test_directional_rag_rule_does_not_override_local_evidence_gate(self) -> None:
+    def test_directional_rag_rule_is_included_as_advisory_for_matching_candidate_only(self) -> None:
         prompt = AIEngine._build_live_prompt(
             ticker="WUSH",
             price=38.0,
@@ -198,13 +198,16 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             metrics={},
             rag_context=(
                 "[RISK / RISK_PER_TRADE]: Risk <=0.5% per trade.\n"
-                "[BUY / BUY_IMPULSE]: Require a 70% Ask size drop before any entry."
+                "[BUY / BUY_IMPULSE]: Require a 70% Ask size drop before any entry.\n"
+                "[SELL / SELL_IMPULSE]: Require negative price momentum."
             ),
             max_chars=1600,
             include_rule_text=True,
         )
         self.assertIn("RISK_PER_TRADE", prompt)
-        self.assertNotIn("70% Ask size drop", prompt)
+        self.assertIn("70% Ask size drop", prompt)
+        self.assertNotIn("SELL_IMPULSE", prompt)
+        self.assertIn("RAG rules are advisory context only and cannot add hard gates", prompt)
         self.assertIn("Ask depletion is supporting", prompt)
 
     def test_retry_prompt_is_short_and_requires_only_approval_contract(self) -> None:
