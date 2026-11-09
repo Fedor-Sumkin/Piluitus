@@ -122,6 +122,13 @@ class Settings:
     # Короткий JSON-контракт: эффективный max_tokens ограничен диапазоном 384..768.
     VLLM_MAX_TOKENS: int = int(os.getenv("VLLM_MAX_TOKENS", "768"))
 
+    # PAPER depth-based partial fills are opt-in. Keep "unknown" until Finam's
+    # ORDER_BOOK buy_size/sell_size unit is confirmed for this data feed.
+    PAPER_BOOK_SIZE_UNIT: str = os.getenv("PILUITUS_PAPER_BOOK_SIZE_UNIT", "unknown").strip().lower()
+    PAPER_MAX_BOOK_PARTICIPATION_PCT: float = float(
+        os.getenv("PILUITUS_PAPER_MAX_BOOK_PARTICIPATION_PCT", "10.0")
+    )
+
     # ---------- Finam ----------
     FINAM_TOKEN: str = os.getenv("FINAM_TOKEN", "")
     FINAM_CLIENT_ID: str = os.getenv("FINAM_CLIENT_ID", "")
