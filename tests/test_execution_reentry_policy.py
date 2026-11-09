@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import unittest
+import time
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from execution_layer import BaseExecutionEngine
 
 
-class ExecutionReentryPolicyTests(unittest.TestCase):
+class ExecutionReentryPolicyTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.engine = object.__new__(BaseExecutionEngine)
         self.engine.stop_loss_cooldown_sec = 180.0
@@ -16,6 +20,7 @@ class ExecutionReentryPolicyTests(unittest.TestCase):
         self.engine._recent_stop_losses = {}
         self.engine._ticker_cooldowns = {}
         self.engine.paper_mode = True
+        self.engine._hydrated_stop_loss_keys = set()
 
     def test_first_stop_sets_short_cooldown_for_same_side(self) -> None:
         cooldown, count = self.engine._register_stop_loss_cooldown("ALRS", "SELL", now=1000.0)
@@ -36,6 +41,82 @@ class ExecutionReentryPolicyTests(unittest.TestCase):
         cooldown, count = self.engine._register_stop_loss_cooldown("ALRS", "SELL", now=2801.0)
         self.assertEqual(cooldown, 180.0)
         self.assertEqual(count, 1)
+
+
+    async def test_recent_same_side_stops_are_restored_after_restart(self) -> None:
+        now_wall = datetime.now(timezone(timedelta(hours=3)))
+        rows = {
+            "old": {
+                "status": "CLOSED", "mode": "PAPER", "ticker": "ALRS", "side": "SELL",
+                "exit_reason": "STOP_LOSS",
+                "exit_timestamp": (now_wall - timedelta(seconds=600)).isoformat(),
+            },
+            "latest": {
+                "status": "CLOSED", "mode": "PAPER", "ticker": "ALRS", "side": "SELL",
+                "exit_reason": "STOP_LOSS",
+                "exit_timestamp": (now_wall - timedelta(seconds=120)).isoformat(),
+            },
+            "other-side": {
+                "status": "CLOSED", "mode": "PAPER", "ticker": "ALRS", "side": "BUY",
+                "exit_reason": "STOP_LOSS",
+                "exit_timestamp": (now_wall - timedelta(seconds=30)).isoformat(),
+            },
+        }
+        db = SimpleNamespace(get_all_daily_trades=AsyncMock(return_value=rows))
+        mono_now = 5000.0
+        count, remaining = await self.engine._hydrate_stop_loss_cooldown(
+            db, "ALRS", "SELL", now_monotonic=mono_now
+        )
+
+        self.assertEqual(count, 2)
+        self.assertAlmostEqual(remaining, 780.0, places=2)
+        self.assertAlmostEqual(self.engine._ticker_cooldowns[("ALRS", "SELL")], mono_now + 780.0, places=2)
+        self.assertEqual(len(self.engine._recent_stop_losses[("ALRS", "SELL")]), 2)
+        self.assertNotIn(("ALRS", "BUY"), self.engine._ticker_cooldowns)
+
+        await self.engine._hydrate_stop_loss_cooldown(
+            db, "ALRS", "SELL", now_monotonic=mono_now + 1.0
+        )
+        db.get_all_daily_trades.assert_awaited_once()
+
+    async def test_previous_moscow_date_stop_does_not_carry_into_new_session(self) -> None:
+        now_wall = datetime(2026, 11, 10, 0, 2, tzinfo=timezone(timedelta(hours=3)))
+        previous_session = datetime(2026, 11, 9, 23, 59, tzinfo=timezone(timedelta(hours=3)))
+        db = SimpleNamespace(get_all_daily_trades=AsyncMock(return_value={
+            "previous-day": {
+                "status": "CLOSED", "mode": "PAPER", "ticker": "ALRS", "side": "BUY",
+                "exit_reason": "STOP_LOSS", "exit_timestamp": previous_session.isoformat(),
+            },
+        }))
+        # Pin wall-clock conversion while preserving the injected monotonic clock.
+        self.engine._hydrated_stop_loss_keys.clear()
+        count, remaining = await self.engine._hydrate_stop_loss_cooldown(
+            db, "ALRS", "BUY", now_monotonic=6000.0, now_wall=now_wall
+        )
+        self.assertEqual(count, 0)
+        self.assertEqual(remaining, 0.0)
+
+    async def test_hydration_does_not_erase_stop_registered_before_journal_write(self) -> None:
+        self.engine._register_stop_loss_cooldown("ALRS", "BUY", now=1000.0)
+        db = SimpleNamespace(get_all_daily_trades=AsyncMock(return_value={}))
+
+        count, remaining = await self.engine._hydrate_stop_loss_cooldown(
+            db, "ALRS", "BUY", now_monotonic=1000.0
+        )
+
+        self.assertEqual(count, 1)
+        self.assertEqual(remaining, 180.0)
+        self.assertEqual(self.engine._ticker_cooldowns[("ALRS", "BUY")], 1180.0)
+
+    async def test_invalid_stop_timestamp_fails_closed(self) -> None:
+        db = SimpleNamespace(get_all_daily_trades=AsyncMock(return_value={
+            "broken": {
+                "status": "CLOSED", "mode": "PAPER", "ticker": "ALRS", "side": "BUY",
+                "exit_reason": "STOP_LOSS", "exit_timestamp": "not-a-timestamp",
+            },
+        }))
+        with self.assertRaises(RuntimeError):
+            await self.engine._hydrate_stop_loss_cooldown(db, "ALRS", "BUY", now_monotonic=10.0)
 
     def test_lot_multiplier_is_available_before_execution_diagnostics(self) -> None:
         self.assertGreater(BaseExecutionEngine._lot_multiplier_for("IRKT"), 0)

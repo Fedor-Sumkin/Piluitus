@@ -96,6 +96,37 @@ class FinamOrderBookParserDiagnosticsTests(unittest.TestCase):
         )
         self.assertNotIn("SBER", self.client._crossed_bbo_since)
 
+
+    def test_deltas_are_ignored_after_resubscribe_until_full_snapshot(self) -> None:
+        self.client._order_book_snapshot_required.add("SBER")
+        delta = {
+            "symbol": "SBER@MISX",
+            "rows": [
+                {"price": 100.0, "buySize": 10.0},
+                {"price": 101.0, "sellSize": 12.0},
+            ],
+        }
+        updates = self.client._extract_order_book_updates(
+            self.envelope(self.now, delta)
+        )
+        self.assertEqual(updates, [])
+        self.assertEqual(self.client._last_order_book_snapshot_wait_tickers, {"SBER"})
+        self.assertNotIn("SBER", self.client._order_book_state)
+
+        snapshot = {
+            "symbol": "SBER@MISX",
+            "is_data_snapshot": True,
+            "bids": [{"price": 100.0, "buySize": 10.0}],
+            "asks": [{"price": 101.0, "sellSize": 12.0}],
+        }
+        recovered = self.client._extract_order_book_updates(
+            self.envelope(self.now + timedelta(seconds=1), snapshot)
+        )
+        self.assertEqual(len(recovered), 1)
+        self.assertTrue(recovered[0]["book_valid"])
+        self.assertNotIn("SBER", self.client._order_book_snapshot_required)
+        self.assertEqual(self.client._order_book_state["SBER"]["bids"][100.0], 10.0)
+
     def test_unrecognized_symbol_is_not_misclassified_as_out_of_order(self) -> None:
         malformed = {"symbol": "GAZP@MISX", "message": "unsupported payload"}
         updates = self.client._extract_order_book_updates(

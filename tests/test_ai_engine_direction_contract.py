@@ -25,7 +25,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
 
     def test_buy_candidate_requests_approval_not_direction_choice(self) -> None:
         prompt = self._prompt("BUY")
-        self.assertIn("exactly two keys: final_decision", prompt)
+        self.assertIn("exactly three keys: final_decision", prompt)
         self.assertIn("Never select, change, invert, or output BUY/SELL", prompt)
         self.assertIn("APPROVE authorizes only the exact local candidate side", prompt)
         self.assertIn("supporting evidence, not mandatory", prompt)
@@ -35,7 +35,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
 
     def test_sell_candidate_requests_approval_not_direction_choice(self) -> None:
         prompt = self._prompt("SELL")
-        self.assertIn("exactly two keys: final_decision", prompt)
+        self.assertIn("exactly three keys: final_decision", prompt)
         self.assertIn("Never select, change, invert, or output BUY/SELL", prompt)
         self.assertIn("APPROVE authorizes only the exact local candidate side", prompt)
         self.assertIn("supporting evidence, not mandatory", prompt)
@@ -121,6 +121,33 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertEqual(result["final_decision"], "HOLD")
         self.assertFalse(result["model_contract_violation"])
         self.assertTrue(result["confidence_valid"])
+        self.assertEqual(result["model_reason_code"], "NOT_PROVIDED")
+
+    def test_reason_code_is_preserved_for_valid_enum_value(self) -> None:
+        result = object.__new__(AIEngine)._cpu_intensive_processing({
+            "choices": [{
+                "message": {"content": (
+                    '{"final_decision":"HOLD","confidence_score":0.42,'
+                    '"reason_code":"HOLD_M1_CONTRADICTION"}'
+                )},
+                "finish_reason": "stop",
+            }]
+        })
+        self.assertFalse(result["model_contract_violation"])
+        self.assertEqual(result["model_reason_code"], "HOLD_M1_CONTRADICTION")
+
+    def test_unknown_reason_code_does_not_break_legacy_decision_contract(self) -> None:
+        result = object.__new__(AIEngine)._cpu_intensive_processing({
+            "choices": [{
+                "message": {"content": (
+                    '{"final_decision":"APPROVE","confidence_score":0.9,'
+                    '"reason_code":"MODEL_MOOD"}'
+                )},
+                "finish_reason": "stop",
+            }]
+        })
+        self.assertFalse(result["model_contract_violation"])
+        self.assertEqual(result["model_reason_code"], "NOT_PROVIDED")
 
     def test_extra_candidate_key_is_rejected_even_with_valid_decision(self) -> None:
         result = object.__new__(AIEngine)._cpu_intensive_processing({
@@ -185,7 +212,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             "SBER", 100.0, 500, "BUY",
             {"price_change_pct": 0.2, "price_vs_vwap_pct": 0.1, "volume_spike": 2.0},
         )
-        self.assertIn("exactly two keys", prompt)
+        self.assertIn("exactly three keys", prompt)
         self.assertIn("APPROVE or HOLD", prompt)
         self.assertIn("Never output BUY/SELL as a decision", prompt)
         self.assertNotIn("Advisory RAG context", prompt)

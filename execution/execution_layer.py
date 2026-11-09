@@ -267,6 +267,7 @@ class BaseExecutionEngine:
         # Cooldowns are side-specific: a short stop does not suppress a valid long setup.
         self._ticker_cooldowns: dict[tuple[str, str], float] = {}
         self._recent_stop_losses: dict[tuple[str, str], deque[float]] = {}
+        self._hydrated_stop_loss_keys: set[tuple[str, str]] = set()
         self._pending_monitor_prices: dict[str, tuple[float, str, object]] = {}
         self._monitor_worker_task: asyncio.Task | None = None
         self._last_bbo_exit_warning_at: dict[str, float] = {}
@@ -952,6 +953,138 @@ class BaseExecutionEngine:
             raw_bbo = required_fill / (1.0 + slip_rate)
         return raw_bbo if math.isfinite(raw_bbo) and raw_bbo > 0.0 else 0.0
 
+    async def _hydrate_stop_loss_cooldown(
+        self,
+        db: DBManager,
+        ticker: str,
+        side: str,
+        *,
+        now_monotonic: float | None = None,
+        now_wall: datetime | None = None,
+    ) -> tuple[int, float]:
+        """Restore same-session stop history from the persisted closed-trade journal.
+
+        In-memory cooldowns alone disappear on process restart. Hydration is
+        fail-closed: if the journal cannot be read, the caller must not open a
+        PAPER position while the recent-stop state is unknown.
+        """
+        symbol = str(ticker or "").strip().upper().split("@")[0]
+        direction = str(side or "").strip().upper()
+        if not symbol or direction not in {"BUY", "SELL"}:
+            raise ValueError("Некорректный тикер/направление для восстановления STOP_LOSS cooldown.")
+        key = (symbol, direction)
+        if key in self._hydrated_stop_loss_keys:
+            remaining = max(0.0, self._ticker_cooldowns.get(key, 0.0) - (
+                time.monotonic() if now_monotonic is None else float(now_monotonic)
+            ))
+            return len(self._recent_stop_losses.get(key, ())), remaining
+
+        getter = getattr(db, "get_all_daily_trades", None)
+        if not callable(getter):
+            raise RuntimeError("DBManager не предоставляет полный журнал для восстановления STOP_LOSS cooldown.")
+        rows = await getter()
+        if not isinstance(rows, Mapping):
+            raise RuntimeError("Полный журнал сделок имеет некорректный формат; STOP_LOSS cooldown не восстановлен.")
+
+        moscow_tz = timezone(timedelta(hours=3), name="MSK")
+        session_now = (now_wall or datetime.now(moscow_tz)).astimezone(moscow_tz).replace(tzinfo=None)
+        now_mono = time.monotonic() if now_monotonic is None else float(now_monotonic)
+        recent_ages: list[float] = []
+        expected_mode = "PAPER" if self.paper_mode else "LIVE"
+        for order_id, trade in rows.items():
+            if not isinstance(trade, Mapping):
+                continue
+            if str(trade.get("status", "")).strip().upper() != "CLOSED":
+                continue
+            mode = str(trade.get("mode", "")).strip().upper()
+            if mode and mode != expected_mode:
+                continue
+            trade_ticker = str(trade.get("ticker") or "").strip().upper().split("@")[0]
+            trade_side = str(trade.get("side") or "").strip().upper()
+            reason = str(trade.get("exit_reason") or trade.get("close_reason") or "").strip().upper()
+            if trade_ticker != symbol or trade_side != direction or reason != "STOP_LOSS":
+                continue
+
+            raw_timestamp = (
+                trade.get("exit_timestamp") or trade.get("closed_at")
+                or trade.get("timestamp") or trade.get("exit_time")
+            )
+            if not raw_timestamp:
+                raise RuntimeError(
+                    f"STOP_LOSS {order_id} по {symbol}/{direction} не содержит времени закрытия; "
+                    "повторный вход заблокирован до проверки журнала."
+                )
+            try:
+                parsed = datetime.fromisoformat(str(raw_timestamp).replace("Z", "+00:00"))
+                if parsed.tzinfo is not None:
+                    parsed = parsed.astimezone(moscow_tz).replace(tzinfo=None)
+                # Match RiskManager: a stop from the previous Moscow trading
+                # date does not carry its cooldown into the next session.
+                if parsed.date() != session_now.date():
+                    continue
+                age = (session_now - parsed).total_seconds()
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise RuntimeError(
+                    f"Некорректное время STOP_LOSS {order_id} по {symbol}/{direction}; "
+                    "повторный вход заблокирован до проверки журнала."
+                ) from exc
+            if age < -2.0:
+                raise RuntimeError(
+                    f"Время STOP_LOSS {order_id} по {symbol}/{direction} находится в будущем; "
+                    "повторный вход заблокирован."
+                )
+            if 0.0 <= age <= self.repeat_stop_window_sec:
+                recent_ages.append(max(0.0, age))
+
+        # Merge in-memory stop events with the journal. A close can register its
+        # cooldown just before its Redis write completes; replacing local history
+        # with an immediately-read journal snapshot would otherwise erase it.
+        history_times: list[float] = []
+        for raw_monotonic in self._recent_stop_losses.get(key, ()):
+            try:
+                stamp = float(raw_monotonic)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(stamp) and now_mono - self.repeat_stop_window_sec <= stamp <= now_mono + 0.5:
+                history_times.append(stamp)
+        for age in recent_ages:
+            stamp = now_mono - age
+            if not any(abs(stamp - existing) <= 0.25 for existing in history_times):
+                history_times.append(stamp)
+        history_times.sort()
+        history = deque(history_times)
+        self._recent_stop_losses[key] = history
+        cooldown = 0.0
+        remaining = 0.0
+        if history:
+            recent_count = len(history)
+            cooldown = (
+                self.repeat_stop_cooldown_sec
+                if recent_count >= self.repeat_stop_limit
+                else self.stop_loss_cooldown_sec
+            )
+            latest_stop_monotonic = history[-1]
+            until = max(
+                latest_stop_monotonic + cooldown,
+                float(self._ticker_cooldowns.get(key, 0.0) or 0.0),
+            )
+            if until > now_mono:
+                self._ticker_cooldowns[key] = until
+                remaining = until - now_mono
+            else:
+                self._ticker_cooldowns.pop(key, None)
+        else:
+            recent_count = 0
+            self._ticker_cooldowns.pop(key, None)
+        self._hydrated_stop_loss_keys.add(key)
+        logger.info(
+            "[STOP COOLDOWN HYDRATION] ticker=%s side=%s mode=%s recent_stops=%d window=%.0fs "
+            "cooldown=%.0fs remaining=%.1fs source=closed_trade_journal+memory",
+            symbol, direction, expected_mode, recent_count,
+            self.repeat_stop_window_sec, cooldown, remaining,
+        )
+        return recent_count, remaining
+
     def _register_stop_loss_cooldown(
         self, ticker: str, side: str, *, now: float | None = None
     ) -> tuple[float, int]:
@@ -1247,6 +1380,21 @@ class BaseExecutionEngine:
                 }
             ai_analysis["stop_loss"] = stop_loss
             ai_analysis["take_profit"] = take_profit
+
+            # Restore same-side stop pauses after a process restart. Never bypass
+            # the guard if the persisted close journal cannot be read reliably.
+            if self.paper_mode:
+                try:
+                    await self._hydrate_stop_loss_cooldown(db, ticker, side)
+                except Exception as cooldown_exc:
+                    logger.error(
+                        "[STOP COOLDOWN HYDRATION FAILED] %s %s: %s; PAPER-вход заблокирован.",
+                        ticker, side, cooldown_exc,
+                    )
+                    return {
+                        "status": "SKIPPED",
+                        "message": f"STOP_COOLDOWN_STATE_UNKNOWN: {cooldown_exc}",
+                    }
 
             # Atomically reserve both committed capital and downside to the final SL.
             pre_risk_lots = lots

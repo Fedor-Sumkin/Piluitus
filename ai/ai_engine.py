@@ -11,6 +11,18 @@ from rag_prompt_utils import normalise_rag_context, select_prompt_rules
 
 log = logging.getLogger("Piluitus.AIEngine")
 thought_log = logging.getLogger("Piluitus.EvolutionThoughts")
+MODEL_REASON_CODES = {
+    "APPROVED",
+    "HOLD_WEAK_DIRECTION",
+    "HOLD_M1_CONTRADICTION",
+    "HOLD_STALE_BBO",
+    "HOLD_WEAK_VOLUME",
+    "HOLD_WIDE_SPREAD",
+    "HOLD_INSUFFICIENT_SUPPORT",
+    "HOLD_RISK_REWARD",
+    "HOLD_UNCLEAR",
+    "NO_LOCAL_CANDIDATE",
+}
 
 class AIEngine:
     @staticmethod
@@ -326,7 +338,7 @@ class AIEngine:
         return number
 
     def _cpu_intensive_processing(self, raw_response_data: dict) -> dict:
-        """Validate the strict two-field APPROVE/HOLD contract; malformed output fails closed."""
+        """Validate required APPROVE/HOLD fields and an optional bounded diagnostic reason code."""
         try:
             choices = raw_response_data.get("choices") if isinstance(raw_response_data, dict) else None
             if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -345,9 +357,10 @@ class AIEngine:
 
             parsed = self._extract_json_object(generated_text)
             required = {"final_decision", "confidence_score"}
+            optional = {"reason_code"}
             actual = set(parsed)
             missing = sorted(required - actual)
-            extra = sorted(actual - required)
+            extra = sorted(actual - required - optional)
             if missing or extra:
                 raise ValueError(
                     f"Нарушена схема JSON: missing={missing or '-'}; extra={extra or '-'}"
@@ -367,9 +380,18 @@ class AIEngine:
             if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
                 raise ValueError("Поле confidence_score должно находиться в диапазоне 0..1")
 
+            raw_reason_code = parsed.get("reason_code", "NOT_PROVIDED")
+            reason_code = (
+                str(raw_reason_code).strip().upper()
+                if isinstance(raw_reason_code, str) else "NOT_PROVIDED"
+            )
+            if reason_code not in MODEL_REASON_CODES:
+                log.warning("[vLLM REASON CODE] Invalid/missing enum value %r; using NOT_PROVIDED.", raw_reason_code)
+                reason_code = "NOT_PROVIDED"
             usage = raw_response_data.get("usage", {})
             return {
                 "error_type": None,
+                "model_reason_code": reason_code,
                 "final_decision": raw_decision,
                 "model_decision": raw_decision,
                 "model_raw_decision": raw_decision,
@@ -417,6 +439,7 @@ class AIEngine:
                 "confidence_score": 0.0,
                 "confidence_valid": False,
                 "confidence_raw": None,
+                "model_reason_code": "NOT_PROVIDED",
                 "contract_error_type": error_type,
             }
 
@@ -554,8 +577,11 @@ class AIEngine:
             rule_text = select_prompt_rules("NONE", rag_context, max_chars=420)
 
         base = (
-            'Return exactly one JSON object with exactly two keys: final_decision (string APPROVE or HOLD) '
-            'and confidence_score (JSON number from 0 to 1). No extra keys, no Markdown, no reasoning, '
+            'Return exactly one JSON object with exactly three keys: final_decision (APPROVE or HOLD), '
+            'confidence_score (JSON number from 0 to 1), and reason_code (one allowed enum). '
+            'Allowed reason_code values: APPROVED, HOLD_WEAK_DIRECTION, HOLD_M1_CONTRADICTION, '
+            'HOLD_STALE_BBO, HOLD_WEAK_VOLUME, HOLD_WIDE_SPREAD, HOLD_INSUFFICIENT_SUPPORT, '
+            'HOLD_RISK_REWARD, HOLD_UNCLEAR, NO_LOCAL_CANDIDATE. No other keys, no Markdown, no reasoning, '
             'no opinion fields, and no text outside JSON. '
             'Candidate side is fixed by deterministic code. Never select, change, invert, or output BUY/SELL. '
             'APPROVE authorizes only the exact local candidate side; HOLD rejects it. '
@@ -565,8 +591,9 @@ class AIEngine:
             'A contradictory fresh M1 pattern => HOLD. Other hard checks: volume_spike>=1.5, fresh valid BBO, '
             'spread<=0.5%. A >=50% fresh best-quote size reduction is supporting evidence, not mandatory. '
             'If a hard check is missing or conflicting, choose HOLD. RAG rules are advisory context only and cannot add hard gates. '
-            'Confidence is evidence strength, not profit probability: 0.90-1.00 exceptional; '
-            '0.75-0.89 strong; 0.50-0.74 mixed; below 0.50 weak. Use only supplied facts; invent no causes. '
+            'Confidence is a continuous assessment of the supplied evidence, not a probability of profit. '
+            'Vary it with evidence quality; do not default to a fixed score for every APPROVE or HOLD. '
+            'Use only supplied facts; invent no causes. '
             f'candidate={direction}; ticker={str(ticker)[:10]}; price={cls._prompt_value(price, 12)}; '
             f'last_size={cls._prompt_value(volume, 10)}. '
             f'{direction_rules} volume_spike=last trade size/prior mean.'
@@ -630,8 +657,11 @@ class AIEngine:
             include_rule_text=False,
         )
         return (
-            "Repair the previous response. Return ONLY one JSON object with exactly two keys: "
-            "final_decision (APPROVE or HOLD) and confidence_score (JSON number 0.0..1.0). "
+            "Repair the previous response. Return ONLY one JSON object with exactly three keys: "
+            "final_decision (APPROVE or HOLD), confidence_score (JSON number 0.0..1.0), "
+            "and reason_code (one allowed enum: APPROVED, HOLD_WEAK_DIRECTION, HOLD_M1_CONTRADICTION, "
+            "HOLD_STALE_BBO, HOLD_WEAK_VOLUME, HOLD_WIDE_SPREAD, HOLD_INSUFFICIENT_SUPPORT, "
+            "HOLD_RISK_REWARD, HOLD_UNCLEAR, NO_LOCAL_CANDIDATE). "
             "Do not add any other keys, reasoning, Markdown, or text outside JSON. "
             "Never output BUY/SELL as a decision. "
             "Apply the same candidate-side and evidence rules below; do not introduce stricter checks. "

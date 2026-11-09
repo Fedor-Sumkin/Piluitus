@@ -74,27 +74,34 @@ class ShadowForwardTracker:
         self._pending: dict[str, list[dict[str, Any]]] = {}
 
     @staticmethod
-    def _fresh_bbo(metrics: Mapping[str, Any]) -> tuple[bool, dict[str, float]]:
+    def _fresh_bbo(metrics: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
         bid = _number(metrics, "bid")
         ask = _number(metrics, "ask")
         bid_age = _number(metrics, "bid_quote_age_sec", math.inf)
         ask_age = _number(metrics, "ask_quote_age_sec", math.inf)
         max_age = min(5.0, max(0.25, _number(metrics, "bbo_max_age_sec", 2.0)))
-        valid = (
-            _number(metrics, "bid_ask_available") >= 0.5
-            and _number(metrics, "spread_available") >= 0.5
-            and bid > 0.0
-            and ask >= bid
-            and ask > 0.0
-            and 0.0 <= bid_age <= max_age
-            and 0.0 <= ask_age <= max_age
-        )
+        if _number(metrics, "bid_ask_available") < 0.5 or _number(metrics, "spread_available") < 0.5:
+            unavailable_reason = "MISSING_BBO_FLAGS"
+        elif bid <= 0.0:
+            unavailable_reason = "MISSING_BID"
+        elif ask <= 0.0:
+            unavailable_reason = "MISSING_ASK"
+        elif ask < bid:
+            unavailable_reason = "CROSSED_BBO"
+        elif bid_age < 0.0 or bid_age > max_age:
+            unavailable_reason = "BID_STALE"
+        elif ask_age < 0.0 or ask_age > max_age:
+            unavailable_reason = "ASK_STALE"
+        else:
+            unavailable_reason = "OK"
+        valid = unavailable_reason == "OK"
         return valid, {
             "bid": bid,
             "ask": ask,
             "bid_age_sec": bid_age,
             "ask_age_sec": ask_age,
             "max_age_sec": max_age,
+            "unavailable_reason": unavailable_reason,
         }
 
     def record_candidate(
@@ -131,6 +138,9 @@ class ShadowForwardTracker:
             "created_at_utc": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
             "entry_bid": entry_bid,
             "entry_ask": entry_ask,
+            "entry_bid_age_sec": quote["bid_age_sec"],
+            "entry_ask_age_sec": quote["ask_age_sec"],
+            "entry_bbo_max_age_sec": quote["max_age_sec"],
             "entry_mid": entry_mid,
             "entry_executable_price": entry_price,
             "entry_fill_price": entry_fill,
@@ -151,6 +161,8 @@ class ShadowForwardTracker:
             "remaining_horizons": list(self.horizons_seconds),
             "mfe_executable_pct": 0.0,
             "mae_executable_pct": 0.0,
+            "no_fresh_bbo_observations": 0,
+            "last_bbo_unavailable_reason": None,
         }
         pending = self._pending.setdefault(symbol, [])
         if len(pending) >= self.max_pending_per_ticker:
@@ -210,8 +222,11 @@ class ShadowForwardTracker:
                 gross_pct, net_pct, exit_fill = self._executable_return_pct(row, float(exit_raw))
                 row["mfe_executable_pct"] = max(float(row["mfe_executable_pct"]), net_pct)
                 row["mae_executable_pct"] = min(float(row["mae_executable_pct"]), net_pct)
+                row["last_bbo_unavailable_reason"] = None
             else:
                 gross_pct = net_pct = exit_fill = math.nan
+                row["no_fresh_bbo_observations"] = int(row.get("no_fresh_bbo_observations", 0)) + 1
+                row["last_bbo_unavailable_reason"] = str(quote.get("unavailable_reason") or "UNKNOWN")
 
             remaining: list[int] = []
             for horizon in row["remaining_horizons"]:
@@ -237,6 +252,10 @@ class ShadowForwardTracker:
                         "entry_fill_price": round(float(row["entry_fill_price"]), 6),
                         "exit_executable_price": round(float(exit_raw), 6),
                         "exit_fill_price": round(float(exit_fill), 6),
+                        "exit_bid_age_sec": round(float(quote["bid_age_sec"]), 3),
+                        "exit_ask_age_sec": round(float(quote["ask_age_sec"]), 3),
+                        "exit_bbo_max_age_sec": round(float(quote["max_age_sec"]), 3),
+                        "exit_spread_pct": _number(metrics, "spread_pct"),
                         "mid_return_pct": round(mid_return_pct, 6),
                         "gross_executable_return_pct": round(gross_pct, 6),
                         "net_executable_return_pct": round(net_pct, 6),
@@ -282,12 +301,20 @@ class ShadowForwardTracker:
                         "m1_pattern_confirmed": row["m1_pattern_confirmed"],
                         "m1_pattern": row["m1_pattern"],
                         "queue_imbalance": row["queue_imbalance"],
+                        "bbo_unavailable_reason": (
+                            str(quote.get("unavailable_reason") or row.get("last_bbo_unavailable_reason") or "UNKNOWN")
+                            if not fresh else "LABEL_LATE"
+                        ),
+                        "no_fresh_bbo_observations": int(row.get("no_fresh_bbo_observations", 0)),
+                        "entry_bid_age_sec": row["entry_bid_age_sec"],
+                        "entry_ask_age_sec": row["entry_ask_age_sec"],
                     }
                     completed.append(label)
                     logger.warning(
                         "[STRATEGY SHADOW OUTCOME] id=%s ticker=%s side=%s horizon=%ss "
-                        "elapsed=%.2fs quality=NO_FRESH_BBO result=NO_FRESH_BBO",
+                        "elapsed=%.2fs quality=NO_FRESH_BBO reason=%s invalid_observations=%d result=NO_FRESH_BBO",
                         label["candidate_id"], symbol, side, horizon, elapsed,
+                        label["bbo_unavailable_reason"], label["no_fresh_bbo_observations"],
                     )
                 else:
                     remaining.append(horizon)

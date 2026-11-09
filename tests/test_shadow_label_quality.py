@@ -40,6 +40,23 @@ class ShadowLabelQualityTests(unittest.TestCase):
         self.assertEqual(labels[0]["price_change_pct"], 0.25)
         self.assertEqual(labels[0]["price_vs_vwap_pct"], 0.12)
 
+    def test_expired_label_window_with_fresh_bbo_is_classified_as_label_late(self):
+        tracker = ShadowForwardTracker(
+            horizons_seconds=(1,),
+            max_label_lag_sec=1.0,
+            on_time_label_lag_sec=0.1,
+        )
+        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[300.0, 302.5]):
+            tracker.record_candidate(
+                "TEST", "BUY", fresh_metrics(), {"score": 86, "eligible": True}
+            )
+            labels = tracker.observe_market_tick("TEST", fresh_metrics())
+
+        self.assertEqual(len(labels), 1)
+        self.assertEqual(labels[0]["result"], "NO_FRESH_BBO")
+        self.assertEqual(labels[0]["bbo_unavailable_reason"], "LABEL_LATE")
+        self.assertEqual(labels[0]["no_fresh_bbo_observations"], 0)
+
     def test_missing_fresh_bbo_is_not_mixed_with_valid_delayed_labels(self):
         tracker = ShadowForwardTracker(
             horizons_seconds=(1,),
@@ -58,6 +75,8 @@ class ShadowLabelQualityTests(unittest.TestCase):
         self.assertEqual(len(labels), 1)
         self.assertEqual(labels[0]["result"], "NO_FRESH_BBO")
         self.assertEqual(labels[0]["label_quality"], "NO_FRESH_BBO")
+        self.assertEqual(labels[0]["bbo_unavailable_reason"], "BID_STALE")
+        self.assertEqual(labels[0]["no_fresh_bbo_observations"], 1)
 
 
 if __name__ == "__main__":

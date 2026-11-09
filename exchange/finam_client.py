@@ -108,6 +108,11 @@ class FinamBrokerClient:
         # Track a crossed-book episode from first detection until the next
         # coherent BBO is published. Individual crossed deltas are not episodes.
         self._crossed_bbo_since: dict[str, float] = {}
+        # A forced resubscription invalidates the local delta chain. Ignore all
+        # deltas for that symbol until Finam supplies a fresh full snapshot.
+        self._order_book_snapshot_required: set[str] = set()
+        self._last_order_book_snapshot_wait_tickers: set[str] = set()
+        self._crossed_bbo_resubscribe_at: dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # 1️⃣  CONNECT 
@@ -547,6 +552,7 @@ class FinamBrokerClient:
         self._last_order_book_out_of_order_tickers.clear()
         self._last_order_book_unrecognized_tickers.clear()
         self._last_order_book_out_of_order_details.clear()
+        self._last_order_book_snapshot_wait_tickers.clear()
         try:
             received_monotonic = float(envelope.get("_received_monotonic", time.monotonic()))
         except (TypeError, ValueError, OverflowError):
@@ -612,6 +618,13 @@ class FinamBrokerClient:
             # It is authoritative evidence that the reconstructed book is empty,
             # unlike a malformed/empty delta which must remain unrecognized.
             empty_snapshot = bool(snapshot_flag and not has_level_payload)
+            # A forced resubscription breaks the previous delta chain. Until a
+            # fresh provider snapshot arrives, deltas cannot safely rebuild BBO.
+            if ticker in self._order_book_snapshot_required and not snapshot_flag:
+                self._last_order_book_snapshot_wait_tickers.add(ticker)
+                continue
+            if snapshot_flag:
+                self._order_book_snapshot_required.discard(ticker)
             if empty_snapshot:
                 self._crossed_bbo_since.pop(ticker, None)
             if not has_level_payload and not empty_snapshot:
@@ -1162,6 +1175,7 @@ class FinamBrokerClient:
                             "window_parse_no_update": 0,
                             "window_parse_out_of_order": 0,
                             "window_parse_unrecognized": 0,
+                            "window_snapshot_wait": 0,
                             "window_parsed": 0,
                             "window_queued": 0,
                             "window_dropped": 0,
@@ -1173,6 +1187,27 @@ class FinamBrokerClient:
                     last_order_book_sync = 0.0
                     last_order_book_diag = asyncio.get_running_loop().time()
                     last_ws_data_at = last_order_book_diag
+                    position_snapshot_inflight: set[str] = set()
+                    position_snapshot_last_at: dict[str, float] = {}
+                    try:
+                        crossed_resubscribe_after_sec = max(2.0, float(os.getenv("FINAM_CROSSED_BBO_RESUBSCRIBE_AFTER_SEC", "5")))
+                        crossed_resubscribe_cooldown_sec = max(10.0, float(os.getenv("FINAM_CROSSED_BBO_RESUBSCRIBE_COOLDOWN_SEC", "30")))
+                        position_rest_refresh_interval_sec = max(3.0, float(os.getenv("FINAM_POSITION_REST_BBO_REFRESH_SEC", "5")))
+                        position_rest_refresh_trigger_age_sec = max(0.5, float(os.getenv("FINAM_POSITION_REST_BBO_TRIGGER_AGE_SEC", "1.5")))
+                    except (TypeError, ValueError):
+                        crossed_resubscribe_after_sec = 5.0
+                        crossed_resubscribe_cooldown_sec = 30.0
+                        position_rest_refresh_interval_sec = 5.0
+                        position_rest_refresh_trigger_age_sec = 1.5
+
+                    async def _refresh_position_snapshot(symbol: str) -> None:
+                        ticker = symbol.split("@", 1)[0].strip().upper()
+                        try:
+                            await self.refresh_order_book_snapshot(ticker, queue)
+                        except Exception as refresh_exc:
+                            logger.warning("Finam REST BBO refresh %s failed: %s", ticker, refresh_exc)
+                        finally:
+                            position_snapshot_inflight.discard(ticker)
                     last_no_data_warning_at = 0.0
                     try:
                         order_book_refresh_sec = max(1.0, float(os.getenv("FINAM_ORDER_BOOK_REFRESH_SEC", "1")))
@@ -1237,6 +1272,30 @@ class FinamBrokerClient:
                                 }
                                 position_only_symbols = position_symbols - wanted
                                 wanted.update(position_symbols)
+
+                                # Positions need continuously executable BBO even outside Top-15.
+                                # Refresh stale/missing sides with a coherent control snapshot.
+                                for position_symbol in sorted(position_symbols):
+                                    position_ticker = position_symbol.split("@", 1)[0].strip().upper()
+                                    if (
+                                        not position_ticker
+                                        or position_ticker in position_snapshot_inflight
+                                        or now_loop - position_snapshot_last_at.get(position_ticker, 0.0)
+                                        < position_rest_refresh_interval_sec
+                                    ):
+                                        continue
+                                    state = self._order_book_state.get(position_ticker, {})
+                                    bid_stamp = state.get("bid_bbo_timestamp")
+                                    ask_stamp = state.get("ask_bbo_timestamp")
+                                    bid_seen = _event_timestamp_to_monotonic(bid_stamp, now_loop)
+                                    ask_seen = _event_timestamp_to_monotonic(ask_stamp, now_loop)
+                                    bid_age = now_loop - bid_seen if bid_stamp else math.inf
+                                    ask_age = now_loop - ask_seen if ask_stamp else math.inf
+                                    if max(bid_age, ask_age) < position_rest_refresh_trigger_age_sec:
+                                        continue
+                                    position_snapshot_inflight.add(position_ticker)
+                                    position_snapshot_last_at[position_ticker] = now_loop
+                                    asyncio.create_task(_refresh_position_snapshot(position_symbol))
 
                                 sync_due = now_loop - last_order_book_sync >= order_book_refresh_sec
                                 selection_changed = wanted != order_book_subscribed
@@ -1328,6 +1387,9 @@ class FinamBrokerClient:
                                 elif wire_age >= 60.0:
                                     flags.append("WIRE_STALE")
                                     position_gaps.append(f"{ticker}:WIRE_STALE={wire_age:.1f}s")
+                                if stats["window_snapshot_wait"] > 0:
+                                    flags.append("WAIT_SNAPSHOT")
+                                    position_gaps.append(f"{ticker}:WAIT_SNAPSHOT={stats['window_snapshot_wait']}")
                                 if stats["window_wire"] > 0 and stats["window_parsed"] == 0:
                                     flags.append("PARSE_EMPTY")
                                     position_gaps.append(f"{ticker}:PARSE_EMPTY")
@@ -1406,7 +1468,7 @@ class FinamBrokerClient:
                                 for key in (
                                     "window_wire", "window_parse_no_update",
                                     "window_parse_out_of_order", "window_parse_unrecognized",
-                                    "window_parsed", "window_queued", "window_dropped",
+                                    "window_snapshot_wait", "window_parsed", "window_queued", "window_dropped",
                                 ):
                                     symbol_stats[key] = 0
                             last_order_book_diag = now_loop
@@ -1505,7 +1567,9 @@ class FinamBrokerClient:
                             parse_missing_tickers = symbol_hints - update_tickers
                             if not self._last_order_book_payload_valid:
                                 self._last_order_book_unrecognized_tickers.update(
-                                    parse_missing_tickers - self._last_order_book_out_of_order_tickers
+                                    parse_missing_tickers
+                                    - self._last_order_book_out_of_order_tickers
+                                    - self._last_order_book_snapshot_wait_tickers
                                 )
                             if not observed_tickers:
                                 order_book_unattributed_messages += 1
@@ -1518,11 +1582,14 @@ class FinamBrokerClient:
                                 safe_payload = self._redact_for_log(payload)
                                 out_of_order_symbols = parse_missing_tickers & self._last_order_book_out_of_order_tickers
                                 unrecognized_symbols = parse_missing_tickers & self._last_order_book_unrecognized_tickers
+                                snapshot_wait_symbols = parse_missing_tickers & self._last_order_book_snapshot_wait_tickers
                                 classifications = []
                                 if out_of_order_symbols:
                                     classifications.append("OUT_OF_ORDER=" + ",".join(sorted(out_of_order_symbols)))
                                 if unrecognized_symbols:
                                     classifications.append("UNRECOGNIZED=" + ",".join(sorted(unrecognized_symbols)))
+                                if snapshot_wait_symbols:
+                                    classifications.append("WAIT_SNAPSHOT=" + ",".join(sorted(snapshot_wait_symbols)))
                                 if not classifications:
                                     classifications.append("NO_UPDATE=unknown")
                                 detail = {
@@ -1542,7 +1609,9 @@ class FinamBrokerClient:
                                 symbol_stats["last_wire_monotonic"] = message_received_monotonic
                                 if observed_ticker not in update_tickers:
                                     symbol_stats["window_parse_no_update"] += 1
-                                    if observed_ticker in self._last_order_book_out_of_order_tickers:
+                                    if observed_ticker in self._last_order_book_snapshot_wait_tickers:
+                                        symbol_stats["window_snapshot_wait"] += 1
+                                    elif observed_ticker in self._last_order_book_out_of_order_tickers:
                                         symbol_stats["window_parse_out_of_order"] += 1
                                     elif (
                                         observed_ticker in self._last_order_book_unrecognized_tickers
@@ -1553,7 +1622,11 @@ class FinamBrokerClient:
                             # same envelope produced a valid update.
                             order_book_out_of_order += len(self._last_order_book_out_of_order_tickers)
                             order_book_decode_failures += len(self._last_order_book_unrecognized_tickers)
-                            if not book_updates and not self._last_order_book_payload_valid:
+                            if (
+                                not book_updates
+                                and not self._last_order_book_payload_valid
+                                and not self._last_order_book_snapshot_wait_tickers
+                            ):
                                 if not order_book_decode_warned:
                                     safe_envelope = self._redact_for_log(envelope)
                                     logger.warning(
@@ -1643,6 +1716,42 @@ class FinamBrokerClient:
                                                 book_update.get("timestamp_source", "UNKNOWN"),
                                                 float(book_update.get("crossed_duration_sec") or 0.0),
                                             )
+                                        crossed_age_sec = float(book_update.get("crossed_duration_sec") or 0.0)
+                                        last_resubscribe = self._crossed_bbo_resubscribe_at.get(invalid_ticker, 0.0)
+                                        symbol = f"{invalid_ticker}@MISX"
+                                        if (
+                                            crossed_age_sec >= crossed_resubscribe_after_sec
+                                            and symbol in order_book_subscribed
+                                            and now_monotonic - last_resubscribe >= crossed_resubscribe_cooldown_sec
+                                        ):
+                                            # A long-lived crossed state can indicate a poisoned delta chain.
+                                            # Restart the subscription and wait for a full provider snapshot.
+                                            self._order_book_snapshot_required.add(invalid_ticker)
+                                            self._last_order_book_snapshot_wait_tickers.discard(invalid_ticker)
+                                            self._order_book_state.pop(invalid_ticker, None)
+                                            self._crossed_bbo_since.pop(invalid_ticker, None)
+                                            self._crossed_bbo_resubscribe_at[invalid_ticker] = now_monotonic
+                                            try:
+                                                await ws.send(json.dumps({
+                                                    "action": "UNSUBSCRIBE", "type": "ORDER_BOOK",
+                                                    "data": {"symbol": symbol}, "token": self.jwt_token,
+                                                }))
+                                                await asyncio.sleep(0.05)
+                                                await ws.send(json.dumps({
+                                                    "action": "SUBSCRIBE", "type": "ORDER_BOOK",
+                                                    "data": {"symbol": symbol}, "token": self.jwt_token,
+                                                }))
+                                                order_book_subscribed_since[symbol] = now_loop
+                                                logger.warning(
+                                                    "🔄 [ORDER_BOOK RESYNC] %s: persistent CROSSED_BBO %.1fs; "
+                                                    "subscription restarted, waiting for full snapshot.",
+                                                    invalid_ticker, crossed_age_sec,
+                                                )
+                                            except Exception as resubscribe_exc:
+                                                logger.error(
+                                                    "[ORDER_BOOK RESYNC FAILED] %s: %s; BBO remains invalid.",
+                                                    invalid_ticker, resubscribe_exc,
+                                                )
                                 else:
                                     if book_update.get("crossed_recovered"):
                                         logger.warning(
@@ -1785,6 +1894,68 @@ class FinamBrokerClient:
 
     async def stop_market_data_stream(self):
         self.is_ws_running = False
+
+    async def refresh_order_book_snapshot(self, ticker: str, queue: asyncio.Queue) -> bool:
+        """Fetch a coherent control snapshot; REST sizes remain informational only."""
+        symbol = str(ticker or "").strip().upper().split("@")[0]
+        if not symbol:
+            return False
+        book = await self.get_ticker_order_book(symbol)
+        if not isinstance(book, dict):
+            return False
+
+        def _levels(raw: object) -> list[dict[str, float]]:
+            result: list[dict[str, float]] = []
+            if not isinstance(raw, list):
+                return result
+            for row in raw:
+                if not isinstance(row, dict):
+                    continue
+                price = self._decimal(row.get("price"))
+                size = self._decimal(row.get("size", row.get("quantity", row.get("volume"))))
+                if price > 0.0 and size > 0.0:
+                    result.append({"price": price, "size": size})
+            return result
+
+        bids = _levels(book.get("bids"))
+        asks = _levels(book.get("asks"))
+        if not bids or not asks:
+            logger.warning("Finam REST snapshot %s: нет обеих сторон BBO; старое состояние не заменяем.", symbol)
+            return False
+        best_bid = max(row["price"] for row in bids)
+        best_ask = min(row["price"] for row in asks)
+        if best_bid <= 0.0 or best_ask < best_bid:
+            logger.warning(
+                "Finam REST snapshot %s отклонён: некогерентный BBO Bid=%.6f Ask=%.6f.",
+                symbol, best_bid, best_ask,
+            )
+            return False
+
+        event_time = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        envelope = {
+            "type": "DATA", "subscription_type": "ORDER_BOOK", "timestamp": event_time,
+            "_received_monotonic": time.monotonic(),
+            "payload": {"order_book": [{
+                "symbol": f"{symbol}@MISX", "is_data_snapshot": True,
+                "bids": bids, "asks": asks,
+            }]},
+        }
+        updates = self._extract_order_book_updates(envelope)
+        if not updates or not updates[0].get("book_valid"):
+            return False
+        update = updates[0]
+        update["timestamp_source"] = "REST_SNAPSHOT"
+        update["snapshot_source"] = "REST_CONTROL_REFRESH"
+        try:
+            queue.put_nowait(update)
+        except asyncio.QueueFull:
+            logger.warning("Finam REST snapshot %s не помещён в очередь: очередь заполнена.", symbol)
+            return False
+        logger.warning(
+            "📚 [ORDER_BOOK REST SNAPSHOT] %s: BBO восстановлен контрольным снимком; Bid=%.6f Ask=%.6f.",
+            symbol, float(update["bid"]), float(update["ask"]),
+        )
+        return True
 
     # ------------------------------------------------------------------
     # 3️⃣  GET_TICKER_ORDER_BOOK

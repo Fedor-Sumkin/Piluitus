@@ -2066,6 +2066,24 @@ class MarketWorker:
                     "spread_pct": _parse_finite_float(metrics.get("spread_pct")),
                     "m1_pattern": str(metrics.get("bar_pattern_name") or ""),
                     "m1_pattern_confirmed": _parse_finite_float(metrics.get("bar_pattern_confirmed")),
+                    "m1_pattern_direction_code": _parse_finite_float(metrics.get("bar_pattern_direction_code")),
+                    "m1_breakout_up": _parse_finite_float(metrics.get("bar_breakout_up")),
+                    "m1_breakout_down": _parse_finite_float(metrics.get("bar_breakout_down")),
+                    "m1_pullback_buy": _parse_finite_float(metrics.get("bar_pullback_buy")),
+                    "m1_pullback_sell": _parse_finite_float(metrics.get("bar_pullback_sell")),
+                    "m1_trend_up": _parse_finite_float(metrics.get("bar_trend_up")),
+                    "m1_trend_down": _parse_finite_float(metrics.get("bar_trend_down")),
+                    "m1_signal_gap_atr": _parse_finite_float(metrics.get("bar_signal_gap_atr")),
+                    "bid_size_drop_pct": _parse_finite_float(metrics.get("bid_size_drop_pct")),
+                    "ask_size_drop_pct": _parse_finite_float(metrics.get("ask_size_drop_pct")),
+                    "top_bid_history_samples": _parse_finite_float(metrics.get("top_bid_history_samples")),
+                    "top_ask_history_samples": _parse_finite_float(metrics.get("top_ask_history_samples")),
+                    "bid_size_drop_age_sec": _parse_finite_float(metrics.get("bid_size_drop_age_sec")),
+                    "ask_size_drop_age_sec": _parse_finite_float(metrics.get("ask_size_drop_age_sec")),
+                    "bid_size_available": _parse_finite_float(metrics.get("bid_size_available")),
+                    "ask_size_available": _parse_finite_float(metrics.get("ask_size_available")),
+                    "bid_ask_available": _parse_finite_float(metrics.get("bid_ask_available")),
+                    "spread_available": _parse_finite_float(metrics.get("spread_available")),
                     "m1_atr": _parse_finite_float(metrics.get("bar_atr")),
                     "m1_atr_periods": _parse_finite_float(metrics.get("bar_atr_periods")),
                     "m1_close_position": _parse_finite_float(metrics.get("bar_close_position")),
@@ -2115,6 +2133,23 @@ class MarketWorker:
                         market_evidence=metrics if isinstance(metrics, dict) else {},
                     )
                     event_payload["rag_context"] = [rag_context_str]
+                    retrieved_rule_ids = re.findall(
+                        r"\[(?:RISK|BUY|SELL)\s*/\s*([A-Z0-9_]+)\]",
+                        rag_context_str,
+                    )
+                    # ai_engine.py intentionally passes only always-on RISK rules
+                    # to the model; directional rules remain advisory research data
+                    # and must not silently become additional hard entry gates.
+                    prompt_rule_ids = re.findall(
+                        r"\[RISK\s*/\s*([A-Z0-9_]+)\]",
+                        rag_context_str,
+                    )
+                    logger.info(
+                        "[LLM CONTEXT] ticker=%s candidate=%s retrieved_rule_ids=%s prompt_rule_ids=%s",
+                        ticker, candidate_direction_for_diag,
+                        ",".join(retrieved_rule_ids) if retrieved_rule_ids else "NONE",
+                        ",".join(prompt_rule_ids) if prompt_rule_ids else "NONE",
+                    )
                 except Exception as exc:
                     logger.error("⚠️ Ошибка сборки RAG-контекста в main.py: %s", exc, exc_info=True)
                     event_payload["rag_context"] = [
@@ -2197,6 +2232,10 @@ class MarketWorker:
                     ai_analysis.get("model_decision", ai_analysis.get("final_decision", "HOLD"))
                 ).strip().upper()
                 candidate_direction = str(event_payload.get("candidate_direction", "")).strip().upper()
+                model_reason_code = str(
+                    ai_analysis.get("model_reason_code")
+                    or ("NO_LOCAL_CANDIDATE" if candidate_direction not in {"BUY", "SELL"} else "NOT_PROVIDED")
+                ).strip().upper()
                 candidate_decision = candidate_direction if candidate_direction in {"BUY", "SELL"} else "HOLD"
                 model_contract_violation = bool(ai_analysis.get("model_contract_violation", False))
                 if not request_error:
@@ -2390,14 +2429,28 @@ class MarketWorker:
                 tactic_text, critic_text = build_verdict_explanation(
                     decision, candidate_decision, evidence, signal_reason
                 )
-                local_evidence_diagnostic = block_reason or (
-                    "PRE_LLM_VALIDATED"
-                    if candidate_direction in {"BUY", "SELL"}
-                    else "NO_DIRECTIONAL_CANDIDATE"
-                )
+                if block_reason:
+                    local_evidence_diagnostic = block_reason
+                elif candidate_direction not in {"BUY", "SELL"}:
+                    local_evidence_diagnostic = "NO_DIRECTIONAL_CANDIDATE"
+                elif request_error:
+                    local_evidence_diagnostic = f"LLM_REQUEST_ERROR:{request_error_type}"
+                elif model_contract_violation:
+                    local_evidence_diagnostic = "LLM_CONTRACT_VIOLATION"
+                elif model_decision == "HOLD":
+                    local_evidence_diagnostic = f"MODEL_HOLD:{model_reason_code}"
+                elif not confidence_valid:
+                    local_evidence_diagnostic = "CONFIDENCE_INVALID"
+                elif decision == "HOLD" and confidence < 75.0:
+                    local_evidence_diagnostic = f"CONFIDENCE_BELOW_THRESHOLD:{confidence:.1f}"
+                elif decision == "HOLD":
+                    local_evidence_diagnostic = "POST_LLM_GUARD_BLOCK"
+                else:
+                    local_evidence_diagnostic = "PRE_LLM_VALIDATED"
                 logger.info(
                     "[LLM DECISION] %s candidate=%s model=%s final=%s confidence=%s "
-                    "confidence_valid=%s contract_violation=%s reason=%s local_evidence=%s features=%s",
+                    "confidence_valid=%s contract_violation=%s model_reason_code=%s "
+                    "reason=%s local_evidence=%s features=%s",
                     ticker,
                     candidate_direction or "NONE",
                     model_decision,
@@ -2405,6 +2458,7 @@ class MarketWorker:
                     f"{confidence:.1f}%" if confidence_valid else "invalid",
                     confidence_valid,
                     model_contract_violation,
+                    model_reason_code,
                     signal_reason or ("APPROVED" if decision in {"BUY", "SELL"} else "MODEL_HOLD"),
                     local_evidence_diagnostic,
                     json.dumps(llm_input_features, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
@@ -2442,6 +2496,7 @@ class MarketWorker:
                     "llm_input_features": llm_input_features,
                     "llm_candidate_direction": candidate_decision,
                     "llm_model_decision": model_decision,
+                    "llm_reason_code": model_reason_code,
                 }
 
                 ai_analysis["final_decision"] = decision
