@@ -685,6 +685,8 @@ class BaseExecutionEngine:
                 return None
             bid = _finite_or_default(quote.get("bid", 0.0), 0.0)
             ask = _finite_or_default(quote.get("ask", 0.0), 0.0)
+            mid = (bid + ask) / 2.0 if bid > 0.0 and ask >= bid else 0.0
+            spread_pct = ((ask - bid) / mid * 100.0) if mid > 0.0 else math.inf
             bid_seen = _finite_or_default(
                 quote.get("last_bid_confirmed_seen", quote.get("last_bid_seen", 0.0)), 0.0
             )
@@ -765,6 +767,16 @@ class BaseExecutionEngine:
         ):
             return None
         chosen = ask_quote if side == "BUY" else bid_quote
+        max_spread_pct = _finite_or_default(
+            os.getenv("PILUITUS_MAX_ENTRY_SPREAD_PCT", "0.50"), 0.50
+        )
+        if not math.isfinite(max_spread_pct) or max_spread_pct <= 0.0:
+            max_spread_pct = 0.50
+        if (
+            not math.isfinite(float(chosen.get("spread_pct", math.inf)))
+            or float(chosen.get("spread_pct", math.inf)) > max_spread_pct
+        ):
+            return None
         return {
             **chosen,
             "executable_price": float(chosen["ask"] if side == "BUY" else chosen["bid"]),
@@ -885,8 +897,14 @@ class BaseExecutionEngine:
             reason = str(quote.get("order_book_last_reason", "UNKNOWN") or "UNKNOWN")
             bid_label = f"{bid_age:.3f}s" if math.isfinite(bid_age) else "нет"
             ask_label = f"{ask_age:.3f}s" if math.isfinite(ask_age) else "нет"
+            mid = (bid + ask) / 2.0 if bid > 0.0 and ask >= bid else 0.0
+            spread_pct = ((ask - bid) / mid * 100.0) if mid > 0.0 else math.inf
+            spread_limit = _finite_or_default(
+                os.getenv("PILUITUS_MAX_ENTRY_SPREAD_PCT", "0.50"), 0.50
+            )
             return (
                 f"bid={bid:.6f} age={bid_label}; ask={ask:.6f} age={ask_label}; "
+                f"spread={spread_pct:.3f}%/limit={spread_limit:.3f}%; "
                 f"limit={max_age:.3f}s; book_valid={valid}; book_reason={reason}"
             )
         except Exception as exc:
@@ -1284,7 +1302,7 @@ class BaseExecutionEngine:
                 if entry_bbo is None:
                     diagnostic = self._paper_entry_bbo_diagnostic(ticker)
                     message = (
-                        "BBO_ENTRY_BLOCK: нет свежего двустороннего BBO для PAPER-входа; "
+                        "BBO_ENTRY_BLOCK: нет пригодного двустороннего BBO (свежесть/спред) для PAPER-входа; "
                         f"ожидание={wait_sec:.2f}s; {diagnostic}. Позиция не открыта."
                     )
                     logger.warning("🧱 [PAPER BBO ENTRY BLOCK] %s %s: %s", side, ticker, message)
