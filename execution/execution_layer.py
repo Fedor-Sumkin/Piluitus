@@ -252,7 +252,7 @@ class BaseExecutionEngine:
         self.paper_max_book_participation_pct = min(
             100.0,
             max(1.0, _finite_or_default(
-                getattr(Settings, "PAPER_MAX_BOOK_PARTICIPATION_PCT", 10.0), 10.0
+                getattr(Settings, "PAPER_MAX_BOOK_PARTICIPATION_PCT", 100.0), 10.0
             )),
         )
 
@@ -987,7 +987,7 @@ class BaseExecutionEngine:
             return None
         requested = max(0, int(requested_lots))
         lot = max(1, int(lot_size))
-        participation = min(100.0, max(1.0, _finite_or_default(max_participation_pct, 10.0)))
+        participation = min(100.0, max(1.0, _finite_or_default(max_participation_pct, 100.0)))
         if requested <= 0 or not isinstance(levels, (list, tuple)):
             return {"filled_lots": 0, "filled_shares": 0, "requested_shares": requested * lot,
                     "average_price": 0.0, "levels_used": 0, "fill_ratio": 0.0}
@@ -1717,7 +1717,7 @@ class BaseExecutionEngine:
             "pnl": round(net_pnl, 2),
             "pnl_percent": round(net_pct, 4),
             "fill_vs_trigger_pct": (
-                round((exit_price - trigger_price) / trigger_price * 100.0, 6)
+                round((exit_price - trigger_price) / trigger_price * 100.0 * (1 if side == "BUY" else -1), 6)
                 if trigger_price > 0.0 else None
             ),
             "time_in_trade_sec": round(held_seconds, 3) if held_seconds is not None else None,
