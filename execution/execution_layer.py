@@ -1357,7 +1357,7 @@ class BaseExecutionEngine:
                     else "BBO_V8" if self.paper_mode else None
                 ),
                 "paper_fill_assumption": (
-                    "DEPTH_LIMITED_PARTIAL_ENTRY_FILL"
+                    "DEPTH_LIMITED_PARTIAL_ENTRY_FULL_BBO_EXIT"
                     if self.paper_mode and self.paper_book_size_unit in {"shares", "lots"}
                     else "FULL_FILL_AT_TOP_OF_BOOK_DEPTH_UNIT_UNCONFIRMED" if self.paper_mode else None
                 ),
@@ -1736,6 +1736,8 @@ class BaseExecutionEngine:
             "observed_exit_price": observed_last_price,
             "exit_reason": exit_reason,
             "exit_price_source": "BBO_BID" if side == "BUY" else "BBO_ASK",
+            "exit_fill_model": "FULL_FILL_AT_EXECUTABLE_BBO",
+            "exit_partial_fill_enabled": False,
             "exit_bid": _finite_or_default(bbo.get("bid"), 0.0),
             "exit_ask": _finite_or_default(bbo.get("ask"), 0.0),
             "exit_bid_size": _finite_or_default(bbo.get("bid_size"), 0.0),
