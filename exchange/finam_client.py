@@ -1942,10 +1942,15 @@ class FinamBrokerClient:
         ws_asks = state.get("asks", {}) if isinstance(state, dict) else {}
         ws_bid = max(ws_bids) if isinstance(ws_bids, dict) and ws_bids else 0.0
         ws_ask = min(ws_asks) if isinstance(ws_asks, dict) and ws_asks else 0.0
-        ws_text = (
-            f"WS Bid={ws_bid:.6f} Ask={ws_ask:.6f}"
-            if ws_bid > 0.0 and ws_ask > 0.0 else "WS BBO=нет"
-        )
+        if ws_bid > 0.0 and ws_ask >= ws_bid and ws_ask > 0.0:
+            bid_delta_pct = (best_bid - ws_bid) / ws_bid * 100.0
+            ask_delta_pct = (best_ask - ws_ask) / ws_ask * 100.0
+            ws_text = (
+                f"WS Bid={ws_bid:.6f} Ask={ws_ask:.6f}; "
+                f"REST-vs-WS delta Bid={bid_delta_pct:+.3f}% Ask={ask_delta_pct:+.3f}%"
+            )
+        else:
+            ws_text = "WS BBO=нет"
         logger.warning(
             "📚 [ORDER_BOOK REST CONTROL] %s: REST Bid=%.6f Ask=%.6f spread=%.3f%%; %s; "
             "снимок только диагностический: не помещён в торговую очередь, "
