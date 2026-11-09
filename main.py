@@ -2392,7 +2392,7 @@ class MarketWorker:
                 )
                 logger.info(
                     "[LLM DECISION] %s candidate=%s model=%s final=%s confidence=%s "
-                    "confidence_valid=%s contract_violation=%s reason=%s features=%s",
+                    "confidence_valid=%s contract_violation=%s reason=%s local_evidence=%s features=%s",
                     ticker,
                     candidate_direction or "NONE",
                     model_decision,
@@ -2400,7 +2400,8 @@ class MarketWorker:
                     f"{confidence:.1f}%" if confidence_valid else "invalid",
                     confidence_valid,
                     model_contract_violation,
-                    signal_reason or "APPROVED",
+                    signal_reason or ("APPROVED" if decision in {"BUY", "SELL"} else "MODEL_HOLD"),
+                    block_reason or "нет направленного локального подтверждения",
                     json.dumps(llm_input_features, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
                 )
 
@@ -2432,6 +2433,7 @@ class MarketWorker:
                     "order_id": None,
                     "tactic_opinion": tactic_text,
                     "critic_opinion": critic_text,
+                    "local_evidence_reason": block_reason or None,
                     "llm_input_features": llm_input_features,
                     "llm_candidate_direction": candidate_decision,
                     "llm_model_decision": model_decision,
