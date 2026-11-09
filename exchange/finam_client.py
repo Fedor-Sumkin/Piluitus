@@ -1293,9 +1293,53 @@ class FinamBrokerClient:
                                     ask_age = now_loop - ask_seen if ask_stamp else math.inf
                                     if max(bid_age, ask_age) < position_rest_refresh_trigger_age_sec:
                                         continue
-                                    position_snapshot_inflight.add(position_ticker)
-                                    position_snapshot_last_at[position_ticker] = now_loop
-                                    asyncio.create_task(_refresh_position_snapshot(position_symbol))
+
+                                    # REST is diagnostic-only, so stale position BBO must
+                                    # recover through a fresh provider snapshot on the WS
+                                    # subscription. Restart the delta chain with a cooldown;
+                                    # never manufacture freshness from REST receive time.
+                                    last_resubscribe = self._crossed_bbo_resubscribe_at.get(
+                                        position_ticker, 0.0
+                                    )
+                                    if (
+                                        position_symbol in order_book_subscribed
+                                        and now_loop - last_resubscribe >= crossed_resubscribe_cooldown_sec
+                                    ):
+                                        self._order_book_snapshot_required.add(position_ticker)
+                                        self._last_order_book_snapshot_wait_tickers.discard(position_ticker)
+                                        self._order_book_state.pop(position_ticker, None)
+                                        self._crossed_bbo_resubscribe_at[position_ticker] = now_loop
+                                        try:
+                                            await ws.send(json.dumps({
+                                                "action": "UNSUBSCRIBE", "type": "ORDER_BOOK",
+                                                "data": {"symbol": position_symbol}, "token": self.jwt_token,
+                                            }))
+                                            await asyncio.sleep(0.05)
+                                            await ws.send(json.dumps({
+                                                "action": "SUBSCRIBE", "type": "ORDER_BOOK",
+                                                "data": {"symbol": position_symbol}, "token": self.jwt_token,
+                                            }))
+                                            order_book_subscribed_since[position_symbol] = now_loop
+                                            logger.warning(
+                                                "🔄 [ORDER_BOOK POSITION RESYNC] %s: BBO устарел "
+                                                "(Bid age=%.2fs, Ask age=%.2fs); WS subscription restarted, "
+                                                "ожидается полный provider snapshot; REST остаётся диагностическим.",
+                                                position_ticker, bid_age, ask_age,
+                                            )
+                                        except Exception as resync_exc:
+                                            logger.warning(
+                                                "Не удалось перезапустить ORDER_BOOK для позиции %s: %s",
+                                                position_ticker, type(resync_exc).__name__,
+                                            )
+
+                                    if (
+                                        position_ticker not in position_snapshot_inflight
+                                        and now_loop - position_snapshot_last_at.get(position_ticker, 0.0)
+                                        >= position_rest_refresh_interval_sec
+                                    ):
+                                        position_snapshot_inflight.add(position_ticker)
+                                        position_snapshot_last_at[position_ticker] = now_loop
+                                        asyncio.create_task(_refresh_position_snapshot(position_symbol))
 
                                 sync_due = now_loop - last_order_book_sync >= order_book_refresh_sec
                                 selection_changed = wanted != order_book_subscribed
