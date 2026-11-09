@@ -153,6 +153,7 @@ class RiskManager:
         max_drawdown_pct=0.05,
         loss_streak_3_pause_sec=600,
         loss_streak_5_pause_sec=1800,
+        loss_streak_hard_stop=5,
     ):
         self.initial_deposit = initial_deposit
         self.current_equity = initial_deposit
@@ -172,6 +173,7 @@ class RiskManager:
         self.loss_streak_5_pause_sec = max(
             self.loss_streak_3_pause_sec, int(loss_streak_5_pause_sec)
         )
+        self.loss_streak_hard_stop = max(3, int(loss_streak_hard_stop))
         self.block_trading = False
         self._drawdown_warning_active = False
         self._loss_streak_count = 0
@@ -258,8 +260,15 @@ class RiskManager:
             configured,
         )
 
-    async def is_trading_allowed(self, db: DBManager) -> bool:
-        """Apply daily loss, high-water drawdown and global loss-streak safeguards."""
+    async def is_trading_allowed(
+        self, db: DBManager, *, force_refresh: bool = False
+    ) -> bool:
+        """Apply daily loss, high-water drawdown and global loss-streak safeguards.
+
+        force_refresh is used at the final execution boundary so a candidate
+        approved before a new loss-streak lock cannot slip through a cached
+        pre-LLM risk decision.
+        """
         risk_logger = logging.getLogger("Piluitus.RiskManager")
         now = datetime.now(_MOSCOW_TZ).replace(tzinfo=None)
         today = now.date()
@@ -267,7 +276,8 @@ class RiskManager:
 
         # Full journal scans are cached briefly to avoid one SCAN per market tick.
         if (
-            self._cached_trading_allowed is not None
+            not force_refresh
+            and self._cached_trading_allowed is not None
             and now_monotonic - self._last_risk_snapshot_monotonic < 1.0
             and self._blocked_date in (None, today)
         ):
@@ -281,6 +291,8 @@ class RiskManager:
         if self._blocked_date is not None and self._blocked_date != today:
             self.block_trading = False
             self._blocked_date = None
+            self._loss_pause_signature = None
+            self._last_loss_streak_diagnostic_signature = None
             risk_logger.warning(
                 "🌅 Новая торговая дата MSK: дневная блокировка и серия убытков текущей сессии "
                 "сбрасываются; долгосрочный HWM и накопленная просадка сохраняются."
@@ -527,6 +539,21 @@ class RiskManager:
                     " | ".join(recent_details) if recent_details else "нет",
                 )
                 self._last_loss_streak_diagnostic_signature = diagnostic_signature
+
+            if loss_streak >= self.loss_streak_hard_stop:
+                signature = f"{today.isoformat()}:{expected_mode}:{loss_streak}:{latest_loss_at.isoformat() if latest_loss_at else 'none'}"
+                if signature != self._loss_pause_signature:
+                    risk_logger.critical(
+                        "🛑 [SESSION LOSS HARD STOP] session_date=%s mode=%s; "
+                        "%d последовательных убыточных сделок (порог=%d). "
+                        "Новые входы заблокированы до следующей торговой даты MSK.",
+                        today.isoformat(), expected_mode, loss_streak,
+                        self.loss_streak_hard_stop,
+                    )
+                    self._loss_pause_signature = signature
+                self.block_trading = True
+                self._blocked_date = today
+                return _cache_result(False)
 
             pause_sec = (
                 self.loss_streak_5_pause_sec if loss_streak >= 5
