@@ -93,6 +93,14 @@ class SessionLossStreakTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(allowed)
         self.assertEqual(manager._loss_streak_count, 5)
+        self.assertTrue(manager.block_trading)
+        self.assertEqual(manager._blocked_date, now.date())
+
+        # The hard stop must remain active even after the timed pause would
+        # otherwise have expired; only a new Moscow trading date resets it.
+        allowed_again = await manager.is_trading_allowed(db, force_refresh=True)
+        self.assertFalse(allowed_again)
+        self.assertTrue(manager.block_trading)
 
 
 if __name__ == "__main__":
