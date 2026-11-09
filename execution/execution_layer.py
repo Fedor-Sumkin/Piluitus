@@ -685,8 +685,6 @@ class BaseExecutionEngine:
                 return None
             bid = _finite_or_default(quote.get("bid", 0.0), 0.0)
             ask = _finite_or_default(quote.get("ask", 0.0), 0.0)
-            mid = (bid + ask) / 2.0 if bid > 0.0 and ask >= bid else 0.0
-            spread_pct = ((ask - bid) / mid * 100.0) if mid > 0.0 else math.inf
             bid_seen = _finite_or_default(
                 quote.get("last_bid_confirmed_seen", quote.get("last_bid_seen", 0.0)), 0.0
             )
