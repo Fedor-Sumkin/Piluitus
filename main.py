@@ -2076,12 +2076,6 @@ class MarketWorker:
                     "bid_quote_age_sec": _parse_finite_float(metrics.get("bid_quote_age_sec")),
                     "ask_quote_age_sec": _parse_finite_float(metrics.get("ask_quote_age_sec")),
                 }
-                logger.info(
-                    "🧭 [LLM INPUT] ticker=%s candidate=%s features=%s",
-                    ticker, candidate_direction_for_diag,
-                    json.dumps(llm_input_features, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-                )
-
                 asyncio.create_task(
                     log_trading_event_to_file(
                         ticker=ticker,
@@ -2127,6 +2121,11 @@ class MarketWorker:
                         "Нет проверенного контекста правил; направленный вход должен быть HOLD."
                     ]
 
+                logger.info(
+                    "🧭 [LLM INPUT] ticker=%s candidate=%s features=%s",
+                    ticker, candidate_direction_for_diag,
+                    json.dumps(llm_input_features, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                )
                 try:
                     _trade_flow_inc("llm_calls")
                     ai_response = await asyncio.wait_for(
