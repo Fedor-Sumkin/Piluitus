@@ -288,8 +288,8 @@ class ShadowForwardTracker:
                         "candidate_id": row["candidate_id"],
                         "ticker": symbol,
                         "side": side,
-                        "result": "NO_FRESH_BBO",
-                        "label_quality": "NO_FRESH_BBO",
+                        "result": "LABEL_LATE" if fresh else "NO_FRESH_BBO",
+                        "label_quality": "LABEL_LATE" if fresh else "NO_FRESH_BBO",
                         "horizon_sec": horizon,
                         "elapsed_sec": round(elapsed, 3),
                         "label_lag_sec": round(max(0.0, elapsed - horizon), 3),
@@ -312,9 +312,10 @@ class ShadowForwardTracker:
                     completed.append(label)
                     logger.warning(
                         "[STRATEGY SHADOW OUTCOME] id=%s ticker=%s side=%s horizon=%ss "
-                        "elapsed=%.2fs quality=NO_FRESH_BBO reason=%s invalid_observations=%d result=NO_FRESH_BBO",
+                        "elapsed=%.2fs quality=%s reason=%s invalid_observations=%d result=%s",
                         label["candidate_id"], symbol, side, horizon, elapsed,
-                        label["bbo_unavailable_reason"], label["no_fresh_bbo_observations"],
+                        label["label_quality"], label["bbo_unavailable_reason"],
+                        label["no_fresh_bbo_observations"], label["result"],
                     )
                 else:
                     remaining.append(horizon)

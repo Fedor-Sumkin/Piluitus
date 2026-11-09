@@ -53,7 +53,8 @@ class ShadowLabelQualityTests(unittest.TestCase):
             labels = tracker.observe_market_tick("TEST", fresh_metrics())
 
         self.assertEqual(len(labels), 1)
-        self.assertEqual(labels[0]["result"], "NO_FRESH_BBO")
+        self.assertEqual(labels[0]["result"], "LABEL_LATE")
+        self.assertEqual(labels[0]["label_quality"], "LABEL_LATE")
         self.assertEqual(labels[0]["bbo_unavailable_reason"], "LABEL_LATE")
         self.assertEqual(labels[0]["no_fresh_bbo_observations"], 0)
 
