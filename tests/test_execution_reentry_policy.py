@@ -5,7 +5,7 @@ import unittest
 import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from execution_layer import BaseExecutionEngine
 
@@ -121,6 +121,40 @@ class ExecutionReentryPolicyTests(unittest.IsolatedAsyncioTestCase):
     def test_lot_multiplier_is_available_before_execution_diagnostics(self) -> None:
         self.assertGreater(BaseExecutionEngine._lot_multiplier_for("IRKT"), 0)
         self.assertEqual(BaseExecutionEngine._lot_multiplier_for("__UNKNOWN__"), 1)
+
+    def test_entry_bbo_rejects_spread_above_final_execution_limit(self) -> None:
+        now = time.monotonic()
+        quote = {
+            "bid": 100.0,
+            "ask": 101.0,
+            "last_bid_confirmed_seen": now - 0.1,
+            "last_ask_confirmed_seen": now - 0.1,
+            "bid_levels": [],
+            "ask_levels": [],
+        }
+        self.engine.screener = SimpleNamespace(
+            quotes={"SBER": quote}, bbo_max_age_sec=2.0
+        )
+        with patch.dict("os.environ", {"PILUITUS_MAX_ENTRY_SPREAD_PCT": "0.50"}):
+            self.assertIsNone(self.engine._latest_fresh_entry_quote("SBER", "BUY"))
+
+    def test_entry_bbo_accepts_fresh_spread_within_final_execution_limit(self) -> None:
+        now = time.monotonic()
+        quote = {
+            "bid": 100.0,
+            "ask": 100.2,
+            "last_bid_confirmed_seen": now - 0.1,
+            "last_ask_confirmed_seen": now - 0.1,
+            "bid_levels": [],
+            "ask_levels": [],
+        }
+        self.engine.screener = SimpleNamespace(
+            quotes={"SBER": quote}, bbo_max_age_sec=2.0
+        )
+        with patch.dict("os.environ", {"PILUITUS_MAX_ENTRY_SPREAD_PCT": "0.50"}):
+            result = self.engine._latest_fresh_entry_quote("SBER", "BUY")
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result["spread_pct"], (0.2 / 100.1) * 100.0)
 
     def test_paper_commission_is_charged_on_entry_and_exit_for_long(self) -> None:
         gross, exit_fee, total_fee, net = BaseExecutionEngine._calculate_paper_pnl(
