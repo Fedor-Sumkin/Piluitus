@@ -2390,6 +2390,11 @@ class MarketWorker:
                 tactic_text, critic_text = build_verdict_explanation(
                     decision, candidate_decision, evidence, signal_reason
                 )
+                local_evidence_diagnostic = block_reason or (
+                    "PRE_LLM_VALIDATED"
+                    if candidate_direction in {"BUY", "SELL"}
+                    else "NO_DIRECTIONAL_CANDIDATE"
+                )
                 logger.info(
                     "[LLM DECISION] %s candidate=%s model=%s final=%s confidence=%s "
                     "confidence_valid=%s contract_violation=%s reason=%s local_evidence=%s features=%s",
@@ -2401,7 +2406,7 @@ class MarketWorker:
                     confidence_valid,
                     model_contract_violation,
                     signal_reason or ("APPROVED" if decision in {"BUY", "SELL"} else "MODEL_HOLD"),
-                    block_reason or "нет направленного локального подтверждения",
+                    local_evidence_diagnostic,
                     json.dumps(llm_input_features, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
                 )
 
@@ -2433,7 +2438,7 @@ class MarketWorker:
                     "order_id": None,
                     "tactic_opinion": tactic_text,
                     "critic_opinion": critic_text,
-                    "local_evidence_reason": block_reason or None,
+                    "local_evidence_reason": local_evidence_diagnostic,
                     "llm_input_features": llm_input_features,
                     "llm_candidate_direction": candidate_decision,
                     "llm_model_decision": model_decision,
