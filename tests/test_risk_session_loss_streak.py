@@ -1,5 +1,7 @@
+import os
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from risk_manager import RiskManager
 
@@ -63,7 +65,8 @@ class SessionLossStreakTests(unittest.IsolatedAsyncioTestCase):
         )
         db = FakeDB(trades)
 
-        allowed = await manager.is_trading_allowed(db)
+        with patch.dict(os.environ, {"PAPER_TRADING": "True"}):
+            allowed = await manager.is_trading_allowed(db)
 
         self.assertTrue(allowed)
         self.assertEqual(manager._loss_streak_count, 1)
@@ -85,7 +88,8 @@ class SessionLossStreakTests(unittest.IsolatedAsyncioTestCase):
         )
         db = FakeDB(trades)
 
-        allowed = await manager.is_trading_allowed(db)
+        with patch.dict(os.environ, {"PAPER_TRADING": "True"}):
+            allowed = await manager.is_trading_allowed(db)
 
         self.assertFalse(allowed)
         self.assertEqual(manager._loss_streak_count, 5)
