@@ -277,6 +277,11 @@ class ShadowForwardTracker:
                         "score": row["score"],
                         "shadow_eligible": row["shadow_eligible"],
                         "regime": row["regime"],
+                        "price_change_pct": row["price_change_pct"],
+                        "price_vs_vwap_pct": row["price_vs_vwap_pct"],
+                        "m1_pattern_confirmed": row["m1_pattern_confirmed"],
+                        "m1_pattern": row["m1_pattern"],
+                        "queue_imbalance": row["queue_imbalance"],
                     }
                     completed.append(label)
                     logger.warning(
