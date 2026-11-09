@@ -61,6 +61,7 @@ class ShadowForwardTracker:
         horizons_seconds: tuple[int, ...] = (60, 180, 300),
         *,
         max_label_lag_sec: float = 30.0,
+        on_time_label_lag_sec: float = 10.0,
         max_pending_per_ticker: int = 100,
     ) -> None:
         normalized = tuple(sorted({int(x) for x in horizons_seconds if int(x) > 0}))
@@ -68,6 +69,7 @@ class ShadowForwardTracker:
             raise ValueError("At least one positive shadow horizon is required.")
         self.horizons_seconds = normalized
         self.max_label_lag_sec = max(1.0, float(max_label_lag_sec))
+        self.on_time_label_lag_sec = max(0.0, float(on_time_label_lag_sec))
         self.max_pending_per_ticker = max(1, int(max_pending_per_ticker))
         self._pending: dict[str, list[dict[str, Any]]] = {}
 
@@ -142,7 +144,10 @@ class ShadowForwardTracker:
             "spread_pct": _number(metrics, "spread_pct"),
             "atr_pct": _number(metrics, "bar_atr_pct"),
             "volume_spike": _number(metrics, "volume_spike"),
-            "pattern": str(metrics.get("bar_pattern_name") or ""),
+            "price_change_pct": _number(metrics, "price_change_pct"),
+            "price_vs_vwap_pct": _number(metrics, "price_vs_vwap_pct"),
+            "m1_pattern_confirmed": _number(metrics, "bar_pattern_confirmed"),
+            "m1_pattern": str(metrics.get("bar_pattern_name") or ""),
             "remaining_horizons": list(self.horizons_seconds),
             "mfe_executable_pct": 0.0,
             "mae_executable_pct": 0.0,
@@ -215,14 +220,19 @@ class ShadowForwardTracker:
                     mid_return_pct = (
                         (mid / float(row["entry_mid"]) - 1.0) * 100.0 * sign
                     )
+                    label_lag = round(max(0.0, elapsed - horizon), 3)
+                    label_quality = (
+                        "ON_TIME" if label_lag <= self.on_time_label_lag_sec else "DELAYED"
+                    )
                     label = {
                         "candidate_id": row["candidate_id"],
                         "ticker": symbol,
                         "side": side,
                         "result": "OK",
+                        "label_quality": label_quality,
                         "horizon_sec": horizon,
                         "elapsed_sec": round(elapsed, 3),
-                        "label_lag_sec": round(max(0.0, elapsed - horizon), 3),
+                        "label_lag_sec": label_lag,
                         "entry_executable_price": round(float(row["entry_executable_price"]), 6),
                         "entry_fill_price": round(float(row["entry_fill_price"]), 6),
                         "exit_executable_price": round(float(exit_raw), 6),
@@ -235,6 +245,10 @@ class ShadowForwardTracker:
                         "score": row["score"],
                         "shadow_eligible": row["shadow_eligible"],
                         "regime": row["regime"],
+                        "price_change_pct": row["price_change_pct"],
+                        "price_vs_vwap_pct": row["price_vs_vwap_pct"],
+                        "m1_pattern_confirmed": row["m1_pattern_confirmed"],
+                        "m1_pattern": row["m1_pattern"],
                         "queue_imbalance": row["queue_imbalance"],
                         "spread_atr_ratio": row["spread_atr_ratio"],
                         "commission_pct_per_side": row["commission_pct_per_side"],
@@ -243,10 +257,10 @@ class ShadowForwardTracker:
                     completed.append(label)
                     logger.info(
                         "[STRATEGY SHADOW OUTCOME] id=%s ticker=%s side=%s horizon=%ss "
-                        "elapsed=%.2fs lag=%.2fs result=OK net=%.5f%% gross=%.5f%% "
+                        "elapsed=%.2fs lag=%.2fs quality=%s result=OK net=%.5f%% gross=%.5f%% "
                         "mid=%.5f%% MFE=%.5f%% MAE=%.5f%% score=%.1f eligible=%s",
                         label["candidate_id"], symbol, side, horizon, elapsed,
-                        label["label_lag_sec"], net_pct, gross_pct, mid_return_pct,
+                        label["label_lag_sec"], label_quality, net_pct, gross_pct, mid_return_pct,
                         row["mfe_executable_pct"], row["mae_executable_pct"],
                         row["score"], row["shadow_eligible"],
                     )
@@ -256,6 +270,7 @@ class ShadowForwardTracker:
                         "ticker": symbol,
                         "side": side,
                         "result": "NO_FRESH_BBO",
+                        "label_quality": "NO_FRESH_BBO",
                         "horizon_sec": horizon,
                         "elapsed_sec": round(elapsed, 3),
                         "label_lag_sec": round(max(0.0, elapsed - horizon), 3),
@@ -266,7 +281,7 @@ class ShadowForwardTracker:
                     completed.append(label)
                     logger.warning(
                         "[STRATEGY SHADOW OUTCOME] id=%s ticker=%s side=%s horizon=%ss "
-                        "elapsed=%.2fs result=NO_FRESH_BBO",
+                        "elapsed=%.2fs quality=NO_FRESH_BBO result=NO_FRESH_BBO",
                         label["candidate_id"], symbol, side, horizon, elapsed,
                     )
                 else:
