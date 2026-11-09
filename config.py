@@ -152,6 +152,9 @@ class Settings:
     MAX_DRAWDOWN_PCT: float = min(float(os.getenv("PILUITUS_MAX_DRAWDOWN_PCT", "0.05")), 0.50)
     LOSS_STREAK_3_PAUSE_SEC: int = max(0, int(os.getenv("PILUITUS_LOSS_STREAK_3_PAUSE_SEC", "600")))
     LOSS_STREAK_5_PAUSE_SEC: int = max(0, int(os.getenv("PILUITUS_LOSS_STREAK_5_PAUSE_SEC", "1800")))
+    # Five consecutive losses stop new entries for the remainder of the Moscow
+    # trading date; the next trading date starts with a fresh session streak.
+    LOSS_STREAK_HARD_STOP: int = max(3, min(20, int(os.getenv("PILUITUS_LOSS_STREAK_HARD_STOP", "5"))))
     ATR_MULTIPLIER: float = float(os.getenv("ATR_MULTIPLIER", "1.5"))
     TRADE_DEPOSIT: float = float(os.getenv("TRADE_DEPOSIT", "100000.0"))
 
