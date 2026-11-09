@@ -1926,8 +1926,15 @@ class BaseExecutionEngine:
 
             bbo = self._latest_fresh_exit_quote(ticker, side)
             if bbo is None:
-                market_state = await self._market_session_status(ticker)
                 pending_exit = str(trade.get("pending_exit_reason") or "").upper()
+                # Once SL/TP has fired, do not let a calendar REST lookup delay
+                # the trigger audit or persistence; only a fresh executable BBO
+                # can release the pending close.
+                market_state = (
+                    {}
+                    if pending_exit in {"STOP_LOSS", "TAKE_PROFIT"}
+                    else await self._market_session_status(ticker)
+                )
                 if pending_exit in {"STOP_LOSS", "TAKE_PROFIT"}:
                     wait_state = "EXIT_TRIGGERED_WAITING_FOR_BBO"
                     wait_reason = f"{pending_exit}: триггер зафиксирован; ожидается свежая исполнимая сторона BBO"
