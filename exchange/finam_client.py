@@ -1327,8 +1327,13 @@ class FinamBrokerClient:
                                                 position_ticker, bid_age, ask_age,
                                             )
                                         except Exception as resync_exc:
+                                            # Let the regular subscription synchronizer retry
+                                            # on the next loop turn if either WS command failed.
+                                            order_book_subscribed.discard(position_symbol)
+                                            order_book_subscribed_since.pop(position_symbol, None)
                                             logger.warning(
-                                                "Не удалось перезапустить ORDER_BOOK для позиции %s: %s",
+                                                "Не удалось перезапустить ORDER_BOOK для позиции %s: %s; "
+                                                "подписка будет повторена синхронизатором.",
                                                 position_ticker, type(resync_exc).__name__,
                                             )
 
