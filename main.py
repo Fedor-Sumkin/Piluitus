@@ -41,6 +41,7 @@ from screener_funnel import HFTMemoryScreener
 from execution_layer import BaseExecutionEngine
 from risk_manager import RiskManager
 from signal_guard import validate_signal_evidence, infer_candidate_direction, validate_atr_readiness
+from rag_prompt_utils import select_prompt_rules
 from candidate_recovery import refresh_candidate_bbo_metrics
 from scalping_strategy import evaluate_scalping_candidate
 from shadow_outcomes import ShadowForwardTracker
@@ -237,6 +238,7 @@ class _DiagnosticLogFilter(logging.Filter):
         "[PRE-LLM FILTER]",
         "[PRE-LLM WAIT]",
         "[M1 PATTERN]",
+        "[DIAGNOSTIC LOGGER READY]",
         "[NUMPY ИМПУЛЬС]",
         "[WS ПОТОК ФИНАМ]",
         "Поток Finam активен:",
@@ -366,6 +368,10 @@ logger.info(
 logger.info(
     "🛡️ [LOG DURABILITY] session/diagnostic fsync interval=%.2fs; errors=fsync per record",
     _log_fsync_interval_seconds(),
+)
+logger.info(
+    "[DIAGNOSTIC LOGGER READY] path=%s",
+    Path(RUN_LOG_PATHS["diagnostic"]).name if RUN_LOG_PATHS.get("diagnostic") else "unavailable",
 )
 
 class TerminalStatusLine:
@@ -724,6 +730,7 @@ risk_manager = RiskManager(
     max_drawdown_pct=Settings.MAX_DRAWDOWN_PCT,
     loss_streak_3_pause_sec=Settings.LOSS_STREAK_3_PAUSE_SEC,
     loss_streak_5_pause_sec=Settings.LOSS_STREAK_5_PAUSE_SEC,
+    loss_streak_hard_stop=Settings.LOSS_STREAK_HARD_STOP,
 )
 
 if not math.isclose(
@@ -1830,15 +1837,32 @@ class MarketWorker:
     ) -> None:
         """Execute asynchronously, then publish and persist the actual result."""
         try:
-            result = await execution_engine.execute_order(
-                ticker=ticker,
-                lots=lots,
-                side=side,
-                price=price,
-                client_id=self.client_id,
-                db=self.db,
-                ai_analysis=ai_analysis,
-            )
+            # Re-read the complete risk state immediately before execution.
+            # A candidate may have waited in an async task while another trade
+            # closed and activated the session hard stop.
+            if not await risk_manager.is_trading_allowed(self.db, force_refresh=True):
+                result = {
+                    "status": "BLOCKED",
+                    "message": (
+                        "RISK_FINAL_GATE: RiskManager запретил исполнение после "
+                        "повторной проверки; ранее одобренный сигнал отброшен."
+                    ),
+                }
+                _trade_flow_inc("risk_final_gate_blocked")
+                logger.warning(
+                    "🛑 [RISK FINAL GATE] %s %s: отложенный сигнал %s заблокирован перед исполнением.",
+                    side, ticker, verdict_id,
+                )
+            else:
+                result = await execution_engine.execute_order(
+                    ticker=ticker,
+                    lots=lots,
+                    side=side,
+                    price=price,
+                    client_id=self.client_id,
+                    db=self.db,
+                    ai_analysis=ai_analysis,
+                )
             if not isinstance(result, dict):
                 result = {"status": "FAILED", "message": "Исполнитель вернул некорректный ответ."}
         except Exception as exc:
@@ -2137,12 +2161,15 @@ class MarketWorker:
                         r"\[(?:RISK|BUY|SELL)\s*/\s*([A-Z0-9_]+)\]",
                         rag_context_str,
                     )
-                    # ai_engine.py intentionally passes only always-on RISK rules
-                    # to the model; directional rules remain advisory research data
-                    # and must not silently become additional hard entry gates.
+                    # The prompt receives always-on RISK rules plus only the
+                    # selected local candidate's directional rules. They remain
+                    # advisory context; deterministic guards own hard entry gates.
+                    prompt_rule_text = select_prompt_rules(
+                        candidate_direction_for_diag, rag_context_str, max_chars=420
+                    )
                     prompt_rule_ids = re.findall(
-                        r"\[RISK\s*/\s*([A-Z0-9_]+)\]",
-                        rag_context_str,
+                        r"\[(?:RISK|BUY|SELL)\s*/\s*([A-Z0-9_]+)\]",
+                        prompt_rule_text,
                     )
                     logger.info(
                         "[LLM CONTEXT] ticker=%s candidate=%s retrieved_rule_ids=%s prompt_rule_ids=%s",
