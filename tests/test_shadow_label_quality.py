@@ -24,10 +24,10 @@ class ShadowLabelQualityTests(unittest.TestCase):
     def test_valid_label_with_lag_over_ten_seconds_is_separated_as_delayed(self):
         tracker = ShadowForwardTracker(
             horizons_seconds=(1,),
-            max_label_lag_sec=5.0,
-            on_time_label_lag_sec=0.1,
+            max_label_lag_sec=30.0,
+            on_time_label_lag_sec=10.0,
         )
-        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 101.2]):
+        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 112.0]):
             tracker.record_candidate(
                 "TEST", "BUY", fresh_metrics(), {"score": 90, "eligible": True}
             )
@@ -36,6 +36,7 @@ class ShadowLabelQualityTests(unittest.TestCase):
         self.assertEqual(len(labels), 1)
         self.assertEqual(labels[0]["result"], "OK")
         self.assertEqual(labels[0]["label_quality"], "DELAYED")
+        self.assertEqual(labels[0]["label_lag_sec"], 11.0)
         self.assertEqual(labels[0]["price_change_pct"], 0.25)
         self.assertEqual(labels[0]["price_vs_vwap_pct"], 0.12)
 
