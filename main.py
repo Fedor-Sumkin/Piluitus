@@ -1559,6 +1559,8 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                         book_ticker,
                         last_trade_price if last_trade_price > 0.0 else None,
                         db_manager,
+                        event_source="ORDER_BOOK",
+                        event_timestamp=event.get("order_book_timestamp"),
                     )
             elif book_result.get("updated"):
                 _trade_flow_inc("orderbook_invalid")
@@ -1771,7 +1773,13 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                                 logger.error("Очередь AI-сигналов заполнена; аномалия %s отброшена.", ticker)
 
         # Обновление позиции продолжается по всем 88 котировкам, а не только по top-N.
-        execution_engine.schedule_paper_position_monitor(ticker, price, db_manager)
+        execution_engine.schedule_paper_position_monitor(
+            ticker,
+            price,
+            db_manager,
+            event_source="LAST_TRADE",
+            event_timestamp=event_timestamp,
+        )
 
     except Exception as e:
         logger.error("💥 Ошибка в обработчике тиков: %s", e, exc_info=True)
@@ -2048,7 +2056,32 @@ class MarketWorker:
                 ticker   = event_payload.get("ticker") or event_payload.get("security_code") or "UNKNOWN"
                 price    = event_payload.get("price") or 0.0
                 metrics  = event_payload.get("metrics", {})
-                
+                if not isinstance(metrics, dict):
+                    metrics = {}
+                candidate_direction_for_diag = str(event_payload.get("candidate_direction") or "").upper()
+                llm_input_features = {
+                    "price_change_pct": _parse_finite_float(metrics.get("price_change_pct")),
+                    "price_vs_vwap_pct": _parse_finite_float(metrics.get("price_vs_vwap_pct")),
+                    "volume_spike": _parse_finite_float(metrics.get("volume_spike")),
+                    "spread_pct": _parse_finite_float(metrics.get("spread_pct")),
+                    "m1_pattern": str(metrics.get("bar_pattern_name") or ""),
+                    "m1_pattern_confirmed": _parse_finite_float(metrics.get("bar_pattern_confirmed")),
+                    "m1_atr": _parse_finite_float(metrics.get("bar_atr")),
+                    "m1_atr_periods": _parse_finite_float(metrics.get("bar_atr_periods")),
+                    "m1_close_position": _parse_finite_float(metrics.get("bar_close_position")),
+                    "m1_body_ratio": _parse_finite_float(metrics.get("bar_body_ratio")),
+                    "queue_imbalance": _parse_finite_float(metrics.get("queue_imbalance")),
+                    "queue_imbalance_available": _parse_finite_float(metrics.get("queue_imbalance_available")),
+                    "queue_imbalance_age_sec": _parse_finite_float(metrics.get("queue_imbalance_age_sec")),
+                    "bid_quote_age_sec": _parse_finite_float(metrics.get("bid_quote_age_sec")),
+                    "ask_quote_age_sec": _parse_finite_float(metrics.get("ask_quote_age_sec")),
+                }
+                logger.info(
+                    "🧭 [LLM INPUT] ticker=%s candidate=%s features=%s",
+                    ticker, candidate_direction_for_diag,
+                    json.dumps(llm_input_features, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                )
+
                 asyncio.create_task(
                     log_trading_event_to_file(
                         ticker=ticker,
@@ -2360,7 +2393,7 @@ class MarketWorker:
                 )
                 logger.info(
                     "[LLM DECISION] %s candidate=%s model=%s final=%s confidence=%s "
-                    "confidence_valid=%s contract_violation=%s reason=%s",
+                    "confidence_valid=%s contract_violation=%s reason=%s features=%s",
                     ticker,
                     candidate_direction or "NONE",
                     model_decision,
@@ -2369,6 +2402,7 @@ class MarketWorker:
                     confidence_valid,
                     model_contract_violation,
                     signal_reason or "APPROVED",
+                    json.dumps(llm_input_features, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
                 )
 
                 signal_status = (
@@ -2399,6 +2433,9 @@ class MarketWorker:
                     "order_id": None,
                     "tactic_opinion": tactic_text,
                     "critic_opinion": critic_text,
+                    "llm_input_features": llm_input_features,
+                    "llm_candidate_direction": candidate_decision,
+                    "llm_model_decision": model_decision,
                 }
 
                 ai_analysis["final_decision"] = decision
