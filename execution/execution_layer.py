@@ -1592,6 +1592,34 @@ class BaseExecutionEngine:
 
         self._unreconciled_paper_positions = unresolved
         if unresolved:
+            for stale_id, stale_trade in sorted(unresolved.items()):
+                side = str(stale_trade.get("side") or "").upper()
+                entry = _finite_or_default(stale_trade.get("entry_price"), 0.0)
+                stop = _finite_or_default(stale_trade.get("stop_loss"), 0.0)
+                target = _finite_or_default(stale_trade.get("take_profit"), 0.0)
+                levels_valid = (
+                    entry > 0.0 and stop > 0.0 and target > 0.0
+                    and (
+                        (side == "BUY" and stop < entry < target)
+                        or (side == "SELL" and target < entry < stop)
+                    )
+                )
+                logger.warning(
+                    "🔎 [PAPER STALE POSITION DETAIL] id=%s ticker=%s side=%s status=%s "
+                    "shares=%s lots=%s entry=%.6f SL=%.6f TP=%.6f SLTP=%s "
+                    "pending_exit=%s entry_timestamp=%s; позиция сохранена, "
+                    "автоматическое закрытие/удаление не выполнялось.",
+                    stale_id,
+                    str(stale_trade.get("ticker") or stale_id).upper(),
+                    side or "UNKNOWN",
+                    str(stale_trade.get("status") or "UNKNOWN"),
+                    stale_trade.get("volume", "N/A"),
+                    stale_trade.get("lots", "N/A"),
+                    entry, stop, target,
+                    "VALID" if levels_valid else "INVALID_OR_MISSING",
+                    stale_trade.get("pending_exit_reason") or "нет",
+                    stale_trade.get("entry_timestamp") or "нет",
+                )
             from portfolio_metrics import calculate_assets_used
             unresolved_cost = calculate_assets_used(unresolved.values(), lot_sizes=LOT_SIZES)
             logger.critical(
