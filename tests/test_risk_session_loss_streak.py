@@ -1,4 +1,5 @@
 import os
+import time
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -72,6 +73,28 @@ class SessionLossStreakTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager._loss_streak_count, 1)
         self.assertAlmostEqual(manager.realized_pnl, -11.0, places=2)
         self.assertGreater(manager.current_drawdown_pct, 0.0)
+
+    async def test_force_refresh_bypasses_recent_allowed_cache(self):
+        now = datetime.now(MSK)
+        trades = {
+            f"TODAY_{i}": closed_loss(
+                f"TODAY_{i}", now - timedelta(minutes=5 - i)
+            )
+            for i in range(5)
+        }
+        manager = RiskManager(initial_deposit=20000.0)
+        manager._cached_trading_allowed = True
+        manager._last_risk_snapshot_monotonic = time.monotonic()
+        manager._blocked_date = now.date()
+        db = FakeDB(trades)
+
+        with patch.dict(os.environ, {"PAPER_TRADING": "True"}):
+            cached = await manager.is_trading_allowed(db)
+            refreshed = await manager.is_trading_allowed(db, force_refresh=True)
+
+        self.assertTrue(cached)
+        self.assertFalse(refreshed)
+        self.assertTrue(manager.block_trading)
 
     async def test_five_losses_in_current_session_still_trigger_pause(self):
         now = datetime.now(MSK)
