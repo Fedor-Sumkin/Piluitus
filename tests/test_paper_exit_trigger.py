@@ -77,6 +77,49 @@ class PaperExitTriggerTests(unittest.TestCase):
         self.assertEqual(reason, "")
         self.assertNotIn("pending_exit_reason", trade)
 
+    def test_order_book_event_does_not_reinterpret_old_last_price_as_new_trigger(self):
+        class ActiveTask:
+            @staticmethod
+            def done():
+                return False
+
+        self.engine.paper_mode = True
+        self.engine._maintenance_active = False
+        self.engine.paper_positions = {"TEST": self._trade("BUY")}
+        self.engine._pending_monitor_prices = {}
+        self.engine._monitor_worker_task = ActiveTask()
+
+        self.engine.schedule_paper_position_monitor(
+            "TEST", 98.0, object(), event_source="ORDER_BOOK"
+        )
+
+        self.assertNotIn("pending_exit_reason", self.engine.paper_positions["TEST"])
+        self.assertEqual(
+            self.engine._pending_monitor_prices["TEST"],
+            (98.0, "ORDER_BOOK"),
+        )
+
+    def test_last_trade_trigger_is_latched_before_monitor_queue_coalescing(self):
+        class ActiveTask:
+            @staticmethod
+            def done():
+                return False
+
+        self.engine.paper_mode = True
+        self.engine._maintenance_active = False
+        self.engine.paper_positions = {"TEST": self._trade("BUY")}
+        self.engine._pending_monitor_prices = {}
+        self.engine._monitor_worker_task = ActiveTask()
+
+        self.engine.schedule_paper_position_monitor(
+            "TEST", 98.0, object(), event_source="LAST_TRADE"
+        )
+
+        self.assertEqual(
+            self.engine.paper_positions["TEST"]["pending_exit_reason"],
+            "STOP_LOSS",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
