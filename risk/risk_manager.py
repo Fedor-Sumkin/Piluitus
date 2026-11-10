@@ -197,61 +197,86 @@ class RiskManager:
             risk_logger.warning("📦 [LOT SIZE] Finam params unavailable; using configured fallback for %d symbols.", len(LOT_SIZES))
             return
         account_id = str(os.getenv("FINAM_CLIENT_ID", "")).strip()
-        assets_method = getattr(finam_broker_client, "get_assets", None)
-        if callable(assets_method):
-            try:
-                assets = await assets_method()
-                for asset in assets if isinstance(assets, list) else []:
-                    symbol = str(asset.get("symbol") or "").strip()
-                    mic = str(asset.get("mic") or (symbol.split("@", 1)[1] if "@" in symbol else "")).strip().upper()
-                    if mic and mic != "MISX":
-                        continue
-                    ticker = str(asset.get("ticker") or symbol.split("@", 1)[0]).strip().upper()
-                    try:
-                        decimals = int(asset.get("decimals", -1))
-                        min_step = int(asset.get("min_step", 0))
-                        lot_raw = asset.get("lot_size")
-                        lot_size = float(lot_raw.get("value")) if isinstance(lot_raw, dict) else float(lot_raw or 0)
-                    except (TypeError, ValueError, OverflowError):
-                        continue
-                    if ticker and decimals >= 0 and min_step > 0:
-                        ASSET_METADATA[ticker] = {
-                            "symbol": symbol, "decimals": decimals, "min_step": min_step,
-                            "price_tick": min_step / (10 ** decimals),
-                            "lot_size": lot_size,
-                            "quote_currency": str(asset.get("quote_currency") or ""),
-                        }
-            except Exception as metadata_exc:
-                risk_logger.warning("Finam asset metadata unavailable (%s); static tick-size fallback remains active.", type(metadata_exc).__name__)
-        semaphore = asyncio.Semaphore(8)
-        updated = 0
-        failed = 0
+        asset_method = getattr(finam_broker_client, "get_asset", None)
+        params_method = getattr(finam_broker_client, "get_asset_params", None)
+        if not callable(asset_method):
+            risk_logger.warning("📐 [ASSET METADATA] Finam GetAsset unavailable; static tick-size metadata retained.")
+        if not callable(params_method):
+            risk_logger.warning("📦 [LOT SIZE] Finam GetAssetParams unavailable; configured lot-size fallback retained.")
+
+        # Finam documents a 200 REST requests/minute limit. Bound the two
+        # per-instrument lookups to avoid an uncontrolled startup burst.
+        semaphore = asyncio.Semaphore(6)
+        updated_lots = failed_lots = updated_metadata = failed_metadata = 0
+
         async def refresh_one(ticker: str) -> None:
-            nonlocal updated, failed
-            async with semaphore:
-                try:
-                    payload = await finam_broker_client.get_asset_params(ticker, account_id=account_id)
-                except Exception:
-                    failed += 1
-                    return
-            if not isinstance(payload, dict):
-                failed += 1
+            nonlocal updated_lots, failed_lots, updated_metadata, failed_metadata
+            normalized = str(ticker or "").strip().upper().split("@", 1)[0]
+            if not normalized:
                 return
-            raw = payload.get("trade_lot_size")
-            try:
-                value = int(float(raw))
-            except (TypeError, ValueError, OverflowError):
-                value = 0
-            if value > 0:
-                LOT_SIZES[ticker] = value
-                updated += 1
-            else:
-                failed += 1
+            async with semaphore:
+                asset_payload = None
+                params_payload = None
+                if callable(asset_method):
+                    try:
+                        asset_payload = await asset_method(normalized, account_id=account_id)
+                    except Exception:
+                        asset_payload = None
+                if callable(params_method):
+                    try:
+                        params_payload = await params_method(normalized, account_id=account_id)
+                    except Exception:
+                        params_payload = None
+
+            if isinstance(asset_payload, dict):
+                try:
+                    decimals = int(asset_payload.get("decimals", -1))
+                    min_step = int(float(asset_payload.get("min_step", 0)))
+                    lot_raw = asset_payload.get("lot_size")
+                    exchange_lot = float(lot_raw.get("value")) if isinstance(lot_raw, dict) else float(lot_raw or 0)
+                    mic = str(asset_payload.get("mic") or "").strip().upper()
+                    if decimals >= 0 and min_step > 0 and mic in {"", "MISX"}:
+                        ASSET_METADATA[normalized] = {
+                            "symbol": str(asset_payload.get("symbol") or f"{normalized}@MISX"),
+                            "decimals": decimals,
+                            "min_step": min_step,
+                            "price_tick": min_step / (10 ** decimals),
+                            "lot_size": exchange_lot,
+                            "quote_currency": str(asset_payload.get("quote_currency") or ""),
+                            "metadata_source": "FINAM_GET_ASSET",
+                        }
+                        updated_metadata += 1
+                    else:
+                        failed_metadata += 1
+                except (TypeError, ValueError, OverflowError):
+                    failed_metadata += 1
+            elif callable(asset_method):
+                failed_metadata += 1
+
+            if isinstance(params_payload, dict):
+                raw = params_payload.get("trade_lot_size")
+                try:
+                    value_float = float(raw)
+                    value = int(value_float)
+                    if not math.isfinite(value_float) or value_float != value:
+                        value = 0
+                except (TypeError, ValueError, OverflowError):
+                    value = 0
+                if value > 0:
+                    LOT_SIZES[normalized] = value
+                    updated_lots += 1
+                else:
+                    failed_lots += 1
+            elif callable(params_method):
+                failed_lots += 1
+
         symbols_to_refresh = list(dict.fromkeys(list(LOT_SIZES) + list(TICKERS_TO_TRADE)))
         await asyncio.gather(*(refresh_one(ticker) for ticker in symbols_to_refresh))
         risk_logger.info(
-            "📦 [LOT SIZE] Finam trade_lot_size обновлён: %d/%d; fallback config.py сохранён для %d; tick-size metadata=%d.",
-            updated, len(symbols_to_refresh), failed, len(ASSET_METADATA),
+            "📦 [FINAM METADATA] trade_lot_size=%d/%d (fallback retained=%d); "
+            "tick-size=%d/%d (static fallback retained=%d).",
+            updated_lots, len(symbols_to_refresh), failed_lots,
+            updated_metadata, len(symbols_to_refresh), failed_metadata,
         )
 
 

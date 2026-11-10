@@ -32,6 +32,31 @@ class TradeFlowMetricsTests(unittest.TestCase):
         self.assertEqual(len(screener.history["SBER"]["trade_events"]), 0)
         self.assertEqual(screener.quotes["SBER"]["trade_metrics"], {})
 
+    def test_subscription_rotation_keeps_closed_m1_bars_but_discards_partial_bar(self):
+        screener = HFTMemoryScreener()
+        screener.register_ticker("SBER")
+        engine = screener.minute_bar_patterns
+        for minute in range(7):
+            engine.update("SBER", 100.0 + minute, now=1.0 + minute * 60.0)
+        self.assertEqual(engine.get_atr_snapshot("SBER")["periods"], 5.0)
+        self.assertEqual(len(engine._states["SBER"]["bars"]), 6)
+
+        screener.history["SBER"]["trade_events"].append((1000.0, 106.0, 5.0, "BUY"))
+        screener.reset_trade_subscription("SBER")
+
+        state = engine._states["SBER"]
+        self.assertEqual(len(state["bars"]), 6)
+        self.assertIsNone(state["current"])
+        self.assertEqual(len(screener.history["SBER"]["trade_events"]), 0)
+
+        # A returning ticker cannot reuse an old ATR as if its M1 feed were fresh.
+        metrics = engine.update("SBER", 110.0, now=601.0)
+        self.assertGreater(metrics["bar_atr_age_sec"], 120.0)
+        from strategy.signal_guard import validate_atr_readiness
+        ready, reason = validate_atr_readiness(metrics)
+        self.assertFalse(ready)
+        self.assertIn("История ATR устарела", reason)
+
     def test_push_trade_deduplicates_exchange_trade_id(self):
         screener = HFTMemoryScreener()
         now = time.monotonic()

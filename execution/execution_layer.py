@@ -521,7 +521,17 @@ class BaseExecutionEngine:
             if not math.isfinite(open_stop_risk):
                 return 0, "Не удалось достоверно определить суммарный риск открытых стопов; новый ордер заблокирован."
 
-            lot_size = max(int(LOT_SIZES.get(ticker, 1) or 1), 1)
+            normalized_ticker = str(ticker or "").strip().upper().split("@", 1)[0]
+            raw_lot_size = LOT_SIZES.get(normalized_ticker)
+            try:
+                lot_size = int(raw_lot_size)
+            except (TypeError, ValueError, OverflowError):
+                lot_size = 0
+            if lot_size <= 0:
+                return 0, (
+                    f"Не подтверждён размер биржевого лота для {normalized_ticker}; "
+                    "резервирование ордера заблокировано."
+                )
             notional_per_lot = price * lot_size
             if notional_per_lot <= 0 or not math.isfinite(notional_per_lot):
                 return 0, "Некорректная стоимость лота."

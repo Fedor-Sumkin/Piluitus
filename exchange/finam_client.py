@@ -211,6 +211,42 @@ class FinamBrokerClient:
                 return []
         return []
 
+    async def get_asset(self, ticker: str, account_id: str | None = None) -> dict[str, Any] | None:
+        """Fetch detailed instrument metadata (decimals, min_step, exchange lot_size)."""
+        if not self.jwt_token:
+            return None
+        normalized = str(ticker or "").strip().upper().split("@", 1)[0]
+        if not normalized:
+            return None
+        symbol = f"{normalized}@MISX"
+        account = str(account_id or "").strip()
+        params = {"account_id": account} if account and account != "UNKNOWN_ACCOUNT" else None
+        url = f"{self.base_url}/v1/assets/{url_quote(symbol, safe='@')}"
+        request_jwt = self.jwt_token
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    response = await client.get(url, headers={
+                        "Authorization": f"Bearer {self.jwt_token}",
+                        "Accept": "application/json",
+                    }, params=params)
+                    response.raise_for_status()
+                    payload = response.json()
+                return payload if isinstance(payload, dict) else None
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 401 and attempt == 0:
+                    if await self._refresh_auth_if_unchanged(request_jwt):
+                        continue
+                if exc.response.status_code in {401, 429, 500, 503, 504}:
+                    logger.warning("Finam asset metadata %s: HTTP %s; static tick-size fallback remains active.", normalized, exc.response.status_code)
+                else:
+                    logger.debug("Finam asset metadata %s unavailable: HTTP %s; static fallback retained.", normalized, exc.response.status_code)
+                return None
+            except (httpx.RequestError, ValueError, TypeError) as exc:
+                logger.debug("Finam asset metadata %s unavailable (%s); static fallback remains active.", normalized, type(exc).__name__)
+                return None
+        return None
+
     async def get_asset_params(self, ticker: str, account_id: str | None = None) -> dict[str, Any] | None:
         """Fetch account-aware Finam trading parameters (notably trade_lot_size)."""
         if not self.jwt_token:
@@ -1478,12 +1514,20 @@ class FinamBrokerClient:
                                             "data": {"symbol": trade_symbol}, "token": self.jwt_token,
                                         }, ensure_ascii=False))
                                         if screener is not None:
-                                            screener.reset_trade_history(trade_symbol)
+                                            reset_subscription = getattr(screener, "reset_trade_subscription", None)
+                                            if callable(reset_subscription):
+                                                reset_subscription(trade_symbol)
+                                            else:
+                                                screener.reset_trade_history(trade_symbol)
                                         trade_subscribed.discard(trade_symbol)
                                         trade_subscribed_since.pop(trade_symbol, None)
                                     for trade_symbol in sorted(added_trade):
                                         if screener is not None:
-                                            screener.reset_trade_history(trade_symbol)
+                                            reset_subscription = getattr(screener, "reset_trade_subscription", None)
+                                            if callable(reset_subscription):
+                                                reset_subscription(trade_symbol)
+                                            else:
+                                                screener.reset_trade_history(trade_symbol)
                                         await ws.send(json.dumps({
                                             "action": "SUBSCRIBE", "type": "INSTRUMENT_TRADES",
                                             "data": {"symbol": trade_symbol}, "token": self.jwt_token,

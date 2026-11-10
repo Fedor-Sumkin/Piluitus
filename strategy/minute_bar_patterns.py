@@ -193,6 +193,7 @@ class MinuteBarPatternEngine:
             "bar_atr": 0.0,
             "bar_atr_pct": 0.0,
             "bar_atr_periods": 0.0,
+            "bar_atr_age_sec": -1.0,
             "bar_body_ratio": 0.0,
             "bar_close_position": 0.5,
             "bar_signal_gap_atr": 0.0,
@@ -200,8 +201,17 @@ class MinuteBarPatternEngine:
             "_bar_pattern_signal_at_monotonic": -1.0,
         }
 
+    def reset_partial(self, ticker: str) -> None:
+        """Discard only the in-progress M1 candle; retain completed observed bars."""
+        symbol = str(ticker or "").strip().upper().split("@", 1)[0]
+        if not symbol:
+            return
+        state = self._states.get(symbol)
+        if isinstance(state, dict):
+            state["current"] = None
+
     def reset(self, ticker: str) -> None:
-        """Discard partial bars after an instrument-trade feed gap."""
+        """Fully discard M1 history after a confirmed clock-domain/feed reset."""
         symbol = str(ticker or "").strip().upper().split("@", 1)[0]
         if symbol:
             self._states.pop(symbol, None)
@@ -230,6 +240,10 @@ class MinuteBarPatternEngine:
         result["bar_atr"] = atr
         result["bar_atr_pct"] = (atr / price * 100.0) if price > 0 else 0.0
         result["bar_atr_periods"] = float(atr_snapshot["periods"])
+        last_event_time = float(state.get("last_event_time", 0.0) or 0.0)
+        latest_closed_bar_end = (bars[-1].bucket + 1) * self.bar_seconds
+        if last_event_time > 0.0:
+            result["bar_atr_age_sec"] = max(0.0, last_event_time - latest_closed_bar_end)
         if len(closes) >= 21:
             result["bar_trend_up"] = float(result["bar_ema9"] > result["bar_ema21"])
             result["bar_trend_down"] = float(result["bar_ema9"] < result["bar_ema21"])
@@ -407,6 +421,7 @@ class MinuteBarPatternEngine:
             state["bars"].clear()
             state["current"] = None
         state["clock_source"] = clock_source
+        state["last_event_time"] = bucket_time
         current: MinuteBar | None = state.get("current")
         if current is None:
             state["current"] = MinuteBar(bucket, value, value, value, value)

@@ -72,12 +72,25 @@ def validate_atr_readiness(metrics: dict[str, Any]) -> tuple[bool, str]:
         min_periods = 5
     atr = _num(metrics, "bar_atr")
     periods = max(0, int(_num(metrics, "bar_atr_periods")))
+    age = _num(metrics, "bar_atr_age_sec", -1.0)
+    try:
+        max_age = float(os.getenv("PILUITUS_ATR_MAX_AGE_SEC", "120"))
+    except (TypeError, ValueError, OverflowError):
+        max_age = 120.0
+    if not math.isfinite(max_age) or max_age <= 0.0:
+        max_age = 120.0
     if not math.isfinite(atr) or atr <= 0.0 or periods < min_periods:
         return False, (
             f"Недостаточно закрытых M1-диапазонов для ATR: {periods}/{min_periods}; "
             "кандидат не отправлен в LLM."
         )
-    return True, "Достаточная M1-история для расчёта ATR подтверждена."
+    if age < 0.0 or age > max_age:
+        age_label = "неизвестен" if age < 0.0 else f"{age:.1f}s"
+        return False, (
+            f"История ATR устарела: возраст последней закрытой M1-свечи={age_label}; "
+            f"лимит {max_age:.0f}s. Кандидат не отправлен в LLM."
+        )
+    return True, "Достаточная и актуальная M1-история для расчёта ATR подтверждена."
 
 
 def infer_candidate_direction(metrics: dict[str, Any]) -> str | None:

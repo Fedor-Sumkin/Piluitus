@@ -1214,6 +1214,25 @@ class HFTMemoryScreener:
                 quote.pop("last_trade_price", None)
             self.minute_bar_patterns.reset(symbol)
 
+    def reset_trade_subscription(self, ticker: str) -> None:
+        """Reset rolling trade-flow on subscription changes without erasing closed M1 bars."""
+        symbol = self.normalize_ticker(ticker)
+        if not symbol:
+            return
+        with self._lock:
+            state = self.history.get(symbol)
+            if isinstance(state, dict):
+                state.get("trade_events", deque()).clear()
+                state.get("trade_seen_ids", deque()).clear()
+                state.get("trade_seen_set", set()).clear()
+            quote = self.quotes.get(symbol)
+            if isinstance(quote, dict):
+                quote["trade_metrics"] = {}
+                quote["bar_pattern_metrics"] = self.minute_bar_patterns._empty()
+                quote["last_trade_event_seen"] = 0.0
+                quote.pop("last_trade_price", None)
+            self.minute_bar_patterns.reset_partial(symbol)
+
     def push_trade(
         self, ticker: str, price: float, size: float, trade_id: object = None,
         side: object = None, event_timestamp: object = None,
