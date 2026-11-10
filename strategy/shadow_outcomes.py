@@ -11,11 +11,12 @@ import math
 import os
 import time
 from collections.abc import Mapping
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
 logger = logging.getLogger("Piluitus.StrategyShadow")
+_MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
 
 
 def _number(metrics: Mapping[str, Any], key: str, default: float = 0.0) -> float:
@@ -72,10 +73,50 @@ class ShadowForwardTracker:
         self.on_time_label_lag_sec = max(0.0, float(on_time_label_lag_sec))
         self.max_pending_per_ticker = max(1, int(max_pending_per_ticker))
         self._pending: dict[str, list[dict[str, Any]]] = {}
+        self.max_segment_groups = 1200
         self._label_stats: dict[str, dict[str, float | int]] = {
-            "eligible": {"labels": 0, "ok": 0, "late": 0, "no_fresh_bbo": 0, "positive": 0, "net_sum_pct": 0.0, "gross_sum_pct": 0.0, "mfe_sum_pct": 0.0, "mae_sum_pct": 0.0},
-            "ineligible": {"labels": 0, "ok": 0, "late": 0, "no_fresh_bbo": 0, "positive": 0, "net_sum_pct": 0.0, "gross_sum_pct": 0.0, "mfe_sum_pct": 0.0, "mae_sum_pct": 0.0},
+            "eligible": self._new_stats_bucket(),
+            "ineligible": self._new_stats_bucket(),
         }
+        # Bounded cross-sections let PAPER research compare direction, ticker,
+        # market regime, score band, horizon and Moscow trading hour.
+        self._segment_stats: dict[str, dict[str, float | int]] = {}
+
+    @staticmethod
+    def _new_stats_bucket() -> dict[str, float | int]:
+        return {
+            "labels": 0, "ok": 0, "late": 0, "no_fresh_bbo": 0,
+            "positive": 0, "net_sum_pct": 0.0, "gross_sum_pct": 0.0,
+            "mfe_sum_pct": 0.0, "mae_sum_pct": 0.0,
+        }
+
+    @staticmethod
+    def _accumulate_stats(bucket: dict[str, float | int], label: Mapping[str, Any]) -> None:
+        bucket["labels"] = int(bucket["labels"]) + 1
+        result = str(label.get("result") or "")
+        if result == "OK":
+            bucket["ok"] = int(bucket["ok"]) + 1
+            net = _number(label, "net_executable_return_pct", math.nan)
+            gross = _number(label, "gross_executable_return_pct", math.nan)
+            if math.isfinite(net):
+                bucket["net_sum_pct"] = float(bucket["net_sum_pct"]) + net
+                if net > 0.0:
+                    bucket["positive"] = int(bucket["positive"]) + 1
+            if math.isfinite(gross):
+                bucket["gross_sum_pct"] = float(bucket["gross_sum_pct"]) + gross
+            bucket["mfe_sum_pct"] = float(bucket["mfe_sum_pct"]) + _number(label, "mfe_executable_pct")
+            bucket["mae_sum_pct"] = float(bucket["mae_sum_pct"]) + _number(label, "mae_executable_pct")
+        elif result == "LABEL_LATE":
+            bucket["late"] = int(bucket["late"]) + 1
+        elif result == "NO_FRESH_BBO":
+            bucket["no_fresh_bbo"] = int(bucket["no_fresh_bbo"]) + 1
+
+    @staticmethod
+    def _score_band(score: float) -> str:
+        value = min(100.0, max(0.0, score))
+        lower = 90 if value >= 90 else int(value // 10) * 10
+        upper = 100 if lower == 90 else lower + 9
+        return f"{lower:02d}-{upper:02d}"
 
     @staticmethod
     def _fresh_bbo(metrics: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
@@ -133,13 +174,17 @@ class ShadowForwardTracker:
             entry_price, "BUY" if side == "BUY" else "SELL", slippage_bps
         )
         now_mono = time.monotonic()
+        created_at_utc = datetime.now(timezone.utc)
+        created_at_msk = created_at_utc.astimezone(_MOSCOW_TZ)
         candidate_id = uuid4().hex[:16]
         row = {
             "candidate_id": candidate_id,
             "ticker": symbol,
             "side": side,
             "created_monotonic": now_mono,
-            "created_at_utc": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+            "created_at_utc": created_at_utc.isoformat(timespec="milliseconds"),
+            "created_at_msk": created_at_msk.isoformat(timespec="milliseconds"),
+            "entry_hour_msk": created_at_msk.strftime("%H"),
             "entry_bid": entry_bid,
             "entry_ask": entry_ask,
             "entry_bid_age_sec": quote["bid_age_sec"],
@@ -247,6 +292,8 @@ class ShadowForwardTracker:
                         "candidate_id": row["candidate_id"],
                         "ticker": symbol,
                         "side": side,
+                        "entry_time_msk": row["created_at_msk"],
+                        "entry_hour_msk": row["entry_hour_msk"],
                         "result": "OK",
                         "label_quality": label_quality,
                         "horizon_sec": horizon,
@@ -292,6 +339,8 @@ class ShadowForwardTracker:
                         "candidate_id": row["candidate_id"],
                         "ticker": symbol,
                         "side": side,
+                        "entry_time_msk": row["created_at_msk"],
+                        "entry_hour_msk": row["entry_hour_msk"],
                         "result": "LABEL_LATE" if fresh else "NO_FRESH_BBO",
                         "label_quality": "LABEL_LATE" if fresh else "NO_FRESH_BBO",
                         "horizon_sec": horizon,
@@ -332,33 +381,59 @@ class ShadowForwardTracker:
         else:
             self._pending.pop(symbol, None)
         for label in completed:
-            bucket = self._label_stats["eligible" if bool(label.get("shadow_eligible")) else "ineligible"]
-            bucket["labels"] = int(bucket["labels"]) + 1
-            result = str(label.get("result") or "")
-            if result == "OK":
-                bucket["ok"] = int(bucket["ok"]) + 1
-                net = _number(label, "net_executable_return_pct", math.nan)
-                gross = _number(label, "gross_executable_return_pct", math.nan)
-                if math.isfinite(net):
-                    bucket["net_sum_pct"] = float(bucket["net_sum_pct"]) + net
-                    if net > 0.0: bucket["positive"] = int(bucket["positive"]) + 1
-                if math.isfinite(gross): bucket["gross_sum_pct"] = float(bucket["gross_sum_pct"]) + gross
-                bucket["mfe_sum_pct"] = float(bucket["mfe_sum_pct"]) + _number(label, "mfe_executable_pct")
-                bucket["mae_sum_pct"] = float(bucket["mae_sum_pct"]) + _number(label, "mae_executable_pct")
-            elif result == "LABEL_LATE": bucket["late"] = int(bucket["late"]) + 1
-            elif result == "NO_FRESH_BBO": bucket["no_fresh_bbo"] = int(bucket["no_fresh_bbo"]) + 1
+            eligible = bool(label.get("shadow_eligible"))
+            self._accumulate_stats(
+                self._label_stats["eligible" if eligible else "ineligible"], label
+            )
+            side = str(label.get("side") or "UNKNOWN").upper()
+            ticker = str(label.get("ticker") or "UNKNOWN").upper()
+            regime = str(label.get("regime") or "UNKNOWN")
+            score_band = self._score_band(_number(label, "score"))
+            horizon = int(_number(label, "horizon_sec"))
+            hour_msk = str(label.get("entry_hour_msk") or "UNKNOWN")
+            eligibility = "eligible" if eligible else "ineligible"
+            segment_keys = (
+                f"side={side}",
+                f"ticker={ticker}",
+                f"regime={regime}",
+                f"score_band={score_band}",
+                f"horizon={horizon}s",
+                f"hour_msk={hour_msk}",
+                f"side_regime={side}|{regime}",
+                f"side_eligibility={side}|{eligibility}",
+                f"ticker_eligibility={ticker}|{eligibility}",
+            )
+            for key in segment_keys:
+                if key not in self._segment_stats:
+                    if len(self._segment_stats) >= self.max_segment_groups:
+                        continue
+                    self._segment_stats[key] = self._new_stats_bucket()
+                self._accumulate_stats(self._segment_stats[key], label)
         return completed
 
-    def statistics_snapshot(self) -> dict[str, dict[str, float | int]]:
-        """Cumulative bounded-memory outcomes, separated by Shadow eligibility."""
-        snapshot: dict[str, dict[str, float | int]] = {}
-        for name, values in self._label_stats.items():
+    def statistics_snapshot(self) -> dict[str, Any]:
+        """Cumulative outcomes by eligibility and bounded research cross-sections."""
+        def summarize(values: Mapping[str, float | int]) -> dict[str, float | int]:
             row = dict(values)
             count = int(row["ok"])
-            row["positive_rate_pct"] = round(int(row["positive"]) / count * 100.0, 2) if count else 0.0
-            for metric, total in (("average_net_return_pct", "net_sum_pct"), ("average_gross_return_pct", "gross_sum_pct"), ("average_mfe_pct", "mfe_sum_pct"), ("average_mae_pct", "mae_sum_pct")):
+            row["positive_rate_pct"] = (
+                round(int(row["positive"]) / count * 100.0, 2) if count else 0.0
+            )
+            for metric, total in (
+                ("average_net_return_pct", "net_sum_pct"),
+                ("average_gross_return_pct", "gross_sum_pct"),
+                ("average_mfe_pct", "mfe_sum_pct"),
+                ("average_mae_pct", "mae_sum_pct"),
+            ):
                 row[metric] = round(float(row[total]) / count, 6) if count else 0.0
-            snapshot[name] = row
+            return row
+
+        snapshot: dict[str, Any] = {
+            name: summarize(values) for name, values in self._label_stats.items()
+        }
+        snapshot["segments"] = {
+            key: summarize(values) for key, values in self._segment_stats.items()
+        }
         return snapshot
 
     def pending_count(self, ticker: str | None = None) -> int:

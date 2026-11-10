@@ -1047,6 +1047,25 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         ineligible["average_net_return_pct"], ineligible["average_mfe_pct"], ineligible["average_mae_pct"],
         scalping_shadow_tracker.pending_count(),
     )
+    segments = shadow.get("segments", {})
+    for side in ("BUY", "SELL"):
+        row = segments.get(f"side={side}")
+        if row and int(row.get("labels", 0)) > 0:
+            logger.info(
+                "[STRATEGY SHADOW SIDE] side=%s labels=%d ok=%d positive=%.1f%% "
+                "avg_net=%+.5f%% MFE=%+.5f%% MAE=%+.5f%%",
+                side, row["labels"], row["ok"], row["positive_rate_pct"],
+                row["average_net_return_pct"], row["average_mfe_pct"], row["average_mae_pct"],
+            )
+    ticker_rows = [
+        (key, row) for key, row in segments.items()
+        if key.startswith("ticker=") and int(row.get("ok", 0)) >= 5
+    ]
+    for key, row in sorted(ticker_rows, key=lambda item: int(item[1].get("ok", 0)), reverse=True)[:5]:
+        logger.info(
+            "[STRATEGY SHADOW TICKER] %s labels=%d ok=%d positive=%.1f%% avg_net=%+.5f%%",
+            key, row["labels"], row["ok"], row["positive_rate_pct"], row["average_net_return_pct"],
+        )
     _log_open_position_bbo_diagnostics()
 
 
