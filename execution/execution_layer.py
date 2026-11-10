@@ -15,7 +15,7 @@ import asyncio
 from uuid import uuid4
 
 # Единый справочник лотности хранится в config.py.
-from config import ASSET_METADATA, LOT_SIZES, Settings
+from config import ASSET_METADATA, FINAM_TRADE_LOT_SIZES, LOT_SIZES, Settings
 
 logger = logging.getLogger("Piluitus.ExecutionLayer")
 
@@ -522,7 +522,7 @@ class BaseExecutionEngine:
                 return 0, "Не удалось достоверно определить суммарный риск открытых стопов; новый ордер заблокирован."
 
             normalized_ticker = str(ticker or "").strip().upper().split("@", 1)[0]
-            raw_lot_size = LOT_SIZES.get(normalized_ticker)
+            raw_lot_size = FINAM_TRADE_LOT_SIZES.get(normalized_ticker)
             try:
                 lot_size = int(raw_lot_size)
             except (TypeError, ValueError, OverflowError):
@@ -933,12 +933,12 @@ class BaseExecutionEngine:
 
     @staticmethod
     def _lot_multiplier_for(ticker: str) -> int:
-        """Return a safe share multiplier for one exchange lot."""
+        """Return the confirmed account-specific share multiplier; 0 means unavailable."""
         symbol = str(ticker).strip().upper().split("@")[0]
         try:
-            return max(int(LOT_SIZES.get(symbol, 1) or 1), 1)
+            return max(int(FINAM_TRADE_LOT_SIZES.get(symbol, 0) or 0), 0)
         except (TypeError, ValueError, OverflowError):
-            return 1
+            return 0
 
     @staticmethod
     def _calculate_paper_pnl(
@@ -1275,6 +1275,14 @@ class BaseExecutionEngine:
                 return {
                     "status": "SKIPPED",
                     "message": self._maintenance_reason or "PAPER-торговля приостановлена для обслуживания сессии.",
+                }
+            if lot_multiplier <= 0:
+                return {
+                    "status": "SKIPPED",
+                    "message": (
+                        f"Finam trade_lot_size для {ticker} не подтверждён; "
+                        "новая PAPER-позиция не создаётся."
+                    ),
                 }
             if side not in {"BUY", "SELL"}:
                 return {"status": "FAILED", "message": f"Недопустимая сторона сделки: {side}"}
@@ -2087,8 +2095,11 @@ class BaseExecutionEngine:
                 return
 
             sign = 1 if side == "BUY" else -1
+            saved_lot_size = int(_finite_or_default(
+                trade.get("lot_size", LOT_SIZES.get(ticker, 1)), 1.0
+            ))
             share_qty = int(trade.get("volume") or (
-                int(trade.get("lots", 1)) * max(int(LOT_SIZES.get(ticker, 1)), 1)
+                int(trade.get("lots", 1)) * max(saved_lot_size, 1)
             ))
             if share_qty <= 0:
                 logger.error("Некорректный объём позиции %s: %s", order_id, share_qty)

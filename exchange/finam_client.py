@@ -183,7 +183,7 @@ class FinamBrokerClient:
         return payload
 
     async def get_assets(self) -> list[dict[str, Any]]:
-        """Fetch the tradable-symbol directory; detailed tick metadata requires GetAsset."""
+        """Fetch Finam's tradable asset directory once for tick-size metadata."""
         if not self.jwt_token:
             return []
         url = f"{self.base_url}/v1/assets"

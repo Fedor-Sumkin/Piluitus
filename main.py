@@ -29,6 +29,7 @@ from config import (
     LOG_REDACT_TELEGRAM_ID,
     LOG_REDACT_PROJECT_PATH,
     TICKERS_TO_TRADE,
+    FINAM_TRADE_LOT_SIZES,
     LOT_SIZES,
 )
 from risk_limits import validate_daily_loss_limit
@@ -1950,7 +1951,7 @@ class MarketWorker:
             and raw_actual_shares is None
             and actual_lots is not None
         ):
-            actual_shares = actual_lots * max(int(LOT_SIZES.get(ticker, 1)), 1)
+            actual_shares = actual_lots * max(int(FINAM_TRADE_LOT_SIZES.get(ticker, 0) or 0), 0)
         if (
             execution_status in {"OPENED", "ACCEPTED"}
             and raw_actual_notional is None
@@ -2440,7 +2441,7 @@ class MarketWorker:
                 execution_message = "Новая позиция не запрашивалась."
                 requested_lots = 0
                 requested_notional = 0.0
-                lot_multiplier = max(int(LOT_SIZES.get(ticker, 1)), 1)
+                lot_multiplier = max(int(FINAM_TRADE_LOT_SIZES.get(ticker, 0) or 0), 0)
                 verdict_id = uuid4().hex
 
                 if decision in ("BUY", "SELL") and confidence >= 75.0:

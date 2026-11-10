@@ -10,7 +10,7 @@ from collections.abc import Callable
 import websockets
 import httpx
 from db_manager import DBManager
-from config import ASSET_METADATA, LOT_SIZES, TICKERS_TO_TRADE
+from config import ASSET_METADATA, FINAM_TRADE_LOT_SIZES, LOT_SIZES, TICKERS_TO_TRADE
 
 _MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
 
@@ -141,7 +141,7 @@ class RealMarketSimulator:
 # ======================================================================
 # 2️⃣ ВЫСОКОСКОРОСТНОЙ ПЕРСИСТЕНТНЫЙ РИСК-МЕНЕДЖЕР (RISK_MANAGER)
 # ======================================================================
-# LOT_SIZES импортирован из config.py и остаётся единым справочником проекта.
+# LOT_SIZES остаётся статическим справочником MOEX; новые заявки используют FINAM_TRADE_LOT_SIZES.
 
 class RiskManager:
     def __init__(
@@ -190,11 +190,14 @@ class RiskManager:
     async def update_finam_lot_sizes(cls, finam_broker_client=None):
         """Refresh trading lot sizes from Finam; retain config values only as fallback."""
         risk_logger = logging.getLogger("Piluitus.RiskManager")
-        if not LOT_SIZES:
-            risk_logger.error("❌ LOT_SIZES пуст: размер позиции не может быть рассчитан.")
+        if not LOT_SIZES and not TICKERS_TO_TRADE:
+            risk_logger.error("❌ Список инструментов пуст: Finam metadata refresh невозможен.")
             return
         if finam_broker_client is None or not callable(getattr(finam_broker_client, "get_asset_params", None)):
-            risk_logger.warning("📦 [LOT SIZE] Finam params unavailable; using configured fallback for %d symbols.", len(LOT_SIZES))
+            risk_logger.error(
+                "Finam GetAssetParams unavailable: account-specific trade_lot_size cannot be confirmed; "
+                "new orders remain blocked. Static LOT_SIZES is not used for new entries."
+            )
             return
         account_id = str(os.getenv("FINAM_CLIENT_ID", "")).strip()
         asset_method = getattr(finam_broker_client, "get_asset", None)
@@ -202,7 +205,9 @@ class RiskManager:
         if not callable(asset_method):
             risk_logger.warning("📐 [ASSET METADATA] Finam GetAsset unavailable; static tick-size metadata retained.")
         if not callable(params_method):
-            risk_logger.warning("📦 [LOT SIZE] Finam GetAssetParams unavailable; configured lot-size fallback retained.")
+            risk_logger.error(
+                "Finam GetAssetParams unavailable; no account-specific lot values will authorize new orders."
+            )
 
         # Finam documents a 200 REST requests/minute limit. Bound the two
         # per-instrument lookups to avoid an uncontrolled startup burst.
@@ -280,9 +285,12 @@ class RiskManager:
                 except (TypeError, ValueError, OverflowError):
                     value = 0
                 if value > 0:
-                    LOT_SIZES[normalized] = value
+                    FINAM_TRADE_LOT_SIZES[normalized] = value
                     updated_lots += 1
                 else:
+                    # Finam documents zero/missing trade_lot_size as unavailable.
+                    # Do not silently substitute the static exchange-lot reference.
+                    FINAM_TRADE_LOT_SIZES.pop(normalized, None)
                     failed_lots += 1
             elif callable(params_method):
                 failed_lots += 1
@@ -290,8 +298,8 @@ class RiskManager:
         symbols_to_refresh = list(dict.fromkeys(list(LOT_SIZES) + list(TICKERS_TO_TRADE)))
         await asyncio.gather(*(refresh_one(ticker) for ticker in symbols_to_refresh))
         risk_logger.info(
-            "📦 [FINAM METADATA] trade_lot_size=%d/%d (fallback retained=%d); "
-            "tick-size=%d/%d (static fallback retained=%d).",
+            "📦 [FINAM METADATA] account trade_lot_size confirmed=%d/%d; unavailable=%d (new entries blocked); "
+            "tick-size=%d/%d; metadata unavailable=%d (static tick-size retained).",
             updated_lots, len(symbols_to_refresh), failed_lots,
             updated_metadata, len(symbols_to_refresh), failed_metadata,
         )
@@ -713,13 +721,17 @@ class RiskManager:
         if risk_per_share_rub <= 0:
             return 0
         allowed_risk_money = max(0.0, self.initial_deposit * self.max_risk_per_trade)
-        normalized_ticker = str(ticker or "").strip().upper()
-        raw_lot_size = LOT_SIZES.get(normalized_ticker)
+        normalized_ticker = str(ticker or "").strip().upper().split("@", 1)[0]
+        raw_lot_size = FINAM_TRADE_LOT_SIZES.get(normalized_ticker)
         try:
             lot_size = int(raw_lot_size)
         except (TypeError, ValueError, OverflowError):
             risk_logger = logging.getLogger("Piluitus.RiskManager")
-            risk_logger.error("Размер позиции заблокирован: для %s нет подтверждённого trade_lot_size.", normalized_ticker)
+            risk_logger.error(
+                "Размер позиции заблокирован: Finam trade_lot_size для %s не подтверждён; "
+                "статический LOT_SIZES не используется для нового ордера.",
+                normalized_ticker,
+            )
             return 0
         if lot_size <= 0:
             return 0

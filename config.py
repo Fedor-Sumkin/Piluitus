@@ -54,7 +54,12 @@ LOT_SIZES: dict[str, int] = {
     "TGKB": 100000, "TGKBP": 100000, "TTLK": 10, "VJGZ": 100, "VJGZP": 100
 }
 
-# Runtime Finam metadata populated during startup. price_tick = min_step / 10**decimals.
+# Static MOEX lot-size reference. Retained for legacy/accounting fallback only.
+# New order sizing uses the account-specific Finam trade_lot_size map below.
+FINAM_TRADE_LOT_SIZES: dict[str, int] = {}
+
+# Runtime Finam instrument metadata populated during startup.
+# price_tick = min_step / 10**decimals; lot_size is shares per exchange lot.
 ASSET_METADATA: dict[str, dict[str, object]] = {}
 
 RSS_FEEDS: list[str] = [
