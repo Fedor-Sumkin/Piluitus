@@ -116,8 +116,10 @@ class HFTMemoryScreener:
     ):
         self.window_size = max(8, int(window_size))
         self.top_n = max(1, int(top_n if top_n is not None else _env_int("PILUITUS_FUNNEL_TOP_N", 15)))
+        # This calibration phase deliberately caps score-only churn at one
+        # replacement per refresh, even if an older .env still says 3 or more.
         self.max_replacements_per_refresh = max(
-            1, _env_int("PILUITUS_FUNNEL_MAX_REPLACEMENTS_PER_REFRESH", 1)
+            0, min(1, _env_int("PILUITUS_FUNNEL_MAX_REPLACEMENTS_PER_REFRESH", 1))
         )
         self.retention_score_gap = _env_float("PILUITUS_FUNNEL_RETENTION_SCORE_GAP", 5.0)
         self.min_selected_hold_sec = max(
@@ -131,7 +133,7 @@ class HFTMemoryScreener:
             int(min_samples if min_samples is not None else _env_int("PILUITUS_FUNNEL_MIN_SAMPLES", 8)),
         )
         self.selection_interval = max(
-            0.5,
+            15.0,
             float(selection_interval if selection_interval is not None else _env_float("PILUITUS_FUNNEL_REFRESH_SEC", 15.0)),
         )
         self.warmup_timeout = max(

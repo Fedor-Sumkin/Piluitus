@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from screener_funnel import HFTMemoryScreener
 
@@ -17,6 +18,15 @@ class FunnelTurnoverTests(unittest.TestCase):
             "tick_activity_30s": 10.0,
             "spread_pct": 0.1,
         }
+
+    def test_legacy_env_cannot_restore_fast_top_n_churn(self) -> None:
+        with patch.dict("os.environ", {
+            "PILUITUS_FUNNEL_REFRESH_SEC": "5",
+            "PILUITUS_FUNNEL_MAX_REPLACEMENTS_PER_REFRESH": "3",
+        }):
+            screener = HFTMemoryScreener()
+        self.assertEqual(screener.selection_interval, 15.0)
+        self.assertEqual(screener.max_replacements_per_refresh, 1)
 
     def test_score_only_rotation_is_capped_after_initial_population(self) -> None:
         screener = HFTMemoryScreener(
