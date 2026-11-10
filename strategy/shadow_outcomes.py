@@ -198,6 +198,14 @@ class ShadowForwardTracker:
             "score": _number(shadow_result, "score"),
             "shadow_eligible": bool(shadow_result.get("eligible", False)),
             "regime": str(shadow_result.get("regime") or "UNKNOWN"),
+            "hard_blocks": [
+                str(item) for item in shadow_result.get("hard_blocks", [])
+                if str(item).strip()
+            ][:12] if isinstance(shadow_result.get("hard_blocks", []), (list, tuple, set)) else [],
+            "reasons": [
+                str(item) for item in shadow_result.get("reasons", [])
+                if str(item).strip()
+            ][:12] if isinstance(shadow_result.get("reasons", []), (list, tuple, set)) else [],
             "queue_imbalance": _number(metrics, "queue_imbalance") if _number(metrics, "queue_imbalance_available") >= 0.5 else None,
             "spread_atr_ratio": _number(shadow_result, "spread_atr_ratio", math.nan),
             "spread_pct": _number(metrics, "spread_pct"),
@@ -315,6 +323,8 @@ class ShadowForwardTracker:
                         "score": row["score"],
                         "shadow_eligible": row["shadow_eligible"],
                         "regime": row["regime"],
+                        "hard_blocks": list(row.get("hard_blocks", [])),
+                        "reasons": list(row.get("reasons", [])),
                         "price_change_pct": row["price_change_pct"],
                         "price_vs_vwap_pct": row["price_vs_vwap_pct"],
                         "m1_pattern_confirmed": row["m1_pattern_confirmed"],
@@ -328,11 +338,13 @@ class ShadowForwardTracker:
                     logger.info(
                         "[STRATEGY SHADOW OUTCOME] id=%s ticker=%s side=%s horizon=%ss "
                         "elapsed=%.2fs lag=%.2fs quality=%s result=OK net=%.5f%% gross=%.5f%% "
-                        "mid=%.5f%% MFE=%.5f%% MAE=%.5f%% score=%.1f eligible=%s",
+                        "mid=%.5f%% MFE=%.5f%% MAE=%.5f%% score=%.1f eligible=%s "
+                        "regime=%s entry_time_msk=%s hard_blocks=%s",
                         label["candidate_id"], symbol, side, horizon, elapsed,
                         label["label_lag_sec"], label_quality, net_pct, gross_pct, mid_return_pct,
                         row["mfe_executable_pct"], row["mae_executable_pct"],
-                        row["score"], row["shadow_eligible"],
+                        row["score"], row["shadow_eligible"], row["regime"],
+                        row["created_at_msk"], ",".join(row.get("hard_blocks", [])) or "-",
                     )
                 elif elapsed > horizon + self.max_label_lag_sec:
                     label = {
@@ -349,6 +361,8 @@ class ShadowForwardTracker:
                         "score": row["score"],
                         "shadow_eligible": row["shadow_eligible"],
                         "regime": row["regime"],
+                        "hard_blocks": list(row.get("hard_blocks", [])),
+                        "reasons": list(row.get("reasons", [])),
                         "price_change_pct": row["price_change_pct"],
                         "price_vs_vwap_pct": row["price_vs_vwap_pct"],
                         "m1_pattern_confirmed": row["m1_pattern_confirmed"],
@@ -365,10 +379,13 @@ class ShadowForwardTracker:
                     completed.append(label)
                     logger.warning(
                         "[STRATEGY SHADOW OUTCOME] id=%s ticker=%s side=%s horizon=%ss "
-                        "elapsed=%.2fs quality=%s reason=%s invalid_observations=%d result=%s",
+                        "elapsed=%.2fs quality=%s reason=%s invalid_observations=%d result=%s "
+                        "regime=%s score=%.1f entry_time_msk=%s hard_blocks=%s",
                         label["candidate_id"], symbol, side, horizon, elapsed,
                         label["label_quality"], label["bbo_unavailable_reason"],
-                        label["no_fresh_bbo_observations"], label["result"],
+                        label["no_fresh_bbo_observations"], label["result"], row["regime"],
+                        row["score"], row["created_at_msk"],
+                        ",".join(row.get("hard_blocks", [])) or "-",
                     )
                 else:
                     remaining.append(horizon)
@@ -402,6 +419,7 @@ class ShadowForwardTracker:
                 f"side_regime={side}|{regime}",
                 f"side_eligibility={side}|{eligibility}",
                 f"ticker_eligibility={ticker}|{eligibility}",
+                *(f"hard_block={reason}" for reason in label.get("hard_blocks", [])),
             )
             for key in segment_keys:
                 if key not in self._segment_stats:

@@ -24,7 +24,11 @@ class ShadowScorecardTests(unittest.TestCase):
             tracker.observe_market_tick("SBER", {**base, "bid": 100.3, "ask": 100.4})
             tracker.record_candidate(
                 "GAZP", "SELL", base,
-                {"eligible": False, "score": 64.0, "regime": "TRANSITION_OR_RANGE"},
+                {
+                    "eligible": False, "score": 64.0,
+                    "regime": "TRANSITION_OR_RANGE",
+                    "hard_blocks": ["atr_not_ready"],
+                },
             )
             tracker.observe_market_tick("GAZP", {**base, "bid": 99.8, "ask": 99.9})
 
@@ -40,6 +44,7 @@ class ShadowScorecardTests(unittest.TestCase):
         self.assertEqual(sum(int(segments[key]["ok"]) for key in hour_keys), 2)
         self.assertEqual(segments["side_eligibility=BUY|eligible"]["ok"], 1)
         self.assertEqual(segments["ticker_eligibility=GAZP|ineligible"]["ok"], 1)
+        self.assertEqual(segments["hard_block=atr_not_ready"]["ok"], 1)
 
     def test_completed_labels_are_aggregated_by_eligibility(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
