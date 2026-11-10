@@ -588,8 +588,8 @@ class AIEngine:
             'volume_spike>=1.5, fresh valid BBO, spread<=0.5%; otherwise HOLD. '
             'A >=50% fresh best-quote size reduction is supporting evidence, not mandatory. '
             'Ask depletion is supporting evidence, not mandatory. RAG is advisory only; it cannot add hard gates. '
-            'Confidence is evidence strength, not profit probability (0.50-0.60 weak, 0.61-0.74 moderate, '
-            '0.75-0.84 strong, 0.85-0.95 exceptional); choose from evidence. Use supplied facts only. '
+            'Confidence is evidence strength, not profit probability: 0.50-0.60 weak, 0.61-0.74 moderate, '
+            '0.75-0.84 strong, 0.85-0.95 exceptional. Choose from evidence, not a fixed score. Use supplied facts only. '
             f'candidate={direction}; ticker={str(ticker)[:10]}; price={cls._prompt_value(price, 12)}; '
             f'last_size={cls._prompt_value(volume, 10)}. '
             f'{direction_rules} volume_spike=last 5s trade volume / average 5s volume in prior 55s.'
@@ -599,7 +599,7 @@ class AIEngine:
         if include_rule_text and isinstance(rag_context, str):
             # Include only the always-on risk rule and rules matching this candidate.
             # Reserve prompt budget for the mandatory contract and live metrics.
-            rule_budget = max(0, min(900, max_chars - len(base) - len(metrics_text) - 180))
+            rule_budget = max(0, min(900, max_chars - len(base) - len(metrics_text) - 80))
             rule_text = select_prompt_rules(direction, rag_context, max_chars=rule_budget)
         rule_part = f" Advisory RAG context (never overrides hard checks): {rule_text}." if rule_text else ""
         metric_part = f" Metrics: {metrics_text}." if metrics_text else " Metrics: нет подтверждённых значений."
