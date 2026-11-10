@@ -1542,10 +1542,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
             else:
                 trade_reason = str(trade_result.get("reason") or "rejected")
                 _trade_flow_inc("instrument_trades_" + trade_reason)
-                if trade_reason == "out_of_order_trade":
-                    # Reject this trade event without invalidating the independent
-                    # QUOTES-driven M1 history for the same instrument.
-                    _trade_flow_inc("instrument_trades_out_of_order_ignored")
+                # Rejected trade events never invalidate the independent QUOTES-driven M1 history.
             return
 
         # ORDER_BOOK events have no last-trade price. Route them before the QUOTES
@@ -2769,6 +2766,17 @@ async def _finam_metadata_refresh_loop() -> None:
         if not str(getattr(broker, "jwt_token", "") or "").strip():
             await asyncio.sleep(1.0)
             continue
+        account_id = (
+            str(os.getenv("FINAM_ACCOUNT_ID", "")).strip()
+            or str(os.getenv("FINAM_CLIENT_ID", "")).strip()
+        )
+        if not account_id or account_id.upper() == "UNKNOWN_ACCOUNT":
+            logger.warning(
+                "⛔ [FINAM METADATA WORKER] waiting for FINAM_ACCOUNT_ID; "
+                "new entries remain blocked until account-specific parameters can be loaded."
+            )
+            await asyncio.sleep(refresh_sec)
+            continue
         try:
             await RiskManager.update_finam_lot_sizes(finam_broker_client=broker)
         except asyncio.CancelledError:
@@ -2778,7 +2786,17 @@ async def _finam_metadata_refresh_loop() -> None:
                 "❌ [FINAM METADATA WORKER] refresh failed: %s",
                 type(exc).__name__, exc_info=True,
             )
-        await asyncio.sleep(refresh_sec)
+        confirmed = sum(
+            1 for ticker in TICKERS_TO_TRADE
+            if int(FINAM_TRADE_LOT_SIZES.get(str(ticker).strip().upper(), 0) or 0) > 0
+        )
+        retry_delay = min(refresh_sec, 180.0) if confirmed == 0 else refresh_sec
+        if confirmed:
+            logger.info(
+                "📦 [FINAM METADATA WORKER] confirmed account lots=%d/%d; next refresh in %.0fs.",
+                confirmed, len(TICKERS_TO_TRADE), refresh_sec,
+            )
+        await asyncio.sleep(retry_delay)
 
 
 async def _start_tables_sync_loop():

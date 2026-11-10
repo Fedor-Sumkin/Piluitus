@@ -188,7 +188,7 @@ class RiskManager:
 
     @classmethod
     async def update_finam_lot_sizes(cls, finam_broker_client=None):
-        """Refresh trading lot sizes from Finam; retain config values only as fallback."""
+        """Refresh account-specific trading lots; never authorize entries from static lot references."""
         risk_logger = logging.getLogger("Piluitus.RiskManager")
         if not LOT_SIZES and not TICKERS_TO_TRADE:
             risk_logger.error("❌ Список инструментов пуст: Finam metadata refresh невозможен.")
@@ -199,9 +199,13 @@ class RiskManager:
                 "new orders remain blocked. Static LOT_SIZES is not used for new entries."
             )
             return
-        account_id = (
+        configured_account_id = (
             str(os.getenv("FINAM_ACCOUNT_ID", "")).strip()
             or str(os.getenv("FINAM_CLIENT_ID", "")).strip()
+        )
+        account_id = (
+            "" if configured_account_id.upper() == "UNKNOWN_ACCOUNT"
+            else configured_account_id
         )
         account_id_source = (
             "FINAM_ACCOUNT_ID" if os.getenv("FINAM_ACCOUNT_ID", "").strip()
@@ -252,7 +256,7 @@ class RiskManager:
             return await method(ticker, account_id=account_id)
 
         async def refresh_one(ticker: str) -> None:
-            nonlocal updated_lots, failed_lots, updated_metadata, failed_metadata
+            nonlocal updated_lots, failed_lots, updated_metadata, failed_metadata, blocked_not_tradable
             normalized = str(ticker or "").strip().upper().split("@", 1)[0]
             if not normalized:
                 return
