@@ -27,6 +27,7 @@ class FunnelTurnoverTests(unittest.TestCase):
         )
         screener.universe = ["A", "B", "C", "D", "E"]
         screener.selection_ready = True
+        screener.retention_score_gap = 15.0
         features = {
             "A": self._feature(10.0),
             "B": self._feature(9.0),
