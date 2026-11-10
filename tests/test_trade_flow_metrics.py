@@ -82,7 +82,7 @@ class TradeFlowMetricsTests(unittest.TestCase):
         engine = HFTMemoryScreener().minute_bar_patterns
         for minute in range(7):
             metrics = engine.update("SBER", 100.0 + minute, now=1.0 + minute * 60.0)
-        metrics = engine.update("SBER", 107.0, now=500.0)
+        metrics = engine.update("SBER", 107.0, now=600.0)
         self.assertGreater(metrics["bar_atr_age_sec"], 120.0)
         ready, reason = validate_atr_readiness(metrics)
         self.assertFalse(ready)
