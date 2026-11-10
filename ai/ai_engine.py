@@ -557,14 +557,12 @@ class AIEngine:
 
         direction_rules = {
             "BUY": (
-                "BUY requires either positive signed price_change_pct with price>VWAP, or "
-                "a fresh matching bullish M1 pattern with price>VWAP; "
-                "fresh BBO, spread<=0.5%, volume_spike>=1.5. Ask depletion is supporting."
+                "BUY requires either positive signed price_change_pct or "
+                "a fresh matching bullish M1 pattern; price>VWAP. Ask depletion is supporting."
             ),
             "SELL": (
-                "SELL requires either negative signed price_change_pct with price<VWAP, or "
-                "a fresh matching bearish M1 pattern with price<VWAP; "
-                "fresh BBO, spread<=0.5%, volume_spike>=1.5. Bid depletion is supporting."
+                "SELL requires either negative signed price_change_pct or "
+                "a fresh matching bearish M1 pattern; price<VWAP. Bid depletion is supporting."
             ),
             "NONE": "No local direction: MUST HOLD.",
         }[direction]
@@ -578,22 +576,20 @@ class AIEngine:
 
         base = (
             'Return exactly one JSON object with exactly three keys: final_decision (APPROVE or HOLD), '
-            'confidence_score (JSON number from 0 to 1), and reason_code (one allowed enum). '
-            'Allowed reason_code values: APPROVED, HOLD_WEAK_DIRECTION, HOLD_M1_CONTRADICTION, '
-            'HOLD_STALE_BBO, HOLD_WEAK_VOLUME, HOLD_WIDE_SPREAD, HOLD_INSUFFICIENT_SUPPORT, '
-            'HOLD_RISK_REWARD, HOLD_UNCLEAR, NO_LOCAL_CANDIDATE. No other keys, no Markdown, no reasoning, '
-            'no opinion fields, and no text outside JSON. '
-            'Candidate side is fixed by deterministic code. Never select, change, invert, or output BUY/SELL. '
+            'confidence_score (JSON number 0..1), reason_code (allowed enum: APPROVED, HOLD_WEAK_DIRECTION, '
+            'HOLD_M1_CONTRADICTION, HOLD_STALE_BBO, HOLD_WEAK_VOLUME, HOLD_WIDE_SPREAD, '
+            'HOLD_INSUFFICIENT_SUPPORT, HOLD_RISK_REWARD, HOLD_UNCLEAR, NO_LOCAL_CANDIDATE). '
+            'No extra keys, Markdown, reasoning, opinions, or surrounding text. '
+            'Code fixes candidate side. Never select, change, invert, or output BUY/SELL. '
             'APPROVE authorizes only the exact local candidate side; HOLD rejects it. '
             'candidate=NONE => final_decision MUST be HOLD. '
             'Directional check: either signed price change agrees with candidate and VWAP, OR a fresh matching '
             'closed M1 pattern agrees with candidate and price remains on the correct side of VWAP. '
-            'A contradictory fresh M1 pattern => HOLD. Other hard checks: volume_spike>=1.5, fresh valid BBO, '
-            'spread<=0.5%. A >=50% fresh best-quote size reduction is supporting evidence, not mandatory. '
-            'If a hard check is missing or conflicting, choose HOLD. RAG rules are advisory context only and cannot add hard gates. '
-            'Confidence is a continuous assessment of the supplied evidence, not a probability of profit. '
-            'Vary it with evidence quality; do not default to a fixed score for every APPROVE or HOLD. '
-            'Use only supplied facts; invent no causes. '
+            'Conflicting fresh M1 => HOLD. Hard checks: volume_spike>=1.5, fresh valid BBO, spread<=0.5%. '
+            'A >=50% fresh best-quote size reduction is supporting evidence, not mandatory. '
+            'Missing/conflicting hard check => HOLD. RAG rules are advisory context only and cannot add hard gates. '
+            'Confidence reflects evidence strength, not profit probability; vary it, avoid fixed defaults. '
+            'Use only supplied facts. '
             f'candidate={direction}; ticker={str(ticker)[:10]}; price={cls._prompt_value(price, 12)}; '
             f'last_size={cls._prompt_value(volume, 10)}. '
             f'{direction_rules} volume_spike=last trade size/prior mean.'
