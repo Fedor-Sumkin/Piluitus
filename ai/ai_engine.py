@@ -562,34 +562,28 @@ class AIEngine:
 
         direction_rules = {
             "BUY": (
-                "BUY requires positive 15s trade momentum and price>rolling trade VWAP, "
-                "or a fresh matching bullish M1 pattern with price>VWAP. "
-                "Neutral M1 is NOT a contradiction; only an explicit fresh bearish pattern/trend conflicts."
+                "BUY requires positive 15s trade momentum and price>VWAP, or fresh bullish M1 with price>VWAP."
             ),
             "SELL": (
-                "SELL requires negative 15s trade momentum and price<rolling trade VWAP, "
-                "or a fresh matching bearish M1 pattern with price<VWAP. "
-                "Neutral M1 is NOT a contradiction; only an explicit fresh bullish pattern/trend conflicts."
+                "SELL requires negative 15s trade momentum and price<VWAP, or fresh bearish M1 with price<VWAP."
             ),
             "NONE": "No local direction: MUST HOLD.",
         }[direction]
 
         base = (
             'Return JSON only with exactly three keys: final_decision (APPROVE|HOLD), '
-            'confidence_score (number 0..1), reason_code (APPROVED|HOLD_WEAK_DIRECTION|HOLD_M1_CONTRADICTION|'
-            'HOLD_STALE_BBO|HOLD_WEAK_VOLUME|HOLD_WIDE_SPREAD|HOLD_INSUFFICIENT_SUPPORT|'
-            'HOLD_RISK_REWARD|HOLD_UNCLEAR|NO_LOCAL_CANDIDATE). No extra keys/text. '
+            'confidence_score (0..1), reason_code=APPROVED|NO_LOCAL_CANDIDATE|HOLD_{WEAK_DIRECTION,M1_CONTRADICTION,STALE_BBO,WEAK_VOLUME,WIDE_SPREAD,INSUFFICIENT_SUPPORT,RISK_REWARD,UNCLEAR}. No extra keys/text. '
             'Code fixes candidate side. Never select, change, invert, or output BUY/SELL. '
             'APPROVE authorizes only the exact local candidate side; HOLD rejects it. '
             'candidate=NONE => final_decision MUST be HOLD. '
             'Directional check: either signed price change agrees with candidate and VWAP, OR a fresh matching '
             'closed M1 pattern agrees with candidate and price remains on the correct side of VWAP. '
-            'M1 NEUTRAL/UNAVAILABLE is not a contradiction; only a fresh opposite pattern or explicit opposite '
-            'EMA trend conflicts. Hard checks: trade_data_ready=1, trade_metrics_age_sec<=5, '
-            'volume_spike>=1.5, fresh valid BBO, spread<=0.5%; otherwise HOLD. '
-            'A >=50% fresh best-quote reduction/Ask depletion is supporting evidence, not mandatory. '
+            'M1 NEUTRAL/UNAVAILABLE is not a contradiction; only a fresh opposite M1/EMA conflicts. '
+            'Hard checks: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, fresh BBO, '
+            'spread<=0.5%; otherwise HOLD. '
+            '>=50% Ask depletion is supporting evidence, not mandatory. '
             'RAG rules are advisory context only and cannot add hard gates. '
-            'Confidence: evidence, not profit odds (weak 0.50-0.60; moderate 0.61-0.74; '
+            'Confidence is evidence strength, not profit probability (weak 0.50-0.60; moderate 0.61-0.74; '
             'strong 0.75-0.84; exceptional 0.85-0.95). Use supplied facts only. '
             f'candidate={direction}; ticker={str(ticker)[:10]}; price={cls._prompt_value(price, 12)}; '
             f'last_size={cls._prompt_value(volume, 10)}. '
