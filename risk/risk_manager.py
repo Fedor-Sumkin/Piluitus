@@ -207,7 +207,24 @@ class RiskManager:
         # Finam documents a 200 REST requests/minute limit. Bound the two
         # per-instrument lookups to avoid an uncontrolled startup burst.
         semaphore = asyncio.Semaphore(6)
+        request_lock = asyncio.Lock()
+        try:
+            request_interval_sec = float(os.getenv("FINAM_METADATA_REQUEST_INTERVAL_SEC", "0.36"))
+        except (TypeError, ValueError, OverflowError):
+            request_interval_sec = 0.36
+        if not math.isfinite(request_interval_sec) or request_interval_sec < 0.0:
+            request_interval_sec = 0.36
+        next_request_at = 0.0
         updated_lots = failed_lots = updated_metadata = failed_metadata = 0
+
+        async def call_limited(method, ticker: str):
+            nonlocal next_request_at
+            async with request_lock:
+                wait_sec = max(0.0, next_request_at - time.monotonic())
+                if wait_sec > 0.0:
+                    await asyncio.sleep(wait_sec)
+                next_request_at = time.monotonic() + request_interval_sec
+            return await method(ticker, account_id=account_id)
 
         async def refresh_one(ticker: str) -> None:
             nonlocal updated_lots, failed_lots, updated_metadata, failed_metadata
@@ -219,12 +236,12 @@ class RiskManager:
                 params_payload = None
                 if callable(asset_method):
                     try:
-                        asset_payload = await asset_method(normalized, account_id=account_id)
+                        asset_payload = await call_limited(asset_method, normalized)
                     except Exception:
                         asset_payload = None
                 if callable(params_method):
                     try:
-                        params_payload = await params_method(normalized, account_id=account_id)
+                        params_payload = await call_limited(params_method, normalized)
                     except Exception:
                         params_payload = None
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from unittest.mock import patch
 
 from config import ASSET_METADATA, LOT_SIZES
 from risk_manager import RiskManager
@@ -34,7 +35,8 @@ class FinamAssetMetadataTests(unittest.TestCase):
         try:
             LOT_SIZES["TESTMETA"] = 1
             ASSET_METADATA.pop("TESTMETA", None)
-            asyncio.run(RiskManager.update_finam_lot_sizes(_FinamMetadataStub()))
+            with patch.dict("os.environ", {"FINAM_METADATA_REQUEST_INTERVAL_SEC": "0"}):
+                asyncio.run(RiskManager.update_finam_lot_sizes(_FinamMetadataStub()))
 
             self.assertEqual(LOT_SIZES["TESTMETA"], 7)
             self.assertEqual(ASSET_METADATA["TESTMETA"]["price_tick"], 0.05)
