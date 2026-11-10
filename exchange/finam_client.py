@@ -2070,7 +2070,6 @@ class FinamBrokerClient:
                             continue
 
                         if subscription_type in {"INSTRUMENT_TRADES", "INSTRUMENT_TRADE"}:
-                        if subscription_type in {"INSTRUMENT_TRADES", "INSTRUMENT_TRADE"}:
                             instrument_trade_messages += 1
                             trade_events = self._extract_instrument_trades(envelope)
                             instrument_trade_events += len(trade_events)
