@@ -256,7 +256,14 @@ class FinamBrokerClient:
             return None
         symbol = f"{normalized}@MISX"
         account = str(account_id or "").strip()
-        params = {"account_id": account} if account and account != "UNKNOWN_ACCOUNT" else None
+        if not account or account == "UNKNOWN_ACCOUNT":
+            logger.error(
+                "Finam GetAssetParams %s skipped: account_id is missing; "
+                "configure FINAM_ACCOUNT_ID (or the legacy FINAM_CLIENT_ID fallback).",
+                normalized,
+            )
+            return None
+        params = {"account_id": account}
         url = f"{self.base_url}/v1/assets/{url_quote(symbol, safe='@')}/params"
         request_jwt = self.jwt_token
         for attempt in range(2):
@@ -273,13 +280,16 @@ class FinamBrokerClient:
                 if exc.response.status_code == 401 and attempt == 0:
                     if await self._refresh_auth_if_unchanged(request_jwt):
                         continue
-                if exc.response.status_code in {401, 429, 500, 503, 504}:
-                    logger.warning("Finam asset params %s: HTTP %s; static lot-size fallback remains active.", normalized, exc.response.status_code)
-                else:
-                    logger.debug("Finam asset params %s unavailable: HTTP %s; static fallback retained.", normalized, exc.response.status_code)
+                logger.warning(
+                    "Finam GetAssetParams %s failed: HTTP %s",
+                    normalized, exc.response.status_code,
+                )
                 return None
             except (httpx.RequestError, ValueError, TypeError) as exc:
-                logger.debug("Finam asset params %s unavailable (%s); static lot-size fallback remains active.", normalized, type(exc).__name__)
+                logger.warning(
+                    "Finam GetAssetParams %s request failed: %s",
+                    normalized, type(exc).__name__,
+                )
                 return None
         return None
 
@@ -1439,10 +1449,9 @@ class FinamBrokerClient:
                         if screener is not None:
                             try:
                                 funnel_status = screener.get_status()
-                                selected = (
-                                    funnel_status.get("selected_tickers", [])
-                                    if funnel_status.get("ready") else []
-                                )
+                                # Keep currently eligible members subscribed during
+                                # short coverage dips; screener readiness still gates LLM.
+                                selected = funnel_status.get("selected_tickers", [])
                                 # Recalculate the desired set on every receive-loop
                                 # turn. A Top-15 rotation should not wait for the
                                 # periodic refresh timer before its BBO subscription

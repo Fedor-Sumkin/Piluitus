@@ -222,6 +222,7 @@ class MinuteBarPatternEngine:
             state = {
                 "current": None,
                 "bars": deque(maxlen=self.history_bars),
+                "last_closed_bar_monotonic": 0.0,
             }
             self._states[ticker] = state
         return state
@@ -240,10 +241,11 @@ class MinuteBarPatternEngine:
         result["bar_atr"] = atr
         result["bar_atr_pct"] = (atr / price * 100.0) if price > 0 else 0.0
         result["bar_atr_periods"] = float(atr_snapshot["periods"])
-        last_event_time = float(state.get("last_event_time", 0.0) or 0.0)
-        latest_closed_bar_end = (bars[-1].bucket + 1) * self.bar_seconds
-        if last_event_time > 0.0:
-            result["bar_atr_age_sec"] = max(0.0, last_event_time - latest_closed_bar_end)
+        last_closed_monotonic = float(state.get("last_closed_bar_monotonic", 0.0) or 0.0)
+        result["bar_atr_age_sec"] = (
+            max(0.0, now - last_closed_monotonic)
+            if last_closed_monotonic > 0.0 else -1.0
+        )
         if len(closes) >= 21:
             result["bar_trend_up"] = float(result["bar_ema9"] > result["bar_ema21"])
             result["bar_trend_down"] = float(result["bar_ema9"] < result["bar_ema21"])
@@ -420,6 +422,7 @@ class MinuteBarPatternEngine:
             # Never combine monotonic-relative buckets with exchange-time buckets.
             state["bars"].clear()
             state["current"] = None
+            state["last_closed_bar_monotonic"] = 0.0
         state["clock_source"] = clock_source
         state["last_event_time"] = bucket_time
         current: MinuteBar | None = state.get("current")
@@ -439,9 +442,11 @@ class MinuteBarPatternEngine:
         if gap_minutes >= 5:
             # Do not carry EMA/ATR regime across a long data outage or overnight.
             state["bars"].clear()
+            state["last_closed_bar_monotonic"] = 0.0
             state["current"] = MinuteBar(bucket, value, value, value, value)
             return self._summarize(state, value, stamp)
         state["bars"].append(closed)
+        state["last_closed_bar_monotonic"] = stamp
         state["current"] = MinuteBar(bucket, value, value, value, value)
         if gap_minutes != 1:
             return self._summarize(state, value, stamp)

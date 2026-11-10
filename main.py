@@ -1543,7 +1543,9 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                 trade_reason = str(trade_result.get("reason") or "rejected")
                 _trade_flow_inc("instrument_trades_" + trade_reason)
                 if trade_reason == "out_of_order_trade":
-                    screener.reset_trade_history(trade_ticker)
+                    # Reject this trade event without invalidating the independent
+                    # QUOTES-driven M1 history for the same instrument.
+                    _trade_flow_inc("instrument_trades_out_of_order_ignored")
             return
 
         # ORDER_BOOK events have no last-trade price. Route them before the QUOTES
@@ -2753,6 +2755,32 @@ async def _start_news_updater() -> None:
         await manager.broadcast(message)
     await MarketNewsParser.update_news_cycle(db_manager, broadcast_callback=_broadcast)
 
+async def _finam_metadata_refresh_loop() -> None:
+    """Refresh account-specific trading metadata without blocking API startup."""
+    from risk_manager import RiskManager
+
+    try:
+        refresh_sec = max(300.0, float(os.getenv("FINAM_METADATA_REFRESH_SEC", "900")))
+    except (TypeError, ValueError, OverflowError):
+        refresh_sec = 900.0
+    while True:
+        # background_broker_init owns authentication. Do not send REST requests
+        # until a JWT has been obtained successfully.
+        if not str(getattr(broker, "jwt_token", "") or "").strip():
+            await asyncio.sleep(1.0)
+            continue
+        try:
+            await RiskManager.update_finam_lot_sizes(finam_broker_client=broker)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "❌ [FINAM METADATA WORKER] refresh failed: %s",
+                type(exc).__name__, exc_info=True,
+            )
+        await asyncio.sleep(refresh_sec)
+
+
 async def _start_tables_sync_loop():
     """Периодически обновляет позиции и фактическую оценку задействованного капитала."""
     logger.info("📊 Воркер синхронизации таблиц и капитала запущен.")
@@ -2831,9 +2859,6 @@ async def lifespan(app: FastAPI):
     except Exception as redis_restore_err:
         logger.error(f"⚠️ Не удалось восстановить историю вердиктов из Redis: {redis_restore_err}")
 
-    from risk_manager import RiskManager
-    await RiskManager.update_finam_lot_sizes(finam_broker_client=broker)
-
     worker = MarketWorker(db=db_manager, ai=ai_engine, broker_client=broker)
     async def _run_worker_safely():
         try:
@@ -2843,6 +2868,7 @@ async def lifespan(app: FastAPI):
 
     # Запускаем строго по одной асинхронной задаче на каждый воркер (дублирование удалено)
     _spawn_background(_run_worker_safely(), name="market-worker")
+    _spawn_background(_finam_metadata_refresh_loop(), name="finam-metadata-refresh")
     _spawn_background(_start_news_updater(), name="news-updater")
     _spawn_background(_start_tables_sync_loop(), name="tables-sync")
 

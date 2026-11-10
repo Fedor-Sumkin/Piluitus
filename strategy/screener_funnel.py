@@ -116,15 +116,23 @@ class HFTMemoryScreener:
     ):
         self.window_size = max(8, int(window_size))
         self.top_n = max(1, int(top_n if top_n is not None else _env_int("PILUITUS_FUNNEL_TOP_N", 15)))
-        self.max_replacements_per_refresh = _env_int("PILUITUS_FUNNEL_MAX_REPLACEMENTS_PER_REFRESH", 3)
+        self.max_replacements_per_refresh = max(
+            1, _env_int("PILUITUS_FUNNEL_MAX_REPLACEMENTS_PER_REFRESH", 1)
+        )
         self.retention_score_gap = _env_float("PILUITUS_FUNNEL_RETENTION_SCORE_GAP", 5.0)
+        self.min_selected_hold_sec = max(
+            0.0, _env_float("PILUITUS_FUNNEL_MIN_HOLD_SEC", 60.0)
+        )
+        self.replacement_confirmations = max(
+            1, _env_int("PILUITUS_FUNNEL_REPLACEMENT_CONFIRMATIONS", 2)
+        )
         self.min_samples = max(
             3,
             int(min_samples if min_samples is not None else _env_int("PILUITUS_FUNNEL_MIN_SAMPLES", 8)),
         )
         self.selection_interval = max(
             0.5,
-            float(selection_interval if selection_interval is not None else _env_float("PILUITUS_FUNNEL_REFRESH_SEC", 5.0)),
+            float(selection_interval if selection_interval is not None else _env_float("PILUITUS_FUNNEL_REFRESH_SEC", 15.0)),
         )
         self.warmup_timeout = max(
             5.0,
@@ -163,6 +171,8 @@ class HFTMemoryScreener:
         self._ranking: dict[str, dict[str, float | int]] = {}
         self._started_at = time.monotonic()
         self._last_selection_update = 0.0
+        self._selected_since: dict[str, float] = {}
+        self._replacement_streak: dict[str, int] = {}
         self._lock = threading.RLock()
         self._last_selection_log_key: tuple[str, ...] | None = None
         # Closed 1-minute OHLC patterns are measured locally; no LLM is used to detect them.
@@ -256,6 +266,8 @@ class HFTMemoryScreener:
             self._ranking.clear()
             self._started_at = time.monotonic()
             self._last_selection_update = 0.0
+            self._selected_since.clear()
+            self._replacement_streak.clear()
             self._last_selection_log_key = None
         logger.info(
             "🎯 Локальная воронка инициализирована: universe=%d, top_n=%d, min_samples=%d, coverage=%.0f%%",
@@ -385,9 +397,19 @@ class HFTMemoryScreener:
         # Если свежих кандидатов стало меньше top-N, не анализируем случайное
         # подмножество: снова ждём минимум полную пятнадцатку пригодных символов.
         if len(candidates) < minimum_for_selection:
+            # A temporary stale quote must not flush the entire subscription set.
+            # Retain only still-eligible previous members; no LLM candidate is
+            # emitted until the full Top-N coverage is restored.
             self.selection_ready = False
             self._ranking = {}
-            self.selected_tickers = []
+            self.selected_tickers = [
+                ticker for ticker in self.selected_tickers if ticker in candidates
+            ]
+            self._selected_since = {
+                ticker: self._selected_since.get(ticker, now)
+                for ticker in self.selected_tickers
+            }
+            self._replacement_streak.clear()
             self._last_selection_update = now
             return
         coverage_required = min(
@@ -454,32 +476,63 @@ class HFTMemoryScreener:
             self._last_selection_update = now
             return
 
-        # Небольшой гистерезис удерживает прежний тикер, если он почти не уступает
-        # порогу top-N, и не позволяет списку дёргаться от каждого тика.
+        # Keep the current cohort stable. Stale/ineligible members are removed
+        # immediately, but score-only challengers must stay in Top-N for multiple
+        # refreshes and the outgoing member must have passed its minimum hold time.
         cutoff = float(ranked[ordered[target_count - 1]]["score"])
         retention_floor = cutoff - self.retention_score_gap
         previous = list(self.selected_tickers)
-        old_selected = set(previous)
-        keepers = [t for t in ordered if t in old_selected and float(ranked[t]["score"]) >= retention_floor]
-        chosen = keepers[:target_count]
-        chosen_set = set(chosen)
-        # Remove stale/ineligible old members immediately; cap score-only rotations.
-        invalid_previous = sum(1 for ticker in previous if ticker not in ranked)
-        missing_from_previous = max(0, target_count - len(previous))
-        replacement_budget = (
-            max(0, target_count - len(chosen))
-            if missing_from_previous > 0
-            else min(max(0, target_count - len(chosen)), self.max_replacements_per_refresh + invalid_previous)
-        )
+        eligible_previous = [ticker for ticker in previous if ticker in ranked]
+        invalid_previous = len(previous) - len(eligible_previous)
+        target_set = set(ordered[:target_count])
+        chosen = list(eligible_previous)
         replacements = 0
-        for ticker in ordered:
-            if len(chosen) >= target_count or replacements >= replacement_budget:
-                break
-            if ticker not in chosen_set:
+
+        # Initial fill and replacement of genuinely stale members are immediate:
+        # these are coverage repairs, not score-driven churn.
+        if len(chosen) < target_count:
+            for ticker in ordered:
+                if len(chosen) >= target_count:
+                    break
+                if ticker not in chosen:
+                    chosen.append(ticker)
+                    self._selected_since[ticker] = now
+            self._replacement_streak.clear()
+        else:
+            current_challengers = target_set - set(chosen)
+            self._replacement_streak = {
+                ticker: streak
+                for ticker, streak in self._replacement_streak.items()
+                if ticker in current_challengers
+            }
+            for ticker in ordered[:target_count]:
+                if ticker in chosen:
+                    self._replacement_streak.pop(ticker, None)
+                    continue
+                self._replacement_streak[ticker] = self._replacement_streak.get(ticker, 0) + 1
+                if self._replacement_streak[ticker] < self.replacement_confirmations:
+                    continue
+                replaceable = [
+                    old for old in chosen
+                    if old not in target_set
+                    and float(ranked[old]["score"]) < retention_floor
+                    and now - self._selected_since.get(old, now) >= self.min_selected_hold_sec
+                ]
+                if not replaceable or replacements >= self.max_replacements_per_refresh:
+                    continue
+                weakest = min(replaceable, key=lambda old: float(ranked[old]["score"]))
+                chosen.remove(weakest)
+                self._selected_since.pop(weakest, None)
                 chosen.append(ticker)
-                chosen_set.add(ticker)
+                self._selected_since[ticker] = now
+                self._replacement_streak.pop(ticker, None)
                 replacements += 1
+
         self.selected_tickers = chosen
+        self._selected_since = {
+            ticker: self._selected_since.get(ticker, now)
+            for ticker in self.selected_tickers
+        }
         if set(previous) != set(chosen):
             logger.info(
                 "[FUNNEL TURNOVER] previous=%d selected=%d retained=%d replaced=%d invalid_previous=%d",
@@ -906,13 +959,12 @@ class HFTMemoryScreener:
                 }
 
             self.register_ticker(ticker)
-            if self.trade_data_mode:
-                stored_pattern = self.quotes[ticker].get("bar_pattern_metrics", {})
-                bar_pattern_metrics = dict(stored_pattern) if isinstance(stored_pattern, dict) else {}
-            else:
-                bar_pattern_metrics = self.minute_bar_patterns.update(
-                    ticker, price, now=now, event_timestamp=event_timestamp
-                )
+            # M1 OHLC uses observed last-price updates from QUOTES across the full
+            # 88-symbol universe. QUOTES.lastSize is never used for volume/VWAP;
+            # selected INSTRUMENT_TRADES may enrich the same price-only candle.
+            bar_pattern_metrics = self.minute_bar_patterns.update(
+                ticker, price, now=now, event_timestamp=event_timestamp
+            )
             data = self.history[ticker]
             prices = data["prices"]
             volumes = data["volumes"]
@@ -1196,7 +1248,7 @@ class HFTMemoryScreener:
             logger.info("📈 Trade-flow mode enabled: QUOTES.lastSize excluded from volume/VWAP.")
 
     def reset_trade_history(self, ticker: str) -> None:
-        """Invalidate rolling trade/M1 evidence after a feed gap or subscription reset."""
+        """Invalidate rolling trade-flow evidence without erasing the independent QUOTES M1 history."""
         symbol = self.normalize_ticker(ticker)
         if not symbol:
             return
@@ -1209,10 +1261,8 @@ class HFTMemoryScreener:
             quote = self.quotes.get(symbol)
             if isinstance(quote, dict):
                 quote["trade_metrics"] = {}
-                quote["bar_pattern_metrics"] = self.minute_bar_patterns._empty()
                 quote["last_trade_event_seen"] = 0.0
                 quote.pop("last_trade_price", None)
-            self.minute_bar_patterns.reset(symbol)
 
     def reset_trade_subscription(self, ticker: str) -> None:
         """Reset rolling trade-flow on subscription changes without erasing closed M1 bars."""
@@ -1228,10 +1278,8 @@ class HFTMemoryScreener:
             quote = self.quotes.get(symbol)
             if isinstance(quote, dict):
                 quote["trade_metrics"] = {}
-                quote["bar_pattern_metrics"] = self.minute_bar_patterns._empty()
                 quote["last_trade_event_seen"] = 0.0
                 quote.pop("last_trade_price", None)
-            self.minute_bar_patterns.reset_partial(symbol)
 
     def push_trade(
         self, ticker: str, price: float, size: float, trade_id: object = None,

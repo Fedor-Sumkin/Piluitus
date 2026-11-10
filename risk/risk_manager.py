@@ -199,7 +199,26 @@ class RiskManager:
                 "new orders remain blocked. Static LOT_SIZES is not used for new entries."
             )
             return
-        account_id = str(os.getenv("FINAM_CLIENT_ID", "")).strip()
+        account_id = (
+            str(os.getenv("FINAM_ACCOUNT_ID", "")).strip()
+            or str(os.getenv("FINAM_CLIENT_ID", "")).strip()
+        )
+        account_id_source = (
+            "FINAM_ACCOUNT_ID" if os.getenv("FINAM_ACCOUNT_ID", "").strip()
+            else "FINAM_CLIENT_ID compatibility fallback" if account_id
+            else "missing"
+        )
+        if not account_id:
+            risk_logger.error(
+                "⛔ [FINAM METADATA] FINAM_ACCOUNT_ID is not configured; "
+                "GetAssetParams will be skipped and all new entries remain blocked. "
+                "Set FINAM_ACCOUNT_ID to the account identifier shown in Finam Trade API."
+            )
+        elif account_id_source != "FINAM_ACCOUNT_ID":
+            risk_logger.warning(
+                "⚠️ [FINAM METADATA] using FINAM_CLIENT_ID as a compatibility fallback for account_id; "
+                "set FINAM_ACCOUNT_ID explicitly to remove ambiguity."
+            )
         asset_method = getattr(finam_broker_client, "get_asset", None)
         params_method = getattr(finam_broker_client, "get_asset_params", None)
         if not callable(asset_method):
@@ -221,6 +240,7 @@ class RiskManager:
             request_interval_sec = 0.36
         next_request_at = 0.0
         updated_lots = failed_lots = updated_metadata = failed_metadata = 0
+        blocked_not_tradable = 0
 
         async def call_limited(method, ticker: str):
             nonlocal next_request_at
@@ -244,10 +264,14 @@ class RiskManager:
                         asset_payload = await call_limited(asset_method, normalized)
                     except Exception:
                         asset_payload = None
-                if callable(params_method):
+                if callable(params_method) and account_id:
                     try:
                         params_payload = await call_limited(params_method, normalized)
-                    except Exception:
+                    except Exception as exc:
+                        risk_logger.warning(
+                            "[FINAM METADATA] GetAssetParams %s failed locally: %s",
+                            normalized, type(exc).__name__,
+                        )
                         params_payload = None
 
             if isinstance(asset_payload, dict):
@@ -277,6 +301,15 @@ class RiskManager:
 
             if isinstance(params_payload, dict):
                 raw = params_payload.get("trade_lot_size")
+                tradable_raw = params_payload.get("is_tradable")
+                if tradable_raw is None:
+                    tradable_raw = params_payload.get("tradeable")
+                if isinstance(tradable_raw, dict):
+                    tradable_raw = tradable_raw.get("value")
+                is_tradable = (
+                    tradable_raw is True
+                    or (isinstance(tradable_raw, str) and tradable_raw.strip().lower() in {"true", "1", "yes"})
+                )
                 try:
                     value_float = float(raw)
                     value = int(value_float)
@@ -284,23 +317,31 @@ class RiskManager:
                         value = 0
                 except (TypeError, ValueError, OverflowError):
                     value = 0
-                if value > 0:
+                if value > 0 and is_tradable:
                     FINAM_TRADE_LOT_SIZES[normalized] = value
                     updated_lots += 1
                 else:
-                    # Finam documents zero/missing trade_lot_size as unavailable.
-                    # Do not silently substitute the static exchange-lot reference.
+                    # A positive lot size is insufficient if Finam says the instrument
+                    # is not tradable (or does not explicitly confirm tradability).
                     FINAM_TRADE_LOT_SIZES.pop(normalized, None)
                     failed_lots += 1
+                    if not is_tradable:
+                        blocked_not_tradable += 1
             elif callable(params_method):
+                FINAM_TRADE_LOT_SIZES.pop(normalized, None)
+                failed_lots += 1
+            else:
+                FINAM_TRADE_LOT_SIZES.pop(normalized, None)
                 failed_lots += 1
 
         symbols_to_refresh = list(dict.fromkeys(list(LOT_SIZES) + list(TICKERS_TO_TRADE)))
         await asyncio.gather(*(refresh_one(ticker) for ticker in symbols_to_refresh))
         risk_logger.info(
-            "📦 [FINAM METADATA] account trade_lot_size confirmed=%d/%d; unavailable=%d (new entries blocked); "
-            "tick-size=%d/%d; metadata unavailable=%d (static tick-size retained).",
-            updated_lots, len(symbols_to_refresh), failed_lots,
+            "📦 [FINAM METADATA] account_id_source=%s configured=%s; "
+            "trade_lot_size confirmed=%d/%d; unavailable=%d (new entries blocked); "
+            "not_tradable_or_unconfirmed=%d; tick-size=%d/%d; metadata unavailable=%d (static tick-size retained).",
+            account_id_source, bool(account_id),
+            updated_lots, len(symbols_to_refresh), failed_lots, blocked_not_tradable,
             updated_metadata, len(symbols_to_refresh), failed_metadata,
         )
 

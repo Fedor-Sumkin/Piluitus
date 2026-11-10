@@ -23,16 +23,22 @@ class TradeFlowMetricsTests(unittest.TestCase):
         self.assertGreater(metrics["trade_vwap_60s"], 100.0)
         self.assertLess(metrics["trade_vwap_60s"], 105.0)
 
-    def test_feed_reset_invalidates_old_trade_and_m1_history(self):
+    def test_trade_flow_reset_does_not_erase_quote_driven_m1_history(self):
         screener = HFTMemoryScreener()
+        engine = screener.minute_bar_patterns
+        for minute in range(7):
+            engine.update("SBER", 100.0 + minute, now=1.0 + minute * 60.0)
+        self.assertEqual(len(engine._states["SBER"]["bars"]), 6)
+
         now = time.monotonic()
-        screener.push_trade("SBER", 100.0, 10.0, "trade-1", "SIDE_BUY", received_monotonic=now)
+        screener.push_trade("SBER", 107.0, 10.0, "trade-1", "SIDE_BUY", received_monotonic=now)
         self.assertEqual(len(screener.history["SBER"]["trade_events"]), 1)
         screener.reset_trade_history("SBER")
         self.assertEqual(len(screener.history["SBER"]["trade_events"]), 0)
         self.assertEqual(screener.quotes["SBER"]["trade_metrics"], {})
+        self.assertEqual(len(engine._states["SBER"]["bars"]), 6)
 
-    def test_subscription_rotation_keeps_closed_m1_bars_but_discards_partial_bar(self):
+    def test_subscription_rotation_preserves_closed_and_partial_quote_m1_bars(self):
         screener = HFTMemoryScreener()
         screener.register_ticker("SBER")
         engine = screener.minute_bar_patterns
@@ -46,13 +52,38 @@ class TradeFlowMetricsTests(unittest.TestCase):
 
         state = engine._states["SBER"]
         self.assertEqual(len(state["bars"]), 6)
-        self.assertIsNone(state["current"])
+        self.assertIsNotNone(state["current"])
         self.assertEqual(len(screener.history["SBER"]["trade_events"]), 0)
 
         # A returning ticker cannot reuse an old ATR as if its M1 feed were fresh.
         metrics = engine.update("SBER", 110.0, now=601.0)
         self.assertGreater(metrics["bar_atr_age_sec"], 120.0)
         from strategy.signal_guard import validate_atr_readiness
+        ready, reason = validate_atr_readiness(metrics)
+        self.assertFalse(ready)
+        self.assertIn("История ATR устарела", reason)
+
+    def test_quote_ticks_build_m1_for_all_symbols_in_trade_data_mode(self):
+        screener = HFTMemoryScreener()
+        screener.enable_trade_data_mode()
+        for minute in range(7):
+            screener.push_tick(
+                "SBER", 100.0 + minute, 999999.0,
+                event_timestamp=1_800_000_000 + minute * 60,
+            )
+        snapshot = screener.minute_bar_patterns.get_atr_snapshot("SBER")
+        self.assertEqual(snapshot["periods"], 5.0)
+        self.assertEqual(len(screener.history["SBER"]["trade_events"]), 0)
+        self.assertEqual(float(screener.history["SBER"]["volumes"].sum()), 0.0)
+
+    def test_atr_age_advances_with_monotonic_time_even_without_new_closed_bar(self):
+        from strategy.signal_guard import validate_atr_readiness
+
+        engine = HFTMemoryScreener().minute_bar_patterns
+        for minute in range(7):
+            metrics = engine.update("SBER", 100.0 + minute, now=1.0 + minute * 60.0)
+        metrics = engine.update("SBER", 107.0, now=500.0)
+        self.assertGreater(metrics["bar_atr_age_sec"], 120.0)
         ready, reason = validate_atr_readiness(metrics)
         self.assertFalse(ready)
         self.assertIn("История ATR устарела", reason)

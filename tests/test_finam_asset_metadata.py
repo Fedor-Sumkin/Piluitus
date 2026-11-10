@@ -24,7 +24,7 @@ class _FinamMetadataStub:
 
     async def get_asset_params(self, ticker: str, account_id: str | None = None):
         if ticker == "TESTMETA":
-            return {"trade_lot_size": "7"}
+            return {"trade_lot_size": "7", "is_tradable": True}
         return None
 
 
@@ -36,7 +36,10 @@ class FinamAssetMetadataTests(unittest.TestCase):
         try:
             LOT_SIZES["TESTMETA"] = 1
             ASSET_METADATA.pop("TESTMETA", None)
-            with patch.dict("os.environ", {"FINAM_METADATA_REQUEST_INTERVAL_SEC": "0"}):
+            with patch.dict("os.environ", {
+                "FINAM_METADATA_REQUEST_INTERVAL_SEC": "0",
+                "FINAM_ACCOUNT_ID": "TEST-ACCOUNT-123",
+            }):
                 asyncio.run(RiskManager.update_finam_lot_sizes(_FinamMetadataStub()))
 
             self.assertEqual(LOT_SIZES["TESTMETA"], 1)
@@ -57,6 +60,65 @@ class FinamAssetMetadataTests(unittest.TestCase):
                 ASSET_METADATA.pop("TESTMETA", None)
             else:
                 ASSET_METADATA["TESTMETA"] = old_metadata
+
+    def test_positive_lot_size_without_explicit_tradability_is_rejected(self):
+        class _NotTradable(_FinamMetadataStub):
+            async def get_asset_params(self, ticker: str, account_id: str | None = None):
+                if ticker == "TESTMETA":
+                    return {"trade_lot_size": "7", "is_tradable": False}
+                return None
+
+        old_lot = LOT_SIZES.get("TESTMETA")
+        old_trade_lot = FINAM_TRADE_LOT_SIZES.get("TESTMETA")
+        try:
+            LOT_SIZES["TESTMETA"] = 1
+            FINAM_TRADE_LOT_SIZES["TESTMETA"] = 7
+            with patch.dict("os.environ", {
+                "FINAM_METADATA_REQUEST_INTERVAL_SEC": "0",
+                "FINAM_ACCOUNT_ID": "TEST-ACCOUNT-123",
+            }):
+                asyncio.run(RiskManager.update_finam_lot_sizes(_NotTradable()))
+            self.assertNotIn("TESTMETA", FINAM_TRADE_LOT_SIZES)
+        finally:
+            if old_lot is None:
+                LOT_SIZES.pop("TESTMETA", None)
+            else:
+                LOT_SIZES["TESTMETA"] = old_lot
+            if old_trade_lot is None:
+                FINAM_TRADE_LOT_SIZES.pop("TESTMETA", None)
+            else:
+                FINAM_TRADE_LOT_SIZES["TESTMETA"] = old_trade_lot
+
+    def test_missing_account_id_does_not_call_account_params(self):
+        class _NoAccount(_FinamMetadataStub):
+            calls = 0
+            async def get_asset_params(self, ticker: str, account_id: str | None = None):
+                self.calls += 1
+                return {"trade_lot_size": "7", "is_tradable": True}
+
+        stub = _NoAccount()
+        old_lot = LOT_SIZES.get("TESTMETA")
+        old_trade_lot = FINAM_TRADE_LOT_SIZES.get("TESTMETA")
+        try:
+            LOT_SIZES["TESTMETA"] = 1
+            FINAM_TRADE_LOT_SIZES["TESTMETA"] = 7
+            with patch.dict("os.environ", {
+                "FINAM_METADATA_REQUEST_INTERVAL_SEC": "0",
+                "FINAM_ACCOUNT_ID": "",
+                "FINAM_CLIENT_ID": "",
+            }):
+                asyncio.run(RiskManager.update_finam_lot_sizes(stub))
+            self.assertEqual(stub.calls, 0)
+            self.assertNotIn("TESTMETA", FINAM_TRADE_LOT_SIZES)
+        finally:
+            if old_lot is None:
+                LOT_SIZES.pop("TESTMETA", None)
+            else:
+                LOT_SIZES["TESTMETA"] = old_lot
+            if old_trade_lot is None:
+                FINAM_TRADE_LOT_SIZES.pop("TESTMETA", None)
+            else:
+                FINAM_TRADE_LOT_SIZES["TESTMETA"] = old_trade_lot
 
 
 if __name__ == "__main__":
