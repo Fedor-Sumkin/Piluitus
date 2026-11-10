@@ -1,0 +1,2 @@
+2026-11-10 21:37:15,809 [ERROR] [RUN=20261110_211532_1464_eb5ce1f1] Piluitus.RiskManager: Размер позиции заблокирован: Finam trade_lot_size для SMLT не подтверждён; статический LOT_SIZES не используется для нового ордера.
+2026-11-10 21:49:12,931 [ERROR] [RUN=20261110_211532_1464_eb5ce1f1] aiogram.dispatcher: Failed to fetch updates - TelegramNetworkError: HTTP Client says - ServerDisconnectedError: Server disconnected
