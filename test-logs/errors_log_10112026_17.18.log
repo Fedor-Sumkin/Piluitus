@@ -1,0 +1,1 @@
+2026-11-10 18:04:21,553 [ERROR] [RUN=20261110_171831_1292_43424123] aiogram.dispatcher: Failed to fetch updates - TelegramNetworkError: HTTP Client says - ServerDisconnectedError: Server disconnected
