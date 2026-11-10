@@ -64,7 +64,7 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(outcomes[0]["result"], "NO_FRESH_BBO")
         self.assertNotIn("net_executable_return_pct", outcomes[0])
 
-    def test_fresh_quote_after_allowed_label_lag_is_not_mislabelled_as_on_time(self) -> None:
+    def test_fresh_quote_after_allowed_label_lag_is_classified_as_label_late(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,), max_label_lag_sec=30)
         with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 191.0]):
             tracker.record_candidate(
@@ -72,8 +72,10 @@ class ShadowForwardTrackerTests(unittest.TestCase):
                 {"score": 90.0, "eligible": True, "regime": "TREND_ALIGNED"},
             )
             outcomes = tracker.observe_market_tick("SBER", quote_metrics(101.0, 101.1))
-        self.assertEqual(outcomes[0]["result"], "NO_FRESH_BBO")
+        self.assertEqual(outcomes[0]["result"], "LABEL_LATE")
+        self.assertEqual(outcomes[0]["label_quality"], "LABEL_LATE")
         self.assertNotIn("net_executable_return_pct", outcomes[0])
+        self.assertEqual(tracker.statistics_snapshot()["eligible"]["late"], 1)
 
     def test_configured_costs_reduce_net_executable_return(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
