@@ -118,9 +118,16 @@ class ExecutionReentryPolicyTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await self.engine._hydrate_stop_loss_cooldown(db, "ALRS", "BUY", now_monotonic=10.0)
 
-    def test_lot_multiplier_is_available_before_execution_diagnostics(self) -> None:
-        self.assertGreater(BaseExecutionEngine._lot_multiplier_for("IRKT"), 0)
-        self.assertEqual(BaseExecutionEngine._lot_multiplier_for("__UNKNOWN__"), 1)
+    def test_lot_multiplier_requires_confirmed_account_metadata(self) -> None:
+        from config import FINAM_TRADE_LOT_SIZES
+
+        # Static MOEX reference data must not authorize a new order.
+        self.assertEqual(BaseExecutionEngine._lot_multiplier_for("IRKT"), 0)
+        self.assertEqual(BaseExecutionEngine._lot_multiplier_for("__UNKNOWN__"), 0)
+
+        # A confirmed account-specific Finam value is available immediately.
+        with patch.dict(FINAM_TRADE_LOT_SIZES, {"IRKT": 10}):
+            self.assertEqual(BaseExecutionEngine._lot_multiplier_for("IRKT"), 10)
 
     def test_entry_bbo_rejects_spread_above_final_execution_limit(self) -> None:
         now = time.monotonic()
