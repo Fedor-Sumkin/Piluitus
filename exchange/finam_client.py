@@ -225,7 +225,7 @@ class FinamBrokerClient:
         request_jwt = self.jwt_token
         for attempt in range(2):
             try:
-                async with httpx.AsyncClient(timeout=6.0) as client:
+                async with httpx.AsyncClient(timeout=3.0) as client:
                     response = await client.get(url, headers={
                         "Authorization": f"Bearer {self.jwt_token}",
                         "Accept": "application/json",
@@ -1259,33 +1259,12 @@ class FinamBrokerClient:
                     )
                     backoff = 1
 
-                    # Public market trades are a separate Finam stream. Subscribe
-                    # once per instrument on the same socket; this is not the account's
-                    # private TRADES stream. A configurable cap allows operation within
-                    # provider-side subscription quotas without silently fabricating volume.
-                    try:
-                        trade_symbol_limit = max(0, int(os.getenv("FINAM_WS_INSTRUMENT_TRADES_LIMIT", str(len(symbols)))))
-                        trade_delay = max(0.0, min(0.25, float(os.getenv("FINAM_WS_TRADE_SUBSCRIPTION_DELAY_SEC", "0.02"))))
-                    except (TypeError, ValueError, OverflowError):
-                        trade_symbol_limit, trade_delay = len(symbols), 0.02
-                    trade_symbols = symbols[:trade_symbol_limit]
-                    trade_subscriptions_sent = 0
-                    for symbol in trade_symbols:
-                        await ws.send(json.dumps({
-                            "action": "SUBSCRIBE", "type": "INSTRUMENT_TRADES",
-                            "data": {"symbol": symbol}, "token": self.jwt_token,
-                        }, ensure_ascii=False))
-                        trade_subscriptions_sent += 1
-                        if trade_delay:
-                            await asyncio.sleep(trade_delay)
+                    # Enable strict trade-data mode before the first QUOTES event.
+                    # Actual INSTRUMENT_TRADES subscriptions follow live Top-15 plus
+                    # open positions, avoiding 88 unnecessary high-rate streams.
                     if screener is not None:
-                        # Fail closed even if the provider rejects/limits the subscriptions:
-                        # do not silently revert to repeated QUOTES.lastSize as trade volume.
                         screener.enable_trade_data_mode()
-                    logger.info(
-                        "📈 Finam INSTRUMENT_TRADES: отправлено подписок=%d/%d; QUOTES.lastSize не используется как поток сделок.",
-                        trade_subscriptions_sent, len(symbols),
-                    )
+                    logger.info("📈 Finam INSTRUMENT_TRADES: dynamic Top-15/position subscriptions enabled; QUOTES.lastSize excluded from trade volume.")
                     backoff = 1
 
                     # Диагностические счётчики: отправка SUBSCRIBE сама по себе не
@@ -1314,6 +1293,17 @@ class FinamBrokerClient:
                     order_book_out_of_order = 0
                     order_book_subscribed: set[str] = set()
                     order_book_subscribed_since: dict[str, float] = {}
+                    trade_subscribed: set[str] = set()
+                    trade_subscribed_since: dict[str, float] = {}
+                    last_trade_subscription_sync = 0.0
+                    try:
+                        trade_subscription_sync_sec = max(2.0, float(os.getenv("FINAM_INSTRUMENT_TRADES_REFRESH_SEC", "5")))
+                        trade_subscription_top_n = max(1, min(15, int(os.getenv("FINAM_INSTRUMENT_TRADES_TOP_N", "15"))))
+                        trade_subscription_min_hold_sec = max(0.0, min(120.0, float(os.getenv("FINAM_INSTRUMENT_TRADES_MIN_HOLD_SEC", "60"))))
+                        trade_subscription_max_overbook = max(0, min(10, int(os.getenv("FINAM_INSTRUMENT_TRADES_MAX_OVERBOOK", "5"))))
+                    except (TypeError, ValueError, OverflowError):
+                        trade_subscription_sync_sec, trade_subscription_top_n = 5.0, 15
+                        trade_subscription_min_hold_sec, trade_subscription_max_overbook = 60.0, 5
                     order_book_symbol_diag: dict[str, dict[str, Any]] = {}
                     last_open_position_symbols: set[str] = set()
                     order_book_unattributed_messages = 0
@@ -1425,6 +1415,52 @@ class FinamBrokerClient:
                                 }
                                 position_only_symbols = position_symbols - wanted
                                 wanted.update(position_symbols)
+
+                                # Trade flow is required only for active Top-15 and open
+                                # positions. Keep a bounded overlap while symbols rotate.
+                                trade_wanted = set(normalized_selected[:trade_subscription_top_n]) | position_symbols
+                                obsolete_trade = trade_subscribed - trade_wanted
+                                protected_trade = {
+                                    symbol for symbol in obsolete_trade
+                                    if now_loop - trade_subscribed_since.get(symbol, 0.0) < trade_subscription_min_hold_sec
+                                }
+                                if len(protected_trade) > trade_subscription_max_overbook:
+                                    protected_trade = set(sorted(
+                                        protected_trade,
+                                        key=lambda item: trade_subscribed_since.get(item, 0.0),
+                                        reverse=True,
+                                    )[:trade_subscription_max_overbook])
+                                effective_trade_wanted = trade_wanted | protected_trade
+                                trade_sync_due = now_loop - last_trade_subscription_sync >= trade_subscription_sync_sec
+                                if effective_trade_wanted != trade_subscribed or trade_sync_due:
+                                    removed_trade = trade_subscribed - effective_trade_wanted
+                                    added_trade = effective_trade_wanted - trade_subscribed
+                                    for trade_symbol in sorted(removed_trade):
+                                        await ws.send(json.dumps({
+                                            "action": "UNSUBSCRIBE", "type": "INSTRUMENT_TRADES",
+                                            "data": {"symbol": trade_symbol}, "token": self.jwt_token,
+                                        }, ensure_ascii=False))
+                                        if screener is not None:
+                                            screener.reset_trade_history(trade_symbol)
+                                        trade_subscribed.discard(trade_symbol)
+                                        trade_subscribed_since.pop(trade_symbol, None)
+                                    for trade_symbol in sorted(added_trade):
+                                        if screener is not None:
+                                            screener.reset_trade_history(trade_symbol)
+                                        await ws.send(json.dumps({
+                                            "action": "SUBSCRIBE", "type": "INSTRUMENT_TRADES",
+                                            "data": {"symbol": trade_symbol}, "token": self.jwt_token,
+                                        }, ensure_ascii=False))
+                                        trade_subscribed.add(trade_symbol)
+                                        trade_subscribed_since[trade_symbol] = now_loop
+                                    last_trade_subscription_sync = now_loop
+                                    if added_trade or removed_trade:
+                                        logger.info(
+                                            "📈 Finam INSTRUMENT_TRADES subscriptions: Top-%d=%d, positions=%d, active=%d, added=%d, removed=%d, held=%d.",
+                                            trade_subscription_top_n, len(normalized_selected[:trade_subscription_top_n]),
+                                            len(position_symbols), len(trade_subscribed), len(added_trade),
+                                            len(removed_trade), len(protected_trade),
+                                        )
 
                                 # Positions need continuously executable BBO even outside Top-15.
                                 # Refresh stale/missing sides with a coherent control snapshot.
@@ -2043,6 +2079,8 @@ class FinamBrokerClient:
                                     queue.put_nowait(trade_event)
                                 except asyncio.QueueFull:
                                     instrument_trade_queue_dropped += 1
+                                    if screener is not None:
+                                        screener.reset_trade_history(trade_event.get("ticker"))
                                     logger.error(
                                         "Очередь рыночных событий переполнена; INSTRUMENT_TRADE %s id=%s отброшен.",
                                         trade_event.get("ticker"), trade_event.get("trade_id"),

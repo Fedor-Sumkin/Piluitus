@@ -228,6 +228,7 @@ class HFTMemoryScreener:
             "top_bid_history_samples": 0,
             "top_ask_history_samples": 0,
             "tick_times": deque(maxlen=self.window_size),
+            "price_events": deque(maxlen=5000),
             # Наблюдения размера только лучшего уровня котировки (не полный стакан).
             # QUOTES и ORDER_BOOK могут пополнять одну короткую историю; размер
             # учитывается только при фактическом наличии соответствующего поля.
@@ -302,13 +303,42 @@ class HFTMemoryScreener:
         base_price = float(prices[-1 - lookback])
         momentum_pct = abs(float(prices[-1]) - base_price) / base_price * 100.0 if base_price > 0 else 0.0
 
-        trade_metrics = quote.get("trade_metrics", {})
-        if self.trade_data_mode and isinstance(trade_metrics, dict) and trade_metrics.get("trade_data_ready"):
-            volatility_pct = float(trade_metrics.get("trade_realized_volatility_60s_pct", volatility_pct) or 0.0)
-            momentum_pct = abs(float(trade_metrics.get("trade_price_change_30s_pct", momentum_pct) or 0.0))
+        if self.trade_data_mode:
+            # Rank all 88 symbols on identical quote-derived fixed windows. The
+            # trade stream is subscribed only for Top-15, so it must not bias ranking.
+            momentum_pct = 0.0
+            volatility_pct = 0.0
+            price_events = quote.get("price_events", ())
+            recent_price_events = [
+                item for item in price_events
+                if isinstance(item, (tuple, list)) and len(item) >= 2
+                and 0.0 <= now - float(item[0]) <= 60.0
+            ]
+            if recent_price_events:
+                latest_event = recent_price_events[-1]
+                reference30 = next((
+                    item for item in reversed(recent_price_events)
+                    if float(item[0]) <= float(latest_event[0]) - 30.0
+                ), None)
+                if reference30 is not None and float(reference30[1]) > 0.0:
+                    momentum_pct = abs(
+                        (float(latest_event[1]) - float(reference30[1]))
+                        / float(reference30[1]) * 100.0
+                    )
+                coverage = now - float(recent_price_events[0][0])
+                if coverage >= 60.0:
+                    time_returns = [
+                        (float(recent_price_events[i][1]) - float(recent_price_events[i - 1][1]))
+                        / float(recent_price_events[i - 1][1]) * 100.0
+                        for i in range(1, len(recent_price_events))
+                        if float(recent_price_events[i - 1][1]) > 0.0
+                    ]
+                    if len(time_returns) >= 2:
+                        volatility_pct = float(np.std(time_returns))
 
         base = self.base_metrics.get(ticker, {})
-        volume_spike = max(0.0, float(base.get("volume_spike", 1.0)))
+        # The volume spike is an entry feature; it cannot rank only already-subscribed symbols.
+        volume_spike = 0.0 if self.trade_data_mode else max(0.0, float(base.get("volume_spike", 1.0)))
         day_volume = max(0.0, float(quote.get("day_volume", 0.0)))
         mean_trade_volume = float(np.mean(volumes)) if len(volumes) else 0.0
         liquidity_measure = day_volume if day_volume > 0 else mean_trade_volume * len(volumes)
@@ -1015,6 +1045,9 @@ class HFTMemoryScreener:
                 quote["day_volume"] = float(day_volume)
             quote["last_seen"] = now
             quote["tick_times"].append(now)
+            price_events = quote["price_events"]
+            if not price_events or abs(float(price_events[-1][1]) - float(price)) > 1e-12:
+                price_events.append((now, float(price)))
 
             bid_level_seen = float(quote.get("last_bid_seen", 0.0) or 0.0)
             ask_level_seen = float(quote.get("last_ask_seen", 0.0) or 0.0)
@@ -1162,6 +1195,25 @@ class HFTMemoryScreener:
                 state["volumes"].fill(0.0)
             logger.info("📈 Trade-flow mode enabled: QUOTES.lastSize excluded from volume/VWAP.")
 
+    def reset_trade_history(self, ticker: str) -> None:
+        """Invalidate rolling trade/M1 evidence after a feed gap or subscription reset."""
+        symbol = self.normalize_ticker(ticker)
+        if not symbol:
+            return
+        with self._lock:
+            state = self.history.get(symbol)
+            if isinstance(state, dict):
+                state.get("trade_events", deque()).clear()
+                state.get("trade_seen_ids", deque()).clear()
+                state.get("trade_seen_set", set()).clear()
+            quote = self.quotes.get(symbol)
+            if isinstance(quote, dict):
+                quote["trade_metrics"] = {}
+                quote["bar_pattern_metrics"] = self.minute_bar_patterns._empty()
+                quote["last_trade_event_seen"] = 0.0
+                quote.pop("last_trade_price", None)
+            self.minute_bar_patterns.reset(symbol)
+
     def push_trade(
         self, ticker: str, price: float, size: float, trade_id: object = None,
         side: object = None, event_timestamp: object = None,
@@ -1269,7 +1321,13 @@ class HFTMemoryScreener:
         known30 = buy30 + sell30
         imbalance30 = (buy30 - sell30) / known30 if known30 > 0 else 0.0
         last_age = max(0.0, now - latest[0]) if latest else math.inf
-        ready = bool(len(recent60) >= 3 and reference is not None and baseline5 > 0 and last_age <= 5.0 and vwap60 > 0)
+        coverage_sec = max(0.0, now - events[0][0]) if events else 0.0
+        # The 5s-vs-prior-55s baseline is valid only after a complete 60s
+        # observation window; otherwise the denominator would be understated.
+        ready = bool(
+            len(recent60) >= 3 and reference is not None and coverage_sec >= 60.0
+            and baseline5 > 0 and last_age <= 5.0 and vwap60 > 0
+        )
         return {
             "trade_data_ready": float(ready), "trade_vwap_60s": float(vwap60),
             "trade_volume_5s": float(total5), "trade_volume_baseline_5s": float(baseline5),
@@ -1280,6 +1338,7 @@ class HFTMemoryScreener:
             "trade_flow_imbalance_30s": float(imbalance30),
             "trade_buy_volume_30s": float(buy30), "trade_sell_volume_30s": float(sell30),
             "trade_count_60s": int(len(recent60)),
+            "trade_history_coverage_sec": float(coverage_sec),
             "trade_metrics_age_sec": float(last_age) if math.isfinite(last_age) else -1.0,
         }
 

@@ -532,7 +532,7 @@ class AIEngine:
         common_keys = (
             "price_change_pct", "price_vs_vwap_pct", "volume_spike", "spread_pct",
             "bid_ask_available", "spread_available", "trade_data_ready",
-            "trade_flow_imbalance_30s", "trade_count_60s", "trade_metrics_age_sec",
+            "trade_flow_imbalance_30s", "trade_count_60s", "trade_history_coverage_sec", "trade_metrics_age_sec",
             "trade_vwap_60s", "trade_price_change_30s_pct",
             "trade_realized_volatility_60s_pct", "queue_imbalance", "queue_imbalance_available",
             "bar_trend_up", "bar_trend_down", "bar_atr_pct", "bar_body_ratio",

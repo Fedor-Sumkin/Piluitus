@@ -223,7 +223,7 @@ class RiskManager:
                         }
             except Exception as metadata_exc:
                 risk_logger.warning("Finam asset metadata unavailable (%s); static tick-size fallback remains active.", type(metadata_exc).__name__)
-        semaphore = asyncio.Semaphore(4)
+        semaphore = asyncio.Semaphore(8)
         updated = 0
         failed = 0
         async def refresh_one(ticker: str) -> None:

@@ -200,6 +200,12 @@ class MinuteBarPatternEngine:
             "_bar_pattern_signal_at_monotonic": -1.0,
         }
 
+    def reset(self, ticker: str) -> None:
+        """Discard partial bars after an instrument-trade feed gap."""
+        symbol = str(ticker or "").strip().upper().split("@", 1)[0]
+        if symbol:
+            self._states.pop(symbol, None)
+
     def _state(self, ticker: str) -> dict[str, Any]:
         state = self._states.get(ticker)
         if state is None:

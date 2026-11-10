@@ -1539,7 +1539,10 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
             if trade_result.get("accepted"):
                 _trade_flow_inc("instrument_trades_received")
             else:
-                _trade_flow_inc("instrument_trades_" + str(trade_result.get("reason") or "rejected"))
+                trade_reason = str(trade_result.get("reason") or "rejected")
+                _trade_flow_inc("instrument_trades_" + trade_reason)
+                if trade_reason == "out_of_order_trade":
+                    screener.reset_trade_history(trade_ticker)
             return
 
         # ORDER_BOOK events have no last-trade price. Route them before the QUOTES
@@ -2123,6 +2126,7 @@ class MarketWorker:
                     "trade_vwap_60s": _parse_finite_float(metrics.get("trade_vwap_60s")),
                     "trade_flow_imbalance_30s": _parse_finite_float(metrics.get("trade_flow_imbalance_30s")),
                     "trade_count_60s": _parse_finite_float(metrics.get("trade_count_60s")),
+                    "trade_history_coverage_sec": _parse_finite_float(metrics.get("trade_history_coverage_sec")),
                     "trade_metrics_age_sec": _parse_finite_float(metrics.get("trade_metrics_age_sec")),
                     "trade_price_change_30s_pct": _parse_finite_float(metrics.get("trade_price_change_30s_pct")),
                     "trade_realized_volatility_60s_pct": _parse_finite_float(metrics.get("trade_realized_volatility_60s_pct")),
@@ -2378,7 +2382,7 @@ class MarketWorker:
                     evidence = dict(evidence)
                     for key in (
                         "trade_data_ready", "trade_vwap_60s", "trade_flow_imbalance_30s",
-                        "trade_count_60s", "trade_metrics_age_sec", "volume_spike",
+                        "trade_count_60s", "trade_history_coverage_sec", "trade_metrics_age_sec", "volume_spike",
                         "price_change_pct", "trade_price_change_30s_pct",
                         "trade_realized_volatility_60s_pct", "current_price", "vwap",
                         "price_vs_vwap_pct",

@@ -26,6 +26,21 @@ class FinamInstrumentTradesTests(unittest.TestCase):
         self.assertEqual(trades[0]["side"], "SIDE_BUY")
         self.assertEqual(trades[0]["received_monotonic"], 123.0)
 
+    def test_supports_finams_camel_case_trade_payload(self):
+        envelope = {
+            "type": "DATA", "subscription_type": "INSTRUMENT_TRADES",
+            "payload": {"symbol": "SBER@MISX", "instrumentTrades": [{
+                "tradeId": "camel-1", "tradePrice": "101.5", "tradeSize": "8",
+                "tradeSide": "SIDE_SELL",
+            }]},
+        }
+        trades = FinamBrokerClient._extract_instrument_trades(envelope)
+        self.assertEqual(len(trades), 1)
+        self.assertEqual(trades[0]["trade_id"], "camel-1")
+        self.assertEqual(trades[0]["price"], 101.5)
+        self.assertEqual(trades[0]["size"], 8.0)
+        self.assertEqual(trades[0]["side"], "SIDE_SELL")
+
     def test_rejects_invalid_trade_rows_without_fabricating_values(self):
         envelope = {"type": "DATA", "subscription_type": "INSTRUMENT_TRADES",
             "payload": {"symbol": "SBER@MISX", "trades": [
