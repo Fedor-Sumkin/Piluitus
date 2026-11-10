@@ -2078,8 +2078,8 @@ class FinamBrokerClient:
                 body = json.dumps(self._redact_for_log(response.json()), ensure_ascii=False, default=str)
             except (ValueError, TypeError):
                 body = response.text or ""
-            body = re.sub(r"(?i)(bearer\\s+)[A-Za-z0-9._~+/=-]+", r"\\1<redacted>", body)
-            body = re.sub(r"\\s+", " ", body).strip()[:300]
+            body = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1<redacted>", body)
+            body = re.sub(r"\s+", " ", body).strip()[:300]
             request_id = response.headers.get("x-request-id") or response.headers.get("x-correlation-id") or response.headers.get("request-id") or "unavailable"
             logger.warning("Finam REST orderbook failed ticker=%s status=%d reason=%s request_id=%s retry_in=%.1fs sdk_error=%s response=%s",
                 symbol, status, response.reason_phrase, request_id, delay, type(sdk_error).__name__ if sdk_error else "none", body or "<empty>")

@@ -426,7 +426,12 @@ class HFTMemoryScreener:
         chosen_set = set(chosen)
         # Remove stale/ineligible old members immediately; cap score-only rotations.
         invalid_previous = sum(1 for ticker in previous if ticker not in ranked)
-        replacement_budget = min(max(0, target_count - len(chosen)), self.max_replacements_per_refresh + invalid_previous)
+        missing_from_previous = max(0, target_count - len(previous))
+        replacement_budget = (
+            max(0, target_count - len(chosen))
+            if missing_from_previous > 0
+            else min(max(0, target_count - len(chosen)), self.max_replacements_per_refresh + invalid_previous)
+        )
         replacements = 0
         for ticker in ordered:
             if len(chosen) >= target_count or replacements >= replacement_budget:

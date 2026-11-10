@@ -1033,6 +1033,19 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "ордеров_принято/открыто=%(orders_scheduled)d",
         values,
     )
+    shadow = scalping_shadow_tracker.statistics_snapshot()
+    eligible = shadow["eligible"]
+    ineligible = shadow["ineligible"]
+    logger.info(
+        "[STRATEGY SHADOW SCORECARD] eligible labels=%d ok=%d positive=%.1f%% avg_net=%+.5f%% "
+        "MFE=%+.5f%% MAE=%+.5f%%; ineligible labels=%d ok=%d positive=%.1f%% avg_net=%+.5f%% "
+        "MFE=%+.5f%% MAE=%+.5f%%; pending=%d",
+        eligible["labels"], eligible["ok"], eligible["positive_rate_pct"],
+        eligible["average_net_return_pct"], eligible["average_mfe_pct"], eligible["average_mae_pct"],
+        ineligible["labels"], ineligible["ok"], ineligible["positive_rate_pct"],
+        ineligible["average_net_return_pct"], ineligible["average_mfe_pct"], ineligible["average_mae_pct"],
+        scalping_shadow_tracker.pending_count(),
+    )
     _log_open_position_bbo_diagnostics()
 
 
