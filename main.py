@@ -2490,8 +2490,22 @@ class MarketWorker:
                         if requested_lots <= 0:
                             _trade_flow_inc("zero_lot")
                             execution_status = "BLOCKED"
-                            execution_message = "Риск на минимальный лот превышает установленный лимит."
-                            logger.warning("Сигнал %s по %s пропущен: риск на минимальный лот превышает лимит.", decision, ticker)
+                            if lot_multiplier <= 0:
+                                _trade_flow_inc("finam_lot_unavailable")
+                                execution_message = (
+                                    f"Finam trade_lot_size для {ticker} не подтверждён; "
+                                    "новая позиция не открыта."
+                                )
+                                logger.warning(
+                                    "Сигнал %s по %s заблокирован: Finam trade_lot_size не подтверждён.",
+                                    decision, ticker,
+                                )
+                            else:
+                                execution_message = "Риск на минимальный лот превышает установленный лимит."
+                                logger.warning(
+                                    "Сигнал %s по %s пропущен: риск на минимальный лот превышает лимит.",
+                                    decision, ticker,
+                                )
                         else:
                             requested_notional = requested_lots * lot_multiplier * price
                             logger.info(

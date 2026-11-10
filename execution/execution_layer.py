@@ -529,8 +529,8 @@ class BaseExecutionEngine:
                 lot_size = 0
             if lot_size <= 0:
                 return 0, (
-                    f"Не подтверждён размер биржевого лота для {normalized_ticker}; "
-                    "резервирование ордера заблокировано."
+                    f"Finam trade_lot_size для {normalized_ticker} не подтверждён; "
+                    "резервирование нового ордера заблокировано."
                 )
             notional_per_lot = price * lot_size
             if notional_per_lot <= 0 or not math.isfinite(notional_per_lot):

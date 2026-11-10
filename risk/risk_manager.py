@@ -188,11 +188,7 @@ class RiskManager:
 
     @classmethod
     async def update_finam_lot_sizes(cls, finam_broker_client=None):
-        """Refresh account-specific trade_lot_size and detailed asset metadata from Finam.
-
-        Static LOT_SIZES remains available for legacy accounting only. It never
-        authorizes a new order when Finam has not confirmed trade_lot_size.
-        """
+        """Refresh trading lot sizes from Finam; retain config values only as fallback."""
         risk_logger = logging.getLogger("Piluitus.RiskManager")
         if not LOT_SIZES and not TICKERS_TO_TRADE:
             risk_logger.error("❌ Список инструментов пуст: Finam metadata refresh невозможен.")
