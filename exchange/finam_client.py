@@ -616,9 +616,27 @@ class FinamBrokerClient:
             candidates: Any = payload
             parent_symbol = str(envelope.get("symbol") or envelope.get("ticker") or "").strip()
         elif isinstance(payload, dict):
-            candidates = payload.get("trades") or payload.get("trade") or payload.get("instrument_trades")
-            parent_symbol = str(payload.get("symbol") or payload.get("ticker") or envelope.get("symbol") or envelope.get("ticker") or "").strip()
-            if candidates is None and any(key in payload for key in ("trade_id", "tradeId", "price", "size")):
+            candidates = (
+                payload.get("trades")
+                or payload.get("trade")
+                or payload.get("instrument_trades")
+                or payload.get("instrumentTrades")
+            )
+            parent_symbol = str(
+                payload.get("symbol")
+                or payload.get("ticker")
+                or payload.get("securityCode")
+                or envelope.get("symbol")
+                or envelope.get("ticker")
+                or ""
+            ).strip()
+            if candidates is None and any(
+                key in payload
+                for key in (
+                    "trade_id", "tradeId", "price", "tradePrice",
+                    "size", "tradeSize",
+                )
+            ):
                 candidates = [payload]
         else:
             return []
@@ -636,11 +654,25 @@ class FinamBrokerClient:
         for item in candidates:
             if not isinstance(item, dict):
                 continue
-            symbol = str(item.get("symbol") or item.get("ticker") or parent_symbol).strip()
+            symbol = str(
+                item.get("symbol")
+                or item.get("ticker")
+                or item.get("securityCode")
+                or parent_symbol
+            ).strip()
             if not symbol:
                 continue
-            price = cls._decimal(item.get("price"))
-            size = cls._decimal(item.get("size") or item.get("quantity") or item.get("volume"))
+            raw_price = item.get("price")
+            if raw_price is None:
+                raw_price = item.get("tradePrice")
+            raw_size = (
+                item.get("size")
+                or item.get("quantity")
+                or item.get("volume")
+                or item.get("tradeSize")
+            )
+            price = cls._decimal(raw_price)
+            size = cls._decimal(raw_size)
             if price <= 0.0 or size <= 0.0:
                 continue
             result.append({
@@ -650,8 +682,13 @@ class FinamBrokerClient:
                 "trade_id": item.get("trade_id") or item.get("tradeId") or item.get("id"),
                 "price": price,
                 "size": size,
-                "side": item.get("side"),
-                "timestamp": item.get("timestamp") or envelope_timestamp,
+                "side": item.get("side") or item.get("tradeSide"),
+                "timestamp": (
+                    item.get("timestamp")
+                    or item.get("tradeTimestamp")
+                    or item.get("tradeTime")
+                    or envelope_timestamp
+                ),
                 "received_monotonic": received,
             })
         return result
