@@ -71,7 +71,7 @@ class FunnelTurnoverTests(unittest.TestCase):
         self.assertEqual(set(screener.selected_tickers), {"A", "C"})
 
     def test_temporary_quote_coverage_dip_retains_only_still_eligible_members(self) -> None:
-        screener = HFTMemoryScreener(top_n=3, min_samples=3, minimum_coverage=0.1)
+        screener = HFTMemoryScreener(top_n=3, min_samples=3, minimum_coverage=1.0)
         screener.universe = ["A", "B", "C", "D"]
         screener.selection_ready = True
         features = {
@@ -89,6 +89,18 @@ class FunnelTurnoverTests(unittest.TestCase):
         screener._refresh_selection(20.0)
         self.assertFalse(screener.selection_ready)
         self.assertEqual(set(screener.selected_tickers), {"A", "B"})
+
+        # A partial recovery below the 100% coverage threshold must not flush
+        # the still-eligible cohort or trigger another subscription reset.
+        features["C"] = self._feature(8.0)
+        screener._refresh_selection(30.0)
+        self.assertFalse(screener.selection_ready)
+        self.assertEqual(set(screener.selected_tickers), {"A", "B"})
+
+        features["D"] = self._feature(7.0)
+        screener._refresh_selection(40.0)
+        self.assertTrue(screener.selection_ready)
+        self.assertEqual(set(screener.selected_tickers), {"A", "B", "C"})
 
 
 if __name__ == "__main__":

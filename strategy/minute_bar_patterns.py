@@ -449,9 +449,11 @@ class MinuteBarPatternEngine:
         # The prior candle ended before the current event when minute buckets
         # were skipped. Estimate its close-time on the local monotonic clock so
         # the ATR freshness guard does not treat a delayed close as a fresh bar.
-        state["last_closed_bar_monotonic"] = (
-            stamp - max(0, gap_minutes - 1) * self.bar_seconds
+        elapsed_after_bar_close = (
+            max(0.0, bucket_time - bucket * self.bar_seconds)
+            + max(0, gap_minutes - 1) * self.bar_seconds
         )
+        state["last_closed_bar_monotonic"] = stamp - elapsed_after_bar_close
         state["current"] = MinuteBar(bucket, value, value, value, value)
         if gap_minutes != 1:
             return self._summarize(state, value, stamp)

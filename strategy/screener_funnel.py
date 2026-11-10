@@ -466,7 +466,16 @@ class HFTMemoryScreener:
         self._ranking = ranked
 
         if not self.selection_ready:
-            self.selected_tickers = []
+            # Preserve a previously active eligible cohort during recovery from
+            # a temporary coverage dip. Initial warm-up still starts with no cohort.
+            self.selected_tickers = [
+                ticker for ticker in self.selected_tickers if ticker in ranked
+            ]
+            self._selected_since = {
+                ticker: self._selected_since.get(ticker, now)
+                for ticker in self.selected_tickers
+            }
+            self._replacement_streak.clear()
             self._last_selection_update = now
             return
 

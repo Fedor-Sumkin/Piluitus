@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 import unittest
 from collections import deque
@@ -66,11 +67,14 @@ class TradeFlowMetricsTests(unittest.TestCase):
     def test_quote_ticks_build_m1_for_all_symbols_in_trade_data_mode(self):
         screener = HFTMemoryScreener()
         screener.enable_trade_data_mode()
-        for minute in range(7):
-            screener.push_tick(
-                "SBER", 100.0 + minute, 999999.0,
-                event_timestamp=1_800_000_000 + minute * 60,
-            )
+        async def feed_quotes():
+            for minute in range(7):
+                await screener.push_tick(
+                    "SBER", 100.0 + minute, 999999.0,
+                    event_timestamp=1_800_000_000 + minute * 60,
+                )
+
+        asyncio.run(feed_quotes())
         snapshot = screener.minute_bar_patterns.get_atr_snapshot("SBER")
         self.assertEqual(snapshot["periods"], 5.0)
         self.assertEqual(len(screener.history["SBER"]["trade_events"]), 0)
