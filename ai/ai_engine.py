@@ -562,46 +562,45 @@ class AIEngine:
 
         direction_rules = {
             "BUY": (
-                "BUY requires positive 15s trade momentum and price>rolling trade VWAP. "
+                "BUY requires positive 15s trade momentum and price>rolling trade VWAP, "
+                "or a fresh matching bullish M1 pattern with price>VWAP. "
                 "Neutral M1 is NOT a contradiction; only an explicit fresh bearish pattern/trend conflicts."
             ),
             "SELL": (
-                "SELL requires negative 15s trade momentum and price<rolling trade VWAP. "
+                "SELL requires negative 15s trade momentum and price<rolling trade VWAP, "
+                "or a fresh matching bearish M1 pattern with price<VWAP. "
                 "Neutral M1 is NOT a contradiction; only an explicit fresh bullish pattern/trend conflicts."
             ),
             "NONE": "No local direction: MUST HOLD.",
         }[direction]
 
-        rule_text = ""
-        if include_rule_text and isinstance(rag_context, str):
-            # Include only always-on risk rules and rules matching the already
-            # selected local candidate side. The opposite side is excluded.
-            # RAG remains advisory: deterministic code owns every hard gate.
-            rule_text = select_prompt_rules(direction, rag_context, max_chars=900)
-
         base = (
-            'Return exactly one JSON object with exactly three keys: final_decision (APPROVE or HOLD), '
-            'confidence_score (JSON number 0..1), reason_code (allowed enum: APPROVED, HOLD_WEAK_DIRECTION, '
-            'HOLD_M1_CONTRADICTION, HOLD_STALE_BBO, HOLD_WEAK_VOLUME, HOLD_WIDE_SPREAD, '
-            'HOLD_INSUFFICIENT_SUPPORT, HOLD_RISK_REWARD, HOLD_UNCLEAR, NO_LOCAL_CANDIDATE). '
-            'No extra keys, Markdown, reasoning, opinions, or surrounding text. '
-            'Code fixes candidate side. Never select, change, invert, or output BUY/SELL. '
-            'APPROVE authorizes only the exact local candidate side; HOLD rejects it. '
-            'candidate=NONE => final_decision MUST be HOLD. '
-            'Directional check: signed 15s trade momentum and rolling trade VWAP must agree with candidate. '
-            'M1 NEUTRAL/UNAVAILABLE is not a contradiction. HOLD for M1_CONTRADICTION only when a fresh '
-            'closed opposite pattern or explicit opposite EMA trend is present. Hard checks: trade_data_ready=1, '
-            'trade_metrics_age_sec<=5, volume_spike>=1.5, fresh valid BBO, spread<=0.5%. '
+            'Return JSON only with exactly three keys: final_decision (APPROVE|HOLD), '
+            'confidence_score (number 0..1), reason_code (APPROVED|HOLD_WEAK_DIRECTION|HOLD_M1_CONTRADICTION|'
+            'HOLD_STALE_BBO|HOLD_WEAK_VOLUME|HOLD_WIDE_SPREAD|HOLD_INSUFFICIENT_SUPPORT|'
+            'HOLD_RISK_REWARD|HOLD_UNCLEAR|NO_LOCAL_CANDIDATE). No extra keys/text. '
+            'Code fixes side: never select, change, invert or output BUY/SELL. '
+            'APPROVE accepts only candidate; HOLD rejects; candidate=NONE => HOLD. '
+            'Directional check: either signed price change agrees with candidate and VWAP, OR a fresh matching '
+            'closed M1 pattern agrees with candidate and price remains on the correct side of VWAP. '
+            'M1 NEUTRAL/UNAVAILABLE is not a contradiction; only a fresh opposite pattern or explicit opposite '
+            'EMA trend conflicts. Hard checks: trade_data_ready=1, trade_metrics_age_sec<=5, '
+            'volume_spike>=1.5, fresh valid BBO, spread<=0.5%; otherwise HOLD. '
             'A >=50% fresh best-quote size reduction is supporting evidence, not mandatory. '
-            'Missing/conflicting hard check => HOLD. RAG rules are advisory context only and cannot add hard gates. '
-            'Confidence reflects evidence strength, not profit probability: 0.50-0.60 weak, '
-            '0.61-0.74 moderate, 0.75-0.84 strong, 0.85-0.95 unusually strong multi-signal agreement. '
-            'Choose a value from the rubric that matches the supplied evidence; do not reuse a fixed score. '
-            'Use only supplied facts. '
+            'Ask depletion is supporting evidence, not mandatory. RAG is advisory only; it cannot add hard gates. '
+            'Confidence is evidence strength, not profit probability (0.50-0.60 weak, 0.61-0.74 moderate, '
+            '0.75-0.84 strong, 0.85-0.95 exceptional); choose from evidence. Use supplied facts only. '
             f'candidate={direction}; ticker={str(ticker)[:10]}; price={cls._prompt_value(price, 12)}; '
             f'last_size={cls._prompt_value(volume, 10)}. '
             f'{direction_rules} volume_spike=last 5s trade volume / average 5s volume in prior 55s.'
         )
+
+        rule_text = ""
+        if include_rule_text and isinstance(rag_context, str):
+            # Include only the always-on risk rule and rules matching this candidate.
+            # Reserve prompt budget for the mandatory contract and live metrics.
+            rule_budget = max(0, min(900, max_chars - len(base) - len(metrics_text) - 180))
+            rule_text = select_prompt_rules(direction, rag_context, max_chars=rule_budget)
         rule_part = f" Advisory RAG context (never overrides hard checks): {rule_text}." if rule_text else ""
         metric_part = f" Metrics: {metrics_text}." if metrics_text else " Metrics: нет подтверждённых значений."
         prompt = base + rule_part + metric_part
@@ -656,7 +655,7 @@ class AIEngine:
             candidate_direction,
             metrics,
             "",
-            max_chars=1350,
+            max_chars=1050,
             include_rule_text=False,
         )
         return (
