@@ -531,19 +531,24 @@ class AIEngine:
         direction = candidate_direction if candidate_direction in {"BUY", "SELL"} else "NONE"
         common_keys = (
             "price_change_pct", "price_vs_vwap_pct", "volume_spike", "spread_pct",
-            "bid_ask_available", "spread_available",
+            "bid_ask_available", "spread_available", "trade_data_ready",
+            "trade_flow_imbalance_30s", "trade_count_60s", "trade_metrics_age_sec",
+            "trade_vwap_60s", "trade_price_change_30s_pct",
+            "trade_realized_volatility_60s_pct", "queue_imbalance", "queue_imbalance_available",
+            "bar_trend_up", "bar_trend_down", "bar_atr_pct", "bar_body_ratio",
+            "bar_close_position",
         )
         if direction == "SELL":
             directional_keys = (
                 "bar_pattern_confirmed", "bar_pattern_direction_code", "bar_breakout_down",
-                "bar_pullback_sell", "bar_trend_down", "bid_size_drop_pct",
-                "top_bid_history_samples", "bid_size_drop_age_sec",
+                "bar_pullback_sell", "bid_size_drop_pct", "top_bid_history_samples",
+                "bid_size_drop_age_sec",
             )
         else:
             directional_keys = (
                 "bar_pattern_confirmed", "bar_pattern_direction_code", "bar_breakout_up",
-                "bar_pullback_buy", "bar_trend_up", "ask_size_drop_pct",
-                "top_ask_history_samples", "ask_size_drop_age_sec",
+                "bar_pullback_buy", "ask_size_drop_pct", "top_ask_history_samples",
+                "ask_size_drop_age_sec",
             )
         metric_keys = common_keys + directional_keys + ("bar_pattern_name", "bar_signal_gap_atr")
         metric_parts: list[str] = []
@@ -557,12 +562,12 @@ class AIEngine:
 
         direction_rules = {
             "BUY": (
-                "BUY requires either positive signed price_change_pct or "
-                "a fresh matching bullish M1 pattern; price>VWAP. Ask depletion is supporting."
+                "BUY requires positive 15s trade momentum and price>rolling trade VWAP. "
+                "Neutral M1 is NOT a contradiction; only an explicit fresh bearish pattern/trend conflicts."
             ),
             "SELL": (
-                "SELL requires either negative signed price_change_pct or "
-                "a fresh matching bearish M1 pattern; price<VWAP. Bid depletion is supporting."
+                "SELL requires negative 15s trade momentum and price<rolling trade VWAP. "
+                "Neutral M1 is NOT a contradiction; only an explicit fresh bullish pattern/trend conflicts."
             ),
             "NONE": "No local direction: MUST HOLD.",
         }[direction]
@@ -572,7 +577,7 @@ class AIEngine:
             # Include only always-on risk rules and rules matching the already
             # selected local candidate side. The opposite side is excluded.
             # RAG remains advisory: deterministic code owns every hard gate.
-            rule_text = select_prompt_rules(direction, rag_context, max_chars=420)
+            rule_text = select_prompt_rules(direction, rag_context, max_chars=900)
 
         base = (
             'Return exactly one JSON object with exactly three keys: final_decision (APPROVE or HOLD), '
@@ -583,16 +588,19 @@ class AIEngine:
             'Code fixes candidate side. Never select, change, invert, or output BUY/SELL. '
             'APPROVE authorizes only the exact local candidate side; HOLD rejects it. '
             'candidate=NONE => final_decision MUST be HOLD. '
-            'Directional check: either signed price change agrees with candidate and VWAP, OR a fresh matching '
-            'closed M1 pattern agrees with candidate and price remains on the correct side of VWAP. '
-            'Conflicting fresh M1 => HOLD. Hard checks: volume_spike>=1.5, fresh valid BBO, spread<=0.5%. '
+            'Directional check: signed 15s trade momentum and rolling trade VWAP must agree with candidate. '
+            'M1 NEUTRAL/UNAVAILABLE is not a contradiction. HOLD for M1_CONTRADICTION only when a fresh '
+            'closed opposite pattern or explicit opposite EMA trend is present. Hard checks: trade_data_ready=1, '
+            'trade_metrics_age_sec<=5, volume_spike>=1.5, fresh valid BBO, spread<=0.5%. '
             'A >=50% fresh best-quote size reduction is supporting evidence, not mandatory. '
             'Missing/conflicting hard check => HOLD. RAG rules are advisory context only and cannot add hard gates. '
-            'Confidence reflects evidence strength, not profit probability; vary it, avoid fixed defaults. '
+            'Confidence reflects evidence strength, not profit probability: 0.50-0.60 weak, '
+            '0.61-0.74 moderate, 0.75-0.84 strong, 0.85-0.95 unusually strong multi-signal agreement. '
+            'Choose a value from the rubric that matches the supplied evidence; do not reuse a fixed score. '
             'Use only supplied facts. '
             f'candidate={direction}; ticker={str(ticker)[:10]}; price={cls._prompt_value(price, 12)}; '
             f'last_size={cls._prompt_value(volume, 10)}. '
-            f'{direction_rules} volume_spike=last trade size/prior mean.'
+            f'{direction_rules} volume_spike=last 5s trade volume / average 5s volume in prior 55s.'
         )
         rule_part = f" Advisory RAG context (never overrides hard checks): {rule_text}." if rule_text else ""
         metric_part = f" Metrics: {metrics_text}." if metrics_text else " Metrics: нет подтверждённых значений."
@@ -604,11 +612,10 @@ class AIEngine:
             metric_part = f" Metrics: {';'.join(parts)}." if parts else ""
             prompt = base + rule_part + metric_part
         if len(prompt) > max_chars and rule_text:
-            overflow = len(prompt) - max_chars
-            keep = max(0, len(rule_text) - overflow - 3)
-            trimmed_rule = rule_text[:keep].rsplit(" ", 1)[0].rstrip() + "..." if keep >= 24 else ""
-            rule_part = f" Rules: {trimmed_rule}." if trimmed_rule else ""
-            prompt = base + rule_part + metric_part
+            # Never cut a curated rule in the middle of a condition. The mandatory
+            # contract wins; omit the optional RAG block as a whole if the budget is tight.
+            rule_part = ""
+            prompt = base + metric_part
         # Never truncate the mandatory decision contract. The dynamic fields above are
         # bounded, but keep this guard in case a caller supplies a smaller custom limit.
         if len(base) > max_chars:
@@ -754,7 +761,7 @@ class AIEngine:
         # исходный длинный prompt с полным словарём метрик и несколькими RAG-правилами.
         user_prompt = self._build_live_prompt(
             ticker, price, volume, candidate_direction, metrics_dict, rag_str,
-            max_chars=1600, include_rule_text=True,
+            max_chars=2100, include_rule_text=True,
         )
         log.debug(
             "[vLLM PROMPT] ticker=%s direction=%s chars=%d metrics=%d",

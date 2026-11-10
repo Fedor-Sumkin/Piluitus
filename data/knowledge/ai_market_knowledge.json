@@ -9,12 +9,12 @@
       {
         "metric": "price_change_pct",
         "op": "gt",
-        "value": 0.0
+        "value": 0
       },
       {
         "metric": "price_vs_vwap_pct",
         "op": "gt",
-        "value": 0.0
+        "value": 0
       },
       {
         "metric": "volume_spike",
@@ -24,7 +24,7 @@
       {
         "metric": "ask_size_drop_pct",
         "op": "gte",
-        "value": 50.0
+        "value": 50
       },
       {
         "metric": "top_ask_history_samples",
@@ -49,12 +49,12 @@
       {
         "metric": "ask_size_drop_age_sec",
         "op": "gte",
-        "value": 0.0
+        "value": 0
       },
       {
         "metric": "ask_size_drop_age_sec",
         "op": "lte",
-        "value": 2.0
+        "value": 2
       }
     ],
     "rules": "СТАКАННЫЙ сетап BUY: цена_change_pct > 0 и price_vs_vwap_pct > 0; размер последней сделки / средний размер >= 1.5; размер лучшей Ask-котировки уменьшился минимум на 50% относительно медианы минимум 3 предыдущих валидных наблюдений; сокращение не старше 2 секунд, Bid/Ask свежие, спред <= 0.5%. Изменение лучшей котировки не доказывает исчезновение полного стакана."
@@ -69,12 +69,12 @@
       {
         "metric": "price_change_pct",
         "op": "lt",
-        "value": 0.0
+        "value": 0
       },
       {
         "metric": "price_vs_vwap_pct",
         "op": "lt",
-        "value": 0.0
+        "value": 0
       },
       {
         "metric": "volume_spike",
@@ -84,7 +84,7 @@
       {
         "metric": "bid_size_drop_pct",
         "op": "gte",
-        "value": 50.0
+        "value": 50
       },
       {
         "metric": "top_bid_history_samples",
@@ -109,65 +109,15 @@
       {
         "metric": "bid_size_drop_age_sec",
         "op": "gte",
-        "value": 0.0
+        "value": 0
       },
       {
         "metric": "bid_size_drop_age_sec",
         "op": "lte",
-        "value": 2.0
+        "value": 2
       }
     ],
     "rules": "СТАКАННЫЙ сетап SELL: price_change_pct < 0 и price_vs_vwap_pct < 0; размер последней сделки / средний размер >= 1.5; размер лучшей Bid-котировки уменьшился минимум на 50% относительно медианы минимум 3 предыдущих валидных наблюдений; сокращение не старше 2 секунд, Bid/Ask свежие, спред <= 0.5%. Изменение лучшей котировки не доказывает исчезновение полного стакана."
-  },
-  {
-    "rule_id": "TOP3_BID_SUPPORT",
-    "category": "ScalpingRules",
-    "source": "Сводный регламент HFT-скальпинга и управления рисками Мосбиржи",
-    "enabled": false,
-    "direction": "INFO",
-    "requires_unavailable_data": [
-      "orderbook_top3_bid_levels",
-      "average_lot_size_by_ticker"
-    ],
-    "rules": "НЕ АКТИВНО: правило о крупной заявке в топ-3 Bid нельзя применять, пока в событие не передаются и не проверяются все три уровня стакана и средний размер лота. Не утверждать, что поддержка обнаружена."
-  },
-  {
-    "rule_id": "LOCK_LONG_FULL_BOOK",
-    "category": "ScalpingRules",
-    "source": "Сводный регламент HFT-скальпинга и управления рисками Мосбиржи",
-    "enabled": false,
-    "direction": "INFO",
-    "requires_unavailable_data": [
-      "orderbook_top3_asks",
-      "orderbook_top3_bids",
-      "near_price_depth_within_pct"
-    ],
-    "rules": "НЕ АКТИВНО: барьер сопротивления в пределах 0.5% требует глубины стакана и расстояния до уровней. Текущих bid_size/ask_size недостаточно; не заявлять, что плотность обнаружена."
-  },
-  {
-    "rule_id": "LOCK_SHORT_FULL_BOOK",
-    "category": "ScalpingRules",
-    "source": "Сводный регламент HFT-скальпинга и управления рисками Мосбиржи",
-    "enabled": false,
-    "direction": "INFO",
-    "requires_unavailable_data": [
-      "orderbook_top3_bids",
-      "near_price_depth_within_pct"
-    ],
-    "rules": "НЕ АКТИВНО: барьер поддержки для SHORT требует полной глубины стакана и расстояния до уровней. Текущего bid_size недостаточно; не заявлять, что поддержка обнаружена."
-  },
-  {
-    "rule_id": "RAG_FAILED_MISTAKE_PENALTY",
-    "category": "ScalpingRules",
-    "source": "Сводный регламент HFT-скальпинга и управления рисками Мосбиржи",
-    "enabled": false,
-    "direction": "INFO",
-    "requires_unavailable_data": [
-      "ticker_history",
-      "trade_status_FAILED_MISTAKE",
-      "historical_spread_similarity"
-    ],
-    "rules": "НЕ АКТИВНО: правило RAG-пенальти включается только после реализации передачи истории конкретного тикера и расчёта схожести спреда. Не говорить, что historical mistake найдена, без такого контекста."
   },
   {
     "rule_id": "RISK_PER_TRADE_AND_RR",
@@ -393,50 +343,183 @@
     "rules": "Минутный EMA-pullback SELL: EMA9 < EMA21 по закрытым 1m-барам; сигнальный бар протестировал область EMA9 (high не ниже EMA9 - 0.15 ATR), закрылся ниже EMA9 и открытия, close находится в нижних 40% диапазона. Требуются цена ниже VWAP, всплеск размера последней сделки >=1.5x, свежий BBO и спред <=0.5%. Не входить только из-за пересечения EMA без подтверждающего закрытия."
   },
   {
-    "rule_id": "M1_OPENING_RANGE_BREAKOUT_EXPERIMENTAL",
+    "rule_id": "BUY_TRADE_FLOW_MOMENTUM",
     "category": "ScalpingRules",
-    "source": "Экспериментальная гипотеза; отключена до точной привязки к сессии MOEX и walk-forward проверки",
-    "enabled": false,
-    "direction": "INFO",
-    "pattern_family": "opening_range_breakout",
+    "source": "PILUITUS measured trade-flow/M1 continuation rules; PAPER validation required.",
+    "enabled": true,
+    "direction": "BUY",
     "conditions": [
       {
-        "metric": "opening_range_ready",
+        "metric": "trade_data_ready",
         "op": "eq",
         "value": 1
       },
       {
-        "metric": "opening_range_breakout_direction",
+        "metric": "trade_flow_imbalance_30s",
+        "op": "gte",
+        "value": 0.15
+      },
+      {
+        "metric": "price_change_pct",
         "op": "gt",
         "value": 0
+      },
+      {
+        "metric": "price_vs_vwap_pct",
+        "op": "gt",
+        "value": 0
+      },
+      {
+        "metric": "volume_spike",
+        "op": "gte",
+        "value": 1.5
+      },
+      {
+        "metric": "spread_available",
+        "op": "eq",
+        "value": 1
+      },
+      {
+        "metric": "spread_pct",
+        "op": "lte",
+        "value": 0.5
       }
     ],
-    "rules": "НЕ АКТИВНО: ORB требует корректного календаря и часового пояса сессии MOEX, диапазона первых 5–15 минут, исключения гэпов/аукциона и теста после комиссий. Не использовать до реализации и отдельной проверки."
+    "rules": "BUY по реальному потоку сделок: INSTRUMENT_TRADES актуален; объём покупок превышает продажи минимум на 15% за 30 секунд; 15-секундный импульс положительный, цена выше rolling VWAP последних 60 секунд; объём последних 5 секунд не ниже 1.5 среднего 5-секундного объёма предыдущих 55 секунд; BBO свежий, спред <=0.5%."
   },
   {
-    "rule_id": "M1_VWAP_MEAN_REVERSION_EXPERIMENTAL",
+    "rule_id": "SELL_TRADE_FLOW_MOMENTUM",
     "category": "ScalpingRules",
-    "source": "Экспериментальная гипотеза; отключена до подтверждённого фильтра бокового/трендового режима",
-    "enabled": false,
-    "direction": "INFO",
-    "pattern_family": "vwap_mean_reversion",
+    "source": "PILUITUS measured trade-flow/M1 continuation rules; PAPER validation required.",
+    "enabled": true,
+    "direction": "SELL",
     "conditions": [
       {
-        "metric": "session_vwap_available",
+        "metric": "trade_data_ready",
         "op": "eq",
         "value": 1
       },
       {
-        "metric": "range_regime",
-        "op": "eq",
-        "value": 1
+        "metric": "trade_flow_imbalance_30s",
+        "op": "lte",
+        "value": -0.15
       },
       {
-        "metric": "vwap_zscore_abs",
+        "metric": "price_change_pct",
+        "op": "lt",
+        "value": 0
+      },
+      {
+        "metric": "price_vs_vwap_pct",
+        "op": "lt",
+        "value": 0
+      },
+      {
+        "metric": "volume_spike",
         "op": "gte",
-        "value": 2
+        "value": 1.5
+      },
+      {
+        "metric": "spread_available",
+        "op": "eq",
+        "value": 1
+      },
+      {
+        "metric": "spread_pct",
+        "op": "lte",
+        "value": 0.5
       }
     ],
-    "rules": "НЕ АКТИВНО: VWAP mean reversion применять только в доказанном диапазонном режиме после экстремального отклонения и свечного подтверждения возврата. Не применять против сильного тренда; текущий скользящий VWAP не является полноценным session VWAP."
+    "rules": "SELL по реальному потоку сделок: INSTRUMENT_TRADES актуален; объём продаж превышает покупки минимум на 15% за 30 секунд; 15-секундный импульс отрицательный, цена ниже rolling VWAP последних 60 секунд; объём последних 5 секунд не ниже 1.5 среднего 5-секундного объёма предыдущих 55 секунд; BBO свежий, спред <=0.5%."
+  },
+  {
+    "rule_id": "BUY_M1_TREND_CONTINUATION",
+    "category": "ScalpingRules",
+    "source": "PILUITUS measured trade-flow/M1 continuation rules; PAPER validation required.",
+    "enabled": true,
+    "direction": "BUY",
+    "conditions": [
+      {
+        "metric": "trade_data_ready",
+        "op": "eq",
+        "value": 1
+      },
+      {
+        "metric": "bar_trend_up",
+        "op": "eq",
+        "value": 1
+      },
+      {
+        "metric": "price_change_pct",
+        "op": "gt",
+        "value": 0
+      },
+      {
+        "metric": "price_vs_vwap_pct",
+        "op": "gt",
+        "value": 0
+      },
+      {
+        "metric": "trade_flow_imbalance_30s",
+        "op": "gte",
+        "value": 0
+      },
+      {
+        "metric": "spread_available",
+        "op": "eq",
+        "value": 1
+      },
+      {
+        "metric": "spread_pct",
+        "op": "lte",
+        "value": 0.5
+      }
+    ],
+    "rules": "BUY продолжение минутного тренда: EMA9 выше EMA21 по закрытым M1-барам; 15-секундный импульс положительный; цена выше rolling VWAP; поток сделок не направлен против BUY; BBO свежий и спред <=0.5%. Не входить по одному пересечению EMA."
+  },
+  {
+    "rule_id": "SELL_M1_TREND_CONTINUATION",
+    "category": "ScalpingRules",
+    "source": "PILUITUS measured trade-flow/M1 continuation rules; PAPER validation required.",
+    "enabled": true,
+    "direction": "SELL",
+    "conditions": [
+      {
+        "metric": "trade_data_ready",
+        "op": "eq",
+        "value": 1
+      },
+      {
+        "metric": "bar_trend_down",
+        "op": "eq",
+        "value": 1
+      },
+      {
+        "metric": "price_change_pct",
+        "op": "lt",
+        "value": 0
+      },
+      {
+        "metric": "price_vs_vwap_pct",
+        "op": "lt",
+        "value": 0
+      },
+      {
+        "metric": "trade_flow_imbalance_30s",
+        "op": "lte",
+        "value": 0
+      },
+      {
+        "metric": "spread_available",
+        "op": "eq",
+        "value": 1
+      },
+      {
+        "metric": "spread_pct",
+        "op": "lte",
+        "value": 0.5
+      }
+    ],
+    "rules": "SELL продолжение минутного тренда: EMA9 ниже EMA21 по закрытым M1-барам; 15-секундный импульс отрицательный; цена ниже rolling VWAP; поток сделок не направлен против SELL; BBO свежий и спред <=0.5%. Не входить по одному пересечению EMA."
   }
 ]

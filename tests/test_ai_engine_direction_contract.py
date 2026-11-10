@@ -30,7 +30,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertIn("APPROVE authorizes only the exact local candidate side", prompt)
         self.assertIn("supporting evidence, not mandatory", prompt)
         self.assertIn("candidate=BUY", prompt)
-        self.assertIn("BUY requires either positive signed price_change_pct", prompt)
+        self.assertIn("BUY requires positive 15s trade momentum", prompt)
         self.assertLessEqual(len(prompt), 1600)
 
     def test_sell_candidate_requests_approval_not_direction_choice(self) -> None:
@@ -40,8 +40,22 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertIn("APPROVE authorizes only the exact local candidate side", prompt)
         self.assertIn("supporting evidence, not mandatory", prompt)
         self.assertIn("candidate=SELL", prompt)
-        self.assertIn("SELL requires either negative signed price_change_pct", prompt)
+        self.assertIn("SELL requires negative 15s trade momentum", prompt)
         self.assertLessEqual(len(prompt), 1600)
+
+    def test_prompt_distinguishes_neutral_m1_from_opposite_m1(self) -> None:
+        prompt = AIEngine._build_live_prompt(
+            ticker="SBER", price=100.0, volume=10, candidate_direction="BUY",
+            metrics={
+                "bar_trend_up": 0.0, "bar_trend_down": 0.0,
+                "bar_pattern_direction_code": 0.0, "trade_data_ready": 1.0,
+                "trade_flow_imbalance_30s": 0.22, "trade_metrics_age_sec": 0.2,
+            }, rag_context="", max_chars=1600, include_rule_text=False,
+        )
+        self.assertIn("bar_trend_up=0", prompt)
+        self.assertIn("bar_trend_down=0", prompt)
+        self.assertIn("M1 NEUTRAL/UNAVAILABLE is not a contradiction", prompt)
+        self.assertIn("trade_flow_imbalance_30s=0.22", prompt)
 
     def test_missing_candidate_requires_hold(self) -> None:
         prompt = self._prompt("NONE")

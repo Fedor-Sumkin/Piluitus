@@ -54,6 +54,9 @@ LOT_SIZES: dict[str, int] = {
     "TGKB": 100000, "TGKBP": 100000, "TTLK": 10, "VJGZ": 100, "VJGZP": 100
 }
 
+# Runtime Finam metadata populated during startup. price_tick = min_step / 10**decimals.
+ASSET_METADATA: dict[str, dict[str, object]] = {}
+
 RSS_FEEDS: list[str] = [
     "https://bcs-express.ru",
     "https://www.bfm.ru/news.rss?rubric=28",

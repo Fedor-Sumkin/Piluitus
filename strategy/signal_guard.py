@@ -150,6 +150,12 @@ def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bo
     if spread_pct < 0.0 or spread_pct > MAX_SPREAD_PCT:
         return False, f"Спред не проходит фильтр: {spread_pct:.3f}% при лимите {MAX_SPREAD_PCT:.2f}%."
 
+    if _num(metrics, "trade_data_mode", 0.0) >= 0.5:
+        if _num(metrics, "trade_data_ready", 0.0) < 0.5:
+            return False, "Нет готового потока уникальных INSTRUMENT_TRADES; вход заблокирован."
+        trade_age = _num(metrics, "trade_metrics_age_sec", -1.0)
+        if trade_age < 0.0 or trade_age > 5.0:
+            return False, f"Поток сделок устарел: age={trade_age:.2f}s; лимит 5.00s."
     volume_spike = _num(metrics, "volume_spike")
     if volume_spike < MIN_VOLUME_SPIKE:
         return False, f"Всплеск размера последней сделки {volume_spike:.2f}× ниже порога {MIN_VOLUME_SPIKE:.1f}×."

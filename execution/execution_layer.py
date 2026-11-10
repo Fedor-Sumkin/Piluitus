@@ -15,7 +15,7 @@ import asyncio
 from uuid import uuid4
 
 # Единый справочник лотности хранится в config.py.
-from config import LOT_SIZES, Settings
+from config import ASSET_METADATA, LOT_SIZES, Settings
 
 logger = logging.getLogger("Piluitus.ExecutionLayer")
 
@@ -664,6 +664,19 @@ class BaseExecutionEngine:
             sl = price + stop_distance
             tp = price - target_distance
 
+        # Round protective levels to the actual Finam price tick. Directional
+        # rounding never moves a stop closer to the entry price.
+        metadata = ASSET_METADATA.get(str(ticker or "").strip().upper(), {})
+        tick = _finite_or_default(metadata.get("price_tick"), 0.0) if isinstance(metadata, Mapping) else 0.0
+        decimals = int(_finite_or_default(metadata.get("decimals"), 4)) if isinstance(metadata, Mapping) else 4
+        if tick > 0.0 and math.isfinite(tick):
+            if side == "BUY":
+                sl = math.floor((sl / tick) + 1e-10) * tick
+                tp = math.ceil((tp / tick) - 1e-10) * tick
+            else:
+                sl = math.ceil((sl / tick) - 1e-10) * tick
+                tp = math.floor((tp / tick) + 1e-10) * tick
+            return round(sl, max(0, min(8, decimals))), round(tp, max(0, min(8, decimals)))
         return round(sl, 4), round(tp, 4)
 
     def _latest_fresh_exit_quote(self, ticker: str, position_side: str) -> BBOExitQuote | None:

@@ -42,6 +42,16 @@ The evaluator marks a candidate ineligible when the data or setup is unsuitable 
 
 These are shadow-only restrictions. The baseline execution route remains unchanged.
 
+## Real trade-flow data (live/PAPER gateway)
+
+The live screener treats Finam INSTRUMENT_TRADES as the authoritative source for unique trade volume, rolling 60-second trade VWAP, 15-second trade momentum, 30-second aggressor-side imbalance and 60-second realized volatility. QUOTES.lastSize is never accumulated as a new trade in this mode. Trades are de-duplicated by exchange trade_id; a deterministic fingerprint is used only when the provider omits an ID. Trade-derived features become ready only after the 15-second reference and prior-volume baseline exist, and expire after five seconds without a new trade. Missing or stale trade data blocks new entries rather than falling back to quote-update counts.
+
+M1 bars in trade-flow mode are updated only by unique instrument trades, not repeated QUOTES carrying an unchanged last price. The strategy uses rolling 60-second trade VWAP, not full-session VWAP. Full-session VWAP requires seeding from the beginning of the session; do not label this rolling value as session VWAP.
+
+## Finam instrument metadata and protective prices
+
+At startup PILUITUS refreshes the asset directory and account-aware trade_lot_size. Protective SL/TP levels are rounded directionally to Finam min_step/decimals. Configured LOT_SIZES remain a fallback when the API is unavailable; an instrument with no confirmed lot size is not allowed to open a position.
+
 ## How to judge the strategy
 
 A high score is not enough. For every candidate, the next data-collection stage should record:

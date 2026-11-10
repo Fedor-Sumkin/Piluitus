@@ -182,6 +182,71 @@ class FinamBrokerClient:
             raise ValueError("Finam schedule response is not a JSON object")
         return payload
 
+    async def get_assets(self) -> list[dict[str, Any]]:
+        """Fetch Finam's tradable asset directory once for tick-size metadata."""
+        if not self.jwt_token:
+            return []
+        url = f"{self.base_url}/v1/assets"
+        request_jwt = self.jwt_token
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(url, headers={
+                        "Authorization": f"Bearer {self.jwt_token}", "Accept": "application/json",
+                    })
+                    response.raise_for_status()
+                    payload = response.json()
+                if isinstance(payload, dict):
+                    assets = payload.get("assets", [])
+                    return [item for item in assets if isinstance(item, dict)] if isinstance(assets, list) else []
+                return []
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 401 and attempt == 0:
+                    if await self._refresh_auth_if_unchanged(request_jwt):
+                        continue
+                logger.warning("Finam asset directory unavailable: HTTP %s; static metadata fallback remains active.", exc.response.status_code)
+                return []
+            except (httpx.RequestError, ValueError, TypeError) as exc:
+                logger.warning("Finam asset directory unavailable (%s); static metadata fallback remains active.", type(exc).__name__)
+                return []
+        return []
+
+    async def get_asset_params(self, ticker: str, account_id: str | None = None) -> dict[str, Any] | None:
+        """Fetch account-aware Finam trading parameters (notably trade_lot_size)."""
+        if not self.jwt_token:
+            return None
+        normalized = str(ticker or "").strip().upper().split("@", 1)[0]
+        if not normalized:
+            return None
+        symbol = f"{normalized}@MISX"
+        account = str(account_id or "").strip()
+        params = {"account_id": account} if account and account != "UNKNOWN_ACCOUNT" else None
+        url = f"{self.base_url}/v1/assets/{url_quote(symbol, safe='@')}/params"
+        request_jwt = self.jwt_token
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=6.0) as client:
+                    response = await client.get(url, headers={
+                        "Authorization": f"Bearer {self.jwt_token}",
+                        "Accept": "application/json",
+                    }, params=params)
+                    response.raise_for_status()
+                    payload = response.json()
+                return payload if isinstance(payload, dict) else None
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 401 and attempt == 0:
+                    if await self._refresh_auth_if_unchanged(request_jwt):
+                        continue
+                if exc.response.status_code in {401, 429, 500, 503, 504}:
+                    logger.warning("Finam asset params %s: HTTP %s; static lot-size fallback remains active.", normalized, exc.response.status_code)
+                else:
+                    logger.debug("Finam asset params %s unavailable: HTTP %s; static fallback retained.", normalized, exc.response.status_code)
+                return None
+            except (httpx.RequestError, ValueError, TypeError) as exc:
+                logger.debug("Finam asset params %s unavailable (%s); static lot-size fallback remains active.", normalized, type(exc).__name__)
+                return None
+        return None
+
     async def get_asset_schedule(self, ticker: str) -> dict[str, Any] | None:
         """Return the authenticated Finam schedule for one MOEX instrument.
 
@@ -538,6 +603,56 @@ class FinamBrokerClient:
                 "timestamp": item.get("timestamp") or envelope_timestamp,
                 "received_monotonic": received_monotonic,
                 "is_snapshot": bool(item.get("isDataSnapshot", item.get("is_snapshot", False))),
+            })
+        return result
+
+    @classmethod
+    def _extract_instrument_trades(cls, envelope: dict) -> list[dict[str, Any]]:
+        """Normalize public Finam INSTRUMENT_TRADES events; never infer a trade from QUOTES."""
+        payload = cls._decode_payload(envelope.get("payload"))
+        if not payload:
+            payload = cls._decode_payload(envelope.get("data"))
+        if isinstance(payload, list):
+            candidates: Any = payload
+            parent_symbol = str(envelope.get("symbol") or envelope.get("ticker") or "").strip()
+        elif isinstance(payload, dict):
+            candidates = payload.get("trades") or payload.get("trade") or payload.get("instrument_trades")
+            parent_symbol = str(payload.get("symbol") or payload.get("ticker") or envelope.get("symbol") or envelope.get("ticker") or "").strip()
+            if candidates is None and any(key in payload for key in ("trade_id", "tradeId", "price", "size")):
+                candidates = [payload]
+        else:
+            return []
+        if isinstance(candidates, dict):
+            candidates = [candidates]
+        if not isinstance(candidates, list):
+            return []
+        envelope_timestamp = envelope.get("timestamp") or envelope.get("datetime") or envelope.get("time")
+        received = envelope.get("_received_monotonic", time.monotonic())
+        try:
+            received = float(received)
+        except (TypeError, ValueError, OverflowError):
+            received = time.monotonic()
+        result: list[dict[str, Any]] = []
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or item.get("ticker") or parent_symbol).strip()
+            if not symbol:
+                continue
+            price = cls._decimal(item.get("price"))
+            size = cls._decimal(item.get("size") or item.get("quantity") or item.get("volume"))
+            if price <= 0.0 or size <= 0.0:
+                continue
+            result.append({
+                "event_type": "INSTRUMENT_TRADE",
+                "ticker": symbol.split("@", 1)[0].upper(),
+                "symbol": symbol if "@" in symbol else f"{symbol}@MISX",
+                "trade_id": item.get("trade_id") or item.get("tradeId") or item.get("id"),
+                "price": price,
+                "size": size,
+                "side": item.get("side"),
+                "timestamp": item.get("timestamp") or envelope_timestamp,
+                "received_monotonic": received,
             })
         return result
 
@@ -1144,6 +1259,35 @@ class FinamBrokerClient:
                     )
                     backoff = 1
 
+                    # Public market trades are a separate Finam stream. Subscribe
+                    # once per instrument on the same socket; this is not the account's
+                    # private TRADES stream. A configurable cap allows operation within
+                    # provider-side subscription quotas without silently fabricating volume.
+                    try:
+                        trade_symbol_limit = max(0, int(os.getenv("FINAM_WS_INSTRUMENT_TRADES_LIMIT", str(len(symbols)))))
+                        trade_delay = max(0.0, min(0.25, float(os.getenv("FINAM_WS_TRADE_SUBSCRIPTION_DELAY_SEC", "0.02"))))
+                    except (TypeError, ValueError, OverflowError):
+                        trade_symbol_limit, trade_delay = len(symbols), 0.02
+                    trade_symbols = symbols[:trade_symbol_limit]
+                    trade_subscriptions_sent = 0
+                    for symbol in trade_symbols:
+                        await ws.send(json.dumps({
+                            "action": "SUBSCRIBE", "type": "INSTRUMENT_TRADES",
+                            "data": {"symbol": symbol}, "token": self.jwt_token,
+                        }, ensure_ascii=False))
+                        trade_subscriptions_sent += 1
+                        if trade_delay:
+                            await asyncio.sleep(trade_delay)
+                    if screener is not None:
+                        # Fail closed even if the provider rejects/limits the subscriptions:
+                        # do not silently revert to repeated QUOTES.lastSize as trade volume.
+                        screener.enable_trade_data_mode()
+                    logger.info(
+                        "📈 Finam INSTRUMENT_TRADES: отправлено подписок=%d/%d; QUOTES.lastSize не используется как поток сделок.",
+                        trade_subscriptions_sent, len(symbols),
+                    )
+                    backoff = 1
+
                     # Диагностические счётчики: отправка SUBSCRIBE сама по себе не
                     # означает, что сервер уже прислал полезные данные.
                     data_messages = 0
@@ -1152,6 +1296,11 @@ class FinamBrokerClient:
                     enqueued_bbo_side_updates = 0
                     first_data_logged = False
                     first_order_book_logged = False
+                    first_trade_logged = False
+                    instrument_trade_messages = 0
+                    instrument_trade_events = 0
+                    instrument_trade_queue_dropped = 0
+                    last_trade_diag = asyncio.get_running_loop().time()
                     order_book_decode_warned = False
                     order_book_messages = 0
                     order_book_decode_failures = 0
@@ -1214,9 +1363,11 @@ class FinamBrokerClient:
                     try:
                         order_book_refresh_sec = max(1.0, float(os.getenv("FINAM_ORDER_BOOK_REFRESH_SEC", "1")))
                         order_book_limit = max(1, min(15, int(os.getenv("FINAM_ORDER_BOOK_TOP_N", "15"))))
+                        order_book_min_hold_sec = max(0.0, min(120.0, float(os.getenv("FINAM_ORDER_BOOK_MIN_HOLD_SEC", "20"))))
+                        order_book_max_overbook = max(0, min(15, int(os.getenv("FINAM_ORDER_BOOK_MAX_OVERBOOK", "5"))))
                     except (TypeError, ValueError):
-                        order_book_refresh_sec = 10.0
-                        order_book_limit = 15
+                        order_book_refresh_sec, order_book_limit = 10.0, 15
+                        order_book_min_hold_sec, order_book_max_overbook = 20.0, 5
 
                     while self.is_ws_running:
                         # Keep ORDER_BOOK subscriptions aligned with the current top-N.
@@ -1348,11 +1499,26 @@ class FinamBrokerClient:
                                         position_snapshot_last_at[position_ticker] = now_loop
                                         asyncio.create_task(_refresh_position_snapshot(position_symbol))
 
+                                # Keep a small subscription overlap during Top-N rotation.
+                                # It avoids tearing down a recently warmed book because of a
+                                # marginal score change while still bounding provider load.
+                                obsolete = order_book_subscribed - wanted
+                                protected = {
+                                    symbol for symbol in obsolete
+                                    if now_loop - order_book_subscribed_since.get(symbol, 0.0) < order_book_min_hold_sec
+                                }
+                                if len(protected) > order_book_max_overbook:
+                                    protected = set(sorted(
+                                        protected,
+                                        key=lambda item: order_book_subscribed_since.get(item, 0.0),
+                                        reverse=True,
+                                    )[:order_book_max_overbook])
+                                effective_wanted = wanted | protected
                                 sync_due = now_loop - last_order_book_sync >= order_book_refresh_sec
-                                selection_changed = wanted != order_book_subscribed
+                                selection_changed = effective_wanted != order_book_subscribed
                                 if selection_changed or sync_due:
-                                    removed = order_book_subscribed - wanted
-                                    added = wanted - order_book_subscribed
+                                    removed = order_book_subscribed - effective_wanted
+                                    added = effective_wanted - order_book_subscribed
                                     for symbol in sorted(removed):
                                         await ws.send(json.dumps({
                                             "action": "UNSUBSCRIBE", "type": "ORDER_BOOK",
@@ -1381,11 +1547,12 @@ class FinamBrokerClient:
                                         )) or "-"
                                         logger.info(
                                             "📚 Finam ORDER_BOOK подписки синхронизированы: Top-%d=%d, "
-                                            "позиций_вне_Top=%d, всего=%d, добавлено=%d, снято=%d; "
+                                            "позиций_вне_Top=%d, всего=%d, добавлено=%d, снято=%d, "
+                                            "временно_удержано=%d; "
                                             "активные_позиции=%s; запрошенные_подписки_позиций=%s.",
                                             order_book_limit, len(normalized_selected),
                                             len(position_only_symbols), len(order_book_subscribed),
-                                            len(added), len(removed),
+                                            len(added), len(removed), len(protected),
                                             position_symbols_text, position_subscriptions_text,
                                         )
                             except Exception as sub_exc:
@@ -1394,6 +1561,16 @@ class FinamBrokerClient:
                                     "Finam ORDER_BOOK: не удалось синхронизировать подписки, "
                                     "QUOTES продолжается: %s", sub_exc,
                                 )
+
+                        if now_loop - last_trade_diag >= 60.0:
+                            logger.info(
+                                "📈 Finam INSTRUMENT_TRADES 60s: messages=%d, trades=%d, queue_dropped=%d.",
+                                instrument_trade_messages, instrument_trade_events, instrument_trade_queue_dropped,
+                            )
+                            instrument_trade_messages = 0
+                            instrument_trade_events = 0
+                            instrument_trade_queue_dropped = 0
+                            last_trade_diag = now_loop
 
                         if now_loop - last_order_book_diag >= 60.0:
                             invalid_reason_summary = ", ".join(
@@ -1609,6 +1786,27 @@ class FinamBrokerClient:
                             )
                             symbol_hints = self._extract_order_book_symbol_hints(payload)
                             book_updates = self._extract_order_book_updates(envelope)
+                            # A rejected out-of-order delta breaks confidence in the local
+                            # delta chain. Resubscribe under a per-symbol cooldown and wait
+                            # for a provider snapshot before accepting another book update.
+                            for stale_ticker in sorted(self._last_order_book_out_of_order_tickers):
+                                stale_symbol = f"{stale_ticker}@MISX"
+                                last_resubscribe = self._crossed_bbo_resubscribe_at.get(stale_ticker, 0.0)
+                                if stale_symbol not in order_book_subscribed or message_received_monotonic - last_resubscribe < crossed_resubscribe_cooldown_sec:
+                                    continue
+                                self._order_book_snapshot_required.add(stale_ticker)
+                                self._order_book_state.pop(stale_ticker, None)
+                                self._crossed_bbo_resubscribe_at[stale_ticker] = message_received_monotonic
+                                try:
+                                    await ws.send(json.dumps({"action":"UNSUBSCRIBE","type":"ORDER_BOOK","data":{"symbol":stale_symbol},"token":self.jwt_token}))
+                                    await asyncio.sleep(0.02)
+                                    await ws.send(json.dumps({"action":"SUBSCRIBE","type":"ORDER_BOOK","data":{"symbol":stale_symbol},"token":self.jwt_token}))
+                                    order_book_subscribed_since[stale_symbol] = message_received_monotonic
+                                    logger.warning("[ORDER_BOOK OUT_OF_ORDER RESYNC] %s: delta chain invalidated; waiting for full snapshot.", stale_ticker)
+                                except Exception as resync_exc:
+                                    order_book_subscribed.discard(stale_symbol)
+                                    order_book_subscribed_since.pop(stale_symbol, None)
+                                    logger.warning("[ORDER_BOOK OUT_OF_ORDER RESYNC FAILED] %s: %s; subscription will retry.", stale_ticker, type(resync_exc).__name__)
                             update_tickers = {
                                 str(item.get("ticker") or "").strip().upper().split("@")[0]
                                 for item in book_updates
@@ -1833,6 +2031,29 @@ class FinamBrokerClient:
                                         "Очередь рыночных событий заполнена; ORDER_BOOK %s отброшен.",
                                         book_update.get("ticker"),
                                     )
+                            continue
+
+                        if subscription_type in {"INSTRUMENT_TRADES", "INSTRUMENT_TRADE"}:
+                        if subscription_type in {"INSTRUMENT_TRADES", "INSTRUMENT_TRADE"}:
+                            instrument_trade_messages += 1
+                            trade_events = self._extract_instrument_trades(envelope)
+                            instrument_trade_events += len(trade_events)
+                            for trade_event in trade_events:
+                                try:
+                                    queue.put_nowait(trade_event)
+                                except asyncio.QueueFull:
+                                    instrument_trade_queue_dropped += 1
+                                    logger.error(
+                                        "Очередь рыночных событий переполнена; INSTRUMENT_TRADE %s id=%s отброшен.",
+                                        trade_event.get("ticker"), trade_event.get("trade_id"),
+                                    )
+                                    continue
+                            if trade_events and not first_trade_logged:
+                                logger.info(
+                                    "📈 Первые сделки Finam: распознано=%d, тикер=%s, side=%s.",
+                                    len(trade_events), trade_events[0].get("ticker"), trade_events[0].get("side"),
+                                )
+                                first_trade_logged = True
                             continue
 
                         if subscription_type and subscription_type != "QUOTES":

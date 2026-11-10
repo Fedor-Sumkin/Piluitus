@@ -1524,6 +1524,24 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
         return
     _expire_pending_bbo_candidates()
     try:
+        # Instrument trades update the trade-flow accumulator independently of QUOTES.
+        if isinstance(event, dict) and str(event.get("event_type", "")).upper() == "INSTRUMENT_TRADE":
+            trade_ticker = str(event.get("ticker") or "").strip().upper().split("@")[0]
+            if not trade_ticker:
+                _trade_flow_inc("instrument_trades_invalid")
+                return
+            trade_result = screener.push_trade(
+                ticker=trade_ticker, price=event.get("price", 0.0),
+                size=event.get("size", 0.0), trade_id=event.get("trade_id"),
+                side=event.get("side"), event_timestamp=event.get("timestamp"),
+                received_monotonic=event.get("received_monotonic"),
+            )
+            if trade_result.get("accepted"):
+                _trade_flow_inc("instrument_trades_received")
+            else:
+                _trade_flow_inc("instrument_trades_" + str(trade_result.get("reason") or "rejected"))
+            return
+
         # ORDER_BOOK events have no last-trade price. Route them before the QUOTES
         # normalizer, otherwise price<=0 would silently discard every book update.
         if isinstance(event, dict) and str(event.get("event_type", "")).upper() == "ORDER_BOOK":
@@ -2100,6 +2118,14 @@ class MarketWorker:
                     "price_change_pct": _parse_finite_float(metrics.get("price_change_pct")),
                     "price_vs_vwap_pct": _parse_finite_float(metrics.get("price_vs_vwap_pct")),
                     "volume_spike": _parse_finite_float(metrics.get("volume_spike")),
+                    "trade_data_mode": _parse_finite_float(metrics.get("trade_data_mode")),
+                    "trade_data_ready": _parse_finite_float(metrics.get("trade_data_ready")),
+                    "trade_vwap_60s": _parse_finite_float(metrics.get("trade_vwap_60s")),
+                    "trade_flow_imbalance_30s": _parse_finite_float(metrics.get("trade_flow_imbalance_30s")),
+                    "trade_count_60s": _parse_finite_float(metrics.get("trade_count_60s")),
+                    "trade_metrics_age_sec": _parse_finite_float(metrics.get("trade_metrics_age_sec")),
+                    "trade_price_change_30s_pct": _parse_finite_float(metrics.get("trade_price_change_30s_pct")),
+                    "trade_realized_volatility_60s_pct": _parse_finite_float(metrics.get("trade_realized_volatility_60s_pct")),
                     "spread_pct": _parse_finite_float(metrics.get("spread_pct")),
                     "m1_pattern": str(metrics.get("bar_pattern_name") or ""),
                     "m1_pattern_confirmed": _parse_finite_float(metrics.get("bar_pattern_confirmed")),
@@ -2178,7 +2204,7 @@ class MarketWorker:
                     # selected local candidate's directional rules. They remain
                     # advisory context; deterministic guards own hard entry gates.
                     prompt_rule_text = select_prompt_rules(
-                        candidate_direction_for_diag, rag_context_str, max_chars=420
+                        candidate_direction_for_diag, rag_context_str, max_chars=900
                     )
                     prompt_rule_ids = re.findall(
                         r"\[(?:RISK|BUY|SELL)\s*/\s*([A-Z0-9_]+)\]",
@@ -2344,6 +2370,23 @@ class MarketWorker:
                 # Независимый численный фильтр: свободный текст и confidence LLM
                 # не заменяют обязательную проверку измеряемых условий входа.
                 evidence = metrics if isinstance(metrics, dict) else {}
+                if isinstance(evidence, dict) and _parse_finite_float(evidence.get("trade_data_mode")) >= 0.5:
+                    # Recompute the trade window after the model response. A candidate
+                    # can become stale while vLLM is thinking; never authorize it from
+                    # the original pre-LLM snapshot alone.
+                    fresh_trade = screener.refresh_trade_metrics(ticker)
+                    evidence = dict(evidence)
+                    for key in (
+                        "trade_data_ready", "trade_vwap_60s", "trade_flow_imbalance_30s",
+                        "trade_count_60s", "trade_metrics_age_sec", "volume_spike",
+                        "price_change_pct", "trade_price_change_30s_pct",
+                        "trade_realized_volatility_60s_pct", "current_price", "vwap",
+                        "price_vs_vwap_pct",
+                    ):
+                        if key in fresh_trade:
+                            evidence[key] = fresh_trade[key]
+                    if isinstance(metrics, dict):
+                        metrics.update(evidence)
                 valid_evidence = True
                 block_reason = ""
                 if decision in {"BUY", "SELL"} and candidate_direction in {"BUY", "SELL"} and decision != candidate_direction:

@@ -66,7 +66,7 @@ def test_patch_launchers_show_help_from_outside_project(tmp_path: Path) -> None:
 
 def test_gitignore_covers_virtualenv_bytecode_and_runtime_logs() -> None:
     ignore = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
-    for pattern in (".venv/", "**/__pycache__/", "*.py[cod]", "trading_logs/", "live_market_logs/"):
+    for pattern in (".venv/", "**/__pycache__/", "*.py[cod]", "trading_logs/", "live_market_logs/", "*.log", "test-logs/piluitus_session_*.txt"):
         assert pattern in ignore
 
 

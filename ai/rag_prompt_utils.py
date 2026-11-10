@@ -22,7 +22,7 @@ def normalise_rag_context(value: object) -> str:
     return "\n".join(lines)
 
 
-def select_prompt_rules(direction: str, rag_context: str, max_chars: int = 420) -> str:
+def select_prompt_rules(direction: str, rag_context: str, max_chars: int = 900) -> str:
     """Keep the always-on risk rule plus the candidate's BUY/SELL rule."""
     direction = str(direction or "NONE").strip().upper()
     prefixes = ["[RISK /"]
@@ -33,10 +33,18 @@ def select_prompt_rules(direction: str, rag_context: str, max_chars: int = 420) 
         for line in str(rag_context or "").splitlines()
         if any(line.strip().startswith(prefix) for prefix in prefixes)
     ]
-    rule_text = " ".join(matched_lines)
+    # Preserve complete rule records. Keep mandatory risk first, then the
+    # candidate-side rule(s) that fit; never pass a mid-sentence truncation.
     limit = max(0, int(max_chars))
-    if len(rule_text) > limit:
-        if limit <= 3:
-            return rule_text[:limit]
-        rule_text = rule_text[: limit - 3].rsplit(" ", 1)[0].rstrip() + "..."
-    return rule_text
+    selected: list[str] = []
+    risk = next((line for line in matched_lines if line.startswith("[RISK /")), None)
+    directional = [line for line in matched_lines if line.startswith(f"[{direction} /")]
+    if risk and len(risk) <= limit:
+        selected.append(risk)
+    remaining = limit - sum(len(item) for item in selected) - max(0, len(selected) - 1)
+    for line in directional:
+        extra = len(line) + (1 if selected else 0)
+        if extra <= remaining:
+            selected.append(line)
+            remaining -= extra
+    return " ".join(selected)

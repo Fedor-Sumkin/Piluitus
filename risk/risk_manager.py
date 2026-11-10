@@ -10,7 +10,7 @@ from collections.abc import Callable
 import websockets
 import httpx
 from db_manager import DBManager
-from config import LOT_SIZES
+from config import ASSET_METADATA, LOT_SIZES, TICKERS_TO_TRADE
 
 _MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
 
@@ -188,14 +188,70 @@ class RiskManager:
 
     @classmethod
     async def update_finam_lot_sizes(cls, finam_broker_client=None):
-        """Проверяет готовность единого справочника LOT_SIZES из config.py."""
+        """Refresh trading lot sizes from Finam; retain config values only as fallback."""
         risk_logger = logging.getLogger("Piluitus.RiskManager")
         if not LOT_SIZES:
-            risk_logger.error("❌ Справочник LOT_SIZES в config.py пуст; расчёт размера позиции будет ограничен.")
+            risk_logger.error("❌ LOT_SIZES пуст: размер позиции не может быть рассчитан.")
             return
+        if finam_broker_client is None or not callable(getattr(finam_broker_client, "get_asset_params", None)):
+            risk_logger.warning("📦 [LOT SIZE] Finam params unavailable; using configured fallback for %d symbols.", len(LOT_SIZES))
+            return
+        account_id = str(os.getenv("FINAM_CLIENT_ID", "")).strip()
+        assets_method = getattr(finam_broker_client, "get_assets", None)
+        if callable(assets_method):
+            try:
+                assets = await assets_method()
+                for asset in assets if isinstance(assets, list) else []:
+                    symbol = str(asset.get("symbol") or "").strip()
+                    mic = str(asset.get("mic") or (symbol.split("@", 1)[1] if "@" in symbol else "")).strip().upper()
+                    if mic and mic != "MISX":
+                        continue
+                    ticker = str(asset.get("ticker") or symbol.split("@", 1)[0]).strip().upper()
+                    try:
+                        decimals = int(asset.get("decimals", -1))
+                        min_step = int(asset.get("min_step", 0))
+                        lot_raw = asset.get("lot_size")
+                        lot_size = float(lot_raw.get("value")) if isinstance(lot_raw, dict) else float(lot_raw or 0)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if ticker and decimals >= 0 and min_step > 0:
+                        ASSET_METADATA[ticker] = {
+                            "symbol": symbol, "decimals": decimals, "min_step": min_step,
+                            "price_tick": min_step / (10 ** decimals),
+                            "lot_size": lot_size,
+                            "quote_currency": str(asset.get("quote_currency") or ""),
+                        }
+            except Exception as metadata_exc:
+                risk_logger.warning("Finam asset metadata unavailable (%s); static tick-size fallback remains active.", type(metadata_exc).__name__)
+        semaphore = asyncio.Semaphore(4)
+        updated = 0
+        failed = 0
+        async def refresh_one(ticker: str) -> None:
+            nonlocal updated, failed
+            async with semaphore:
+                try:
+                    payload = await finam_broker_client.get_asset_params(ticker, account_id=account_id)
+                except Exception:
+                    failed += 1
+                    return
+            if not isinstance(payload, dict):
+                failed += 1
+                return
+            raw = payload.get("trade_lot_size")
+            try:
+                value = int(float(raw))
+            except (TypeError, ValueError, OverflowError):
+                value = 0
+            if value > 0:
+                LOT_SIZES[ticker] = value
+                updated += 1
+            else:
+                failed += 1
+        symbols_to_refresh = list(dict.fromkeys(list(LOT_SIZES) + list(TICKERS_TO_TRADE)))
+        await asyncio.gather(*(refresh_one(ticker) for ticker in symbols_to_refresh))
         risk_logger.info(
-            "📦 [STATIC CONTOUR] Лотность загружена из config.py: %d инструментов.",
-            len(LOT_SIZES),
+            "📦 [LOT SIZE] Finam trade_lot_size обновлён: %d/%d; fallback config.py сохранён для %d; tick-size metadata=%d.",
+            updated, len(symbols_to_refresh), failed, len(ASSET_METADATA),
         )
 
 
@@ -615,7 +671,16 @@ class RiskManager:
         if risk_per_share_rub <= 0:
             return 0
         allowed_risk_money = max(0.0, self.initial_deposit * self.max_risk_per_trade)
-        lot_size = max(int(LOT_SIZES.get(ticker, 1)), 1)
+        normalized_ticker = str(ticker or "").strip().upper()
+        raw_lot_size = LOT_SIZES.get(normalized_ticker)
+        try:
+            lot_size = int(raw_lot_size)
+        except (TypeError, ValueError, OverflowError):
+            risk_logger = logging.getLogger("Piluitus.RiskManager")
+            risk_logger.error("Размер позиции заблокирован: для %s нет подтверждённого trade_lot_size.", normalized_ticker)
+            return 0
+        if lot_size <= 0:
+            return 0
         risk_per_lot_rub = risk_per_share_rub * lot_size
         notional_per_lot = float(current_price) * lot_size
         if risk_per_lot_rub <= 0 or notional_per_lot <= 0 or allowed_risk_money < risk_per_lot_rub:

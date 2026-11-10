@@ -32,7 +32,15 @@ class RagPromptTests(unittest.TestCase):
         context = "[RISK / RISK_PER_TRADE]: " + ("very long risk condition " * 100)
         selected = select_prompt_rules("NONE", context, max_chars=80)
         self.assertLessEqual(len(selected), 80)
-        self.assertTrue(selected.startswith("[RISK / RISK_PER_TRADE]"))
+        self.assertEqual(selected, "")  # never pass a partial mandatory rule
+
+    def test_rag_rules_are_never_cut_mid_sentence(self):
+        risk = "[RISK / RISK_PER_TRADE]: max risk 0.5%; R:R >= 1:1."
+        buy = "[BUY / BUY_TRADE_FLOW]: trade imbalance >= 0.15; VWAP aligned; spread <= 0.5%."
+        selected = select_prompt_rules("BUY", risk + "\n" + buy, max_chars=900)
+        self.assertIn(risk, selected)
+        self.assertIn(buy, selected)
+        self.assertNotIn("...", selected)
 
 
 if __name__ == "__main__":
