@@ -116,6 +116,8 @@ class HFTMemoryScreener:
     ):
         self.window_size = max(8, int(window_size))
         self.top_n = max(1, int(top_n if top_n is not None else _env_int("PILUITUS_FUNNEL_TOP_N", 15)))
+        self.max_replacements_per_refresh = _env_int("PILUITUS_FUNNEL_MAX_REPLACEMENTS_PER_REFRESH", 3)
+        self.retention_score_gap = _env_float("PILUITUS_FUNNEL_RETENTION_SCORE_GAP", 5.0)
         self.min_samples = max(
             3,
             int(min_samples if min_samples is not None else _env_int("PILUITUS_FUNNEL_MIN_SAMPLES", 8)),
@@ -416,18 +418,30 @@ class HFTMemoryScreener:
         # Небольшой гистерезис удерживает прежний тикер, если он почти не уступает
         # порогу top-N, и не позволяет списку дёргаться от каждого тика.
         cutoff = float(ranked[ordered[target_count - 1]]["score"])
-        retention_floor = cutoff - 5.0
-        old_selected = set(self.selected_tickers)
+        retention_floor = cutoff - self.retention_score_gap
+        previous = list(self.selected_tickers)
+        old_selected = set(previous)
         keepers = [t for t in ordered if t in old_selected and float(ranked[t]["score"]) >= retention_floor]
         chosen = keepers[:target_count]
         chosen_set = set(chosen)
+        # Remove stale/ineligible old members immediately; cap score-only rotations.
+        invalid_previous = sum(1 for ticker in previous if ticker not in ranked)
+        replacement_budget = min(max(0, target_count - len(chosen)), self.max_replacements_per_refresh + invalid_previous)
+        replacements = 0
         for ticker in ordered:
-            if len(chosen) >= target_count:
+            if len(chosen) >= target_count or replacements >= replacement_budget:
                 break
             if ticker not in chosen_set:
                 chosen.append(ticker)
                 chosen_set.add(ticker)
+                replacements += 1
         self.selected_tickers = chosen
+        if set(previous) != set(chosen):
+            logger.info(
+                "[FUNNEL TURNOVER] previous=%d selected=%d retained=%d replaced=%d invalid_previous=%d",
+                len(previous), len(chosen), len(set(previous) & set(chosen)),
+                len(set(previous) - set(chosen)), invalid_previous,
+            )
         self._last_selection_update = now
 
     @staticmethod

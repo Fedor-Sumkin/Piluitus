@@ -113,6 +113,8 @@ class FinamBrokerClient:
         self._order_book_snapshot_required: set[str] = set()
         self._last_order_book_snapshot_wait_tickers: set[str] = set()
         self._crossed_bbo_resubscribe_at: dict[str, float] = {}
+        # Diagnostic REST fallback backoff, isolated per instrument.
+        self._order_book_http_backoff: dict[str, tuple[float, int]] = {}
 
     # ------------------------------------------------------------------
     # 1️⃣  CONNECT 
@@ -2012,42 +2014,87 @@ class FinamBrokerClient:
     # 3️⃣  GET_TICKER_ORDER_BOOK
     # ------------------------------------------------------------------
     async def get_ticker_order_book(self, ticker: str) -> dict | None:
-        """Получение текущего стакана по инструменту через нативный SDK Финама (gRPC/REST)"""
+        """Fetch a diagnostic snapshot with per-symbol backoff; never changes WS BBO."""
+        symbol = str(ticker or "").strip().upper().split("@", 1)[0]
+        if not symbol:
+            return {"bids": [], "asks": []}
+        sdk_error: Exception | None = None
         try:
-            md_service = getattr(self.client, 'market_data', None) or getattr(self.client, 'instruments', None)
-            if md_service and hasattr(md_service, 'get_order_book'):
-                res_call = md_service.get_order_book(security_board="TQBR", security_code=ticker, order_book_depth=3)
-                response = await res_call if asyncio.iscoroutine(res_call) else res_call
-                
+            service = getattr(self.client, "market_data", None) or getattr(self.client, "instruments", None)
+            if service and hasattr(service, "get_order_book"):
+                call = service.get_order_book(security_board="TQBR", security_code=symbol, order_book_depth=3)
+                response = await call if asyncio.iscoroutine(call) else call
                 if response:
-                    bids = getattr(response, 'bids', [])
-                    asks = getattr(response, 'asks', [])
-                    return {
-                        "bids": [{"price": float(getattr(b, 'price', b)), "volume": int(getattr(b, 'quantity', b))} for b in bids],
-                        "asks": [{"price": float(getattr(a, 'price', a)), "volume": int(getattr(a, 'quantity', a))} for a in asks]
-                    }
-        except Exception as e:
-            logger.debug(f"Резервный переход на HTTP-запрос стакана из-за: {e}")
-            
+                    bids = [{"price": self._decimal(getattr(x, "price", x)), "volume": self._decimal(getattr(x, "quantity", 0))} for x in getattr(response, "bids", [])]
+                    asks = [{"price": self._decimal(getattr(x, "price", x)), "volume": self._decimal(getattr(x, "quantity", 0))} for x in getattr(response, "asks", [])]
+                    bids = [x for x in bids if x["price"] > 0 and x["volume"] > 0]
+                    asks = [x for x in asks if x["price"] > 0 and x["volume"] > 0]
+                    if bids and asks:
+                        self._order_book_http_backoff.pop(symbol, None)
+                        return {"bids": bids[:3], "asks": asks[:3]}
+        except Exception as exc:
+            sdk_error = exc
+            logger.debug("Finam SDK orderbook fallback ticker=%s error_type=%s detail=%s", symbol, type(exc).__name__, str(exc)[:240])
+
+        now = time.monotonic()
+        next_allowed, failures = self._order_book_http_backoff.get(symbol, (0.0, 0))
+        if now < next_allowed:
+            logger.debug("Finam REST orderbook backoff ticker=%s retry_in=%.1fs failures=%d", symbol, next_allowed-now, failures)
+            return {"bids": [], "asks": []}
+
+        url = f"{self.base_url}/v1/instruments/{url_quote(symbol + '@MISX', safe='@')}/orderbook"
+        request_token = self.jwt_token
         try:
-            url = f"{self.base_url}/v1/instruments/{ticker}@MISX/orderbook"
-            params = {}
-            async with httpx.AsyncClient(timeout=5.0, http2=True) as client:
-                response = await client.get(url, headers=self.headers, params=params)
-                if response.status_code == 200:
-                    data = response.json()
-                    ob = data.get("orderbook", data.get("orderBook", data))
-                    rows = ob.get("rows", []) if isinstance(ob, dict) else []
-                    bids, asks = [], []
-                    for row in rows:
-                        price = self._decimal(row.get("price"))
-                        buy = self._decimal(row.get("buy_size"))
-                        sell = self._decimal(row.get("sell_size"))
-                        if price > 0 and buy > 0: bids.append({"price": price, "volume": int(buy)})
-                        if price > 0 and sell > 0: asks.append({"price": price, "volume": int(sell)})
-                    return {"bids": bids[:3], "asks": asks[:3]}
-        except Exception as http_err:
-            logger.error(f"Не удалось получить стакан по тикеру {ticker}: {http_err}")
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0), http2=True) as client:
+                response = await client.get(url, headers=self.headers)
+                if response.status_code == 401 and request_token:
+                    if await self._refresh_auth_if_unchanged(request_token):
+                        response = await client.get(url, headers=self.headers)
+                response.raise_for_status()
+                data = response.json()
+            book = data.get("orderbook", data.get("orderBook", data)) if isinstance(data, dict) else {}
+            rows = book.get("rows", []) if isinstance(book, dict) else []
+            bids: list[dict[str, float]] = []
+            asks: list[dict[str, float]] = []
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, dict):
+                    continue
+                price = self._decimal(row.get("price"))
+                buy = self._decimal(row.get("buy_size", row.get("buySize")))
+                sell = self._decimal(row.get("sell_size", row.get("sellSize")))
+                if price > 0 and buy > 0: bids.append({"price": price, "volume": buy})
+                if price > 0 and sell > 0: asks.append({"price": price, "volume": sell})
+            if not bids or not asks:
+                raise ValueError(f"incomplete orderbook sides: bids={len(bids)} asks={len(asks)}")
+            self._order_book_http_backoff.pop(symbol, None)
+            return {"bids": bids[:3], "asks": asks[:3]}
+        except httpx.HTTPStatusError as exc:
+            status = int(exc.response.status_code)
+            failures += 1
+            delay = min(60.0, 2.0 ** min(failures, 6)) if status == 429 or status >= 500 else 15.0
+            self._order_book_http_backoff[symbol] = (time.monotonic() + delay, failures)
+            response = exc.response
+            try:
+                body = json.dumps(self._redact_for_log(response.json()), ensure_ascii=False, default=str)
+            except (ValueError, TypeError):
+                body = response.text or ""
+            body = re.sub(r"(?i)(bearer\\s+)[A-Za-z0-9._~+/=-]+", r"\\1<redacted>", body)
+            body = re.sub(r"\\s+", " ", body).strip()[:300]
+            request_id = response.headers.get("x-request-id") or response.headers.get("x-correlation-id") or response.headers.get("request-id") or "unavailable"
+            logger.warning("Finam REST orderbook failed ticker=%s status=%d reason=%s request_id=%s retry_in=%.1fs sdk_error=%s response=%s",
+                symbol, status, response.reason_phrase, request_id, delay, type(sdk_error).__name__ if sdk_error else "none", body or "<empty>")
+        except (httpx.RequestError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            failures += 1
+            delay = min(60.0, 2.0 ** min(failures, 6))
+            self._order_book_http_backoff[symbol] = (time.monotonic() + delay, failures)
+            logger.warning("Finam REST orderbook failed ticker=%s error_type=%s detail=%s retry_in=%.1fs sdk_error=%s",
+                symbol, type(exc).__name__, str(exc)[:300], delay, type(sdk_error).__name__ if sdk_error else "none")
+        except Exception as exc:
+            failures += 1
+            delay = min(60.0, 2.0 ** min(failures, 6))
+            self._order_book_http_backoff[symbol] = (time.monotonic() + delay, failures)
+            logger.exception("Unexpected Finam orderbook error ticker=%s retry_in=%.1fs sdk_error=%s",
+                symbol, delay, type(sdk_error).__name__ if sdk_error else "none")
         return {"bids": [], "asks": []}
 
     # ------------------------------------------------------------------

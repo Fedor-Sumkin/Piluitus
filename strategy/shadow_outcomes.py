@@ -72,6 +72,10 @@ class ShadowForwardTracker:
         self.on_time_label_lag_sec = max(0.0, float(on_time_label_lag_sec))
         self.max_pending_per_ticker = max(1, int(max_pending_per_ticker))
         self._pending: dict[str, list[dict[str, Any]]] = {}
+        self._label_stats: dict[str, dict[str, float | int]] = {
+            "eligible": {"labels": 0, "ok": 0, "late": 0, "no_fresh_bbo": 0, "positive": 0, "net_sum_pct": 0.0, "gross_sum_pct": 0.0, "mfe_sum_pct": 0.0, "mae_sum_pct": 0.0},
+            "ineligible": {"labels": 0, "ok": 0, "late": 0, "no_fresh_bbo": 0, "positive": 0, "net_sum_pct": 0.0, "gross_sum_pct": 0.0, "mfe_sum_pct": 0.0, "mae_sum_pct": 0.0},
+        }
 
     @staticmethod
     def _fresh_bbo(metrics: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
@@ -327,7 +331,35 @@ class ShadowForwardTracker:
             self._pending[symbol] = survivors
         else:
             self._pending.pop(symbol, None)
+        for label in completed:
+            bucket = self._label_stats["eligible" if bool(label.get("shadow_eligible")) else "ineligible"]
+            bucket["labels"] = int(bucket["labels"]) + 1
+            result = str(label.get("result") or "")
+            if result == "OK":
+                bucket["ok"] = int(bucket["ok"]) + 1
+                net = _number(label, "net_executable_return_pct", math.nan)
+                gross = _number(label, "gross_executable_return_pct", math.nan)
+                if math.isfinite(net):
+                    bucket["net_sum_pct"] = float(bucket["net_sum_pct"]) + net
+                    if net > 0.0: bucket["positive"] = int(bucket["positive"]) + 1
+                if math.isfinite(gross): bucket["gross_sum_pct"] = float(bucket["gross_sum_pct"]) + gross
+                bucket["mfe_sum_pct"] = float(bucket["mfe_sum_pct"]) + _number(label, "mfe_executable_pct")
+                bucket["mae_sum_pct"] = float(bucket["mae_sum_pct"]) + _number(label, "mae_executable_pct")
+            elif result == "LABEL_LATE": bucket["late"] = int(bucket["late"]) + 1
+            elif result == "NO_FRESH_BBO": bucket["no_fresh_bbo"] = int(bucket["no_fresh_bbo"]) + 1
         return completed
+
+    def statistics_snapshot(self) -> dict[str, dict[str, float | int]]:
+        """Cumulative bounded-memory outcomes, separated by Shadow eligibility."""
+        snapshot: dict[str, dict[str, float | int]] = {}
+        for name, values in self._label_stats.items():
+            row = dict(values)
+            count = int(row["ok"])
+            row["positive_rate_pct"] = round(int(row["positive"]) / count * 100.0, 2) if count else 0.0
+            for metric, total in (("average_net_return_pct", "net_sum_pct"), ("average_gross_return_pct", "gross_sum_pct"), ("average_mfe_pct", "mfe_sum_pct"), ("average_mae_pct", "mae_sum_pct")):
+                row[metric] = round(float(row[total]) / count, 6) if count else 0.0
+            snapshot[name] = row
+        return snapshot
 
     def pending_count(self, ticker: str | None = None) -> int:
         if ticker is None:

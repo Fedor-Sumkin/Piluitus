@@ -1902,6 +1902,11 @@ class BaseExecutionEngine:
             "exit_price_source": "BBO_BID" if side == "BUY" else "BBO_ASK",
             "exit_fill_model": "FULL_FILL_AT_EXECUTABLE_BBO",
             "exit_partial_fill_enabled": False,
+            "exit_bbo_gap_count": int(trade.get("exit_bbo_gap_count", 0) or 0),
+            "last_exit_bbo_gap_sec": _finite_or_default(trade.get("last_exit_bbo_gap_sec"), 0.0),
+            "max_exit_bbo_gap_sec": _finite_or_default(trade.get("max_exit_bbo_gap_sec"), 0.0),
+            "total_exit_bbo_gap_sec": _finite_or_default(trade.get("total_exit_bbo_gap_sec"), 0.0),
+            "current_exit_bbo_gap_sec": _finite_or_default(trade.get("current_exit_bbo_gap_sec"), 0.0),
             "exit_bid": _finite_or_default(bbo.get("bid"), 0.0),
             "exit_ask": _finite_or_default(bbo.get("ask"), 0.0),
             "exit_bid_size": _finite_or_default(bbo.get("bid_size"), 0.0),
@@ -1995,6 +2000,30 @@ class BaseExecutionEngine:
         except Exception:
             pass
         return closed_trade
+
+    @staticmethod
+    def _track_exit_bbo_gap(trade: TradeRecord, now_monotonic: float, *, fresh: bool) -> float | None:
+        """Track stale executable-BBO episodes without ever using stale prices."""
+        started = _finite_or_default(trade.get("exit_bbo_gap_started_monotonic"), 0.0)
+        if not fresh:
+            if started <= 0.0:
+                started = now_monotonic
+                trade["exit_bbo_gap_started_monotonic"] = started
+                trade["exit_bbo_gap_count"] = int(trade.get("exit_bbo_gap_count", 0) or 0) + 1
+            duration = max(0.0, now_monotonic - started)
+            trade["current_exit_bbo_gap_sec"] = round(duration, 3)
+            trade["max_exit_bbo_gap_sec"] = round(max(_finite_or_default(trade.get("max_exit_bbo_gap_sec"), 0.0), duration), 3)
+            return None
+        if started > 0.0:
+            duration = max(0.0, now_monotonic - started)
+            trade["last_exit_bbo_gap_sec"] = round(duration, 3)
+            trade["max_exit_bbo_gap_sec"] = round(max(_finite_or_default(trade.get("max_exit_bbo_gap_sec"), 0.0), duration), 3)
+            trade["total_exit_bbo_gap_sec"] = round(_finite_or_default(trade.get("total_exit_bbo_gap_sec"), 0.0) + duration, 3)
+            trade.pop("exit_bbo_gap_started_monotonic", None)
+            trade["current_exit_bbo_gap_sec"] = 0.0
+            return duration
+        trade["current_exit_bbo_gap_sec"] = 0.0
+        return None
 
     async def monitor_paper_positions(
         self,
@@ -2092,6 +2121,7 @@ class BaseExecutionEngine:
 
             bbo = self._latest_fresh_exit_quote(ticker, side)
             if bbo is None:
+                self._track_exit_bbo_gap(trade, time.monotonic(), fresh=False)
                 pending_exit = str(trade.get("pending_exit_reason") or "").upper()
                 # Once SL/TP has fired, do not let a calendar REST lookup delay
                 # the trigger audit or persistence; only a fresh executable BBO
@@ -2222,6 +2252,16 @@ class BaseExecutionEngine:
                     )
                     self._last_bbo_exit_warning_at[ticker] = now_mono
                 return
+
+            gap_duration = self._track_exit_bbo_gap(trade, time.monotonic(), fresh=True)
+            if gap_duration is not None:
+                logger.warning(
+                    "[PAPER BBO GAP RECOVERED] %s %s: gap=%.3fs max_gap=%.3fs total_gap=%.3fs; "
+                    "SL/TP monitor resumed only on fresh executable BBO.",
+                    ticker, side, gap_duration,
+                    _finite_or_default(trade.get("max_exit_bbo_gap_sec"), 0.0),
+                    _finite_or_default(trade.get("total_exit_bbo_gap_sec"), 0.0),
+                )
 
             # A coherent executable BBO has returned; resume the monitor without
             # manufacturing a fill or changing the saved SL/TP levels.
