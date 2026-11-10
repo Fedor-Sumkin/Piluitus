@@ -5,7 +5,9 @@ import asyncio
 import json
 import unittest
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
+from config import FINAM_TRADE_LOT_SIZES
 from execution_layer import BaseExecutionEngine
 from risk_manager import RiskManager
 
@@ -192,6 +194,13 @@ class ExecutionStopRiskTests(unittest.IsolatedAsyncioTestCase):
                 "stop_loss": 1.60,
             }
         }
+        # Unit tests model a broker-confirmed account metadata response.
+        # They must not rely on the static LOT_SIZES reference table.
+        self._lot_metadata_patch = patch.dict(
+            FINAM_TRADE_LOT_SIZES, {"LSRG": 1, "SBER": 10}
+        )
+        self._lot_metadata_patch.start()
+        self.addCleanup(self._lot_metadata_patch.stop)
 
     async def test_single_position_cap_limits_each_order_to_three_percent(self) -> None:
         self.engine.paper_positions = {}
