@@ -27,11 +27,15 @@ class TradeFlowMetricsTests(unittest.TestCase):
     def test_trade_flow_reset_does_not_erase_quote_driven_m1_history(self):
         screener = HFTMemoryScreener()
         engine = screener.minute_bar_patterns
+        # Keep the synthetic quote clock in the same monotonic domain as
+        # push_trade(); mixing timestamps near zero with the real monotonic
+        # clock simulates a multi-day feed outage and correctly clears the bars.
+        base = time.monotonic() - 6 * 60.0
         for minute in range(7):
-            engine.update("SBER", 100.0 + minute, now=1.0 + minute * 60.0)
+            engine.update("SBER", 100.0 + minute, now=base + minute * 60.0)
         self.assertEqual(len(engine._states["SBER"]["bars"]), 6)
 
-        now = time.monotonic()
+        now = base + 6 * 60.0
         screener.push_trade("SBER", 107.0, 10.0, "trade-1", "SIDE_BUY", received_monotonic=now)
         self.assertEqual(len(screener.history["SBER"]["trade_events"]), 1)
         screener.reset_trade_history("SBER")
