@@ -1,0 +1,11 @@
+2026-11-11 16:07:50,213 [ERROR] [RUN=20261111_160747_3204_0ef8c423] Piluitus.FinamGateway: ⛔ [FINAM ACCOUNT DISCOVERY] токен не содержит доступных счетов (account_ids пуст); новые входы остаются заблокированы.
+2026-11-11 16:07:50,218 [ERROR] [RUN=20261111_160747_3204_0ef8c423] Piluitus.Main: ⛔ [FINAM ACCOUNT] счёт не определён; GetAssetParams и новые входы заблокированы.
+2026-11-11 16:07:50,381 [ERROR] [RUN=20261111_160747_3204_0ef8c423] Piluitus.FinamGateway: ⛔ [FINAM ACCOUNT DISCOVERY] токен не содержит доступных счетов (account_ids пуст); новые входы остаются заблокированы.
+2026-11-11 16:08:51,116 [ERROR] [RUN=20261111_160747_3204_0ef8c423] Piluitus.FinamGateway: ⛔ [FINAM ACCOUNT DISCOVERY] токен не содержит доступных счетов (account_ids пуст); новые входы остаются заблокированы.
+2026-11-11 16:09:51,852 [ERROR] [RUN=20261111_160747_3204_0ef8c423] Piluitus.FinamGateway: ⛔ [FINAM ACCOUNT DISCOVERY] токен не содержит доступных счетов (account_ids пуст); новые входы остаются заблокированы.
+2026-11-11 16:10:52,493 [ERROR] [RUN=20261111_160747_3204_0ef8c423] Piluitus.FinamGateway: ⛔ [FINAM ACCOUNT DISCOVERY] токен не содержит доступных счетов (account_ids пуст); новые входы остаются заблокированы.
+2026-11-11 16:11:53,222 [ERROR] [RUN=20261111_160747_3204_0ef8c423] Piluitus.FinamGateway: ⛔ [FINAM ACCOUNT DISCOVERY] токен не содержит доступных счетов (account_ids пуст); новые входы остаются заблокированы.
+2026-11-11 16:12:53,960 [ERROR] [RUN=20261111_160747_3204_0ef8c423] Piluitus.FinamGateway: ⛔ [FINAM ACCOUNT DISCOVERY] токен не содержит доступных счетов (account_ids пуст); новые входы остаются заблокированы.
+2026-11-11 16:13:54,635 [ERROR] [RUN=20261111_160747_3204_0ef8c423] Piluitus.FinamGateway: ⛔ [FINAM ACCOUNT DISCOVERY] токен не содержит доступных счетов (account_ids пуст); новые входы остаются заблокированы.
+2026-11-11 16:14:55,379 [ERROR] [RUN=20261111_160747_3204_0ef8c423] Piluitus.FinamGateway: ⛔ [FINAM ACCOUNT DISCOVERY] токен не содержит доступных счетов (account_ids пуст); новые входы остаются заблокированы.
+2026-11-11 16:15:56,151 [ERROR] [RUN=20261111_160747_3204_0ef8c423] Piluitus.FinamGateway: ⛔ [FINAM ACCOUNT DISCOVERY] токен не содержит доступных счетов (account_ids пуст); новые входы остаются заблокированы.
