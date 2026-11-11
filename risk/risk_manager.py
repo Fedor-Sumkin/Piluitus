@@ -199,29 +199,32 @@ class RiskManager:
                 "new orders remain blocked. Static LOT_SIZES is not used for new entries."
             )
             return
-        configured_account_id = (
-            str(os.getenv("FINAM_ACCOUNT_ID", "")).strip()
-            or str(os.getenv("FINAM_CLIENT_ID", "")).strip()
-        )
-        account_id = (
-            "" if configured_account_id.upper() == "UNKNOWN_ACCOUNT"
-            else configured_account_id
-        )
-        account_id_source = (
-            "FINAM_ACCOUNT_ID" if os.getenv("FINAM_ACCOUNT_ID", "").strip()
-            else "FINAM_CLIENT_ID compatibility fallback" if account_id
-            else "missing"
+        account_id = str(getattr(finam_broker_client, "account_id", "") or "").strip()
+        account_id_source = str(
+            getattr(finam_broker_client, "account_id_source", "") or "authenticated_session"
         )
         if not account_id:
+            discover = getattr(finam_broker_client, "discover_accounts", None)
+            if callable(discover):
+                try:
+                    resolved = await discover()
+                    account_id = str(
+                        getattr(finam_broker_client, "account_id", "") or resolved or ""
+                    ).strip()
+                    account_id_source = str(
+                        getattr(finam_broker_client, "account_id_source", "")
+                        or "authenticated_session"
+                    )
+                except Exception as exc:
+                    risk_logger.warning(
+                        "[FINAM METADATA] account discovery failed: %s",
+                        type(exc).__name__,
+                    )
+        if not account_id or account_id.upper() == "UNKNOWN_ACCOUNT":
+            account_id = ""
             risk_logger.error(
-                "⛔ [FINAM METADATA] FINAM_ACCOUNT_ID is not configured; "
-                "GetAssetParams will be skipped and all new entries remain blocked. "
-                "Set FINAM_ACCOUNT_ID to the account identifier shown in Finam Trade API."
-            )
-        elif account_id_source != "FINAM_ACCOUNT_ID":
-            risk_logger.warning(
-                "⚠️ [FINAM METADATA] using FINAM_CLIENT_ID as a compatibility fallback for account_id; "
-                "set FINAM_ACCOUNT_ID explicitly to remove ambiguity."
+                "⛔ [FINAM METADATA] account_id was not resolved from the authenticated "
+                "Finam session; GetAssetParams is skipped and all new entries remain blocked."
             )
         asset_method = getattr(finam_broker_client, "get_asset", None)
         params_method = getattr(finam_broker_client, "get_asset_params", None)
