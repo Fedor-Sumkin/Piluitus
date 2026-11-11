@@ -1212,16 +1212,17 @@ def _store_pending_bbo_candidate(
     payload: dict[str, Any],
     received_monotonic: object | None = None,
 ) -> None:
+    # TTL starts when the candidate is actually stored, not at the provider
+    # event's receive timestamp. Queueing/processing delay must not consume its
+    # entire BBO-wait budget before the waiter can observe a fresh book.
     now = time_module.monotonic()
-    received_at = _parse_finite_float(received_monotonic)
-    if received_at is None:
-        received_at = now
-    if not math.isfinite(received_at) or received_at <= 0.0 or received_at > now + 0.05:
-        received_at = now
-    received_at = min(now, received_at)
-    entry = {"created_at": received_at, "payload": payload}
+    entry = {"created_at": now, "payload": payload}
+    key = str(ticker).strip().upper().split("@")[0]
     with _pending_bbo_lock:
-        _pending_bbo_candidates[str(ticker).upper()] = entry
+        previous = _pending_bbo_candidates.get(key)
+        _pending_bbo_candidates[key] = entry
+    if previous is not None:
+        _trade_flow_inc("bbo_superseded")
     _trade_flow_inc("bbo_deferred")
     logger.info(
         "⏳ [PRE-LLM WAIT] %s: кандидат временно ожидает целостный свежий ORDER_BOOK (TTL=%.2fs).",
@@ -1686,9 +1687,9 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
         ticker = str(ticker or "").strip().upper().split("@")[0]
         if price <= 0.0 or not ticker or volume < 0.0:
             return
-        # A newer trade supersedes any older deferred impulse for this ticker.
-        if _drop_pending_bbo_candidate(ticker):
-            _trade_flow_inc("bbo_superseded")
+        # Ordinary quote ticks do not cancel a deferred candidate. It remains
+        # pending until a coherent ORDER_BOOK event resumes it, its TTL expires,
+        # or a newer qualifying anomaly replaces it in _store_pending_bbo_candidate.
 
         tick_counter += 1
         current_frame = spinner_frames[tick_counter % len(spinner_frames)]
@@ -2827,7 +2828,9 @@ async def _finam_metadata_refresh_loop() -> None:
                 "⛔ [FINAM METADATA WORKER] account_id не получен из текущей Finam-сессии; "
                 "новые входы остаются заблокированы."
             )
-            await asyncio.sleep(min(refresh_sec, 60.0))
+            # Avoid hammering session discovery on every minute while the
+            # provider returns an empty/malformed account list.
+            await asyncio.sleep(max(300.0, min(refresh_sec, 900.0)))
             continue
         try:
             await RiskManager.update_finam_lot_sizes(finam_broker_client=broker)
