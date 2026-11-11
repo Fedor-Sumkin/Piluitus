@@ -85,6 +85,7 @@ class FinamBrokerClient:
         self.headers: dict[str, str] = {}
         # Serializes JWT refreshes triggered by concurrent REST requests.
         self._auth_refresh_lock = asyncio.Lock()
+        self._account_discovery_lock = asyncio.Lock()
         self.is_demo = bool(is_demo)
         # Account identity is resolved from the authenticated session.
         self.account_id: str = ""
@@ -179,7 +180,7 @@ class FinamBrokerClient:
             return None
 
     async def get_account(self, account_id: str) -> dict[str, Any] | None:
-        """Fetch account metadata for one ID returned by the authenticated session."""
+        """Fetch account metadata for an explicit or session-authorized account ID."""
         account = str(account_id or "").strip()
         if not self.jwt_token or not account:
             return None
@@ -291,81 +292,131 @@ class FinamBrokerClient:
         return "", "ambiguous_account_selection"
 
     async def discover_accounts(self) -> str | None:
-        """Discover session-authorized accounts and select one without guessing."""
-        self.account_id = ""
-        self.account_id_source = "unresolved"
-        self.account_ids = []
-        self.session_details = {}
-        self.account_details = {}
+        """Resolve one authorized account; serialize startup and worker discovery."""
+        async with self._account_discovery_lock:
+            # Startup and metadata worker may start almost simultaneously. Reuse a
+            # previously verified identity instead of issuing duplicate REST calls.
+            if self.account_id:
+                return self.account_id
 
-        details = await self.get_session_details()
-        if not isinstance(details, dict):
-            logger.error(
-                "⛔ [FINAM ACCOUNT DISCOVERY] не удалось получить account_ids из сессии; "
-                "новые входы остаются заблокированы."
-            )
-            return None
+            details = await self.get_session_details()
+            if not isinstance(details, dict):
+                logger.error(
+                    "⛔ [FINAM ACCOUNT DISCOVERY] session details недоступны; "
+                    "account_id не подтверждён, новые входы заблокированы."
+                )
+                return None
 
-        raw_ids = details.get("account_ids")
-        if not isinstance(raw_ids, list):
-            raw_ids = []
-        self.account_ids = list(dict.fromkeys(
-            str(value).strip() for value in raw_ids
-            if isinstance(value, (str, int)) and str(value).strip()
-        ))
-        self.session_details = details
-        if not self.account_ids:
-            logger.error(
-                "⛔ [FINAM ACCOUNT DISCOVERY] токен не содержит доступных счетов "
-                "(account_ids пуст); новые входы остаются заблокированы."
-            )
-            return None
-
-        for candidate_id in self.account_ids:
-            account_payload = await self.get_account(candidate_id)
-            if not isinstance(account_payload, dict):
-                continue
-            nested = account_payload.get("account")
-            if isinstance(nested, dict):
-                account_payload = nested
-            self.account_details[candidate_id] = account_payload
-
-        explicit_id = str(os.getenv("FINAM_ACCOUNT_ID", "") or "").strip()
-        legacy_id = str(os.getenv("FINAM_CLIENT_ID", "") or "").strip()
-        selected, source = self._choose_account_id(
-            self.account_ids, explicit_id, legacy_id, self.account_details, self.is_demo
-        )
-        if not selected:
-            if explicit_id:
-                reason = "FINAM_ACCOUNT_ID отсутствует в account_ids токена или не соответствует FINAM_DEMO"
-            elif len(self.account_ids) > 1:
-                reason = "несколько счетов без единственного однозначного типа DEMO/LIVE"
-            else:
-                reason = "тип единственного счёта не соответствует FINAM_DEMO"
-            logger.error(
-                "⛔ [FINAM ACCOUNT DISCOVERY] выбор счёта не выполнен: %s; доступно=%d; "
-                "новые входы остаются заблокированы.",
-                reason, len(self.account_ids),
-            )
-            return None
-
-        self.account_id = selected
-        self.account_id_source = source
-        selected_details = self.account_details.get(selected, {})
-        logger.info(
-            "✅ [FINAM ACCOUNT DISCOVERY] доступно=%d; выбран=%s; source=%s; type=%s; readonly=%s.",
-            len(self.account_ids),
-            self._mask_account_id(selected),
-            source,
-            self._account_type_text(selected_details) or "unknown",
-            bool(details.get("readonly", False)),
-        )
-        if legacy_id and legacy_id not in self.account_ids and not explicit_id:
+            raw_ids = details.get("account_ids")
+            raw_type = type(raw_ids).__name__
+            ids_source = raw_ids if isinstance(raw_ids, list) else []
+            account_ids = list(dict.fromkeys(
+                str(value).strip() for value in ids_source
+                if isinstance(value, (str, int)) and str(value).strip()
+            ))
+            self.session_details = details
             logger.info(
-                "ℹ️ [FINAM ACCOUNT DISCOVERY] FINAM_CLIENT_ID не совпадает ни с одним "
-                "account_id сессии и не используется как идентификатор счёта."
+                "[FINAM ACCOUNT DISCOVERY] response_keys=%s; account_ids_type=%s; "
+                "account_ids_count=%d; readonly=%s.",
+                ",".join(sorted(str(key) for key in details.keys()))[:300] or "-",
+                raw_type,
+                len(account_ids),
+                bool(details.get("readonly", False)),
             )
-        return self.account_id
+
+            explicit_id = str(os.getenv("FINAM_ACCOUNT_ID", "") or "").strip()
+            legacy_id = str(os.getenv("FINAM_CLIENT_ID", "") or "").strip()
+            account_details: dict[str, dict[str, Any]] = {}
+
+            # A configured FINAM_ACCOUNT_ID is not assumed valid merely because it
+            # is configured. If the session omits account_ids, validate it directly
+            # against GET /v1/accounts/{id} and require the response to identify the
+            # exact same account. FINAM_CLIENT_ID is deliberately never used here.
+            if not account_ids and explicit_id:
+                account_payload = await self.get_account(explicit_id)
+                if isinstance(account_payload, dict):
+                    nested = account_payload.get("account")
+                    if isinstance(nested, dict):
+                        account_payload = nested
+                    returned_id = str(
+                        account_payload.get("account_id") or account_payload.get("id") or ""
+                    ).strip()
+                    mode_ok = not (
+                        (self.is_demo and self._is_live_account(account_payload))
+                        or (not self.is_demo and self._is_demo_account(account_payload))
+                    )
+                    if returned_id == explicit_id and mode_ok:
+                        account_ids = [explicit_id]
+                        account_details[explicit_id] = account_payload
+                        logger.info(
+                            "[FINAM ACCOUNT DISCOVERY] account_ids отсутствует/пуст; "
+                            "FINAM_ACCOUNT_ID подтверждён GET /v1/accounts/{id}; mode_ok=%s.",
+                            mode_ok,
+                        )
+                    else:
+                        logger.error(
+                            "⛔ [FINAM ACCOUNT DISCOVERY] явный FINAM_ACCOUNT_ID не подтверждён: "
+                            "identity_match=%s; mode_ok=%s; новые входы заблокированы.",
+                            returned_id == explicit_id, mode_ok,
+                        )
+                if not account_ids:
+                    logger.error(
+                        "⛔ [FINAM ACCOUNT DISCOVERY] account_ids пуст/отсутствует, "
+                        "а FINAM_ACCOUNT_ID не прошёл проверку GET /v1/accounts/{id}; входы заблокированы."
+                    )
+                    return None
+            elif not account_ids:
+                logger.error(
+                    "⛔ [FINAM ACCOUNT DISCOVERY] account_ids пуст/отсутствует "
+                    "(тип=%s), FINAM_ACCOUNT_ID не задан; входы заблокированы.",
+                    raw_type,
+                )
+                return None
+
+            self.account_ids = account_ids
+            for candidate_id in account_ids:
+                if candidate_id in account_details:
+                    continue
+                account_payload = await self.get_account(candidate_id)
+                if not isinstance(account_payload, dict):
+                    continue
+                nested = account_payload.get("account")
+                if isinstance(nested, dict):
+                    account_payload = nested
+                account_details[candidate_id] = account_payload
+            self.account_details = account_details
+
+            selected, source = self._choose_account_id(
+                account_ids, explicit_id, legacy_id, account_details, self.is_demo
+            )
+            if not selected:
+                if explicit_id:
+                    reason = "FINAM_ACCOUNT_ID отсутствует в разрешённых счетах или не соответствует FINAM_DEMO"
+                elif len(account_ids) > 1:
+                    reason = "несколько счетов без единственного однозначного типа DEMO/LIVE"
+                else:
+                    reason = "тип единственного счёта не соответствует FINAM_DEMO"
+                logger.error(
+                    "⛔ [FINAM ACCOUNT DISCOVERY] выбор счёта не выполнен: %s; доступно=%d; "
+                    "новые входы остаются заблокированы.", reason, len(account_ids),
+                )
+                return None
+
+            self.account_id = selected
+            self.account_id_source = source
+            selected_details = account_details.get(selected, {})
+            logger.info(
+                "✅ [FINAM ACCOUNT DISCOVERY] доступно=%d; выбран=%s; source=%s; type=%s; readonly=%s.",
+                len(account_ids), self._mask_account_id(selected), source,
+                self._account_type_text(selected_details) or "unknown",
+                bool(details.get("readonly", False)),
+            )
+            if legacy_id and legacy_id not in account_ids and not explicit_id:
+                logger.info(
+                    "ℹ️ [FINAM ACCOUNT DISCOVERY] FINAM_CLIENT_ID не совпадает ни с одним "
+                    "account_id сессии и не используется как идентификатор счёта."
+                )
+            return self.account_id
 
     async def _refresh_auth_if_unchanged(self, rejected_token: str) -> bool:
         """Refresh the REST JWT once when a request proves the current token is rejected.
