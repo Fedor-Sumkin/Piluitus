@@ -2715,6 +2715,18 @@ async def background_broker_init():
     logger.info("🔌 Проверка брокерского соединения Finam; календарь сессий будет проверяться по каждому инструменту...")
     try:
         await broker.connect()
+        selected_account_id = await broker.discover_accounts()
+        if selected_account_id:
+            logger.info(
+                "🏦 [FINAM ACCOUNT] account_id успешно определён из текущей сессии; "
+                "source=%s; account_id=%s.",
+                getattr(broker, "account_id_source", "session"),
+                broker._mask_account_id(selected_account_id),
+            )
+        else:
+            logger.error(
+                "⛔ [FINAM ACCOUNT] счёт не определён; GetAssetParams и новые входы заблокированы."
+            )
 
         # Verify both the authenticated endpoint and the schedule parser before
         # the first candidate reaches the executor. SBER is used only as a probe;
