@@ -2842,7 +2842,8 @@ async def _finam_metadata_refresh_loop() -> None:
             1 for ticker in TICKERS_TO_TRADE
             if int(FINAM_TRADE_LOT_SIZES.get(str(ticker).strip().upper(), 0) or 0) > 0
         )
-        retry_delay = min(refresh_sec, 180.0) if confirmed == 0 else refresh_sec
+        # Avoid repeating 88 requests every 180 seconds after persistent provider-side HTTP 400.
+        retry_delay = refresh_sec
         if confirmed:
             logger.info(
                 "📦 [FINAM METADATA WORKER] confirmed account lots=%d/%d; next refresh in %.0fs.",
