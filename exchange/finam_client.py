@@ -85,7 +85,13 @@ class FinamBrokerClient:
         self.headers: dict[str, str] = {}
         # Serializes JWT refreshes triggered by concurrent REST requests.
         self._auth_refresh_lock = asyncio.Lock()
-        self.is_demo = is_demo
+        self.is_demo = bool(is_demo)
+        # Account identity is resolved from the authenticated session.
+        self.account_id: str = ""
+        self.account_id_source: str = "unresolved"
+        self.account_ids: list[str] = []
+        self.session_details: dict[str, Any] = {}
+        self.account_details: dict[str, dict[str, Any]] = {}
         self.client: Any = None
         self.is_ws_running = False
         # Local level maps for ORDER_BOOK deltas.
@@ -144,6 +150,222 @@ class FinamBrokerClient:
             "Content-Type": "application/json",
         }
         logger.info("Авторизация Finam Trade API подтверждена.")
+
+    async def get_session_details(self) -> dict[str, Any] | None:
+        """Return account IDs explicitly granted to the current JWT session."""
+        if not self.jwt_token:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/v1/sessions/details",
+                    json={"token": self.jwt_token},
+                    headers={"Content-Type": "application/json", "Accept": "application/json"},
+                )
+                response.raise_for_status()
+                payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Finam session details response is not a JSON object")
+            return payload
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "Finam session details failed: HTTP %s; response=%s",
+                exc.response.status_code,
+                self._safe_response_hint(exc.response),
+            )
+            return None
+        except (httpx.RequestError, ValueError, TypeError) as exc:
+            logger.warning("Finam session details request failed: %s", type(exc).__name__)
+            return None
+
+    async def get_account(self, account_id: str) -> dict[str, Any] | None:
+        """Fetch account metadata for one ID returned by the authenticated session."""
+        account = str(account_id or "").strip()
+        if not self.jwt_token or not account:
+            return None
+        url = f"{self.base_url}/v1/accounts/{url_quote(account, safe='')}"
+        request_jwt = self.jwt_token
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    response = await client.get(
+                        url,
+                        headers={"Authorization": f"Bearer {self.jwt_token}", "Accept": "application/json"},
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                return payload if isinstance(payload, dict) else None
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 401 and attempt == 0:
+                    if await self._refresh_auth_if_unchanged(request_jwt):
+                        continue
+                logger.warning(
+                    "Finam account details unavailable for %s: HTTP %s; response=%s",
+                    self._mask_account_id(account),
+                    exc.response.status_code,
+                    self._safe_response_hint(exc.response),
+                )
+                return None
+            except (httpx.RequestError, ValueError, TypeError) as exc:
+                logger.warning(
+                    "Finam account details request failed for %s: %s",
+                    self._mask_account_id(account),
+                    type(exc).__name__,
+                )
+                return None
+        return None
+
+    @staticmethod
+    def _mask_account_id(account_id: str) -> str:
+        value = str(account_id or "")
+        return f"***{value[-4:]}" if len(value) > 4 else "***"
+
+    @staticmethod
+    def _account_type_text(account: dict[str, Any] | None) -> str:
+        if not isinstance(account, dict):
+            return ""
+        return str(account.get("type") or account.get("account_type") or "").strip().upper()
+
+    @classmethod
+    def _is_demo_account(cls, account: dict[str, Any] | None) -> bool:
+        if not isinstance(account, dict):
+            return False
+        if account.get("is_demo") is True:
+            return True
+        return any(marker in cls._account_type_text(account) for marker in ("DEMO", "SIMULATION", "PAPER"))
+
+    @classmethod
+    def _is_live_account(cls, account: dict[str, Any] | None) -> bool:
+        if not isinstance(account, dict):
+            return False
+        if account.get("is_demo") is False:
+            return True
+        return any(marker in cls._account_type_text(account) for marker in ("REAL", "LIVE"))
+
+    @classmethod
+    def _choose_account_id(
+        cls,
+        account_ids: list[str],
+        explicit_account_id: str,
+        legacy_client_id: str,
+        account_details: dict[str, dict[str, Any]],
+        is_demo: bool,
+    ) -> tuple[str, str]:
+        """Choose only a session-authorized and unambiguous account."""
+        ids = list(dict.fromkeys(str(value).strip() for value in account_ids if str(value).strip()))
+
+        def mode_matches(account_id: str) -> bool:
+            details = account_details.get(account_id)
+            if is_demo and cls._is_live_account(details):
+                return False
+            if not is_demo and cls._is_demo_account(details):
+                return False
+            return True
+
+        if explicit_account_id:
+            if explicit_account_id not in ids or not mode_matches(explicit_account_id):
+                return "", "FINAM_ACCOUNT_ID_not_authorized_or_mode_mismatch"
+            return explicit_account_id, "FINAM_ACCOUNT_ID"
+
+        # Legacy FINAM_CLIENT_ID is accepted only when it exactly matches an
+        # account authorized by this JWT; a client ID is never guessed as account_id.
+        if legacy_client_id and legacy_client_id in ids:
+            if not mode_matches(legacy_client_id):
+                return "", "FINAM_CLIENT_ID_mode_mismatch"
+            return legacy_client_id, "FINAM_CLIENT_ID_matched_account_ids"
+
+        if len(ids) == 1:
+            only_id = ids[0]
+            if not mode_matches(only_id):
+                return "", "single_account_mode_mismatch"
+            return only_id, "session_details_single_account"
+
+        if is_demo:
+            candidates = [value for value in ids if cls._is_demo_account(account_details.get(value))]
+            source = "session_details_unique_demo_account"
+        else:
+            candidates = [value for value in ids if cls._is_live_account(account_details.get(value))]
+            source = "session_details_unique_live_account"
+        if len(candidates) == 1:
+            return candidates[0], source
+        return "", "ambiguous_account_selection"
+
+    async def discover_accounts(self) -> str | None:
+        """Discover session-authorized accounts and select one without guessing."""
+        self.account_id = ""
+        self.account_id_source = "unresolved"
+        self.account_ids = []
+        self.session_details = {}
+        self.account_details = {}
+
+        details = await self.get_session_details()
+        if not isinstance(details, dict):
+            logger.error(
+                "⛔ [FINAM ACCOUNT DISCOVERY] не удалось получить account_ids из сессии; "
+                "новые входы остаются заблокированы."
+            )
+            return None
+
+        raw_ids = details.get("account_ids")
+        if not isinstance(raw_ids, list):
+            raw_ids = []
+        self.account_ids = list(dict.fromkeys(
+            str(value).strip() for value in raw_ids
+            if isinstance(value, (str, int)) and str(value).strip()
+        ))
+        self.session_details = details
+        if not self.account_ids:
+            logger.error(
+                "⛔ [FINAM ACCOUNT DISCOVERY] токен не содержит доступных счетов "
+                "(account_ids пуст); новые входы остаются заблокированы."
+            )
+            return None
+
+        for candidate_id in self.account_ids:
+            account_payload = await self.get_account(candidate_id)
+            if not isinstance(account_payload, dict):
+                continue
+            nested = account_payload.get("account")
+            if isinstance(nested, dict):
+                account_payload = nested
+            self.account_details[candidate_id] = account_payload
+
+        explicit_id = str(os.getenv("FINAM_ACCOUNT_ID", "") or "").strip()
+        legacy_id = str(os.getenv("FINAM_CLIENT_ID", "") or "").strip()
+        selected, source = self._choose_account_id(
+            self.account_ids, explicit_id, legacy_id, self.account_details, self.is_demo
+        )
+        if not selected:
+            if explicit_id:
+                reason = "FINAM_ACCOUNT_ID отсутствует в account_ids токена или не соответствует FINAM_DEMO"
+            elif len(self.account_ids) > 1:
+                reason = "несколько счетов без единственного однозначного типа DEMO/LIVE"
+            else:
+                reason = "тип единственного счёта не соответствует FINAM_DEMO"
+            logger.error(
+                "⛔ [FINAM ACCOUNT DISCOVERY] выбор счёта не выполнен: %s; доступно=%d; "
+                "новые входы остаются заблокированы.",
+                reason, len(self.account_ids),
+            )
+            return None
+
+        self.account_id = selected
+        self.account_id_source = source
+        selected_details = self.account_details.get(selected, {})
+        logger.info(
+            "✅ [FINAM ACCOUNT DISCOVERY] доступно=%d; выбран=%s; source=%s; type=%s; readonly=%s.",
+            len(self.account_ids),
+            self._mask_account_id(selected),
+            source,
+            self._account_type_text(selected_details) or "unknown",
+            bool(details.get("readonly", False)),
+        )
+        if legacy_id and legacy_id not in self.account_ids and not explicit_id:
+            logger.info(
+                "ℹ️ [FINAM ACCOUNT DISCOVERY] FINAM_CLIENT_ID не совпадает ни с одним "
+                "account_id сессии и не используется как идентификатор счёта."
+            )
+        return self.account_id
 
     async def _refresh_auth_if_unchanged(self, rejected_token: str) -> bool:
         """Refresh the REST JWT once when a request proves the current token is rejected.
@@ -219,7 +441,7 @@ class FinamBrokerClient:
         if not normalized:
             return None
         symbol = f"{normalized}@MISX"
-        account = str(account_id or "").strip()
+        account = str(account_id or self.account_id or "").strip()
         params = {"account_id": account} if account and account != "UNKNOWN_ACCOUNT" else None
         url = f"{self.base_url}/v1/assets/{url_quote(symbol, safe='@')}"
         request_jwt = self.jwt_token
@@ -255,11 +477,11 @@ class FinamBrokerClient:
         if not normalized:
             return None
         symbol = f"{normalized}@MISX"
-        account = str(account_id or "").strip()
+        account = str(account_id or self.account_id or "").strip()
         if not account or account == "UNKNOWN_ACCOUNT":
             logger.error(
-                "Finam GetAssetParams %s skipped: account_id is missing; "
-                "configure FINAM_ACCOUNT_ID (or the legacy FINAM_CLIENT_ID fallback).",
+                "Finam GetAssetParams %s skipped: no account was resolved from the authenticated session; "
+                "new entries remain blocked.",
                 normalized,
             )
             return None
@@ -281,8 +503,9 @@ class FinamBrokerClient:
                     if await self._refresh_auth_if_unchanged(request_jwt):
                         continue
                 logger.warning(
-                    "Finam GetAssetParams %s failed: HTTP %s",
+                    "Finam GetAssetParams %s failed: HTTP %s; response=%s",
                     normalized, exc.response.status_code,
+                    self._safe_response_hint(exc.response),
                 )
                 return None
             except (httpx.RequestError, ValueError, TypeError) as exc:
@@ -458,6 +681,34 @@ class FinamBrokerClient:
         if isinstance(value, list):
             return [FinamBrokerClient._redact_for_log(item) for item in value[:20]]
         return value
+
+    @staticmethod
+    def _safe_response_hint(response: httpx.Response, max_chars: int = 400) -> str:
+        """Return a bounded provider error body with credentials redacted."""
+        try:
+            payload = response.json()
+        except (ValueError, TypeError):
+            payload = response.text or ""
+        if isinstance(payload, (dict, list)):
+            rendered = json.dumps(
+                FinamBrokerClient._redact_for_log(payload),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        else:
+            rendered = str(payload)
+        rendered = re.sub(
+            r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+",
+            r"\1<redacted>",
+            rendered,
+        )
+        rendered = re.sub(
+            r'(?i)((?:access[_-]?token|refresh[_-]?token|token|authorization|password|secret|api[_-]?key)\s*[:=]\s*)("[^"]*"|[^,\s}]+)',
+            r"\1<redacted>",
+            rendered,
+        )
+        rendered = re.sub(r"\s+", " ", rendered).strip()
+        return rendered[:max(0, int(max_chars))] or "<empty>"
 
     @staticmethod
     def _extract_order_book_symbol_hints(value: Any) -> set[str]:
