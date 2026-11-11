@@ -2807,16 +2807,27 @@ async def _finam_metadata_refresh_loop() -> None:
         if not str(getattr(broker, "jwt_token", "") or "").strip():
             await asyncio.sleep(1.0)
             continue
-        account_id = (
-            str(os.getenv("FINAM_ACCOUNT_ID", "")).strip()
-            or str(os.getenv("FINAM_CLIENT_ID", "")).strip()
-        )
+        account_id = str(getattr(broker, "account_id", "") or "").strip()
+        if not account_id:
+            discover = getattr(broker, "discover_accounts", None)
+            if callable(discover):
+                try:
+                    account_id = str(
+                        await discover() or getattr(broker, "account_id", "") or ""
+                    ).strip()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "[FINAM METADATA WORKER] account discovery failed: %s",
+                        type(exc).__name__,
+                    )
         if not account_id or account_id.upper() == "UNKNOWN_ACCOUNT":
             logger.warning(
-                "⛔ [FINAM METADATA WORKER] waiting for FINAM_ACCOUNT_ID; "
-                "new entries remain blocked until account-specific parameters can be loaded."
+                "⛔ [FINAM METADATA WORKER] account_id не получен из текущей Finam-сессии; "
+                "новые входы остаются заблокированы."
             )
-            await asyncio.sleep(refresh_sec)
+            await asyncio.sleep(min(refresh_sec, 60.0))
             continue
         try:
             await RiskManager.update_finam_lot_sizes(finam_broker_client=broker)
