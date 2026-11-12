@@ -40,6 +40,7 @@ class ScreenerCrossStreamBboTests(unittest.TestCase):
         self.assertEqual(quote["last_bid_book_event_seen"], 9.80)
         self.assertEqual(quote["last_bid_quotes_event_seen"], 9.95)
         self.assertEqual(quote["last_bid_source_received_seen"], 10.0)
+        self.assertEqual(quote["last_bid_confirmed_seen"], 9.80)
 
         metrics = {}
         ok, reason = refresh_candidate_bbo_metrics(screener, "TESTBBO", metrics, now=10.0)

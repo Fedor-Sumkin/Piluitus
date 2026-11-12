@@ -844,23 +844,19 @@ class HFTMemoryScreener:
                         ask_seen_at if ask_seen_at > 0.0 else book_seen_at,
                     )
             # A coherent, in-order delta confirms both sides of the maintained
-            # book even if neither best level changed. Preserve a newer QUOTES
-            # confirmation rather than moving its clock backwards.
+            # book even if neither best level changed. Record this book's actual
+            # event time; never borrow a newer QUOTES timestamp for an older book.
             if current_bid > 0.0 and accept_bid_update:
                 # When the envelope clock is absent, `book_seen_at` is the
                 # captured socket receive time. A level timestamp may be old
                 # simply because that resting price has not changed recently.
                 bid_confirmation_at = book_seen_at
-                quote["last_bid_confirmed_seen"] = max(
-                    float(quote.get("last_bid_confirmed_seen", 0.0) or 0.0), bid_confirmation_at
-                )
+                quote["last_bid_confirmed_seen"] = bid_confirmation_at
             elif current_bid <= 0.0:
                 quote["last_bid_confirmed_seen"] = 0.0
             if current_ask > 0.0 and accept_ask_update:
                 ask_confirmation_at = book_seen_at
-                quote["last_ask_confirmed_seen"] = max(
-                    float(quote.get("last_ask_confirmed_seen", 0.0) or 0.0), ask_confirmation_at
-                )
+                quote["last_ask_confirmed_seen"] = ask_confirmation_at
             elif current_ask <= 0.0:
                 quote["last_ask_confirmed_seen"] = 0.0
             bid_confirmed = float(quote.get("last_bid_confirmed_seen", 0.0) or 0.0)
