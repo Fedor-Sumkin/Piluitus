@@ -579,7 +579,7 @@ class FinamBrokerClient:
                 )
                 return None
             except httpx.RequestError as exc:
-                detail = re.sub(r"\\s+", " ", str(exc)).strip()[:180] or "<no detail>"
+                detail = re.sub(r"\s+", " ", str(exc)).strip()[:180] or "<no detail>"
                 logger.warning(
                     "Finam GetAsset %s request failed: error_type=%s; detail=%s; request_symbol=%s",
                     normalized, type(exc).__name__, detail, symbol,
