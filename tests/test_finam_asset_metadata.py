@@ -30,6 +30,69 @@ class _FinamMetadataStub:
 
 
 class FinamAssetMetadataTests(unittest.TestCase):
+    def test_get_asset_logs_http_status_and_sanitized_provider_body(self):
+        import httpx
+
+        url = "https://api.finam.ru/v1/assets/VTBR@MISX"
+        response = httpx.Response(
+            404,
+            json={"error": "asset not found", "access_token": "must-not-leak"},
+            request=httpx.Request("GET", url),
+        )
+
+        class _AsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, *args, **kwargs):
+                return response
+
+        client = FinamBrokerClient(token="test-token")
+        client.jwt_token = "test-jwt"
+        with patch("exchange.finam_client.httpx.AsyncClient", _AsyncClient):
+            with self.assertLogs("Piluitus.FinamGateway", level="WARNING") as captured:
+                result = asyncio.run(client.get_asset("VTBR"))
+
+        self.assertIsNone(result)
+        output = "\\n".join(captured.output)
+        self.assertIn("HTTP 404", output)
+        self.assertIn("asset not found", output)
+        self.assertNotIn("must-not-leak", output)
+        self.assertIn("<redacted>", output)
+
+    def test_get_asset_logs_request_timeout_instead_of_silently_returning_none(self):
+        import httpx
+
+        class _AsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url, **kwargs):
+                raise httpx.ConnectTimeout("connection timed out")
+
+        client = FinamBrokerClient(token="test-token")
+        client.jwt_token = "test-jwt"
+        with patch("exchange.finam_client.httpx.AsyncClient", _AsyncClient):
+            with self.assertLogs("Piluitus.FinamGateway", level="WARNING") as captured:
+                result = asyncio.run(client.get_asset("VTBR"))
+
+        self.assertIsNone(result)
+        output = "\\n".join(captured.output)
+        self.assertIn("ConnectTimeout", output)
+        self.assertIn("connection timed out", output)
+
     def test_paper_uses_public_exchange_lot_and_asset_details(self):
         old_lot = LOT_SIZES.get("TESTMETA")
         old_trade_lot = FINAM_TRADE_LOT_SIZES.get("TESTMETA")
