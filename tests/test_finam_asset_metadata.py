@@ -115,6 +115,131 @@ class FinamAssetMetadataTests(unittest.TestCase):
             else:
                 FINAM_TRADE_LOT_SIZES["TESTMETA"] = old_trade_lot
 
+    def test_get_moex_asset_parses_verified_tqbr_lot_and_scaled_tick(self):
+        import httpx
+
+        captured = {}
+
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            @staticmethod
+            def json():
+                return {
+                    "securities": {
+                        "columns": ["SECID", "BOARDID", "LOTSIZE", "MINSTEP", "DECIMALS", "CURRENCYID"],
+                        "data": [["VTBR", "TQBR", 10000, 0.01, 2, "RUB"]],
+                    }
+                }
+
+        class _AsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url, params=None):
+                captured["url"] = url
+                captured["params"] = params
+                return _Response()
+
+        client = FinamBrokerClient(token="")
+        with patch("exchange.finam_client.httpx.AsyncClient", _AsyncClient):
+            payload = asyncio.run(client.get_moex_asset("VTBR"))
+
+        self.assertEqual(payload["lot_size"]["value"], "10000")
+        self.assertEqual(payload["min_step"], 1)
+        self.assertEqual(payload["decimals"], 2)
+        self.assertEqual(payload["mic"], "MISX")
+        self.assertEqual(payload["metadata_source"], "MOEX_ISS_TQBR")
+        self.assertIn("/boards/TQBR/securities/VTBR.json", captured["url"])
+        self.assertEqual(captured["params"]["iss.only"], "securities")
+
+    def test_get_moex_asset_rejects_non_tqbr_or_mismatched_security(self):
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            @staticmethod
+            def json():
+                return {
+                    "securities": {
+                        "columns": ["SECID", "BOARDID", "LOTSIZE", "MINSTEP", "DECIMALS"],
+                        "data": [["VTBR", "TQTF", 10000, 0.01, 2]],
+                    }
+                }
+
+        class _AsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url, params=None):
+                return _Response()
+
+        client = FinamBrokerClient(token="")
+        with patch("exchange.finam_client.httpx.AsyncClient", _AsyncClient):
+            with self.assertLogs("Piluitus.FinamGateway", level="WARNING"):
+                payload = asyncio.run(client.get_moex_asset("VTBR"))
+        self.assertIsNone(payload)
+
+    def test_paper_prefers_public_moex_metadata_without_fin​​am_account_context(self):
+        class _MoexOnly(_FinamMetadataStub):
+            async def get_moex_asset(self, ticker: str):
+                if ticker != "TESTMETA":
+                    return None
+                return {
+                    "symbol": "TESTMETA@MISX",
+                    "ticker": "TESTMETA",
+                    "mic": "MISX",
+                    "decimals": 2,
+                    "min_step": 5,
+                    "lot_size": {"value": "10"},
+                    "quote_currency": "RUB",
+                    "metadata_source": "MOEX_ISS_TQBR",
+                }
+
+            async def discover_metadata_account_id(self):
+                raise AssertionError("PAPER MOEX metadata must not discover a Finam account")
+
+            async def get_asset(self, ticker: str, account_id: str | None = None):
+                raise AssertionError("PAPER must use MOEX ISS, not Finam GetAsset")
+
+        old_lot = LOT_SIZES.get("TESTMETA")
+        old_trade_lot = FINAM_TRADE_LOT_SIZES.get("TESTMETA")
+        old_metadata = ASSET_METADATA.get("TESTMETA")
+        try:
+            LOT_SIZES["TESTMETA"] = 1
+            ASSET_METADATA.pop("TESTMETA", None)
+            with patch.dict("os.environ", {"FINAM_METADATA_REQUEST_INTERVAL_SEC": "0"}):
+                asyncio.run(RiskManager.update_finam_lot_sizes(_MoexOnly(), paper_mode=True))
+            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 10)
+            self.assertEqual(ASSET_METADATA["TESTMETA"]["metadata_source"], "MOEX_ISS_TQBR")
+            self.assertEqual(ASSET_METADATA["TESTMETA"]["price_tick"], 0.05)
+        finally:
+            if old_lot is None:
+                LOT_SIZES.pop("TESTMETA", None)
+            else:
+                LOT_SIZES["TESTMETA"] = old_lot
+            if old_trade_lot is None:
+                FINAM_TRADE_LOT_SIZES.pop("TESTMETA", None)
+            else:
+                FINAM_TRADE_LOT_SIZES["TESTMETA"] = old_trade_lot
+            if old_metadata is None:
+                ASSET_METADATA.pop("TESTMETA", None)
+            else:
+                ASSET_METADATA["TESTMETA"] = old_metadata
+
     def test_get_asset_logs_http_status_and_sanitized_provider_body(self):
         import httpx
 
