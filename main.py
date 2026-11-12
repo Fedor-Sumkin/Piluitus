@@ -61,8 +61,9 @@ from news_parser import MarketNewsParser
 load_dotenv()
 
 FINAM_TOKEN = os.getenv("FINAM_TOKEN", "")
-CLIENT_ID   = os.getenv("FINAM_CLIENT_ID", "UNKNOWN_ACCOUNT")
-DEPOSIT      = float(os.getenv("TRADING_DEPOSIT", 100000.0))
+# PAPER orders are recorded against an internal simulator identity, never a Finam client/account ID.
+CLIENT_ID = "PILUITUS_PAPER" if Settings.PAPER_TRADING else os.getenv("FINAM_CLIENT_ID", "UNKNOWN_ACCOUNT")
+DEPOSIT = float(os.getenv("TRADING_DEPOSIT", 100000.0))
 
 # --------------------------------------------------------------
 #  LOGGING REGIME
