@@ -219,6 +219,12 @@ class HFTMemoryScreener:
             # side, so an older packet cannot resurrect a withdrawn quote.
             "last_bid_event_seen": 0.0,
             "last_ask_event_seen": 0.0,
+            "last_bid_quotes_event_seen": 0.0,
+            "last_ask_quotes_event_seen": 0.0,
+            "last_bid_book_event_seen": 0.0,
+            "last_ask_book_event_seen": 0.0,
+            "last_bid_source_received_seen": 0.0,
+            "last_ask_source_received_seen": 0.0,
             "last_bid_size_event_seen": 0.0,
             "last_ask_size_event_seen": 0.0,
             "last_order_book_received": 0.0,
@@ -702,8 +708,8 @@ class HFTMemoryScreener:
             old_bid = float(quote.get("bid", 0.0) or 0.0)
             old_ask = float(quote.get("ask", 0.0) or 0.0)
 
-            prior_bid_event = float(quote.get("last_bid_event_seen", quote.get("last_bid_seen", 0.0)) or 0.0)
-            prior_ask_event = float(quote.get("last_ask_event_seen", quote.get("last_ask_seen", 0.0)) or 0.0)
+            prior_bid_event = float(quote.get("last_bid_book_event_seen", 0.0) or 0.0)
+            prior_ask_event = float(quote.get("last_ask_book_event_seen", 0.0) or 0.0)
             # Every emitted parser event contains a complete reconstructed book.
             # The envelope clock orders that state against QUOTES and earlier
             # ORDER_BOOK events. Per-level timestamps are retained only as
@@ -717,11 +723,23 @@ class HFTMemoryScreener:
             # at that price; they must never be used as the message ordering clock.
             bid_ordering_time = book_seen_at
             ask_ordering_time = book_seen_at
-            accept_bid_update = bool(
+            accept_bid_event = bool(
                 bid_state_present and (prior_bid_event <= 0.0 or bid_ordering_time + 0.001 >= prior_bid_event)
             )
-            accept_ask_update = bool(
+            accept_ask_event = bool(
                 ask_state_present and (prior_ask_event <= 0.0 or ask_ordering_time + 0.001 >= prior_ask_event)
+            )
+            if accept_bid_event:
+                quote["last_bid_book_event_seen"] = max(prior_bid_event, bid_ordering_time)
+            if accept_ask_event:
+                quote["last_ask_book_event_seen"] = max(prior_ask_event, ask_ordering_time)
+            accept_bid_update = bool(
+                accept_bid_event
+                and received_at >= float(quote.get("last_bid_source_received_seen", 0.0) or 0.0)
+            )
+            accept_ask_update = bool(
+                accept_ask_event
+                and received_at >= float(quote.get("last_ask_source_received_seen", 0.0) or 0.0)
             )
 
             old_bid = float(quote.get("bid", 0.0) or 0.0)
@@ -735,7 +753,8 @@ class HFTMemoryScreener:
             if not book_valid:
                 if bid_state_present and accept_bid_update:
                     quote["bid"] = candidate_bid
-                    quote["last_bid_event_seen"] = max(prior_bid_event, bid_ordering_time)
+                    quote["last_bid_source_received_seen"] = received_at
+                    quote["last_bid_event_seen"] = bid_ordering_time
                     if bid_present:
                         quote["last_bid_seen"] = max(
                             float(quote.get("last_bid_seen", 0.0) or 0.0),
@@ -743,7 +762,8 @@ class HFTMemoryScreener:
                         )
                 if ask_state_present and accept_ask_update:
                     quote["ask"] = candidate_ask
-                    quote["last_ask_event_seen"] = max(prior_ask_event, ask_ordering_time)
+                    quote["last_ask_source_received_seen"] = received_at
+                    quote["last_ask_event_seen"] = ask_ordering_time
                     if ask_present:
                         quote["last_ask_seen"] = max(
                             float(quote.get("last_ask_seen", 0.0) or 0.0),
@@ -777,9 +797,11 @@ class HFTMemoryScreener:
                 quote["bid"] = current_bid
                 quote["ask"] = current_ask
                 if accept_bid_update:
-                    quote["last_bid_event_seen"] = max(prior_bid_event, bid_ordering_time)
+                    quote["last_bid_source_received_seen"] = received_at
+                    quote["last_bid_event_seen"] = bid_ordering_time
                 if accept_ask_update:
-                    quote["last_ask_event_seen"] = max(prior_ask_event, ask_ordering_time)
+                    quote["last_ask_source_received_seen"] = received_at
+                    quote["last_ask_event_seen"] = ask_ordering_time
                 quote["last_bid_confirmed_seen"] = 0.0
                 quote["last_ask_confirmed_seen"] = 0.0
                 quote["last_bbo_seen"] = 0.0
@@ -807,14 +829,16 @@ class HFTMemoryScreener:
                 # prevents a delayed QUOTES packet from rolling the maintained
                 # BBO backwards. `last_bid_seen` remains the last actual best-
                 # level update, separate from the book-confirmation clock.
-                quote["last_bid_event_seen"] = max(prior_bid_event, bid_ordering_time)
+                quote["last_bid_source_received_seen"] = received_at
+                quote["last_bid_event_seen"] = bid_ordering_time
                 if bid_present:
                     quote["last_bid_seen"] = max(
                         float(quote.get("last_bid_seen", 0.0) or 0.0),
                         bid_seen_at if bid_seen_at > 0.0 else book_seen_at,
                     )
             if accept_ask_update:
-                quote["last_ask_event_seen"] = max(prior_ask_event, ask_ordering_time)
+                quote["last_ask_source_received_seen"] = received_at
+                quote["last_ask_event_seen"] = ask_ordering_time
                 if ask_present:
                     quote["last_ask_seen"] = max(
                         float(quote.get("last_ask_seen", 0.0) or 0.0),
@@ -1042,9 +1066,10 @@ class HFTMemoryScreener:
             bid_size_present = (bid_size > 0) if bid_size_present is None else bool(bid_size_present)
             ask_size_present = (ask_size > 0) if ask_size_present is None else bool(ask_size_present)
 
-            # QUOTES and ORDER_BOOK must share the provider event clock. Stamping
-            # QUOTES with local receive time would make a slightly older book
-            # delta look out-of-order and could leave an open position's BBO stale.
+            # QUOTES and ORDER_BOOK have independent event-time watermarks.
+            # Their envelope timestamps can differ slightly even when the later
+            # received packet is the newest observation. Keep ordering within
+            # each source, then use captured ingress time to arbitrate sources.
             received_at = now
             if received_monotonic is not None:
                 try:
@@ -1054,20 +1079,34 @@ class HFTMemoryScreener:
                 except (TypeError, ValueError, OverflowError):
                     pass
             event_seen_at = _event_timestamp_to_monotonic(event_timestamp, received_at)
-            prior_bid_event = float(quote.get("last_bid_event_seen", quote.get("last_bid_seen", 0.0)) or 0.0)
-            prior_ask_event = float(quote.get("last_ask_event_seen", quote.get("last_ask_seen", 0.0)) or 0.0)
-            accept_bid_update = bool(
+            prior_bid_event = float(quote.get("last_bid_quotes_event_seen", 0.0) or 0.0)
+            prior_ask_event = float(quote.get("last_ask_quotes_event_seen", 0.0) or 0.0)
+            accept_bid_event = bool(
                 bid_present and (prior_bid_event <= 0.0 or event_seen_at >= prior_bid_event)
             )
-            accept_ask_update = bool(
+            accept_ask_event = bool(
                 ask_present and (prior_ask_event <= 0.0 or event_seen_at >= prior_ask_event)
             )
+            accept_bid_update = bool(
+                accept_bid_event
+                and received_at >= float(quote.get("last_bid_source_received_seen", 0.0) or 0.0)
+            )
+            accept_ask_update = bool(
+                accept_ask_event
+                and received_at >= float(quote.get("last_ask_source_received_seen", 0.0) or 0.0)
+            )
+            if accept_bid_event:
+                quote["last_bid_quotes_event_seen"] = event_seen_at
+            if accept_ask_event:
+                quote["last_ask_quotes_event_seen"] = event_seen_at
             if accept_bid_update:
+                quote["last_bid_source_received_seen"] = received_at
                 quote["last_bid_event_seen"] = event_seen_at
                 quote["bid"] = float(bid) if bid > 0.0 else 0.0
                 quote["last_bid_seen"] = event_seen_at if bid > 0.0 else 0.0
                 quote["last_bid_confirmed_seen"] = event_seen_at if bid > 0.0 else 0.0
             if accept_ask_update:
+                quote["last_ask_source_received_seen"] = received_at
                 quote["last_ask_event_seen"] = event_seen_at
                 quote["ask"] = float(ask) if ask > 0.0 else 0.0
                 quote["last_ask_seen"] = event_seen_at if ask > 0.0 else 0.0

@@ -256,6 +256,10 @@ class RiskManager:
                 if wait_sec > 0.0:
                     await asyncio.sleep(wait_sec)
                 next_request_at = time.monotonic() + request_interval_sec
+            # PAPER has no brokerage account. Never inherit an account ID from
+            # the client when requesting public exchange instrument metadata.
+            if is_paper:
+                return await method(ticker)
             return await method(ticker, account_id=account_id)
 
         async def refresh_one(ticker: str) -> None:
@@ -282,21 +286,27 @@ class RiskManager:
                         )
                         params_payload = None
 
-            if isinstance(asset_payload, dict):
+            asset_data = asset_payload
+            if isinstance(asset_payload, dict) and isinstance(asset_payload.get("asset"), dict):
+                asset_data = asset_payload["asset"]
+
+            if isinstance(asset_data, dict):
                 try:
-                    decimals = int(asset_payload.get("decimals", -1))
-                    min_step = int(float(asset_payload.get("min_step", 0)))
-                    lot_raw = asset_payload.get("lot_size")
-                    exchange_lot = float(lot_raw.get("value")) if isinstance(lot_raw, dict) else float(lot_raw or 0)
-                    mic = str(asset_payload.get("mic") or "").strip().upper()
+                    decimals = int(asset_data.get("decimals", -1))
+                    min_step = int(float(asset_data.get("min_step", 0)))
+                    lot_raw = asset_data.get("lot_size")
+                    if isinstance(lot_raw, dict):
+                        lot_raw = lot_raw.get("value", lot_raw.get("units", lot_raw.get("amount", 0)))
+                    exchange_lot = float(lot_raw or 0)
+                    mic = str(asset_data.get("mic") or "").strip().upper()
                     if decimals >= 0 and min_step > 0 and mic in {"", "MISX"}:
                         ASSET_METADATA[normalized] = {
-                            "symbol": str(asset_payload.get("symbol") or f"{normalized}@MISX"),
+                            "symbol": str(asset_data.get("symbol") or f"{normalized}@MISX"),
                             "decimals": decimals,
                             "min_step": min_step,
                             "price_tick": min_step / (10 ** decimals),
                             "lot_size": exchange_lot,
-                            "quote_currency": str(asset_payload.get("quote_currency") or ""),
+                            "quote_currency": str(asset_data.get("quote_currency") or ""),
                             "metadata_source": "FINAM_GET_ASSET",
                         }
                         updated_metadata += 1
@@ -312,7 +322,7 @@ class RiskManager:
                 # no Finam brokerage account, so GetAssetParams/account discovery
                 # must never gate the internal simulator.
                 try:
-                    lot_value = float(exchange_lot) if isinstance(asset_payload, dict) else 0.0
+                    lot_value = float(exchange_lot) if isinstance(asset_data, dict) else 0.0
                     paper_lot = int(lot_value)
                     if math.isfinite(lot_value) and lot_value > 0 and lot_value == paper_lot:
                         FINAM_TRADE_LOT_SIZES[normalized] = paper_lot
@@ -794,8 +804,9 @@ class RiskManager:
         except (TypeError, ValueError, OverflowError):
             risk_logger = logging.getLogger("Piluitus.RiskManager")
             risk_logger.error(
-                "Размер позиции заблокирован: Finam trade_lot_size для %s не подтверждён; "
+                "Размер позиции заблокирован: %s lot_size для %s не подтверждён; "
                 "статический LOT_SIZES не используется для нового ордера.",
+                "биржевой exchange" if PAPER_TRADING else "Finam account trade",
                 normalized_ticker,
             )
             return 0
