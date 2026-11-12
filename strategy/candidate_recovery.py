@@ -58,6 +58,19 @@ def _refresh_locked(
     ask_age = now - ask_seen if ask_seen > 0.0 else math.inf
     max_age = _finite(getattr(screener, "bbo_max_age_sec", 2.0), 2.0)
     max_age = min(5.0, max(0.25, max_age))
+
+    # A fresh QUOTES BBO is not sufficient if the reconstructed ORDER_BOOK
+    # itself is old. Require both a recent coherent book and fresh two-sided
+    # confirmations before allowing a deferred candidate to resume.
+    last_order_book_seen = _finite(quote.get("last_order_book_seen"))
+    order_book_age = now - last_order_book_seen if last_order_book_seen > 0.0 else math.inf
+    if (
+        not math.isfinite(order_book_age)
+        or order_book_age < 0.0
+        or order_book_age > max_age
+    ):
+        return False, "Последнее состояние ORDER_BOOK устарело или не имеет подтверждённого времени."
+
     if (
         not math.isfinite(bid_age)
         or not math.isfinite(ask_age)
