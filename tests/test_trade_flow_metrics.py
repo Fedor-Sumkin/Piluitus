@@ -39,7 +39,7 @@ class TradeFlowMetricsTests(unittest.TestCase):
 
         result = asyncio.run(screener.push_tick(
             "SBER", 100.06, 0.0, bid=100.05, ask=100.07,
-            event_timestamp=now, received_monotonic=now,
+            received_monotonic=now,
         ))
         metrics = result["metrics"]
 
