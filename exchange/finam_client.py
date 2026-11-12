@@ -600,6 +600,119 @@ class FinamBrokerClient:
                 return []
         return []
 
+    async def get_moex_asset(self, ticker: str) -> dict[str, Any] | None:
+        """Fetch public MOEX TQBR security metadata without a Finam brokerage account.
+
+        The ISS security table is the exchange source of truth for LOTSIZE.
+        MINSTEP is converted to the scaled integer representation used by the
+        existing ASSET_METADATA parser (MINSTEP * 10**DECIMALS).
+        """
+        normalized = str(ticker or "").strip().upper().split("@", 1)[0]
+        if not normalized or not re.fullmatch(r"[A-Z0-9._-]{1,32}", normalized):
+            return None
+
+        url = (
+            "https://iss.moex.com/iss/engines/stock/markets/shares/"
+            f"boards/TQBR/securities/{url_quote(normalized, safe='')}.json"
+        )
+        params = {
+            "iss.meta": "off",
+            "iss.only": "securities",
+            "securities.columns": "SECID,BOARDID,LOTSIZE,MINSTEP,DECIMALS,SHORTNAME,SECNAME,CURRENCYID",
+        }
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(8.0, connect=3.0),
+                headers={"Accept": "application/json", "User-Agent": "PILUITUS-market-metadata/1.0"},
+            ) as client:
+                response = await client.get(url, params=params)
+                response.raise_for_status()
+                payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "MOEX ISS metadata %s unavailable: HTTP %s; TQBR exchange lot remains unconfirmed.",
+                normalized, exc.response.status_code,
+            )
+            return None
+        except (httpx.RequestError, ValueError, TypeError) as exc:
+            logger.warning(
+                "MOEX ISS metadata %s request failed: %s; TQBR exchange lot remains unconfirmed.",
+                normalized, type(exc).__name__,
+            )
+            return None
+
+        block = payload.get("securities") if isinstance(payload, dict) else None
+        if not isinstance(block, dict):
+            logger.warning("MOEX ISS metadata %s returned no securities block.", normalized)
+            return None
+        columns = block.get("columns")
+        rows = block.get("data")
+        if not isinstance(columns, list) or not isinstance(rows, list):
+            logger.warning("MOEX ISS metadata %s returned an invalid securities table.", normalized)
+            return None
+
+        for row in rows:
+            if isinstance(row, dict):
+                record = row
+            elif isinstance(row, (list, tuple)) and len(row) == len(columns):
+                record = dict(zip(columns, row))
+            else:
+                continue
+
+            secid = str(record.get("SECID") or "").strip().upper()
+            board = str(record.get("BOARDID") or "").strip().upper()
+            if secid != normalized or board != "TQBR":
+                continue
+
+            try:
+                raw_lot = record.get("LOTSIZE")
+                lot_float = float(raw_lot)
+                lot_size = int(lot_float)
+                if not math.isfinite(lot_float) or lot_size <= 0 or lot_float != lot_size:
+                    raise ValueError("invalid LOTSIZE")
+            except (TypeError, ValueError, OverflowError):
+                logger.warning("MOEX ISS metadata %s has invalid LOTSIZE; exchange lot remains unconfirmed.", normalized)
+                return None
+
+            decimals = -1
+            try:
+                raw_decimals = record.get("DECIMALS")
+                decimals = int(raw_decimals)
+                if decimals < 0 or decimals > 10:
+                    decimals = -1
+            except (TypeError, ValueError, OverflowError):
+                decimals = -1
+
+            min_step_units = 0
+            if decimals >= 0:
+                try:
+                    from decimal import Decimal
+                    raw_step = Decimal(str(record.get("MINSTEP")))
+                    scaled_step = raw_step * (Decimal(10) ** decimals)
+                    if raw_step > 0 and scaled_step == scaled_step.to_integral_value():
+                        min_step_units = int(scaled_step)
+                except (TypeError, ValueError, ArithmeticError):
+                    min_step_units = 0
+
+            return {
+                "symbol": f"{normalized}@MISX",
+                "ticker": normalized,
+                "mic": "MISX",
+                "board": "TQBR",
+                "decimals": decimals,
+                "min_step": min_step_units,
+                "lot_size": {"value": str(lot_size)},
+                "quote_currency": str(record.get("CURRENCYID") or "RUB"),
+                "name": str(record.get("SECNAME") or record.get("SHORTNAME") or ""),
+                "metadata_source": "MOEX_ISS_TQBR",
+            }
+
+        logger.warning(
+            "MOEX ISS metadata %s has no matching TQBR security row; exchange lot remains unconfirmed.",
+            normalized,
+        )
+        return None
+
     async def get_asset(self, ticker: str, account_id: str | None = None) -> dict[str, Any] | None:
         """Fetch detailed instrument metadata (decimals, min_step, exchange lot_size)."""
         if not self.jwt_token:
