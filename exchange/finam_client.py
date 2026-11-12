@@ -386,7 +386,6 @@ class FinamBrokerClient:
                 if legacy_id and legacy_id != explicit_id:
                     candidates.append((legacy_id, "FINAM_CLIENT_ID"))
 
-                explicit_rejected = False
                 for candidate_id, candidate_source in candidates:
                     account_payload = await self.get_account(candidate_id)
                     if isinstance(account_payload, dict):
@@ -418,8 +417,6 @@ class FinamBrokerClient:
                         )
                         break
 
-                    if candidate_source == "FINAM_ACCOUNT_ID":
-                        explicit_rejected = True
                     logger.warning(
                         "[FINAM ACCOUNT DISCOVERY] %s не подтверждён GET /v1/accounts/{id}: "
                         "payload_ok=%s; identity_match=%s; mode_ok=%s; проверяется следующий "
