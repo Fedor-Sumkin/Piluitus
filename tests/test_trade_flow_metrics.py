@@ -24,6 +24,40 @@ class TradeFlowMetricsTests(unittest.TestCase):
         self.assertGreater(metrics["trade_vwap_60s"], 100.0)
         self.assertLess(metrics["trade_vwap_60s"], 105.0)
 
+    def test_push_tick_exposes_full_trade_metrics_for_llm_and_shadow(self):
+        screener = HFTMemoryScreener()
+        screener.enable_trade_data_mode()
+        screener.register_ticker("SBER")
+        now = time.monotonic()
+        screener.history["SBER"]["trade_events"] = deque([
+            (now - 60.0, 100.00, 10.0, "BUY"),
+            (now - 45.0, 100.02, 12.0, "BUY"),
+            (now - 30.0, 100.01, 8.0, "SELL"),
+            (now - 15.0, 100.04, 15.0, "BUY"),
+            (now - 1.0, 100.06, 50.0, "BUY"),
+        ])
+
+        result = asyncio.run(screener.push_tick(
+            "SBER", 100.06, 0.0, bid=100.05, ask=100.07,
+            event_timestamp=now, received_monotonic=now,
+        ))
+        metrics = result["metrics"]
+
+        self.assertEqual(metrics["trade_data_ready"], 1.0)
+        for field in (
+            "trade_volume_5s",
+            "trade_volume_baseline_5s",
+            "trade_flow_imbalance_30s",
+            "trade_price_change_30s_pct",
+            "trade_realized_volatility_60s_pct",
+            "trade_history_coverage_sec",
+            "trade_count_60s",
+        ):
+            self.assertIn(field, metrics)
+            self.assertIsNotNone(metrics[field])
+        self.assertGreater(metrics["trade_volume_5s"], 0.0)
+        self.assertGreater(metrics["trade_history_coverage_sec"], 0.0)
+
     def test_trade_flow_reset_does_not_erase_quote_driven_m1_history(self):
         screener = HFTMemoryScreener()
         engine = screener.minute_bar_patterns
