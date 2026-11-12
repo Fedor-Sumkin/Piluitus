@@ -248,6 +248,7 @@ class RiskManager:
         next_request_at = 0.0
         updated_lots = failed_lots = updated_metadata = failed_metadata = 0
         blocked_not_tradable = 0
+        paper_lot_failure_examples: list[str] = []
 
         async def call_limited(method, ticker: str):
             nonlocal next_request_at
@@ -271,6 +272,8 @@ class RiskManager:
                 asset_payload = None
                 params_payload = None
                 exchange_lot = 0.0
+                asset_market_ok = False
+                asset_mic = ""
                 if callable(asset_method):
                     try:
                         asset_payload = await call_limited(asset_method, normalized)
@@ -299,7 +302,9 @@ class RiskManager:
                         lot_raw = lot_raw.get("value", lot_raw.get("units", lot_raw.get("amount", 0)))
                     exchange_lot = float(lot_raw or 0)
                     mic = str(asset_data.get("mic") or "").strip().upper()
-                    if decimals >= 0 and min_step > 0 and mic in {"", "MISX"}:
+                    asset_mic = mic or "UNSPECIFIED"
+                    asset_market_ok = mic in {"", "MISX"}
+                    if decimals >= 0 and min_step > 0 and asset_market_ok:
                         ASSET_METADATA[normalized] = {
                             "symbol": str(asset_data.get("symbol") or f"{normalized}@MISX"),
                             "decimals": decimals,
@@ -324,12 +329,20 @@ class RiskManager:
                 try:
                     lot_value = float(exchange_lot) if isinstance(asset_data, dict) else 0.0
                     paper_lot = int(lot_value)
-                    if math.isfinite(lot_value) and lot_value > 0 and lot_value == paper_lot:
+                    if asset_market_ok and math.isfinite(lot_value) and lot_value > 0 and lot_value == paper_lot:
                         FINAM_TRADE_LOT_SIZES[normalized] = paper_lot
                         updated_lots += 1
                     else:
                         FINAM_TRADE_LOT_SIZES.pop(normalized, None)
                         failed_lots += 1
+                        if len(paper_lot_failure_examples) < 8:
+                            if not isinstance(asset_data, dict):
+                                reason = "GetAsset payload missing/invalid"
+                            elif not asset_market_ok:
+                                reason = f"unsupported MIC={asset_mic}"
+                            else:
+                                reason = f"invalid/missing lot_size={lot_value!r}"
+                            paper_lot_failure_examples.append(f"{normalized}:{reason}")
                 except (TypeError, ValueError, OverflowError):
                     FINAM_TRADE_LOT_SIZES.pop(normalized, None)
                     failed_lots += 1
@@ -373,11 +386,13 @@ class RiskManager:
         risk_logger.info(
             "📦 [FINAM METADATA] mode=%s account_context=%s; "
             "lot multiplier confirmed=%d/%d; unavailable=%d (new entries blocked); "
-            "not_tradable_or_unconfirmed=%d; tick-size=%d/%d; metadata unavailable=%d (static tick-size retained).",
+            "not_tradable_or_unconfirmed=%d; tick-size=%d/%d; metadata unavailable=%d (static tick-size retained); "
+            "PAPER lot failure examples=%s.",
             "PAPER" if is_paper else "LIVE",
             "not_required_pseudo_account" if is_paper else f"{account_id_source}:{bool(account_id)}",
             updated_lots, len(symbols_to_refresh), failed_lots, blocked_not_tradable,
             updated_metadata, len(symbols_to_refresh), failed_metadata,
+            "; ".join(paper_lot_failure_examples) if paper_lot_failure_examples else "-",
         )
 
 
@@ -806,7 +821,7 @@ class RiskManager:
             risk_logger.error(
                 "Размер позиции заблокирован: %s lot_size для %s не подтверждён; "
                 "статический LOT_SIZES не используется для нового ордера.",
-                "биржевой exchange" if PAPER_TRADING else "Finam account trade",
+                "биржевой" if PAPER_TRADING else "Finam account trade",
                 normalized_ticker,
             )
             return 0

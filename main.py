@@ -2643,7 +2643,7 @@ class MarketWorker:
                             if lot_multiplier <= 0:
                                 _trade_flow_inc("finam_lot_unavailable")
                                 execution_message = (
-                                    f"{'биржевой exchange lot_size' if Settings.PAPER_TRADING else 'Finam account trade_lot_size'} для {ticker} не подтверждён; "
+                                    f"{'биржевой lot_size' if Settings.PAPER_TRADING else 'Finam account trade_lot_size'} для {ticker} не подтверждён; "
                                     "новая позиция не открыта."
                                 )
                                 logger.warning(

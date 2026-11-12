@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from config import ASSET_METADATA, FINAM_TRADE_LOT_SIZES, LOT_SIZES
+from finam_client import FinamBrokerClient
 from risk_manager import RiskManager
 
 
@@ -132,6 +133,39 @@ class FinamAssetMetadataTests(unittest.TestCase):
             else:
                 FINAM_TRADE_LOT_SIZES["TESTMETA"] = old_trade_lot
 
+
+    def test_public_get_asset_does_not_inherit_client_account_id(self):
+        captured = {}
+
+        class _Response:
+            def raise_for_status(self):
+                return None
+
+            @staticmethod
+            def json():
+                return {"symbol": "VTBR@MISX", "lot_size": {"value": "10"}}
+
+        class _AsyncClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url, *, headers, params=None):
+                captured["url"] = url
+                captured["params"] = params
+                return _Response()
+
+        client = FinamBrokerClient(token="test-token")
+        client.jwt_token = "test-jwt"
+        client.account_id = "STALE-PAPER-ACCOUNT"
+
+        with patch("exchange.finam_client.httpx.AsyncClient", return_value=_AsyncClient()):
+            payload = asyncio.run(client.get_asset("VTBR"))
+
+        self.assertEqual(payload["lot_size"]["value"], "10")
+        self.assertIsNone(captured["params"])
 
 if __name__ == "__main__":
     unittest.main()

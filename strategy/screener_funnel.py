@@ -711,10 +711,9 @@ class HFTMemoryScreener:
             prior_bid_event = float(quote.get("last_bid_book_event_seen", 0.0) or 0.0)
             prior_ask_event = float(quote.get("last_ask_book_event_seen", 0.0) or 0.0)
             # Every emitted parser event contains a complete reconstructed book.
-            # The envelope clock orders that state against QUOTES and earlier
-            # ORDER_BOOK events. Per-level timestamps are retained only as
-            # last-level-change diagnostics; they are not suitable for ordering
-            # a full-book heartbeat against a newer QUOTES message.
+            # Its envelope clock orders this stream against earlier ORDER_BOOK
+            # events only. Cross-stream arbitration uses socket-ingress time;
+            # each stream retains its own event-time watermark.
             bid_state_present = bool(bid_present or bid_levels_present or order_book_timestamp is not None)
             ask_state_present = bool(ask_present or ask_levels_present or order_book_timestamp is not None)
             # The envelope timestamp orders the complete ORDER_BOOK message.

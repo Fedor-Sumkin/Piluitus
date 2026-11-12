@@ -529,7 +529,7 @@ class BaseExecutionEngine:
                 lot_size = 0
             if lot_size <= 0:
                 return 0, (
-                    f"{'биржевой exchange lot_size' if self.paper_mode else 'Finam account trade_lot_size'} для {normalized_ticker} не подтверждён; "
+                    f"{'биржевой lot_size' if self.paper_mode else 'Finam account trade_lot_size'} для {normalized_ticker} не подтверждён; "
                     "резервирование нового ордера заблокировано."
                 )
             notional_per_lot = price * lot_size
@@ -1280,7 +1280,7 @@ class BaseExecutionEngine:
                 return {
                     "status": "SKIPPED",
                     "message": (
-                        f"биржевой exchange lot_size для {ticker} не подтверждён; "
+                        f"биржевой lot_size для {ticker} не подтверждён; "
                         "новая PAPER-позиция не создаётся."
                     ),
                 }
