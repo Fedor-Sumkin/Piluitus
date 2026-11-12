@@ -380,14 +380,28 @@ class AIEngine:
             if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
                 raise ValueError("Поле confidence_score должно находиться в диапазоне 0..1")
 
-            raw_reason_code = parsed.get("reason_code", "NOT_PROVIDED")
+            raw_reason_code = parsed.get("reason_code")
             reason_code = (
                 str(raw_reason_code).strip().upper()
                 if isinstance(raw_reason_code, str) else "NOT_PROVIDED"
             )
             if reason_code not in MODEL_REASON_CODES:
-                log.warning("[vLLM REASON CODE] Invalid/missing enum value %r; using NOT_PROVIDED.", raw_reason_code)
-                reason_code = "NOT_PROVIDED"
+                # Older prompt/model combinations sometimes emit HOLD_{ENUM} or
+                # append a short explanation to the enum. Recover only an exact
+                # known reason; never infer a reason from arbitrary metric text.
+                legacy_match = re.fullmatch(r"HOLD_\\{\\s*([A-Z_]+)\\s*\\}", reason_code)
+                legacy_reason = legacy_match.group(1) if legacy_match else ""
+                if legacy_reason in MODEL_REASON_CODES:
+                    reason_code = legacy_reason
+                elif "M1_NEUTRAL" in reason_code or "M1_UNAVAILABLE" in reason_code:
+                    reason_code = "HOLD_INSUFFICIENT_SUPPORT"
+                elif reason_code == "HOLD":
+                    reason_code = "HOLD_UNCLEAR"
+                else:
+                    # reason_code is advisory; an invalid value must not turn a
+                    # valid APPROVE/HOLD JSON contract into a warning storm.
+                    log.debug("[vLLM REASON CODE] Unrecognized optional value %r; using NOT_PROVIDED.", raw_reason_code)
+                    reason_code = "NOT_PROVIDED"
             usage = raw_response_data.get("usage", {})
             return {
                 "error_type": None,
@@ -530,11 +544,13 @@ class AIEngine:
         """Короткий prompt с запасом под лимит vLLM 2048 токенов."""
         direction = candidate_direction if candidate_direction in {"BUY", "SELL"} else "NONE"
         common_keys = (
-            "price_change_pct", "price_vs_vwap_pct", "volume_spike", "spread_pct",
-            "bid_ask_available", "spread_available", "trade_data_ready",
-            "trade_flow_imbalance_30s", "trade_count_60s", "trade_history_coverage_sec", "trade_metrics_age_sec",
-            "trade_vwap_60s", "trade_price_change_30s_pct",
-            "trade_realized_volatility_60s_pct", "queue_imbalance", "queue_imbalance_available",
+            "price_change_pct", "price_vs_vwap_pct", "volume_spike",
+            "trade_volume_5s", "trade_volume_baseline_5s", "trade_count_60s",
+            "trade_flow_imbalance_30s", "trade_buy_volume_30s", "trade_sell_volume_30s",
+            "trade_price_change_30s_pct", "trade_realized_volatility_60s_pct",
+            "trade_history_coverage_sec", "trade_metrics_age_sec", "trade_vwap_60s",
+            "spread_pct", "bid_ask_available", "spread_available", "trade_data_ready",
+            "queue_imbalance", "queue_imbalance_available",
             "bar_trend_up", "bar_trend_down", "bar_atr_pct", "bar_body_ratio",
             "bar_close_position",
         )
@@ -562,10 +578,12 @@ class AIEngine:
 
         direction_rules = {
             "BUY": (
-                "BUY requires positive 15s trade momentum and price>VWAP, or fresh bullish M1 with price>VWAP."
+                "BUY requires positive 15s trade momentum and price>VWAP, or fresh bullish M1 with price>VWAP. "
+                "Positive 30s BUY-vs-SELL trade-volume imbalance supports BUY; strong opposite flow is a caution."
             ),
             "SELL": (
-                "SELL requires negative 15s trade momentum and price<VWAP, or fresh bearish M1 with price<VWAP."
+                "SELL requires negative 15s trade momentum and price<VWAP, or fresh bearish M1 with price<VWAP. "
+                "Negative 30s BUY-vs-SELL trade-volume imbalance supports SELL; strong opposite flow is a caution."
             ),
             "NONE": "No local direction: MUST HOLD.",
         }[direction]
@@ -586,6 +604,9 @@ class AIEngine:
             'Hard checks: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, fresh BBO, '
             'spread<=0.5%; otherwise HOLD. '
             '>=50% Ask depletion is supporting evidence, not mandatory. '
+            'trade_flow_imbalance_30s is signed BUY-vs-SELL classified trade volume (-1..+1); zero is neutral. '
+            'trade_volume_5s and trade_volume_baseline_5s use provider volume units; compare within the same ticker, not across tickers. '
+            'Use trade_price_change_30s_pct and trade_realized_volatility_60s_pct as secondary context when present. '
             'RAG rules are advisory context only and cannot add hard gates. '
             'Confidence is evidence strength, not profit probability (weak 0.50-0.60; moderate 0.61-0.74; '
             'strong 0.75-0.84; exceptional 0.85-0.95). Use supplied facts only. '
