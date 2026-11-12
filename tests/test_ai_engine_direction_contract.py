@@ -206,6 +206,27 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             self.assertIn(field, prompt)
         self.assertIn("provider volume units", prompt)
 
+    def test_contract_retry_retains_live_trade_flow_metrics(self) -> None:
+        prompt = AIEngine._build_contract_retry_prompt(
+            ticker="SBER",
+            price=100.0,
+            volume=500,
+            candidate_direction="BUY",
+            metrics={
+                "trade_data_ready": 1.0,
+                "trade_volume_5s": 120.0,
+                "trade_volume_baseline_5s": 20.0,
+                "trade_count_60s": 32,
+                "trade_flow_imbalance_30s": 0.45,
+                "trade_price_change_30s_pct": 0.12,
+                "trade_realized_volatility_60s_pct": 0.03,
+                "trade_history_coverage_sec": 60.0,
+            },
+        )
+        self.assertIn("trade_flow_imbalance_30s=0.45", prompt)
+        self.assertIn("trade_volume_5s=120", prompt)
+        self.assertIn("trade_history_coverage_sec=60", prompt)
+
     def test_legacy_hold_reason_code_is_normalized_without_warning(self) -> None:
         with self.assertNoLogs("Piluitus.AIEngine", level="WARNING"):
             result = object.__new__(AIEngine)._cpu_intensive_processing({
