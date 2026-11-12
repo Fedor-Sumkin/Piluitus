@@ -389,7 +389,7 @@ class AIEngine:
                 # Older prompt/model combinations sometimes emit HOLD_{ENUM} or
                 # append a short explanation to the enum. Recover only an exact
                 # known reason; never infer a reason from arbitrary metric text.
-                legacy_match = re.fullmatch(r"HOLD_\{\s*([A-Z_]+)\s*\}", reason_code)
+                legacy_match = re.fullmatch(r"HOLD_\{\s*([A-Z0-9_]+)\s*\}", reason_code)
                 legacy_reason = legacy_match.group(1) if legacy_match else ""
                 if legacy_reason in MODEL_REASON_CODES:
                     reason_code = legacy_reason
