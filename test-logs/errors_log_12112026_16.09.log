@@ -1,0 +1,5 @@
+2026-11-12 16:09:19,311 [ERROR] [RUN=20261112_160916_1516_8a31f6eb] Piluitus.FinamGateway: ⛔ [FINAM ACCOUNT DISCOVERY] account_ids пуст/отсутствует, FINAM_ACCOUNT_ID не прошёл проверку GET /v1/accounts/{id}; входы заблокированы.
+2026-11-12 16:09:19,314 [ERROR] [RUN=20261112_160916_1516_8a31f6eb] Piluitus.Main: ⛔ [FINAM ACCOUNT] счёт не определён; GetAssetParams и новые входы заблокированы.
+2026-11-12 16:09:20,908 [ERROR] [RUN=20261112_160916_1516_8a31f6eb] Piluitus.FinamGateway: ⛔ [FINAM ACCOUNT DISCOVERY] account_ids пуст/отсутствует, FINAM_ACCOUNT_ID не прошёл проверку GET /v1/accounts/{id}; входы заблокированы.
+2026-11-12 16:16:14,891 [ERROR] [RUN=20261112_160916_1516_8a31f6eb] Piluitus.RiskManager: Размер позиции заблокирован: Finam trade_lot_size для LKOH не подтверждён; статический LOT_SIZES не используется для нового ордера.
+2026-11-12 16:18:23,167 [ERROR] [RUN=20261112_160916_1516_8a31f6eb] aiogram.dispatcher: Failed to fetch updates - TelegramNetworkError: HTTP Client says - ServerDisconnectedError: Server disconnected
