@@ -521,6 +521,11 @@ class ShadowForwardTracker:
         snapshot["segments"] = {
             key: summarize(values) for key, values in self._segment_stats.items()
         }
+        commission_pct, slippage_bps = _cost_settings()
+        snapshot["cost_model"] = {
+            "commission_pct_per_side": commission_pct,
+            "slippage_bps": slippage_bps,
+        }
         return snapshot
 
     def pending_count(self, ticker: str | None = None) -> int:
