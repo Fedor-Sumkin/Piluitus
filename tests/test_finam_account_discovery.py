@@ -173,7 +173,7 @@ class FinamAccountDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             selected = await broker.discover_accounts()
 
         self.assertEqual(selected, "DEMO-6161")
-        self.assertEqual(broker.account_id_source, "FINAM_CLIENT_ID_verified_by_account_endpoint")
+        self.assertEqual(broker.account_id_source, "FINAM_CLIENT_ID")
         self.assertTrue(any("/v1/accounts/DEMO-6161" in item[0] for item in fake.gets))
 
     async def test_legacy_client_id_is_tried_after_explicit_account_id_fails_direct_validation(self):
@@ -194,7 +194,7 @@ class FinamAccountDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(selected, "DEMO-7171")
         self.assertEqual(
             broker.account_id_source,
-            "FINAM_CLIENT_ID_verified_by_account_endpoint_after_FINAM_ACCOUNT_ID_rejected",
+            "FINAM_CLIENT_ID",
         )
         self.assertEqual(
             [url.rsplit("/", 1)[-1] for url, _ in fake.gets if "/v1/accounts/" in url],
@@ -228,7 +228,7 @@ class FinamAccountDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             selected = await broker.discover_accounts()
 
         self.assertEqual(selected, "DEMO-7373")
-        self.assertEqual(broker.account_id_source, "FINAM_ACCOUNT_ID_verified_by_account_endpoint")
+        self.assertEqual(broker.account_id_source, "FINAM_ACCOUNT_ID")
 
     async def test_legacy_client_id_accepts_account_resource_without_redundant_id_field(self):
         os.environ["FINAM_CLIENT_ID"] = "DEMO-6363"
@@ -242,7 +242,7 @@ class FinamAccountDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             selected = await broker.discover_accounts()
 
         self.assertEqual(selected, "DEMO-6363")
-        self.assertEqual(broker.account_id_source, "FINAM_CLIENT_ID_verified_by_account_endpoint")
+        self.assertEqual(broker.account_id_source, "FINAM_CLIENT_ID")
 
     async def test_legacy_client_id_direct_validation_rejects_conflicting_account_identity(self):
         os.environ["FINAM_CLIENT_ID"] = "DEMO-6262"
