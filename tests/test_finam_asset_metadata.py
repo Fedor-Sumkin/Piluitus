@@ -77,7 +77,9 @@ class FinamAssetMetadataTests(unittest.TestCase):
                 "FINAM_METADATA_REQUEST_INTERVAL_SEC": "0",
                 "FINAM_ACCOUNT_ID": "TEST-ACCOUNT-123",
             }):
-                asyncio.run(RiskManager.update_finam_lot_sizes(_NotTradable()))
+                stub = _NotTradable()
+                stub.account_id = "TEST-ACCOUNT-123"
+                asyncio.run(RiskManager.update_finam_lot_sizes(stub, paper_mode=False))
             self.assertNotIn("TESTMETA", FINAM_TRADE_LOT_SIZES)
         finally:
             if old_lot is None:
