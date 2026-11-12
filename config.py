@@ -56,6 +56,8 @@ LOT_SIZES: dict[str, int] = {
 
 # Static MOEX lot-size reference. Retained for legacy/accounting fallback only.
 # New order sizing uses the account-specific Finam trade_lot_size map below.
+# In PAPER mode this map is populated from public exchange lot_size metadata.
+# In LIVE mode it contains account-specific Finam trade_lot_size values.
 FINAM_TRADE_LOT_SIZES: dict[str, int] = {}
 
 # Runtime Finam instrument metadata populated during startup.
@@ -81,6 +83,10 @@ def _env_flag(name: str, default: bool = True) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# One canonical mode flag shared by execution, metadata refresh and startup.
+PAPER_TRADING = _env_flag("PAPER_TRADING", True)
+
+
 # Локальный корень проекта можно задать в .env. По умолчанию используется
 # папка config.py, поэтому настройка не обязательна и проект остаётся переносимым.
 _project_root_value = os.getenv("PILUITUS_PROJECT_ROOT", "").strip()
@@ -101,6 +107,8 @@ LOG_REDACT_PROJECT_PATH = _env_flag("PILUITUS_LOG_REDACT_PROJECT_PATH", True)
 # 2️⃣  Класс‑контейнер с параметрами (все публичные атрибуты!)
 # --------------------------------------------------------------
 class Settings:
+    PAPER_TRADING: bool = PAPER_TRADING
+
     # ---------- FastAPI / Uvicorn ----------
     APP_HOST: str = os.getenv("APP_HOST", "0.0.0.0")
     APP_PORT: int = int(os.getenv("APP_PORT", "8080"))
