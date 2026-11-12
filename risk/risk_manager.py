@@ -263,16 +263,22 @@ class RiskManager:
                 "Finam GetAssetParams unavailable; no account-specific lot values will authorize LIVE orders."
             )
 
-        # Finam documents a 200 REST requests/minute limit. Bound the two
-        # per-instrument lookups to avoid an uncontrolled startup burst.
+        # Pace external metadata calls and avoid an uncontrolled startup burst.
+        # MOEX ISS uses a separate, conservative interval; Finam's documented
+        # 200 requests/minute limit applies only to Finam REST endpoints.
         semaphore = asyncio.Semaphore(6)
         request_lock = asyncio.Lock()
+        interval_env = (
+            "PILUITUS_MOEX_ISS_REQUEST_INTERVAL_SEC"
+            if use_moex_iss else "FINAM_METADATA_REQUEST_INTERVAL_SEC"
+        )
+        interval_default = "0.50" if use_moex_iss else "0.36"
         try:
-            request_interval_sec = float(os.getenv("FINAM_METADATA_REQUEST_INTERVAL_SEC", "0.36"))
+            request_interval_sec = float(os.getenv(interval_env, interval_default))
         except (TypeError, ValueError, OverflowError):
-            request_interval_sec = 0.36
+            request_interval_sec = float(interval_default)
         if not math.isfinite(request_interval_sec) or request_interval_sec < 0.0:
-            request_interval_sec = 0.36
+            request_interval_sec = float(interval_default)
         next_request_at = 0.0
         updated_lots = failed_lots = updated_metadata = failed_metadata = 0
         blocked_not_tradable = 0
