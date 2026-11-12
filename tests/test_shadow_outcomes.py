@@ -88,12 +88,15 @@ class ShadowForwardTrackerTests(unittest.TestCase):
                 {"score": 90.0, "eligible": True, "regime": "TREND_ALIGNED"},
             )
             outcomes = tracker.observe_market_tick("SBER", quote_metrics(101.0, 101.1))
+            snapshot = tracker.statistics_snapshot()
         self.assertLess(
             outcomes[0]["net_executable_return_pct"],
             outcomes[0]["gross_executable_return_pct"],
         )
         self.assertEqual(outcomes[0]["commission_pct_per_side"], 0.10)
         self.assertEqual(outcomes[0]["slippage_bps"], 1.0)
+        self.assertEqual(snapshot["cost_model"]["commission_pct_per_side"], 0.10)
+        self.assertEqual(snapshot["cost_model"]["slippage_bps"], 1.0)
 
     def test_fresh_bbo_can_label_candidate_even_without_full_book_confirmation(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
