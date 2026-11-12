@@ -227,6 +227,25 @@ class RiskManager:
                 "⛔ [FINAM METADATA] account_id was not resolved from the authenticated "
                 "Finam session; LIVE GetAssetParams is skipped and LIVE entries remain blocked."
             )
+        metadata_account_id = str(
+            getattr(finam_broker_client, "metadata_account_id", "") or ""
+        ).strip()
+        metadata_discover = getattr(finam_broker_client, "discover_metadata_account_id", None)
+        if is_paper and callable(metadata_discover) and not metadata_account_id:
+            try:
+                metadata_account_id = str(await metadata_discover() or "").strip()
+            except Exception as exc:
+                risk_logger.warning(
+                    "[FINAM METADATA] read-only account context discovery failed: %s",
+                    type(exc).__name__,
+                )
+            if not metadata_account_id:
+                risk_logger.warning(
+                    "⛔ [FINAM METADATA] PAPER GetAsset skipped: Finam requires account_id, "
+                    "but no session-authorized read-only metadata context was resolved. "
+                    "Previously confirmed exchange lots are preserved; new unknown lots remain blocked."
+                )
+                return
         asset_method = getattr(finam_broker_client, "get_asset", None)
         if not callable(asset_method):
             risk_logger.warning("📐 [ASSET METADATA] Finam GetAsset unavailable; static tick-size metadata retained.")
@@ -434,7 +453,10 @@ class RiskManager:
             "not_tradable_or_unconfirmed=%d; tick-size=%d/%d; metadata unavailable=%d (static tick-size retained); "
             "PAPER lot failure examples=%s.",
             "PAPER" if is_paper else "LIVE",
-            "not_required_pseudo_account" if is_paper else f"{account_id_source}:{bool(account_id)}",
+            (
+                f"read_only_metadata:{bool(metadata_account_id)}"
+                if is_paper else f"{account_id_source}:{bool(account_id)}"
+            ),
             updated_lots, len(symbols_to_refresh), failed_lots, blocked_not_tradable,
             updated_metadata, len(symbols_to_refresh), failed_metadata,
             "; ".join(paper_lot_failure_examples) if paper_lot_failure_examples else "-",
