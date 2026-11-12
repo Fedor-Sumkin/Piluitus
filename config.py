@@ -147,8 +147,10 @@ class Settings:
 
     # ---------- Finam ----------
     FINAM_TOKEN: str = os.getenv("FINAM_TOKEN", "")
+    # Brokerage account identifiers are optional and used only by LIVE execution.
+    # PAPER trades on the internal simulator and requires only FINAM_TOKEN.
     FINAM_ACCOUNT_ID: str = os.getenv("FINAM_ACCOUNT_ID", "")
-    # Legacy value is accepted only when authorized by session account_ids or verified by scoped GET /accounts/{id}.
+    # Legacy LIVE-only compatibility; ignored by PAPER mode.
     FINAM_CLIENT_ID: str = os.getenv("FINAM_CLIENT_ID", "")
     FINAM_USER: str = os.getenv("FINAM_USER", "")
     FINAM_PASSWORD: str = os.getenv("FINAM_PASSWORD", "")
