@@ -172,6 +172,80 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertFalse(result["model_contract_violation"])
         self.assertEqual(result["model_reason_code"], "NOT_PROVIDED")
 
+    def test_prompt_includes_absolute_trade_volume_flow_and_realized_volatility(self) -> None:
+        prompt = AIEngine._build_live_prompt(
+            ticker="SBER",
+            price=100.0,
+            volume=500,
+            candidate_direction="BUY",
+            metrics={
+                "trade_data_ready": 1.0,
+                "trade_volume_5s": 120.0,
+                "trade_volume_baseline_5s": 20.0,
+                "trade_count_60s": 32,
+                "trade_flow_imbalance_30s": 0.45,
+                "trade_buy_volume_30s": 80.0,
+                "trade_sell_volume_30s": 20.0,
+                "trade_price_change_30s_pct": 0.12,
+                "trade_realized_volatility_60s_pct": 0.03,
+                "trade_history_coverage_sec": 60.0,
+            },
+            rag_context="",
+            max_chars=2100,
+            include_rule_text=False,
+        )
+        for field in (
+            "trade_volume_5s=120",
+            "trade_volume_baseline_5s=20",
+            "trade_count_60s=32",
+            "trade_flow_imbalance_30s=0.45",
+            "trade_price_change_30s_pct=0.12",
+            "trade_realized_volatility_60s_pct=0.03",
+            "trade_history_coverage_sec=60",
+        ):
+            self.assertIn(field, prompt)
+        self.assertIn("provider volume units", prompt)
+
+    def test_legacy_hold_reason_code_is_normalized_without_warning(self) -> None:
+        with self.assertNoLogs("Piluitus.AIEngine", level="WARNING"):
+            result = object.__new__(AIEngine)._cpu_intensive_processing({
+                "choices": [{
+                    "message": {"content": (
+                        '{"final_decision":"HOLD","confidence_score":0.8,'
+                        '"reason_code":"HOLD_{WEAK_DIRECTION}"}'
+                    )},
+                    "finish_reason": "stop",
+                }]
+            })
+        self.assertEqual(result["model_reason_code"], "HOLD_WEAK_DIRECTION")
+        self.assertFalse(result["model_contract_violation"])
+
+    def test_neutral_m1_legacy_reason_code_maps_to_insufficient_support(self) -> None:
+        with self.assertNoLogs("Piluitus.AIEngine", level="WARNING"):
+            result = object.__new__(AIEngine)._cpu_intensive_processing({
+                "choices": [{
+                    "message": {"content": (
+                        '{"final_decision":"HOLD","confidence_score":0.8,'
+                        '"reason_code":"HOLD_{M1_NEUTRAL/UNAVAILABLE}"}'
+                    )},
+                    "finish_reason": "stop",
+                }]
+            })
+        self.assertEqual(result["model_reason_code"], "HOLD_INSUFFICIENT_SUPPORT")
+
+    def test_missing_optional_reason_code_does_not_emit_warning(self) -> None:
+        with self.assertNoLogs("Piluitus.AIEngine", level="WARNING"):
+            result = object.__new__(AIEngine)._cpu_intensive_processing({
+                "choices": [{
+                    "message": {"content": (
+                        '{"final_decision":"HOLD","confidence_score":0.8}'
+                    )},
+                    "finish_reason": "stop",
+                }]
+            })
+        self.assertEqual(result["model_reason_code"], "NOT_PROVIDED")
+        self.assertFalse(result["model_contract_violation"])
+
     def test_extra_candidate_key_is_rejected_even_with_valid_decision(self) -> None:
         result = object.__new__(AIEngine)._cpu_intensive_processing({
             "choices": [{
