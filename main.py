@@ -43,7 +43,7 @@ from execution_layer import BaseExecutionEngine
 from risk_manager import RiskManager
 from signal_guard import validate_signal_evidence, infer_candidate_direction, validate_atr_readiness
 from rag_prompt_utils import select_prompt_rules
-from candidate_recovery import refresh_candidate_bbo_metrics
+from candidate_recovery import coalesce_pending_bbo_entry, refresh_candidate_bbo_metrics
 from scalping_strategy import evaluate_scalping_candidate
 from shadow_outcomes import ShadowForwardTracker
 from dashboard_verdicts import (
@@ -975,7 +975,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
     names = (
         "quotes_received", "selected_quotes", "selected_anomalies", "anomalies_queued",
         "queue_dropped", "direction_prefilter_skipped", "prefilter_blocked", "candidate_deduplicated",
-        "bbo_deferred", "bbo_resumed", "bbo_expired", "bbo_superseded", "bbo_cancelled",
+        "bbo_deferred", "bbo_resumed", "bbo_expired", "bbo_superseded", "bbo_coalesced", "bbo_cancelled",
         "local_candidate_buy", "local_candidate_sell",
         "prefilter_pass_buy", "prefilter_pass_sell",
         "llm_calls", "llm_model_approve", "llm_model_hold",
@@ -1023,7 +1023,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "ATR ожидание до LLM (кандидаты отложены)=%(atr_unready_candidates)d; "
         "блок ATR после APPROVE=%(atr_history_blocked)d; "
         "BBO wait=%(bbo_deferred)d, resumed=%(bbo_resumed)d, expired=%(bbo_expired)d, "
-        "superseded=%(bbo_superseded)d, cancelled=%(bbo_cancelled)d, pending_now=%(bbo_pending)d; "
+        "superseded=%(bbo_superseded)d, coalesced=%(bbo_coalesced)d, cancelled=%(bbo_cancelled)d, pending_now=%(bbo_pending)d; "
         "после_LLM_исполнение: portfolio_cap_block=%(portfolio_cap_blocked)d, "
         "portfolio_size_reduced=%(portfolio_size_reduced)d, entry_session_block=%(entry_session_blocked)d, "
         "other_block=%(execution_other_blocked)d; "
@@ -1212,21 +1212,33 @@ def _store_pending_bbo_candidate(
     payload: dict[str, Any],
     received_monotonic: object | None = None,
 ) -> None:
-    # TTL starts when the candidate is actually stored, not at the provider
-    # event's receive timestamp. Queueing/processing delay must not consume its
-    # entire BBO-wait budget before the waiter can observe a fresh book.
+    # TTL starts when the candidate is actually stored. Repeated ticks for
+    # the same ticker/side refresh evidence but do not restart the TTL or replace
+    # the waiter object; this prevents the resume path from chasing a moving target.
     now = time_module.monotonic()
-    entry = {"created_at": now, "payload": payload}
     key = str(ticker).strip().upper().split("@")[0]
     with _pending_bbo_lock:
         previous = _pending_bbo_candidates.get(key)
-        _pending_bbo_candidates[key] = entry
-    if previous is not None:
+        entry, status = coalesce_pending_bbo_entry(
+            previous, payload, now=now, ttl_sec=_PENDING_BBO_CANDIDATE_TTL_SEC
+        )
+        if status == "coalesced" and previous is not None:
+            previous["payload"] = entry["payload"]
+            _pending_bbo_candidates[key] = previous
+        else:
+            _pending_bbo_candidates[key] = entry
+    if status == "expired":
+        _trade_flow_inc("bbo_expired")
+    elif status == "coalesced":
+        _trade_flow_inc("bbo_coalesced")
+        logger.debug("♻️ [PRE-LLM COALESCE] %s: повторный сигнал обновил существующее ожидание.", key)
+        return
+    elif status == "superseded":
         _trade_flow_inc("bbo_superseded")
     _trade_flow_inc("bbo_deferred")
     logger.info(
-        "⏳ [PRE-LLM WAIT] %s: кандидат временно ожидает целостный свежий ORDER_BOOK (TTL=%.2fs).",
-        ticker, _PENDING_BBO_CANDIDATE_TTL_SEC,
+        "⏳ [PRE-LLM WAIT] %s: кандидат ожидает целостный свежий ORDER_BOOK (TTL=%.2fs; status=%s).",
+        key, _PENDING_BBO_CANDIDATE_TTL_SEC, status,
     )
 
 
@@ -1302,6 +1314,17 @@ async def _resume_pending_bbo_candidate(ticker: str) -> None:
         _trade_flow_inc("atr_unready_candidates")
         _cancel_pending_bbo_candidate(key, pending)
         _log_prefilter_blocked(key, atr_reason, interval_sec=60.0)
+        return
+
+    # A same-side tick may have refreshed the pending payload while this
+    # coroutine was validating the book. Never enqueue stale evidence or remove
+    # the newer payload; the next coherent ORDER_BOOK event will retry it.
+    with _pending_bbo_lock:
+        still_current = (
+            _pending_bbo_candidates.get(key) is pending
+            and pending.get("payload") is payload
+        )
+    if not still_current:
         return
 
     if not _reserve_ai_ticker(key):
