@@ -1,5 +1,0 @@
-2026-11-12 18:18:12,456 [ERROR] [RUN=20261112_181102_20104_282ec2be] Piluitus.RiskManager: Размер позиции заблокирован: Finam trade_lot_size для LSRG не подтверждён; статический LOT_SIZES не используется для нового ордера.
-2026-11-12 18:25:16,596 [ERROR] [RUN=20261112_181102_20104_282ec2be] Piluitus.FinamGateway: Finam WebSocket отключён/не подключён: no close frame received or sent. Повтор через 1 сек.
-2026-11-12 18:25:16,606 [ERROR] [RUN=20261112_181102_20104_282ec2be] aiogram.dispatcher: Failed to fetch updates - TelegramNetworkError: HTTP Client says - ClientOSError: [WinError 1236] Подключение к сети было разорвано локальной системой
-2026-11-12 18:25:38,840 [ERROR] [RUN=20261112_181102_20104_282ec2be] aiogram.dispatcher: Failed to fetch updates - TelegramNetworkError: HTTP Client says - ClientConnectorError: Cannot connect to host api.telegram.org:443 ssl:default [Превышен таймаут семафора]
-2026-11-12 18:38:32,227 [ERROR] [RUN=20261112_181102_20104_282ec2be] aiogram.dispatcher: Failed to fetch updates - TelegramNetworkError: HTTP Client says - ServerDisconnectedError: Server disconnected
