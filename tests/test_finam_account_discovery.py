@@ -149,7 +149,7 @@ class FinamAccountDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(selected)
         self.assertEqual(broker.account_id, "")
 
-    async def test_missing_account_ids_can_use_explicit_account_id_but_not_client_id(self):
+    async def test_missing_account_ids_reject_unverifiable_client_id(self):
         os.environ["FINAM_CLIENT_ID"] = "DEMO-1212"
         fake = _FakeAsyncClient({"readonly": False}, {})
         broker = FinamBrokerClient("secret", is_demo=True)
@@ -158,7 +158,8 @@ class FinamAccountDiscoveryTests(unittest.IsolatedAsyncioTestCase):
             selected = await broker.discover_accounts()
 
         self.assertIsNone(selected)
-        self.assertEqual(fake.gets, [])
+        self.assertEqual(broker.account_id, "")
+        self.assertTrue(any("/v1/accounts/DEMO-1212" in item[0] for item in fake.gets))
 
     async def test_legacy_client_id_is_verified_directly_when_session_account_ids_are_empty(self):
         os.environ["FINAM_CLIENT_ID"] = "DEMO-6161"
