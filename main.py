@@ -2922,6 +2922,13 @@ async def _finam_metadata_refresh_loop() -> None:
         refresh_sec = max(300.0, float(os.getenv("FINAM_METADATA_REFRESH_SEC", "900")))
     except (TypeError, ValueError, OverflowError):
         refresh_sec = 900.0
+    try:
+        account_retry_sec = min(
+            300.0,
+            max(15.0, float(os.getenv("FINAM_ACCOUNT_DISCOVERY_RETRY_SEC", "60"))),
+        )
+    except (TypeError, ValueError, OverflowError):
+        account_retry_sec = 60.0
     while True:
         # background_broker_init owns authentication. Do not send REST requests
         # until a JWT has been obtained successfully.
@@ -2948,9 +2955,10 @@ async def _finam_metadata_refresh_loop() -> None:
                 "⛔ [FINAM METADATA WORKER] account_id не получен из текущей Finam-сессии; "
                 "новые входы остаются заблокированы."
             )
-            # Avoid hammering session discovery on every minute while the
-            # provider returns an empty/malformed account list.
-            await asyncio.sleep(max(300.0, min(refresh_sec, 900.0)))
+            # Retry account discovery on a bounded short interval. A transient
+            # Finam session/account endpoint failure must not disable lot metadata
+            # for most of a PAPER trading session.
+            await asyncio.sleep(account_retry_sec)
             continue
         try:
             await RiskManager.update_finam_lot_sizes(finam_broker_client=broker)
