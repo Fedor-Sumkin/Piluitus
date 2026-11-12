@@ -2327,29 +2327,29 @@ class MarketWorker:
                 volume_5s = _parse_finite_float(metrics.get("trade_volume_5s"))
                 volume_baseline_5s = _parse_finite_float(metrics.get("trade_volume_baseline_5s"))
                 trade_count_60s = _parse_finite_float(metrics.get("trade_count_60s"))
-                if volume_5s is not None and volume_baseline_5s is not None:
+                trade_data_ready = (_parse_finite_float(metrics.get("trade_data_ready")) or 0.0) >= 0.5
+                volume_spike_text = f"{volume_spike:.2f}×" if volume_spike is not None else "Н/Д"
+                if trade_data_ready and volume_5s is not None and volume_baseline_5s is not None:
                     volume_text = (
-                        f"Всплеск объёма: {volume_spike:.2f}×; "
+                        f"Всплеск объёма: {volume_spike_text}; "
                         f"5с={volume_5s:.3f} ед. провайдера, база={volume_baseline_5s:.3f}; "
                         f"сделок за 60с={int(trade_count_60s or 0)}."
                     )
                 else:
-                    volume_text = (
-                        f"Всплеск объёма: {volume_spike:.2f}×."
-                        if volume_spike is not None else "Объём сделок: Н/Д."
-                    )
+                    volume_text = f"Объём сделок: Н/Д — история потока не готова; spike={volume_spike_text}."
 
                 trade_realized_volatility = _parse_finite_float(
                     metrics.get("trade_realized_volatility_60s_pct")
                 )
                 m1_atr_pct = _parse_finite_float(metrics.get("bar_atr_pct"))
-                if trade_realized_volatility is not None:
+                m1_atr_periods = _parse_finite_float(metrics.get("bar_atr_periods")) or 0.0
+                if trade_data_ready and trade_realized_volatility is not None:
                     volatility_text = (
                         f"Реализованная волатильность по сделкам за 60с: "
                         f"{trade_realized_volatility:.5f}%."
                     )
-                elif m1_atr_pct is not None:
-                    volatility_text = f"M1 ATR: {m1_atr_pct:.5f}%."
+                elif m1_atr_pct is not None and m1_atr_pct > 0.0 and m1_atr_periods >= 5.0:
+                    volatility_text = f"M1 ATR ({int(m1_atr_periods)} закрытых баров): {m1_atr_pct:.5f}%."
                 else:
                     volatility_text = "Волатильность: Н/Д — нет подтверждённой истории."
 
