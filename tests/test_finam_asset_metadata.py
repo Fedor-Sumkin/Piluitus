@@ -193,7 +193,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
                 payload = asyncio.run(client.get_moex_asset("VTBR"))
         self.assertIsNone(payload)
 
-    def test_paper_prefers_public_moex_metadata_without_fin​​am_account_context(self):
+    def test_paper_prefers_public_moex_metadata_without_finam_account_context(self):
         class _MoexOnly(_FinamMetadataStub):
             async def get_moex_asset(self, ticker: str):
                 if ticker != "TESTMETA":
