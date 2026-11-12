@@ -343,7 +343,7 @@ class RiskManager:
                     mic = str(scalar(field(asset_data, "mic", "exchange_mic")) or "").strip().upper()
                     symbol = str(scalar(field(asset_data, "symbol", "ticker")) or "")
                     asset_mic = mic or ("MISX" if symbol.upper().endswith("@MISX") else "UNSPECIFIED")
-                    asset_market_ok = mic in {"", "MISX"} and not (symbol.upper().endswith("@") and not symbol.upper().endswith("@MISX"))
+                    asset_market_ok = mic in {"", "MISX"} and (not symbol or "@" not in symbol or symbol.upper().endswith("@MISX"))
                     if decimals >= 0 and min_step > 0 and asset_market_ok:
                         ASSET_METADATA[normalized] = {
                             "symbol": symbol or f"{normalized}@MISX",
