@@ -252,7 +252,7 @@ class FinamBrokerClient:
         account_details: dict[str, dict[str, Any]],
         is_demo: bool,
     ) -> tuple[str, str]:
-        """Choose only a session-authorized and unambiguous account."""
+        """Choose only an account authorized by the current JWT session."""
         ids = list(dict.fromkeys(str(value).strip() for value in account_ids if str(value).strip()))
 
         def mode_matches(account_id: str) -> bool:
@@ -263,17 +263,25 @@ class FinamBrokerClient:
                 return False
             return True
 
-        if explicit_account_id:
-            if explicit_account_id not in ids or not mode_matches(explicit_account_id):
-                return "", "FINAM_ACCOUNT_ID_not_authorized_or_mode_mismatch"
+        # FINAM_ACCOUNT_ID is preferred, but a stale explicit setting must not
+        # prevent use of FINAM_CLIENT_ID when the latter is independently present
+        # in the authenticated session's account_ids list.
+        if explicit_account_id and explicit_account_id in ids and mode_matches(explicit_account_id):
             return explicit_account_id, "FINAM_ACCOUNT_ID"
 
-        # Legacy FINAM_CLIENT_ID is accepted only when it exactly matches an
-        # account authorized by this JWT; a client ID is never guessed as account_id.
+        if legacy_client_id and legacy_client_id in ids and mode_matches(legacy_client_id):
+            source = "FINAM_CLIENT_ID_matched_account_ids"
+            if explicit_account_id and explicit_account_id != legacy_client_id:
+                source += "_after_explicit_reject"
+            return legacy_client_id, source
+
+        # An explicit account ID is never silently replaced by an arbitrary
+        # single account from the session. It may only fall back to the configured
+        # legacy value when that value is itself session-authorized.
+        if explicit_account_id:
+            return "", "FINAM_ACCOUNT_ID_not_authorized_or_mode_mismatch"
         if legacy_client_id and legacy_client_id in ids:
-            if not mode_matches(legacy_client_id):
-                return "", "FINAM_CLIENT_ID_mode_mismatch"
-            return legacy_client_id, "FINAM_CLIENT_ID_matched_account_ids"
+            return "", "FINAM_CLIENT_ID_mode_mismatch"
 
         if len(ids) == 1:
             only_id = ids[0]
@@ -292,20 +300,26 @@ class FinamBrokerClient:
         return "", "ambiguous_account_selection"
 
     async def discover_accounts(self) -> str | None:
-        """Resolve one authorized account; serialize startup and worker discovery."""
+        """Resolve one account from the authenticated session or a scoped account GET.
+
+        Finam may return an empty account_ids array for some established token
+        configurations. In that case each explicitly configured candidate is
+        checked independently through GET /v1/accounts/{id}; a failed preferred
+        FINAM_ACCOUNT_ID must not suppress verification of FINAM_CLIENT_ID.
+        """
         async with self._account_discovery_lock:
-            # Startup and metadata worker may start almost simultaneously. Reuse a
-            # previously verified identity instead of issuing duplicate REST calls.
             if self.account_id:
                 return self.account_id
 
             details = await self.get_session_details()
-            if not isinstance(details, dict):
-                logger.error(
-                    "⛔ [FINAM ACCOUNT DISCOVERY] session details недоступны; "
-                    "account_id не подтверждён, новые входы заблокированы."
+            details_available = isinstance(details, dict)
+            if not details_available:
+                logger.warning(
+                    "[FINAM ACCOUNT DISCOVERY] session details недоступны; "
+                    "будут проверены только явно заданные FINAM_ACCOUNT_ID/FINAM_CLIENT_ID "
+                    "через scoped GET /v1/accounts/{id}."
                 )
-                return None
+                details = {}
 
             raw_ids = details.get("account_ids")
             raw_type = type(raw_ids).__name__
@@ -317,102 +331,120 @@ class FinamBrokerClient:
             self.session_details = details
             logger.info(
                 "[FINAM ACCOUNT DISCOVERY] response_keys=%s; account_ids_type=%s; "
-                "account_ids_count=%d; readonly=%s.",
+                "account_ids_count=%d; readonly=%s; session_details_available=%s.",
                 ",".join(sorted(str(key) for key in details.keys()))[:300] or "-",
                 raw_type,
                 len(account_ids),
                 bool(details.get("readonly", False)),
+                details_available,
             )
 
             explicit_id = str(os.getenv("FINAM_ACCOUNT_ID", "") or "").strip()
             legacy_id = str(os.getenv("FINAM_CLIENT_ID", "") or "").strip()
             account_details: dict[str, dict[str, Any]] = {}
+            selected = ""
+            source = ""
 
-            # Preserve the established FINAM_CLIENT_ID configuration when the
-            # session-details endpoint omits account_ids. The configured value is
-            # never trusted by itself: verify it against the account resource first.
-            direct_candidate_id = explicit_id or legacy_id
-            direct_candidate_source = "FINAM_ACCOUNT_ID" if explicit_id else "FINAM_CLIENT_ID"
-            legacy_verified_directly = False
-            if not account_ids and direct_candidate_id:
-                account_payload = await self.get_account(direct_candidate_id)
-                if isinstance(account_payload, dict):
+            if account_ids:
+                self.account_ids = account_ids
+                for candidate_id in account_ids:
+                    account_payload = await self.get_account(candidate_id)
+                    if not isinstance(account_payload, dict):
+                        continue
                     nested = account_payload.get("account")
                     if isinstance(nested, dict):
                         account_payload = nested
-                    returned_id = str(
-                        account_payload.get("account_id") or account_payload.get("id") or ""
-                    ).strip()
-                    identity_ok = not returned_id or returned_id == direct_candidate_id
-                    mode_ok = not (
+                    account_details[candidate_id] = account_payload
+
+                selected, source = self._choose_account_id(
+                    account_ids, explicit_id, legacy_id, account_details, self.is_demo
+                )
+                if not selected:
+                    if explicit_id:
+                        reason = (
+                            "FINAM_ACCOUNT_ID не авторизован/не соответствует режиму, "
+                            "а FINAM_CLIENT_ID не подтверждён этим списком счетов"
+                        )
+                    elif len(account_ids) > 1:
+                        reason = "несколько счетов без единственного однозначного типа DEMO/LIVE"
+                    else:
+                        reason = "тип единственного счёта не соответствует FINAM_DEMO"
+                    logger.error(
+                        "⛔ [FINAM ACCOUNT DISCOVERY] выбор счёта не выполнен: %s; доступно=%d; "
+                        "новые входы остаются заблокированы.",
+                        reason, len(account_ids),
+                    )
+                    self.account_details = account_details
+                    return None
+            else:
+                # GET /accounts/{id} is scoped by the requested account path and
+                # returns 404 when the JWT cannot access that account. Try both
+                # configured names in priority order, without logging their values.
+                candidates: list[tuple[str, str]] = []
+                if explicit_id:
+                    candidates.append((explicit_id, "FINAM_ACCOUNT_ID"))
+                if legacy_id and legacy_id != explicit_id:
+                    candidates.append((legacy_id, "FINAM_CLIENT_ID"))
+
+                explicit_rejected = False
+                for candidate_id, candidate_source in candidates:
+                    account_payload = await self.get_account(candidate_id)
+                    if isinstance(account_payload, dict):
+                        nested = account_payload.get("account")
+                        if isinstance(nested, dict):
+                            account_payload = nested
+                    returned_id = ""
+                    if isinstance(account_payload, dict):
+                        returned_id = str(
+                            account_payload.get("account_id") or account_payload.get("id") or ""
+                        ).strip()
+                    identity_ok = not returned_id or returned_id == candidate_id
+                    mode_ok = isinstance(account_payload, dict) and not (
                         (self.is_demo and self._is_live_account(account_payload))
                         or (not self.is_demo and self._is_demo_account(account_payload))
                     )
-                    # GET /accounts/{id} is itself scoped to the requested resource.
-                    # Some valid Finam payload variants omit the ID field, so accept
-                    # a non-empty account object if it does not contradict the path ID.
-                    payload_ok = bool(account_payload)
+                    payload_ok = isinstance(account_payload, dict) and bool(account_payload)
                     if payload_ok and identity_ok and mode_ok:
-                        account_ids = [direct_candidate_id]
-                        account_details[direct_candidate_id] = account_payload
-                        legacy_verified_directly = not bool(explicit_id)
+                        selected = candidate_id
+                        if candidate_source == "FINAM_ACCOUNT_ID":
+                            source = "FINAM_ACCOUNT_ID_verified_by_account_endpoint"
+                        elif explicit_rejected:
+                            source = "FINAM_CLIENT_ID_verified_by_account_endpoint_after_FINAM_ACCOUNT_ID_rejected"
+                        else:
+                            source = "FINAM_CLIENT_ID_verified_by_account_endpoint"
+                        account_ids = [candidate_id]
+                        account_details[candidate_id] = account_payload
                         logger.info(
-                            "[FINAM ACCOUNT DISCOVERY] account_ids отсутствует/пуст; "
+                            "[FINAM ACCOUNT DISCOVERY] account_ids пуст/отсутствует; "
                             "%s подтверждён GET /v1/accounts/{id}; response_id_present=%s; mode_ok=%s.",
-                            direct_candidate_source, bool(returned_id), mode_ok,
+                            candidate_source, bool(returned_id), mode_ok,
                         )
+                        break
+
+                    if candidate_source == "FINAM_ACCOUNT_ID":
+                        explicit_rejected = True
+                    logger.warning(
+                        "[FINAM ACCOUNT DISCOVERY] %s не подтверждён GET /v1/accounts/{id}: "
+                        "payload_ok=%s; identity_match=%s; mode_ok=%s; проверяется следующий "
+                        "явно заданный кандидат, если он есть.",
+                        candidate_source, payload_ok, identity_ok, mode_ok,
+                    )
+
+                if not selected:
+                    self.account_ids = []
+                    self.account_details = account_details
+                    if not candidates:
+                        reason = "account_ids пуст/отсутствует, FINAM_ACCOUNT_ID и FINAM_CLIENT_ID не заданы"
                     else:
-                        logger.error(
-                            "⛔ [FINAM ACCOUNT DISCOVERY] %s не подтверждён GET /v1/accounts/{id}: "
-                            "payload_ok=%s; identity_match=%s; mode_ok=%s; входы заблокированы.",
-                            direct_candidate_source, payload_ok, identity_ok, mode_ok,
-                        )
-                if not account_ids:
+                        reason = "ни один явно заданный идентификатор не подтверждён GET /v1/accounts/{id}"
                     logger.error(
-                        "⛔ [FINAM ACCOUNT DISCOVERY] account_ids пуст/отсутствует, "
-                        "%s не прошёл проверку GET /v1/accounts/{id}; входы заблокированы.",
-                        direct_candidate_source,
+                        "⛔ [FINAM ACCOUNT DISCOVERY] %s; новые входы заблокированы.",
+                        reason,
                     )
                     return None
-            elif not account_ids:
-                logger.error(
-                    "⛔ [FINAM ACCOUNT DISCOVERY] account_ids пуст/отсутствует "
-                    "(тип=%s), FINAM_ACCOUNT_ID и FINAM_CLIENT_ID не заданы; входы заблокированы.",
-                    raw_type,
-                )
-                return None
 
             self.account_ids = account_ids
-            for candidate_id in account_ids:
-                if candidate_id in account_details:
-                    continue
-                account_payload = await self.get_account(candidate_id)
-                if not isinstance(account_payload, dict):
-                    continue
-                nested = account_payload.get("account")
-                if isinstance(nested, dict):
-                    account_payload = nested
-                account_details[candidate_id] = account_payload
             self.account_details = account_details
-
-            selected, source = self._choose_account_id(
-                account_ids, explicit_id, legacy_id, account_details, self.is_demo
-            )
-            if selected and legacy_verified_directly and not explicit_id:
-                source = "FINAM_CLIENT_ID_verified_by_account_endpoint"
-            if not selected:
-                if explicit_id:
-                    reason = "FINAM_ACCOUNT_ID отсутствует в разрешённых счетах или не соответствует FINAM_DEMO"
-                elif len(account_ids) > 1:
-                    reason = "несколько счетов без единственного однозначного типа DEMO/LIVE"
-                else:
-                    reason = "тип единственного счёта не соответствует FINAM_DEMO"
-                logger.error(
-                    "⛔ [FINAM ACCOUNT DISCOVERY] выбор счёта не выполнен: %s; доступно=%d; "
-                    "новые входы остаются заблокированы.", reason, len(account_ids),
-                )
-                return None
-
             self.account_id = selected
             self.account_id_source = source
             selected_details = account_details.get(selected, {})
@@ -422,11 +454,6 @@ class FinamBrokerClient:
                 self._account_type_text(selected_details) or "unknown",
                 bool(details.get("readonly", False)),
             )
-            if legacy_id and legacy_id not in account_ids and not explicit_id:
-                logger.info(
-                    "ℹ️ [FINAM ACCOUNT DISCOVERY] FINAM_CLIENT_ID не совпадает ни с одним "
-                    "account_id сессии и не используется как идентификатор счёта."
-                )
             return self.account_id
 
     async def _refresh_auth_if_unchanged(self, rejected_token: str) -> bool:
