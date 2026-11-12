@@ -266,6 +266,7 @@ class RiskManager:
             async with semaphore:
                 asset_payload = None
                 params_payload = None
+                exchange_lot = 0.0
                 if callable(asset_method):
                     try:
                         asset_payload = await call_limited(asset_method, normalized)
