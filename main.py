@@ -2578,6 +2578,8 @@ class MarketWorker:
                     evidence = dict(evidence)
                     for key in (
                         "trade_data_ready", "trade_vwap_60s", "trade_flow_imbalance_30s",
+                        "trade_buy_volume_30s", "trade_sell_volume_30s",
+                        "trade_volume_5s", "trade_volume_baseline_5s",
                         "trade_count_60s", "trade_history_coverage_sec", "trade_metrics_age_sec", "volume_spike",
                         "price_change_pct", "trade_price_change_30s_pct",
                         "trade_realized_volatility_60s_pct", "current_price", "vwap",
