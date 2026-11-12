@@ -210,7 +210,14 @@ class ShadowForwardTracker:
             "spread_atr_ratio": _number(shadow_result, "spread_atr_ratio", math.nan),
             "spread_pct": _number(metrics, "spread_pct"),
             "atr_pct": _number(metrics, "bar_atr_pct"),
+            "spread_atr_ratio": _number(shadow_result, "spread_atr_ratio", math.nan),
             "volume_spike": _number(metrics, "volume_spike"),
+            "trade_count_60s": int(max(0.0, _number(metrics, "trade_count_60s"))),
+            "trade_flow_imbalance_30s": _number(metrics, "trade_flow_imbalance_30s", math.nan),
+            "trade_history_coverage_sec": _number(metrics, "trade_history_coverage_sec", math.nan),
+            "trade_realized_volatility_60s_pct": _number(metrics, "trade_realized_volatility_60s_pct", math.nan),
+            "trade_volume_5s": _number(metrics, "trade_volume_5s", math.nan),
+            "trade_volume_baseline_5s": _number(metrics, "trade_volume_baseline_5s", math.nan),
             "price_change_pct": _number(metrics, "price_change_pct"),
             "price_vs_vwap_pct": _number(metrics, "price_vs_vwap_pct"),
             "m1_pattern_confirmed": _number(metrics, "bar_pattern_confirmed"),
@@ -231,9 +238,13 @@ class ShadowForwardTracker:
         pending.append(row)
         logger.info(
             "[STRATEGY SHADOW SAMPLE] id=%s ticker=%s side=%s score=%.1f eligible=%s "
-            "entry=%s entry_fill=%.6f commission=%.4f%%/side slippage=%.2fbps",
+            "entry=%s entry_fill=%.6f commission=%.4f%%/side slippage=%.2fbps "
+            "trades60=%d flow30=%s spread_ATR=%s",
             candidate_id, symbol, side, row["score"], row["shadow_eligible"],
             "ASK" if side == "BUY" else "BID", entry_fill, commission_pct, slippage_bps,
+            row["trade_count_60s"],
+            f'{row["trade_flow_imbalance_30s"]:+.3f}' if math.isfinite(row["trade_flow_imbalance_30s"]) else "NA",
+            f'{row["spread_atr_ratio"]:.3f}' if math.isfinite(row["spread_atr_ratio"]) else "NA",
         )
         return candidate_id
 
@@ -331,6 +342,12 @@ class ShadowForwardTracker:
                         "m1_pattern": row["m1_pattern"],
                         "queue_imbalance": row["queue_imbalance"],
                         "spread_atr_ratio": row["spread_atr_ratio"],
+                        "trade_count_60s": row["trade_count_60s"],
+                        "trade_flow_imbalance_30s": row["trade_flow_imbalance_30s"],
+                        "trade_history_coverage_sec": row["trade_history_coverage_sec"],
+                        "trade_realized_volatility_60s_pct": row["trade_realized_volatility_60s_pct"],
+                        "trade_volume_5s": row["trade_volume_5s"],
+                        "trade_volume_baseline_5s": row["trade_volume_baseline_5s"],
                         "commission_pct_per_side": row["commission_pct_per_side"],
                         "slippage_bps": row["slippage_bps"],
                     }
@@ -339,12 +356,15 @@ class ShadowForwardTracker:
                         "[STRATEGY SHADOW OUTCOME] id=%s ticker=%s side=%s horizon=%ss "
                         "elapsed=%.2fs lag=%.2fs quality=%s result=OK net=%.5f%% gross=%.5f%% "
                         "mid=%.5f%% MFE=%.5f%% MAE=%.5f%% score=%.1f eligible=%s "
-                        "regime=%s entry_time_msk=%s hard_blocks=%s",
+                        "regime=%s entry_time_msk=%s hard_blocks=%s trades60=%d flow30=%s spread_ATR=%s",
                         label["candidate_id"], symbol, side, horizon, elapsed,
                         label["label_lag_sec"], label_quality, net_pct, gross_pct, mid_return_pct,
                         row["mfe_executable_pct"], row["mae_executable_pct"],
                         row["score"], row["shadow_eligible"], row["regime"],
                         row["created_at_msk"], ",".join(row.get("hard_blocks", [])) or "-",
+                        row["trade_count_60s"],
+                        f'{row["trade_flow_imbalance_30s"]:+.3f}' if math.isfinite(row["trade_flow_imbalance_30s"]) else "NA",
+                        f'{row["spread_atr_ratio"]:.3f}' if math.isfinite(row["spread_atr_ratio"]) else "NA",
                     )
                 elif elapsed > horizon + self.max_label_lag_sec:
                     label = {
@@ -368,6 +388,13 @@ class ShadowForwardTracker:
                         "m1_pattern_confirmed": row["m1_pattern_confirmed"],
                         "m1_pattern": row["m1_pattern"],
                         "queue_imbalance": row["queue_imbalance"],
+                        "spread_atr_ratio": row["spread_atr_ratio"],
+                        "trade_count_60s": row["trade_count_60s"],
+                        "trade_flow_imbalance_30s": row["trade_flow_imbalance_30s"],
+                        "trade_history_coverage_sec": row["trade_history_coverage_sec"],
+                        "trade_realized_volatility_60s_pct": row["trade_realized_volatility_60s_pct"],
+                        "trade_volume_5s": row["trade_volume_5s"],
+                        "trade_volume_baseline_5s": row["trade_volume_baseline_5s"],
                         "bbo_unavailable_reason": (
                             str(quote.get("unavailable_reason") or row.get("last_bbo_unavailable_reason") or "UNKNOWN")
                             if not fresh else "LABEL_LATE"
@@ -409,6 +436,45 @@ class ShadowForwardTracker:
             horizon = int(_number(label, "horizon_sec"))
             hour_msk = str(label.get("entry_hour_msk") or "UNKNOWN")
             eligibility = "eligible" if eligible else "ineligible"
+
+            spread_atr = _number(label, "spread_atr_ratio", math.nan)
+            if not math.isfinite(spread_atr) or spread_atr <= 0.0:
+                spread_atr_bucket = "unavailable"
+            elif spread_atr <= 0.10:
+                spread_atr_bucket = "le_0.10"
+            elif spread_atr <= 0.20:
+                spread_atr_bucket = "0.10-0.20"
+            elif spread_atr <= 0.35:
+                spread_atr_bucket = "0.20-0.35"
+            elif spread_atr <= 0.50:
+                spread_atr_bucket = "0.35-0.50"
+            else:
+                spread_atr_bucket = "gt_0.50"
+
+            trade_count = int(max(0.0, _number(label, "trade_count_60s")))
+            if trade_count < 10:
+                trade_count_bucket = "lt_10"
+            elif trade_count < 20:
+                trade_count_bucket = "10-19"
+            elif trade_count < 50:
+                trade_count_bucket = "20-49"
+            else:
+                trade_count_bucket = "ge_50"
+
+            flow = _number(label, "trade_flow_imbalance_30s", math.nan)
+            if not math.isfinite(flow):
+                flow_alignment = "unavailable"
+            else:
+                signed_flow = flow if side == "BUY" else -flow
+                if signed_flow >= 0.25:
+                    flow_alignment = "strong_aligned"
+                elif signed_flow >= 0.10:
+                    flow_alignment = "aligned"
+                elif signed_flow > -0.10:
+                    flow_alignment = "neutral"
+                else:
+                    flow_alignment = "opposed"
+
             segment_keys = (
                 f"side={side}",
                 f"ticker={ticker}",
@@ -416,6 +482,10 @@ class ShadowForwardTracker:
                 f"score_band={score_band}",
                 f"horizon={horizon}s",
                 f"hour_msk={hour_msk}",
+                f"spread_atr_bucket={spread_atr_bucket}",
+                f"trade_count_bucket={trade_count_bucket}",
+                f"flow_alignment={flow_alignment}",
+                f"side_flow_alignment={side}|{flow_alignment}",
                 f"side_regime={side}|{regime}",
                 f"side_eligibility={side}|{eligibility}",
                 f"ticker_eligibility={ticker}|{eligibility}",
