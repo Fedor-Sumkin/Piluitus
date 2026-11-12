@@ -194,9 +194,12 @@ class RiskManager:
         if not LOT_SIZES and not TICKERS_TO_TRADE:
             risk_logger.error("❌ Список инструментов пуст: Finam metadata refresh невозможен.")
             return
-        if finam_broker_client is None or not callable(getattr(finam_broker_client, "get_asset", None)):
+        if finam_broker_client is None or not (
+            callable(getattr(finam_broker_client, "get_asset", None))
+            or callable(getattr(finam_broker_client, "get_moex_asset", None))
+        ):
             risk_logger.error(
-                "Finam GetAsset unavailable: exchange lot metadata cannot be confirmed; new entries remain blocked."
+                "Exchange asset metadata source unavailable: exchange lot cannot be confirmed; new entries remain blocked."
             )
             return
         params_method = getattr(finam_broker_client, "get_asset_params", None)
@@ -230,25 +233,31 @@ class RiskManager:
         metadata_account_id = str(
             getattr(finam_broker_client, "metadata_account_id", "") or ""
         ).strip()
-        metadata_discover = getattr(finam_broker_client, "discover_metadata_account_id", None)
-        if is_paper and callable(metadata_discover) and not metadata_account_id:
-            try:
-                metadata_account_id = str(await metadata_discover() or "").strip()
-            except Exception as exc:
-                risk_logger.warning(
-                    "[FINAM METADATA] read-only account context discovery failed: %s",
-                    type(exc).__name__,
-                )
-            if not metadata_account_id:
-                risk_logger.warning(
-                    "⛔ [FINAM METADATA] PAPER GetAsset skipped: Finam requires account_id, "
-                    "but no session-authorized read-only metadata context was resolved. "
-                    "Previously confirmed exchange lots are preserved; new unknown lots remain blocked."
-                )
-                return
-        asset_method = getattr(finam_broker_client, "get_asset", None)
+        moex_asset_method = getattr(finam_broker_client, "get_moex_asset", None)
+        use_moex_iss = is_paper and callable(moex_asset_method)
+        if is_paper and not use_moex_iss:
+            # Compatibility for test doubles/older clients only. Production PAPER
+            # uses public MOEX ISS and never discovers or borrows a Finam account.
+            metadata_discover = getattr(finam_broker_client, "discover_metadata_account_id", None)
+            if callable(metadata_discover) and not metadata_account_id:
+                try:
+                    metadata_account_id = str(await metadata_discover() or "").strip()
+                except Exception as exc:
+                    risk_logger.warning(
+                        "[FINAM METADATA] legacy read-only context discovery failed: %s",
+                        type(exc).__name__,
+                    )
+                if not metadata_account_id:
+                    risk_logger.warning(
+                        "⛔ [FINAM METADATA] no public MOEX ISS client is available and Finam "
+                        "GetAsset requires an authorized account context; previously confirmed "
+                        "exchange lots are preserved and unknown lots remain blocked."
+                    )
+                    return
+        asset_method = moex_asset_method if use_moex_iss else getattr(finam_broker_client, "get_asset", None)
+        metadata_source_label = "MOEX_ISS_TQBR" if use_moex_iss else "FINAM_GET_ASSET"
         if not callable(asset_method):
-            risk_logger.warning("📐 [ASSET METADATA] Finam GetAsset unavailable; static tick-size metadata retained.")
+            risk_logger.warning("📐 [ASSET METADATA] Exchange metadata method unavailable; static tick-size metadata retained.")
         if not is_paper and not callable(params_method):
             risk_logger.error(
                 "Finam GetAssetParams unavailable; no account-specific lot values will authorize LIVE orders."
@@ -375,7 +384,9 @@ class RiskManager:
                             "price_tick": min_step / (10 ** decimals),
                             "lot_size": exchange_lot,
                             "quote_currency": str(scalar(field(asset_data, "quote_currency", "quoteCurrency")) or ""),
-                            "metadata_source": "FINAM_GET_ASSET",
+                            "metadata_source": str(
+                                scalar(field(asset_data, "metadata_source")) or metadata_source_label
+                            ),
                         }
                         updated_metadata += 1
                     else:
@@ -454,8 +465,11 @@ class RiskManager:
             "PAPER lot failure examples=%s.",
             "PAPER" if is_paper else "LIVE",
             (
-                f"read_only_metadata:{bool(metadata_account_id)}"
-                if is_paper else f"{account_id_source}:{bool(account_id)}"
+                "public_MOEX_ISS_TQBR"
+                if use_moex_iss else (
+                    f"read_only_metadata:{bool(metadata_account_id)}"
+                    if is_paper else f"{account_id_source}:{bool(account_id)}"
+                )
             ),
             updated_lots, len(symbols_to_refresh), failed_lots, blocked_not_tradable,
             updated_metadata, len(symbols_to_refresh), failed_metadata,
