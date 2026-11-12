@@ -167,5 +167,64 @@ class FinamAssetMetadataTests(unittest.TestCase):
         self.assertEqual(payload["lot_size"]["value"], "10")
         self.assertIsNone(captured["params"])
 
+
+    def test_paper_accepts_nested_camel_case_and_object_wrapped_lot_metadata(self):
+        from types import SimpleNamespace
+
+        class _ObjectPayload:
+            async def get_asset(self, ticker: str):
+                if ticker != "TESTMETA":
+                    return None
+                return SimpleNamespace(asset=SimpleNamespace(
+                    symbol="TESTMETA@MISX",
+                    mic="MISX",
+                    decimals=2,
+                    min_step=5,
+                    lotSize=SimpleNamespace(value="15"),
+                    quote_currency="RUB",
+                ))
+
+        old_lot = LOT_SIZES.get("TESTMETA")
+        old_trade_lot = FINAM_TRADE_LOT_SIZES.get("TESTMETA")
+        try:
+            LOT_SIZES["TESTMETA"] = 1
+            with patch.dict("os.environ", {"FINAM_METADATA_REQUEST_INTERVAL_SEC": "0"}):
+                asyncio.run(RiskManager.update_finam_lot_sizes(_ObjectPayload(), paper_mode=True))
+            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 15)
+            self.assertEqual(ASSET_METADATA["TESTMETA"]["lot_size"], 15.0)
+        finally:
+            if old_lot is None:
+                LOT_SIZES.pop("TESTMETA", None)
+            else:
+                LOT_SIZES["TESTMETA"] = old_lot
+            if old_trade_lot is None:
+                FINAM_TRADE_LOT_SIZES.pop("TESTMETA", None)
+            else:
+                FINAM_TRADE_LOT_SIZES["TESTMETA"] = old_trade_lot
+            ASSET_METADATA.pop("TESTMETA", None)
+
+    def test_paper_transient_metadata_failure_preserves_last_confirmed_exchange_lot(self):
+        class _Unavailable:
+            async def get_asset(self, ticker: str):
+                return None
+
+        old_lot = LOT_SIZES.get("TESTMETA")
+        old_trade_lot = FINAM_TRADE_LOT_SIZES.get("TESTMETA")
+        try:
+            LOT_SIZES["TESTMETA"] = 1
+            FINAM_TRADE_LOT_SIZES["TESTMETA"] = 10
+            with patch.dict("os.environ", {"FINAM_METADATA_REQUEST_INTERVAL_SEC": "0"}):
+                asyncio.run(RiskManager.update_finam_lot_sizes(_Unavailable(), paper_mode=True))
+            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 10)
+        finally:
+            if old_lot is None:
+                LOT_SIZES.pop("TESTMETA", None)
+            else:
+                LOT_SIZES["TESTMETA"] = old_lot
+            if old_trade_lot is None:
+                FINAM_TRADE_LOT_SIZES.pop("TESTMETA", None)
+            else:
+                FINAM_TRADE_LOT_SIZES["TESTMETA"] = old_trade_lot
+
 if __name__ == "__main__":
     unittest.main()
