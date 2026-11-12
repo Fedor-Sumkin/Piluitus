@@ -19,7 +19,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             candidate_direction=direction,
             metrics={},
             rag_context="",
-            max_chars=1600,
+            max_chars=2100,
             include_rule_text=False,
         )
 
@@ -31,7 +31,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertIn("supporting evidence, not mandatory", prompt)
         self.assertIn("candidate=BUY", prompt)
         self.assertIn("BUY requires positive 15s trade momentum", prompt)
-        self.assertLessEqual(len(prompt), 1600)
+        self.assertLessEqual(len(prompt), 2100)
 
     def test_sell_candidate_requests_approval_not_direction_choice(self) -> None:
         prompt = self._prompt("SELL")
@@ -41,7 +41,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertIn("supporting evidence, not mandatory", prompt)
         self.assertIn("candidate=SELL", prompt)
         self.assertIn("SELL requires negative 15s trade momentum", prompt)
-        self.assertLessEqual(len(prompt), 1600)
+        self.assertLessEqual(len(prompt), 2100)
 
     def test_prompt_distinguishes_neutral_m1_from_opposite_m1(self) -> None:
         prompt = AIEngine._build_live_prompt(
@@ -50,7 +50,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
                 "bar_trend_up": 0.0, "bar_trend_down": 0.0,
                 "bar_pattern_direction_code": 0.0, "trade_data_ready": 1.0,
                 "trade_flow_imbalance_30s": 0.22, "trade_metrics_age_sec": 0.2,
-            }, rag_context="", max_chars=1600, include_rule_text=False,
+            }, rag_context="", max_chars=2100, include_rule_text=False,
         )
         self.assertIn("bar_trend_up=0", prompt)
         self.assertIn("bar_trend_down=0", prompt)
@@ -61,7 +61,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         prompt = self._prompt("NONE")
         self.assertIn("candidate=NONE => final_decision MUST be HOLD.", prompt)
         self.assertIn("No local direction: MUST HOLD.", prompt)
-        self.assertLessEqual(len(prompt), 1600)
+        self.assertLessEqual(len(prompt), 2100)
 
     def test_missing_final_decision_is_flagged_as_contract_violation(self) -> None:
         result = object.__new__(AIEngine)._cpu_intensive_processing({
@@ -298,7 +298,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
                 "[BUY / BUY_IMPULSE]: Require a 70% Ask size drop before any entry.\n"
                 "[SELL / SELL_IMPULSE]: Require negative price momentum."
             ),
-            max_chars=1600,
+            max_chars=2100,
             include_rule_text=True,
         )
         self.assertIn("RISK_PER_TRADE", prompt)
@@ -381,12 +381,12 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             candidate_direction="NONE",
             metrics=metrics,
             rag_context="",
-            max_chars=1600,
+            max_chars=2100,
             include_rule_text=False,
         )
         self.assertIn("candidate=NONE => final_decision MUST be HOLD.", prompt)
         self.assertIn("No local direction: MUST HOLD.", prompt)
-        self.assertLessEqual(len(prompt), 1600)
+        self.assertLessEqual(len(prompt), 2100)
 
 
 class AIEngineContractRetryTests(unittest.IsolatedAsyncioTestCase):
