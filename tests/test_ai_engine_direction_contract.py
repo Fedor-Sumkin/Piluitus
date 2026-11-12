@@ -124,6 +124,15 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             "Импульс недостаточен.",
         )
 
+    def test_live_prompt_lists_exact_reason_code_values_without_brace_shorthand(self) -> None:
+        prompt = AIEngine._build_live_prompt(
+            "SBER", 100.0, 10.0, "BUY", {}, "", include_rule_text=False
+        )
+        self.assertIn("HOLD_WEAK_DIRECTION", prompt)
+        self.assertIn("HOLD_M1_CONTRADICTION", prompt)
+        self.assertIn("HOLD_UNCLEAR", prompt)
+        self.assertNotIn("HOLD_{", prompt)
+
     def test_valid_hold_is_not_a_contract_violation(self) -> None:
         result = object.__new__(AIEngine)._cpu_intensive_processing({
             "choices": [{
