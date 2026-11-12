@@ -2323,14 +2323,44 @@ class MarketWorker:
                     "bid_quote_age_sec": _parse_finite_float(metrics.get("bid_quote_age_sec")),
                     "ask_quote_age_sec": _parse_finite_float(metrics.get("ask_quote_age_sec")),
                 }
+                volume_spike = _parse_finite_float(metrics.get("volume_spike"))
+                volume_5s = _parse_finite_float(metrics.get("trade_volume_5s"))
+                volume_baseline_5s = _parse_finite_float(metrics.get("trade_volume_baseline_5s"))
+                trade_count_60s = _parse_finite_float(metrics.get("trade_count_60s"))
+                if volume_5s is not None and volume_baseline_5s is not None:
+                    volume_text = (
+                        f"Всплеск объёма: {volume_spike:.2f}×; "
+                        f"5с={volume_5s:.3f} ед. провайдера, база={volume_baseline_5s:.3f}; "
+                        f"сделок за 60с={int(trade_count_60s or 0)}."
+                    )
+                else:
+                    volume_text = (
+                        f"Всплеск объёма: {volume_spike:.2f}×."
+                        if volume_spike is not None else "Объём сделок: Н/Д."
+                    )
+
+                trade_realized_volatility = _parse_finite_float(
+                    metrics.get("trade_realized_volatility_60s_pct")
+                )
+                m1_atr_pct = _parse_finite_float(metrics.get("bar_atr_pct"))
+                if trade_realized_volatility is not None:
+                    volatility_text = (
+                        f"Реализованная волатильность по сделкам за 60с: "
+                        f"{trade_realized_volatility:.5f}%."
+                    )
+                elif m1_atr_pct is not None:
+                    volatility_text = f"M1 ATR: {m1_atr_pct:.5f}%."
+                else:
+                    volatility_text = "Волатильность: Н/Д — нет подтверждённой истории."
+
                 asyncio.create_task(
                     log_trading_event_to_file(
                         ticker=ticker,
                         price=price,
                         decision="В ОЧЕРЕДИ (ПРОВЕРКА РИСКОВ)",
                         confidence=0.0,
-                        tactic=f"Всплеск объема: {metrics.get('volume_spike', 'Н/Д')}",
-                        critic=f"Волатильность: {metrics.get('volatility_pct', 'Н/Д')}%"
+                        tactic=volume_text,
+                        critic=volatility_text,
                     )
                 )
 
