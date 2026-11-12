@@ -140,7 +140,7 @@ class Settings:
     # ---------- Finam ----------
     FINAM_TOKEN: str = os.getenv("FINAM_TOKEN", "")
     FINAM_ACCOUNT_ID: str = os.getenv("FINAM_ACCOUNT_ID", "")
-    # Legacy value is accepted only when it matches a session-authorized account ID.
+    # Legacy value is accepted only when authorized by session account_ids or verified by scoped GET /accounts/{id}.
     FINAM_CLIENT_ID: str = os.getenv("FINAM_CLIENT_ID", "")
     FINAM_USER: str = os.getenv("FINAM_USER", "")
     FINAM_PASSWORD: str = os.getenv("FINAM_PASSWORD", "")
