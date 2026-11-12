@@ -988,6 +988,9 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "guard_quotes", "guard_spread", "guard_volume", "guard_direction", "guard_size",
         "guard_text", "guard_other", "confidence_blocked", "risk_blocked", "zero_lot",
         "strategy_shadow_evaluated", "strategy_shadow_pass", "strategy_shadow_reject",
+        "shadow_block_bbo_unavailable", "shadow_block_bbo_stale",
+        "shadow_block_order_book_not_confirmed", "shadow_block_atr_not_ready",
+        "shadow_block_spread", "shadow_block_other",
         "orders_scheduled", "orderbook_updates", "orderbook_unusable",
         "orderbook_side_touches", "orderbook_heartbeats", "orderbook_invalid",
         "orderbook_out_of_order", "active_position_skipped", "atr_unready_candidates",
@@ -1028,7 +1031,9 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "portfolio_size_reduced=%(portfolio_size_reduced)d, entry_session_block=%(entry_session_blocked)d, "
         "other_block=%(execution_other_blocked)d; "
         "strategy_shadow=%(strategy_shadow_pass)d/%(strategy_shadow_evaluated)d pass "
-        "(reject=%(strategy_shadow_reject)d); "
+        "(reject=%(strategy_shadow_reject)d; hard_blocks: BBO_missing=%(shadow_block_bbo_unavailable)d, "
+        "BBO_stale=%(shadow_block_bbo_stale)d, book_unconfirmed=%(shadow_block_order_book_not_confirmed)d, "
+        "ATR=%(shadow_block_atr_not_ready)d, spread=%(shadow_block_spread)d, other=%(shadow_block_other)d); "
         "confidence=%(confidence_blocked)d, RiskManager_pre_LLM=%(risk_blocked)d, "
         "минимальный_лот_по_риску=%(zero_lot)d, BBO_entry_block=%(execution_bbo_blocked)d, "
         "ордеров_принято/открыто=%(orders_scheduled)d",
@@ -1138,6 +1143,22 @@ def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -
     observation_id = scalping_shadow_tracker.record_candidate(ticker, direction, metrics, result)
     _trade_flow_inc("strategy_shadow_evaluated")
     _trade_flow_inc("strategy_shadow_pass" if result.get("eligible") else "strategy_shadow_reject")
+    shadow_block_keys = {
+        "bbo_unavailable": "shadow_block_bbo_unavailable",
+        "bbo_stale": "shadow_block_bbo_stale",
+        "order_book_not_confirmed": "shadow_block_order_book_not_confirmed",
+        "atr_not_ready": "shadow_block_atr_not_ready",
+        "spread_above_0.50_pct": "shadow_block_spread",
+    }
+    observed_blocks = set(result.get("hard_blocks", []))
+    counted_blocks = set()
+    for block in observed_blocks:
+        counter = shadow_block_keys.get(block)
+        if counter:
+            _trade_flow_inc(counter)
+            counted_blocks.add(block)
+    if observed_blocks - counted_blocks:
+        _trade_flow_inc("shadow_block_other", len(observed_blocks - counted_blocks))
     logger.info(
         "🧪 [STRATEGY SHADOW] %s id=%s side=%s eligible=%s score=%.1f/%.0f regime=%s "
         "queue_imbalance=%s spread_ATR=%s hard_blocks=%s reasons=%s",
