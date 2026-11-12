@@ -437,7 +437,7 @@ class ShadowForwardTracker:
             eligibility = "eligible" if eligible else "ineligible"
 
             spread_atr = _number(label, "spread_atr_ratio", math.nan)
-            if not math.isfinite(spread_atr) or spread_atr <= 0.0:
+            if not math.isfinite(spread_atr) or spread_atr < 0.0:
                 spread_atr_bucket = "unavailable"
             elif spread_atr <= 0.10:
                 spread_atr_bucket = "le_0.10"
