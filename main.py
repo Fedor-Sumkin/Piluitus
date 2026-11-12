@@ -2836,18 +2836,24 @@ async def background_broker_init():
     logger.info("🔌 Проверка брокерского соединения Finam; календарь сессий будет проверяться по каждому инструменту...")
     try:
         await broker.connect()
-        selected_account_id = await broker.discover_accounts()
-        if selected_account_id:
+        if bool(getattr(execution_engine, "paper_mode", True)):
             logger.info(
-                "🏦 [FINAM ACCOUNT] account_id успешно определён из текущей сессии; "
-                "source=%s; account_id=%s.",
-                getattr(broker, "account_id_source", "session"),
-                broker._mask_account_id(selected_account_id),
+                "🧪 [FINAM ACCOUNT] PAPER работает на внутреннем псевдосчёте; "
+                "Finam используется только для авторизации и рыночных данных. Account discovery не требуется."
             )
         else:
-            logger.error(
-                "⛔ [FINAM ACCOUNT] счёт не определён; GetAssetParams и новые входы заблокированы."
-            )
+            selected_account_id = await broker.discover_accounts()
+            if selected_account_id:
+                logger.info(
+                    "🏦 [FINAM ACCOUNT] account_id успешно определён из текущей сессии; "
+                    "source=%s; account_id=%s.",
+                    getattr(broker, "account_id_source", "session"),
+                    broker._mask_account_id(selected_account_id),
+                )
+            else:
+                logger.error(
+                    "⛔ [FINAM ACCOUNT] LIVE-счёт не определён; LIVE-входы заблокированы."
+                )
 
         # Verify both the authenticated endpoint and the schedule parser before
         # the first candidate reaches the executor. SBER is used only as a probe;
@@ -2915,7 +2921,7 @@ async def _start_news_updater() -> None:
     await MarketNewsParser.update_news_cycle(db_manager, broadcast_callback=_broadcast)
 
 async def _finam_metadata_refresh_loop() -> None:
-    """Refresh account-specific trading metadata without blocking API startup."""
+    """Refresh exchange lots for PAPER or account-specific lots for LIVE."""
     from risk_manager import RiskManager
 
     try:
@@ -2935,8 +2941,9 @@ async def _finam_metadata_refresh_loop() -> None:
         if not str(getattr(broker, "jwt_token", "") or "").strip():
             await asyncio.sleep(1.0)
             continue
+        paper_mode = bool(getattr(execution_engine, "paper_mode", True))
         account_id = str(getattr(broker, "account_id", "") or "").strip()
-        if not account_id:
+        if not paper_mode and not account_id:
             discover = getattr(broker, "discover_accounts", None)
             if callable(discover):
                 try:
@@ -2950,18 +2957,16 @@ async def _finam_metadata_refresh_loop() -> None:
                         "[FINAM METADATA WORKER] account discovery failed: %s",
                         type(exc).__name__,
                     )
-        if not account_id or account_id.upper() == "UNKNOWN_ACCOUNT":
+        if not paper_mode and (not account_id or account_id.upper() == "UNKNOWN_ACCOUNT"):
             logger.warning(
-                "⛔ [FINAM METADATA WORKER] account_id не получен из текущей Finam-сессии; "
-                "новые входы остаются заблокированы."
+                "⛔ [FINAM METADATA WORKER] LIVE account_id не получен; LIVE-входы остаются заблокированы."
             )
-            # Retry account discovery on a bounded short interval. A transient
-            # Finam session/account endpoint failure must not disable lot metadata
-            # for most of a PAPER trading session.
             await asyncio.sleep(account_retry_sec)
             continue
         try:
-            await RiskManager.update_finam_lot_sizes(finam_broker_client=broker)
+            await RiskManager.update_finam_lot_sizes(
+                finam_broker_client=broker, paper_mode=paper_mode
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -2977,7 +2982,8 @@ async def _finam_metadata_refresh_loop() -> None:
         retry_delay = refresh_sec
         if confirmed:
             logger.info(
-                "📦 [FINAM METADATA WORKER] confirmed account lots=%d/%d; next refresh in %.0fs.",
+                "📦 [FINAM METADATA WORKER] confirmed %s lots=%d/%d; next refresh in %.0fs.",
+                "PAPER exchange" if paper_mode else "LIVE account",
                 confirmed, len(TICKERS_TO_TRADE), refresh_sec,
             )
         await asyncio.sleep(retry_delay)
