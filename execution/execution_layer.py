@@ -15,7 +15,7 @@ import asyncio
 from uuid import uuid4
 
 # Единый справочник лотности хранится в config.py.
-from config import ASSET_METADATA, FINAM_TRADE_LOT_SIZES, LOT_SIZES, Settings
+from config import ASSET_METADATA, FINAM_TRADE_LOT_SIZES, LOT_SIZES, Settings, PAPER_TRADING
 
 logger = logging.getLogger("Piluitus.ExecutionLayer")
 
@@ -167,7 +167,7 @@ class BaseExecutionEngine:
     ):
         self.broker = finam_broker_client
         self.screener = screener
-        self.paper_mode = os.getenv("PAPER_TRADING", "True").strip().lower() in ("true", "1", "yes")
+        self.paper_mode = bool(getattr(Settings, "PAPER_TRADING", PAPER_TRADING))
 
         try:
             self.initial_capital = max(0.0, float(
