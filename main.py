@@ -976,6 +976,14 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "quotes_received", "selected_quotes", "selected_anomalies", "anomalies_queued",
         "queue_dropped", "direction_prefilter_skipped", "prefilter_blocked", "candidate_deduplicated",
         "bbo_deferred", "bbo_resumed", "bbo_expired", "bbo_superseded", "bbo_coalesced", "bbo_cancelled",
+        "bbo_resume_attempted", "bbo_resume_from_book", "bbo_resume_from_quotes", "bbo_resume_expired",
+        "bbo_resume_session_cancelled", "bbo_resume_invalid_payload", "bbo_resume_funnel_not_ready",
+        "bbo_resume_not_selected", "bbo_resume_active_position", "bbo_resume_quote_missing",
+        "bbo_resume_book_unconfirmed", "bbo_resume_invalid_bbo", "bbo_resume_book_stale",
+        "bbo_resume_confirmation_stale", "bbo_resume_other_book_failure",
+        "bbo_resume_direction_changed", "bbo_resume_evidence_quotes", "bbo_resume_evidence_blocked",
+        "bbo_resume_atr_blocked", "bbo_resume_payload_changed", "bbo_resume_deduplicated",
+        "bbo_resume_queue_full",
         "local_candidate_buy", "local_candidate_sell",
         "prefilter_pass_buy", "prefilter_pass_sell",
         "llm_calls", "llm_model_approve", "llm_model_hold",
@@ -1027,6 +1035,17 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "блок ATR после APPROVE=%(atr_history_blocked)d; "
         "BBO wait=%(bbo_deferred)d, resumed=%(bbo_resumed)d, expired=%(bbo_expired)d, "
         "superseded=%(bbo_superseded)d, coalesced=%(bbo_coalesced)d, cancelled=%(bbo_cancelled)d, pending_now=%(bbo_pending)d; "
+        "BBO resume: attempts=%(bbo_resume_attempted)d (ORDER_BOOK=%(bbo_resume_from_book)d, QUOTES=%(bbo_resume_from_quotes)d), "
+        "expired=%(bbo_resume_expired)d, session_cancel=%(bbo_resume_session_cancelled)d, "
+        "funnel_not_ready=%(bbo_resume_funnel_not_ready)d, not_selected=%(bbo_resume_not_selected)d, "
+        "active_position=%(bbo_resume_active_position)d, invalid_payload=%(bbo_resume_invalid_payload)d, "
+        "book_wait(missing=%(bbo_resume_quote_missing)d, unconfirmed=%(bbo_resume_book_unconfirmed)d, "
+        "invalid=%(bbo_resume_invalid_bbo)d, stale=%(bbo_resume_book_stale)d, "
+        "confirmation_stale=%(bbo_resume_confirmation_stale)d, other=%(bbo_resume_other_book_failure)d), "
+        "direction_changed=%(bbo_resume_direction_changed)d, evidence(quotes=%(bbo_resume_evidence_quotes)d, "
+        "blocked=%(bbo_resume_evidence_blocked)d), ATR=%(bbo_resume_atr_blocked)d, "
+        "payload_changed=%(bbo_resume_payload_changed)d, deduplicated=%(bbo_resume_deduplicated)d, "
+        "queue_full=%(bbo_resume_queue_full)d; "
         "после_LLM_исполнение: portfolio_cap_block=%(portfolio_cap_blocked)d, "
         "portfolio_size_reduced=%(portfolio_size_reduced)d, entry_session_block=%(entry_session_blocked)d, "
         "other_block=%(execution_other_blocked)d; "
@@ -1263,56 +1282,97 @@ def _store_pending_bbo_candidate(
     )
 
 
-async def _resume_pending_bbo_candidate(ticker: str) -> None:
-    """Revalidate a short-lived candidate after a coherent ORDER_BOOK update."""
+def _bbo_resume_reason_bucket(reason: object) -> str:
+    """Map a human-readable BBO recovery failure to a stable diagnostic counter."""
+    lowered = str(reason or "").strip().lower()
+    if "состояние котировок" in lowered or "состояния стакана" in lowered:
+        return "quote_missing"
+    if "не подтверждён" in lowered or "не подтвержден" in lowered or "целостный" in lowered:
+        return "book_unconfirmed"
+    if "непротиворечив" in lowered or "двухсторон" in lowered:
+        return "invalid_bbo"
+    if "order_book устарело" in lowered:
+        return "book_stale"
+    if "свежего подтверждения" in lowered:
+        return "confirmation_stale"
+    return "other_book_failure"
+
+
+async def _resume_pending_bbo_candidate(
+    ticker: str,
+    *,
+    trigger: str = "ORDER_BOOK",
+) -> None:
+    """Revalidate a short-lived candidate after a coherent book or fresh quote event."""
     key = str(ticker or "").strip().upper().split("@")[0]
     with _pending_bbo_lock:
         pending = _pending_bbo_candidates.get(key)
     if pending is None:
         return
 
+    normalized_trigger = str(trigger or "ORDER_BOOK").strip().upper()
+    _trade_flow_inc("bbo_resume_attempted")
+    _trade_flow_inc(
+        "bbo_resume_from_quotes" if normalized_trigger == "QUOTES" else "bbo_resume_from_book"
+    )
+
     now = time_module.monotonic()
     created_at = float(pending.get("created_at", 0.0) or 0.0)
     if created_at <= 0.0 or now - created_at > _PENDING_BBO_CANDIDATE_TTL_SEC:
         _drop_pending_bbo_candidate(key, pending)
         _trade_flow_inc("bbo_expired")
+        _trade_flow_inc("bbo_resume_expired")
         return
 
     payload = pending.get("payload")
     if not isinstance(payload, dict):
+        _trade_flow_inc("bbo_resume_invalid_payload")
         _cancel_pending_bbo_candidate(key, pending)
         return
     if (
         getattr(execution_engine, "_maintenance_active", False)
         or payload.get("paper_session_generation") != _paper_session_generation
     ):
+        _trade_flow_inc("bbo_resume_session_cancelled")
         _cancel_pending_bbo_candidate(key, pending)
         return
 
     funnel_status = screener.get_status()
-    if not funnel_status.get("ready") or key not in set(funnel_status.get("selected_tickers", [])):
+    if not funnel_status.get("ready"):
+        _trade_flow_inc("bbo_resume_funnel_not_ready")
         _cancel_pending_bbo_candidate(key, pending)
         return
+    if key not in set(funnel_status.get("selected_tickers", [])):
+        _trade_flow_inc("bbo_resume_not_selected")
+        _cancel_pending_bbo_candidate(key, pending)
+        return
+
     active_tickers = execution_engine.get_open_position_tickers()
     if key in active_tickers or key in getattr(execution_engine, "_opening_tickers", set()):
+        _trade_flow_inc("bbo_resume_active_position")
         _cancel_pending_bbo_candidate(key, pending)
         _trade_flow_inc("active_position_skipped")
         return
 
     metrics = payload.get("metrics")
     if not isinstance(metrics, dict):
+        _trade_flow_inc("bbo_resume_invalid_payload")
         _cancel_pending_bbo_candidate(key, pending)
         return
+
     book_ready, book_reason = refresh_candidate_bbo_metrics(screener, key, metrics, now=now)
     if not book_ready:
-        # A valid but old/partial book may be followed by a coherent heartbeat.
-        # Keep the candidate only until its original short TTL expires.
-        logger.debug("[PRE-LLM WAIT] %s: %s", key, book_reason)
+        _trade_flow_inc("bbo_resume_" + _bbo_resume_reason_bucket(book_reason))
+        logger.debug(
+            "[PRE-LLM BBO RESUME WAIT] %s trigger=%s: %s",
+            key, normalized_trigger, book_reason,
+        )
         return
 
     direction = infer_candidate_direction(metrics)
     original_direction = str(payload.get("candidate_direction", "")).upper()
     if direction not in {"BUY", "SELL"} or direction != original_direction:
+        _trade_flow_inc("bbo_resume_direction_changed")
         _cancel_pending_bbo_candidate(key, pending)
         _trade_flow_inc("direction_prefilter_skipped")
         return
@@ -1321,7 +1381,9 @@ async def _resume_pending_bbo_candidate(ticker: str) -> None:
     evidence_ok, evidence_reason = validate_signal_evidence(direction, metrics)
     if not evidence_ok:
         if _guard_reason_bucket(evidence_reason) == "quotes":
+            _trade_flow_inc("bbo_resume_evidence_quotes")
             return
+        _trade_flow_inc("bbo_resume_evidence_blocked")
         _cancel_pending_bbo_candidate(key, pending)
         _trade_flow_inc("prefilter_blocked")
         _trade_flow_guard_block(evidence_reason)
@@ -1330,8 +1392,7 @@ async def _resume_pending_bbo_candidate(ticker: str) -> None:
 
     atr_ready, atr_reason = validate_atr_readiness(metrics)
     if not atr_ready:
-        # Do not preserve an old signal while ATR warms up. A later market tick
-        # must produce a fresh candidate after the required closed M1 bars exist.
+        _trade_flow_inc("bbo_resume_atr_blocked")
         _trade_flow_inc("atr_unready_candidates")
         _cancel_pending_bbo_candidate(key, pending)
         _log_prefilter_blocked(key, atr_reason, interval_sec=60.0)
@@ -1339,16 +1400,18 @@ async def _resume_pending_bbo_candidate(ticker: str) -> None:
 
     # A same-side tick may have refreshed the pending payload while this
     # coroutine was validating the book. Never enqueue stale evidence or remove
-    # the newer payload; the next coherent ORDER_BOOK event will retry it.
+    # the newer payload; a later event will revalidate that newer candidate.
     with _pending_bbo_lock:
         still_current = (
             _pending_bbo_candidates.get(key) is pending
             and pending.get("payload") is payload
         )
     if not still_current:
+        _trade_flow_inc("bbo_resume_payload_changed")
         return
 
     if not _reserve_ai_ticker(key):
+        _trade_flow_inc("bbo_resume_deduplicated")
         _cancel_pending_bbo_candidate(key, pending)
         _trade_flow_inc("candidate_deduplicated")
         return
@@ -1363,11 +1426,16 @@ async def _resume_pending_bbo_candidate(ticker: str) -> None:
         _trade_flow_inc("bbo_resumed")
         _trade_flow_inc("anomalies_queued")
         _trade_flow_inc("prefilter_pass_buy" if direction == "BUY" else "prefilter_pass_sell")
-        logger.info("✅ [PRE-LLM RESUME] %s: свежий BBO подтверждён, кандидат %s передан в LLM-очередь.", key, direction)
+        logger.info(
+            "✅ [PRE-LLM RESUME] %s: свежий BBO и ORDER_BOOK подтверждены; "
+            "кандидат %s передан в LLM-очередь (trigger=%s).",
+            key, direction, normalized_trigger,
+        )
         update_numpy_impulse_status(key)
     except asyncio.QueueFull:
         _release_ai_ticker(key)
         _drop_pending_bbo_candidate(key, pending)
+        _trade_flow_inc("bbo_resume_queue_full")
         _trade_flow_inc("queue_dropped")
         logger.error("Очередь AI-сигналов заполнена; восстановленный кандидат %s отброшен.", key)
 
@@ -1663,7 +1731,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                 )
                 if shadow_bbo_ready:
                     scalping_shadow_tracker.observe_market_tick(book_ticker, shadow_metrics)
-                await _resume_pending_bbo_candidate(book_ticker)
+                await _resume_pending_bbo_candidate(book_ticker, trigger="ORDER_BOOK")
                 # ORDER_BOOK can refresh BBO independently of QUOTES. Re-run the
                 # PAPER exit monitor only after a coherent book confirmation.
                 if execution_engine.paper_mode and book_ticker in execution_engine.paper_positions:
@@ -1731,9 +1799,9 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
         ticker = str(ticker or "").strip().upper().split("@")[0]
         if price <= 0.0 or not ticker or volume < 0.0:
             return
-        # Ordinary quote ticks do not cancel a deferred candidate. It remains
-        # pending until a coherent ORDER_BOOK event resumes it, its TTL expires,
-        # or a newer qualifying anomaly replaces it in _store_pending_bbo_candidate.
+        # Quote ticks do not cancel deferred candidates. They may refresh the
+        # two-sided quote confirmation clocks; a pending candidate can resume on
+        # QUOTES only while a recently confirmed coherent ORDER_BOOK is still fresh.
 
         tick_counter += 1
         current_frame = spinner_frames[tick_counter % len(spinner_frames)]
@@ -1761,6 +1829,14 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
         )
 
         _trade_flow_inc("quotes_received")
+        # ORDER_BOOK and QUOTES use independent provider streams. A valid recent
+        # book can be confirmed by the newest two-sided QUOTES packet between
+        # book deltas; this prevents a pending candidate from expiring merely
+        # because no new best-level ORDER_BOOK event arrived within its 1.5s TTL.
+        with _pending_bbo_lock:
+            has_pending_bbo = ticker in _pending_bbo_candidates
+        if has_pending_bbo:
+            await _resume_pending_bbo_candidate(ticker, trigger="QUOTES")
         quote_metrics_for_shadow = analysis.get("metrics", {})
         if isinstance(quote_metrics_for_shadow, dict):
             scalping_shadow_tracker.observe_market_tick(ticker, quote_metrics_for_shadow)
