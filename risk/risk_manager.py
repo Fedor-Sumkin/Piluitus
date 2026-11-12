@@ -411,7 +411,7 @@ class RiskManager:
                             payload_type = type(asset_payload).__name__
                             payload_keys = ",".join(sorted(asset_payload.keys())) if isinstance(asset_payload, dict) else "-"
                             if asset_payload is None:
-                                reason = "GetAsset returned empty response"
+                                reason = f"{metadata_source_label} returned empty response"
                             elif not isinstance(asset_data, dict):
                                 reason = f"unsupported payload type={payload_type}"
                             elif not asset_market_ok:
