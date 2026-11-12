@@ -43,7 +43,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
                 asyncio.run(RiskManager.update_finam_lot_sizes(_FinamMetadataStub()))
 
             self.assertEqual(LOT_SIZES["TESTMETA"], 1)
-            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 7)
+            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 10)
             self.assertEqual(ASSET_METADATA["TESTMETA"]["price_tick"], 0.05)
             self.assertEqual(ASSET_METADATA["TESTMETA"]["lot_size"], 10.0)
             self.assertEqual(ASSET_METADATA["TESTMETA"]["metadata_source"], "FINAM_GET_ASSET")
@@ -89,7 +89,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
             else:
                 FINAM_TRADE_LOT_SIZES["TESTMETA"] = old_trade_lot
 
-    def test_missing_account_id_does_not_call_account_params(self):
+    def test_paper_mode_uses_exchange_lot_without_finam_account(self):
         class _NoAccount(_FinamMetadataStub):
             calls = 0
             async def get_asset_params(self, ticker: str, account_id: str | None = None):
@@ -109,7 +109,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
             }):
                 asyncio.run(RiskManager.update_finam_lot_sizes(stub))
             self.assertEqual(stub.calls, 0)
-            self.assertNotIn("TESTMETA", FINAM_TRADE_LOT_SIZES)
+            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 10)
         finally:
             if old_lot is None:
                 LOT_SIZES.pop("TESTMETA", None)
