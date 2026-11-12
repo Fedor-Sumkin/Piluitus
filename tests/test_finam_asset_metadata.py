@@ -60,7 +60,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
                 result = asyncio.run(client.get_asset("VTBR"))
 
         self.assertIsNone(result)
-        output = "\\n".join(captured.output)
+        output = captured.output[0] if captured.output else ""
         self.assertIn("HTTP 404", output)
         self.assertIn("asset not found", output)
         self.assertNotIn("must-not-leak", output)
@@ -89,7 +89,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
                 result = asyncio.run(client.get_asset("VTBR"))
 
         self.assertIsNone(result)
-        output = "\\n".join(captured.output)
+        output = captured.output[0] if captured.output else ""
         self.assertIn("ConnectTimeout", output)
         self.assertIn("connection timed out", output)
 
