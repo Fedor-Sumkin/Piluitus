@@ -29,7 +29,7 @@ class _FinamMetadataStub:
 
 
 class FinamAssetMetadataTests(unittest.TestCase):
-    def test_asset_details_and_account_trade_lot_are_loaded_separately(self):
+    def test_paper_uses_public_exchange_lot_and_asset_details(self):
         old_lot = LOT_SIZES.get("TESTMETA")
         old_trade_lot = FINAM_TRADE_LOT_SIZES.get("TESTMETA")
         old_metadata = ASSET_METADATA.get("TESTMETA")
@@ -38,7 +38,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
             ASSET_METADATA.pop("TESTMETA", None)
             with patch.dict("os.environ", {
                 "FINAM_METADATA_REQUEST_INTERVAL_SEC": "0",
-                "FINAM_ACCOUNT_ID": "TEST-ACCOUNT-123",
+                "FINAM_ACCOUNT_ID": "",
             }):
                 asyncio.run(RiskManager.update_finam_lot_sizes(_FinamMetadataStub()))
 
@@ -94,9 +94,13 @@ class FinamAssetMetadataTests(unittest.TestCase):
     def test_paper_mode_uses_exchange_lot_without_finam_account(self):
         class _NoAccount(_FinamMetadataStub):
             calls = 0
+            discovery_calls = 0
+            async def discover_accounts(self):
+                self.discovery_calls += 1
+                raise AssertionError("PAPER must not discover a Finam brokerage account")
             async def get_asset_params(self, ticker: str, account_id: str | None = None):
                 self.calls += 1
-                return {"trade_lot_size": "7", "is_tradable": True}
+                raise AssertionError("PAPER must not request account-specific parameters")
 
         stub = _NoAccount()
         old_lot = LOT_SIZES.get("TESTMETA")
@@ -111,6 +115,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
             }):
                 asyncio.run(RiskManager.update_finam_lot_sizes(stub))
             self.assertEqual(stub.calls, 0)
+            self.assertEqual(stub.discovery_calls, 0)
             self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 10)
         finally:
             if old_lot is None:
