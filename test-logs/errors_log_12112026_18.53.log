@@ -1,3 +1,0 @@
-2026-11-12 18:54:09,401 [ERROR] [RUN=20261112_185358_25240_682bf2a9] Piluitus.Main: ❌ Telegram‑бот не смог запуститься: HTTP Client says - ClientConnectorError: Cannot connect to host api.telegram.org:443 ssl:default [Указанное сетевое имя более недоступно]
-2026-11-12 19:15:50,330 [ERROR] [RUN=20261112_185358_25240_682bf2a9] Piluitus.RiskManager: Размер позиции заблокирован: биржевой lot_size для RUAL не подтверждён; статический LOT_SIZES не используется для нового ордера.
-2026-11-12 19:21:17,070 [ERROR] [RUN=20261112_185358_25240_682bf2a9] Piluitus.RiskManager: Размер позиции заблокирован: биржевой lot_size для SVCB не подтверждён; статический LOT_SIZES не используется для нового ордера.
