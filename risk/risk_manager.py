@@ -277,7 +277,11 @@ class RiskManager:
                 if callable(asset_method):
                     try:
                         asset_payload = await call_limited(asset_method, normalized)
-                    except Exception:
+                    except Exception as exc:
+                        risk_logger.warning(
+                            "[FINAM METADATA] GetAsset %s raised locally: %s: %s",
+                            normalized, type(exc).__name__, str(exc)[:180],
+                        )
                         asset_payload = None
                 if not is_paper and callable(params_method) and account_id:
                     try:
