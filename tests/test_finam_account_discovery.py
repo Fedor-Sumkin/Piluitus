@@ -160,6 +160,35 @@ class FinamAccountDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(selected)
         self.assertEqual(fake.gets, [])
 
+    async def test_legacy_client_id_is_verified_directly_when_session_account_ids_are_empty(self):
+        os.environ["FINAM_CLIENT_ID"] = "DEMO-6161"
+        fake = _FakeAsyncClient(
+            {"account_ids": [], "readonly": False},
+            {"DEMO-6161": {"account_id": "DEMO-6161", "type": "ACCOUNT_TYPE_DEMO"}},
+        )
+        broker = FinamBrokerClient("secret", is_demo=True)
+        broker.jwt_token = "jwt"
+        with patch("exchange.finam_client.httpx.AsyncClient", return_value=fake):
+            selected = await broker.discover_accounts()
+
+        self.assertEqual(selected, "DEMO-6161")
+        self.assertEqual(broker.account_id_source, "FINAM_CLIENT_ID_verified_by_account_endpoint")
+        self.assertTrue(any("/v1/accounts/DEMO-6161" in item[0] for item in fake.gets))
+
+    async def test_legacy_client_id_direct_validation_rejects_conflicting_account_identity(self):
+        os.environ["FINAM_CLIENT_ID"] = "DEMO-6262"
+        fake = _FakeAsyncClient(
+            {"account_ids": []},
+            {"DEMO-6262": {"account_id": "OTHER-ACCOUNT", "type": "ACCOUNT_TYPE_DEMO"}},
+        )
+        broker = FinamBrokerClient("secret", is_demo=True)
+        broker.jwt_token = "jwt"
+        with patch("exchange.finam_client.httpx.AsyncClient", return_value=fake):
+            selected = await broker.discover_accounts()
+
+        self.assertIsNone(selected)
+        self.assertEqual(broker.account_id, "")
+
     async def test_concurrent_discovery_is_serialized_and_reuses_verified_account(self):
         fake = _FakeAsyncClient(
             {"account_ids": ["DEMO-1313"]},
