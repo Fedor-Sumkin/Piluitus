@@ -171,7 +171,11 @@ def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bo
             return False, f"Поток сделок устарел: age={trade_age:.2f}s; лимит 5.00s."
     volume_spike = _num(metrics, "volume_spike")
     if volume_spike < MIN_VOLUME_SPIKE:
-        return False, f"Всплеск размера последней сделки {volume_spike:.2f}× ниже порога {MIN_VOLUME_SPIKE:.1f}×."
+        return False, (
+            f"Объём сделок за последние 5 секунд относительно среднего 5-секундного "
+            f"объёма за предыдущие 55 секунд недостаточен: {volume_spike:.2f}× "
+            f"при минимуме {MIN_VOLUME_SPIKE:.1f}×."
+        )
 
     price_change = _num(metrics, "price_change_pct")
     price_vs_vwap = _num(metrics, "price_vs_vwap_pct")
@@ -322,7 +326,10 @@ def compact_fallback(decision: str, metrics: dict[str, Any], reason: str = "") -
     if reason:
         critic = reason
     elif spike < MIN_VOLUME_SPIKE:
-        critic = f"Всплеск размера последней сделки {spike:.2f}× ниже порога {MIN_VOLUME_SPIKE:.1f}×."
+        critic = (
+            f"Объём сделок за последние 5 секунд относительно предыдущих 55 секунд "
+            f"недостаточен: {spike:.2f}× при минимуме {MIN_VOLUME_SPIKE:.1f}×."
+        )
     elif decision == "BUY":
         critic = "Не подтверждены обязательные условия по размеру лучшей котировки Ask."
     elif decision == "SELL":
