@@ -86,10 +86,15 @@ class FinamBrokerClient:
         # Serializes JWT refreshes triggered by concurrent REST requests.
         self._auth_refresh_lock = asyncio.Lock()
         self._account_discovery_lock = asyncio.Lock()
+        self._metadata_account_discovery_lock = asyncio.Lock()
         self.is_demo = bool(is_demo)
-        # Account identity is resolved from the authenticated session.
+        # Execution account identity is used only by LIVE order/account endpoints.
         self.account_id: str = ""
         self.account_id_source: str = "unresolved"
+        # PAPER uses a separate read-only account context because Finam GetAsset
+        # requires account_id even though the simulator never routes orders to it.
+        self.metadata_account_id: str = ""
+        self.metadata_account_id_source: str = "unresolved"
         self.account_ids: list[str] = []
         self.session_details: dict[str, Any] = {}
         self.account_details: dict[str, dict[str, Any]] = {}
@@ -178,6 +183,85 @@ class FinamBrokerClient:
         except (httpx.RequestError, ValueError, TypeError) as exc:
             logger.warning("Finam session details request failed: %s", type(exc).__name__)
             return None
+
+    async def discover_metadata_account_id(self) -> str | None:
+        """Resolve a session-authorized account ID for read-only GetAsset metadata.
+
+        Finam currently requires account_id on GetAsset. PAPER remains an internal
+        pseudo-account: this ID is used only as a REST metadata query context and is
+        never copied into self.account_id or used for order routing.
+        """
+        async with self._metadata_account_discovery_lock:
+            if self.metadata_account_id:
+                return self.metadata_account_id
+
+            details = await self.get_session_details()
+            session_data = details if isinstance(details, dict) else {}
+            nested = session_data.get("session") or session_data.get("data")
+            if isinstance(nested, dict):
+                session_data = nested
+            raw_ids = session_data.get("account_ids")
+            account_ids = list(dict.fromkeys(
+                str(value).strip()
+                for value in (raw_ids if isinstance(raw_ids, list) else [])
+                if isinstance(value, (str, int)) and str(value).strip()
+            ))
+            self.account_ids = account_ids
+
+            explicit_id = str(os.getenv("FINAM_ACCOUNT_ID", "") or "").strip()
+            legacy_id = str(os.getenv("FINAM_CLIENT_ID", "") or "").strip()
+            selected = ""
+            source = ""
+
+            if account_ids:
+                if explicit_id and explicit_id in account_ids:
+                    selected, source = explicit_id, "session_details_FINAM_ACCOUNT_ID"
+                elif legacy_id and legacy_id in account_ids:
+                    selected, source = legacy_id, "session_details_FINAM_CLIENT_ID"
+                else:
+                    # Every ID here is explicitly authorized by this JWT session.
+                    # GetAsset lot_size is exchange metadata, not an order request.
+                    selected, source = account_ids[0], "session_details_first_authorized_account"
+            else:
+                # Older token configurations may omit account_ids. Verify only
+                # explicitly configured candidates; never guess an account number.
+                candidates = []
+                if explicit_id:
+                    candidates.append((explicit_id, "scoped_FINAM_ACCOUNT_ID"))
+                if legacy_id and legacy_id != explicit_id:
+                    candidates.append((legacy_id, "scoped_FINAM_CLIENT_ID"))
+                for candidate_id, candidate_source in candidates:
+                    payload = await self.get_account(candidate_id)
+                    if not isinstance(payload, dict):
+                        continue
+                    account_data = payload.get("account")
+                    if isinstance(account_data, dict):
+                        payload = account_data
+                    returned_id = str(
+                        payload.get("account_id") or payload.get("id") or ""
+                    ).strip()
+                    if not returned_id or returned_id == candidate_id:
+                        selected, source = candidate_id, candidate_source
+                        break
+
+            if not selected:
+                logger.warning(
+                    "[FINAM METADATA CONTEXT] read-only account context could not be resolved; "
+                    "GetAsset refresh is skipped. PAPER pseudo-account and order routing are unchanged."
+                )
+                return None
+
+            self.metadata_account_id = selected
+            self.metadata_account_id_source = source
+            logger.info(
+                "[FINAM METADATA CONTEXT] read-only context resolved; source=%s; "
+                "authorized_accounts=%d; selected=%s; purpose=GetAsset metadata only; "
+                "PAPER order routing remains internal.",
+                source,
+                len(account_ids),
+                self._mask_account_id(selected),
+            )
+            return self.metadata_account_id
 
     async def get_account(self, account_id: str) -> dict[str, Any] | None:
         """Fetch account metadata for an explicit or session-authorized account ID."""
@@ -528,9 +612,10 @@ class FinamBrokerClient:
         if not normalized:
             return None
         symbol = f"{normalized}@MISX"
-        # GetAsset metadata is requested without account context in PAPER.
-        # LIVE account-specific permissions remain a separate GetAssetParams call.
-        account = str(account_id or "").strip()
+        # Finam validates account_id on GetAsset. PAPER supplies a separately
+        # discovered read-only metadata context; it never populates the LIVE
+        # execution account field and is never used for order placement.
+        account = str(account_id or self.metadata_account_id or "").strip()
         params = {"account_id": account} if account and account != "UNKNOWN_ACCOUNT" else None
         url = f"{self.base_url}/v1/assets/{url_quote(symbol, safe='@')}"
         request_jwt = self.jwt_token
