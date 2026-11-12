@@ -524,7 +524,11 @@ class FinamBrokerClient:
         if not normalized:
             return None
         symbol = f"{normalized}@MISX"
-        account = str(account_id or self.account_id or "").strip()
+        # GetAsset is public instrument metadata. Do not silently attach the
+        # client's current account when callers (notably PAPER) request the
+        # exchange lot size without brokerage context. LIVE account-specific
+        # permissions are checked separately through GetAssetParams.
+        account = str(account_id or "").strip()
         params = {"account_id": account} if account and account != "UNKNOWN_ACCOUNT" else None
         url = f"{self.base_url}/v1/assets/{url_quote(symbol, safe='@')}"
         request_jwt = self.jwt_token
