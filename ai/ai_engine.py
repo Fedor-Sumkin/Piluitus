@@ -572,7 +572,11 @@ class AIEngine:
 
         base = (
             'Return JSON only with exactly three keys: final_decision (APPROVE|HOLD), '
-            'confidence_score (0..1), reason_code=APPROVED|NO_LOCAL_CANDIDATE|HOLD_{WEAK_DIRECTION,M1_CONTRADICTION,STALE_BBO,WEAK_VOLUME,WIDE_SPREAD,INSUFFICIENT_SUPPORT,RISK_REWARD,UNCLEAR}. No extra keys/text. '
+            'confidence_score (0..1), reason_code must be exactly one of these values: '
+            'APPROVED, NO_LOCAL_CANDIDATE, HOLD_WEAK_DIRECTION, HOLD_M1_CONTRADICTION, '
+            'HOLD_STALE_BBO, HOLD_WEAK_VOLUME, HOLD_WIDE_SPREAD, HOLD_INSUFFICIENT_SUPPORT, '
+            'HOLD_RISK_REWARD, HOLD_UNCLEAR. Do not add braces, explanations, suffixes or other text. '
+            'No extra keys/text. '
             'Code fixes candidate side. Never select, change, invert, or output BUY/SELL. '
             'APPROVE authorizes only the exact local candidate side; HOLD rejects it. '
             'candidate=NONE => final_decision MUST be HOLD. '
