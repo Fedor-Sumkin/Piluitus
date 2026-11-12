@@ -132,5 +132,44 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(tracker.pending_count(), 0)
 
 
+    def test_outcomes_segment_by_spread_atr_trade_count_and_directional_flow(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,))
+        metrics = quote_metrics(100.0, 100.1)
+        metrics.update({
+            "trade_count_60s": 32,
+            "trade_flow_imbalance_30s": 0.45,
+            "trade_history_coverage_sec": 60.0,
+            "trade_realized_volatility_60s_pct": 0.025,
+            "trade_volume_5s": 120.0,
+            "trade_volume_baseline_5s": 20.0,
+        })
+        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 160.0]):
+            tracker.record_candidate(
+                "SBER", "BUY", metrics,
+                {
+                    "score": 90.0,
+                    "eligible": True,
+                    "regime": "TREND_ALIGNED",
+                    "spread_atr_ratio": 0.15,
+                },
+            )
+            outcomes = tracker.observe_market_tick("SBER", quote_metrics(100.2, 100.3))
+
+        self.assertEqual(len(outcomes), 1)
+        label = outcomes[0]
+        self.assertEqual(label["trade_count_60s"], 32)
+        self.assertEqual(label["trade_flow_imbalance_30s"], 0.45)
+        self.assertEqual(label["trade_history_coverage_sec"], 60.0)
+        self.assertEqual(label["trade_realized_volatility_60s_pct"], 0.025)
+        self.assertEqual(label["trade_volume_5s"], 120.0)
+        self.assertEqual(label["trade_volume_baseline_5s"], 20.0)
+
+        segments = tracker.statistics_snapshot()["segments"]
+        self.assertEqual(segments["spread_atr_bucket=0.10-0.20"]["labels"], 1)
+        self.assertEqual(segments["trade_count_bucket=20-49"]["labels"], 1)
+        self.assertEqual(segments["flow_alignment=strong_aligned"]["labels"], 1)
+        self.assertEqual(segments["side_flow_alignment=BUY|strong_aligned"]["labels"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
