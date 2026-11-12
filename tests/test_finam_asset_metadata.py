@@ -30,6 +30,91 @@ class _FinamMetadataStub:
 
 
 class FinamAssetMetadataTests(unittest.TestCase):
+    def test_metadata_account_discovery_uses_session_id_without_setting_execution_account(self):
+        client = FinamBrokerClient(token="test-token")
+        client.jwt_token = "test-jwt"
+
+        async def _session_details():
+            return {"account_ids": ["READONLY-ACCOUNT-1234", "SECOND-ACCOUNT-5678"]}
+
+        client.get_session_details = _session_details
+        with patch.dict("os.environ", {"FINAM_ACCOUNT_ID": "", "FINAM_CLIENT_ID": ""}):
+            selected = asyncio.run(client.discover_metadata_account_id())
+
+        self.assertEqual(selected, "READONLY-ACCOUNT-1234")
+        self.assertEqual(client.metadata_account_id, "READONLY-ACCOUNT-1234")
+        self.assertEqual(client.account_id, "")
+        self.assertEqual(client.metadata_account_id_source, "session_details_first_authorized_account")
+
+    def test_get_asset_uses_read_only_metadata_context_but_not_execution_account(self):
+        captured = {}
+
+        class _Response:
+            status_code = 200
+            headers = {"content-type": "application/json"}
+
+            def raise_for_status(self):
+                return None
+
+            @staticmethod
+            def json():
+                return {"symbol": "VTBR@MISX", "lot_size": {"value": "10"}}
+
+        class _AsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url, *, headers, params=None):
+                captured["params"] = params
+                return _Response()
+
+        client = FinamBrokerClient(token="test-token")
+        client.jwt_token = "test-jwt"
+        client.metadata_account_id = "READONLY-ACCOUNT-1234"
+        with patch("exchange.finam_client.httpx.AsyncClient", _AsyncClient):
+            payload = asyncio.run(client.get_asset("VTBR"))
+
+        self.assertEqual(payload["lot_size"]["value"], "10")
+        self.assertEqual(captured["params"], {"account_id": "READONLY-ACCOUNT-1234"})
+        self.assertEqual(client.account_id, "")
+
+    def test_paper_metadata_refresh_skips_all_symbols_when_read_only_context_is_unavailable(self):
+        class _NoMetadataContext:
+            metadata_account_id = ""
+            calls = 0
+
+            async def discover_metadata_account_id(self):
+                return None
+
+            async def get_asset(self, ticker: str):
+                self.calls += 1
+                raise AssertionError("GetAsset must not fan out without account_id")
+
+        stub = _NoMetadataContext()
+        old_lot = LOT_SIZES.get("TESTMETA")
+        old_trade_lot = FINAM_TRADE_LOT_SIZES.get("TESTMETA")
+        try:
+            LOT_SIZES["TESTMETA"] = 1
+            FINAM_TRADE_LOT_SIZES["TESTMETA"] = 10
+            asyncio.run(RiskManager.update_finam_lot_sizes(stub, paper_mode=True))
+            self.assertEqual(stub.calls, 0)
+            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 10)
+        finally:
+            if old_lot is None:
+                LOT_SIZES.pop("TESTMETA", None)
+            else:
+                LOT_SIZES["TESTMETA"] = old_lot
+            if old_trade_lot is None:
+                FINAM_TRADE_LOT_SIZES.pop("TESTMETA", None)
+            else:
+                FINAM_TRADE_LOT_SIZES["TESTMETA"] = old_trade_lot
+
     def test_get_asset_logs_http_status_and_sanitized_provider_body(self):
         import httpx
 
