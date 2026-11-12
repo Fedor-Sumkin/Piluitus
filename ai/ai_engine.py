@@ -657,7 +657,7 @@ class AIEngine:
         """Экстренный минимальный prompt при ответе context-length от vLLM."""
         return cls._build_live_prompt(
             ticker, price, volume, candidate_direction, metrics, rag_context,
-            max_chars=980, include_rule_text=False,
+            max_chars=1800, include_rule_text=False,
         )
 
     @classmethod
@@ -677,7 +677,7 @@ class AIEngine:
             candidate_direction,
             metrics,
             "",
-            max_chars=1050,
+            max_chars=1800,
             include_rule_text=False,
         )
         return (
