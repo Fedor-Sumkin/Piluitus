@@ -10,7 +10,7 @@ from collections.abc import Callable
 import websockets
 import httpx
 from db_manager import DBManager
-from config import ASSET_METADATA, FINAM_TRADE_LOT_SIZES, LOT_SIZES, TICKERS_TO_TRADE
+from config import ASSET_METADATA, FINAM_TRADE_LOT_SIZES, LOT_SIZES, TICKERS_TO_TRADE, PAPER_TRADING
 
 _MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
 
@@ -187,23 +187,24 @@ class RiskManager:
         self.open_assets_cost_provider: Callable[[], float] | None = None
 
     @classmethod
-    async def update_finam_lot_sizes(cls, finam_broker_client=None):
-        """Refresh account-specific trading lots; never authorize entries from static lot references."""
+    async def update_finam_lot_sizes(cls, finam_broker_client=None, paper_mode: bool | None = None):
+        """Refresh PAPER exchange lots or LIVE account-specific trade lots from Finam metadata."""
         risk_logger = logging.getLogger("Piluitus.RiskManager")
+        is_paper = PAPER_TRADING if paper_mode is None else bool(paper_mode)
         if not LOT_SIZES and not TICKERS_TO_TRADE:
             risk_logger.error("❌ Список инструментов пуст: Finam metadata refresh невозможен.")
             return
-        if finam_broker_client is None or not callable(getattr(finam_broker_client, "get_asset_params", None)):
+        if finam_broker_client is None or not callable(getattr(finam_broker_client, "get_asset", None)):
             risk_logger.error(
-                "Finam GetAssetParams unavailable: account-specific trade_lot_size cannot be confirmed; "
-                "new orders remain blocked. Static LOT_SIZES is not used for new entries."
+                "Finam GetAsset unavailable: exchange lot metadata cannot be confirmed; new entries remain blocked."
             )
             return
+        params_method = getattr(finam_broker_client, "get_asset_params", None)
         account_id = str(getattr(finam_broker_client, "account_id", "") or "").strip()
         account_id_source = str(
             getattr(finam_broker_client, "account_id_source", "") or "authenticated_session"
         )
-        if not account_id:
+        if not is_paper and not account_id:
             discover = getattr(finam_broker_client, "discover_accounts", None)
             if callable(discover):
                 try:
@@ -220,19 +221,18 @@ class RiskManager:
                         "[FINAM METADATA] account discovery failed: %s",
                         type(exc).__name__,
                     )
-        if not account_id or account_id.upper() == "UNKNOWN_ACCOUNT":
+        if not is_paper and (not account_id or account_id.upper() == "UNKNOWN_ACCOUNT"):
             account_id = ""
             risk_logger.error(
                 "⛔ [FINAM METADATA] account_id was not resolved from the authenticated "
-                "Finam session; GetAssetParams is skipped and all new entries remain blocked."
+                "Finam session; LIVE GetAssetParams is skipped and LIVE entries remain blocked."
             )
         asset_method = getattr(finam_broker_client, "get_asset", None)
-        params_method = getattr(finam_broker_client, "get_asset_params", None)
         if not callable(asset_method):
             risk_logger.warning("📐 [ASSET METADATA] Finam GetAsset unavailable; static tick-size metadata retained.")
-        if not callable(params_method):
+        if not is_paper and not callable(params_method):
             risk_logger.error(
-                "Finam GetAssetParams unavailable; no account-specific lot values will authorize new orders."
+                "Finam GetAssetParams unavailable; no account-specific lot values will authorize LIVE orders."
             )
 
         # Finam documents a 200 REST requests/minute limit. Bound the two
@@ -271,7 +271,7 @@ class RiskManager:
                         asset_payload = await call_limited(asset_method, normalized)
                     except Exception:
                         asset_payload = None
-                if callable(params_method) and account_id:
+                if not is_paper and callable(params_method) and account_id:
                     try:
                         params_payload = await call_limited(params_method, normalized)
                     except Exception as exc:
@@ -306,7 +306,23 @@ class RiskManager:
             elif callable(asset_method):
                 failed_metadata += 1
 
-            if isinstance(params_payload, dict):
+            if is_paper:
+                # PAPER uses the exchange lot from public GetAsset metadata. It has
+                # no Finam brokerage account, so GetAssetParams/account discovery
+                # must never gate the internal simulator.
+                try:
+                    lot_value = float(exchange_lot) if isinstance(asset_payload, dict) else 0.0
+                    paper_lot = int(lot_value)
+                    if math.isfinite(lot_value) and lot_value > 0 and lot_value == paper_lot:
+                        FINAM_TRADE_LOT_SIZES[normalized] = paper_lot
+                        updated_lots += 1
+                    else:
+                        FINAM_TRADE_LOT_SIZES.pop(normalized, None)
+                        failed_lots += 1
+                except (TypeError, ValueError, OverflowError):
+                    FINAM_TRADE_LOT_SIZES.pop(normalized, None)
+                    failed_lots += 1
+            elif isinstance(params_payload, dict):
                 raw = params_payload.get("trade_lot_size")
                 tradable_raw = params_payload.get("is_tradable")
                 if tradable_raw is None:
@@ -337,17 +353,17 @@ class RiskManager:
             elif callable(params_method):
                 FINAM_TRADE_LOT_SIZES.pop(normalized, None)
                 failed_lots += 1
-            else:
+            elif not is_paper:
                 FINAM_TRADE_LOT_SIZES.pop(normalized, None)
                 failed_lots += 1
 
         symbols_to_refresh = list(dict.fromkeys(list(LOT_SIZES) + list(TICKERS_TO_TRADE)))
         await asyncio.gather(*(refresh_one(ticker) for ticker in symbols_to_refresh))
         risk_logger.info(
-            "📦 [FINAM METADATA] account_id_source=%s configured=%s; "
-            "trade_lot_size confirmed=%d/%d; unavailable=%d (new entries blocked); "
+            "📦 [FINAM METADATA] mode=%s account_id_source=%s configured=%s; "
+            "lot multiplier confirmed=%d/%d; unavailable=%d (new entries blocked); "
             "not_tradable_or_unconfirmed=%d; tick-size=%d/%d; metadata unavailable=%d (static tick-size retained).",
-            account_id_source, bool(account_id),
+            "PAPER" if is_paper else "LIVE", account_id_source, bool(account_id),
             updated_lots, len(symbols_to_refresh), failed_lots, blocked_not_tradable,
             updated_metadata, len(symbols_to_refresh), failed_metadata,
         )
