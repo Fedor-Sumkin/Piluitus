@@ -1,0 +1,4 @@
+2026-11-12 17:25:07,274 [ERROR] [RUN=20261112_171142_26028_dafdd65f] Piluitus.RiskManager: Размер позиции заблокирован: Finam trade_lot_size для VTBR не подтверждён; статический LOT_SIZES не используется для нового ордера.
+2026-11-12 17:28:02,587 [ERROR] [RUN=20261112_171142_26028_dafdd65f] Piluitus.RiskManager: Размер позиции заблокирован: Finam trade_lot_size для GAZP не подтверждён; статический LOT_SIZES не используется для нового ордера.
+2026-11-12 17:35:44,241 [ERROR] [RUN=20261112_171142_26028_dafdd65f] Piluitus.RiskManager: Размер позиции заблокирован: Finam trade_lot_size для VTBR не подтверждён; статический LOT_SIZES не используется для нового ордера.
+2026-11-12 17:38:39,865 [ERROR] [RUN=20261112_171142_26028_dafdd65f] aiogram.dispatcher: Failed to fetch updates - TelegramNetworkError: HTTP Client says - ServerDisconnectedError: Server disconnected
