@@ -1062,10 +1062,14 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
     shadow = scalping_shadow_tracker.statistics_snapshot()
     eligible = shadow["eligible"]
     ineligible = shadow["ineligible"]
+    cost_model = shadow.get("cost_model", {})
     logger.info(
-        "[STRATEGY SHADOW SCORECARD] eligible labels=%d ok=%d positive=%.1f%% avg_gross=%+.5f%% avg_net=%+.5f%% "
+        "[STRATEGY SHADOW SCORECARD] costs=commission %.4f%%/side slippage %.2fbps; "
+        "eligible labels=%d ok=%d positive=%.1f%% avg_gross=%+.5f%% avg_net=%+.5f%% "
         "MFE=%+.5f%% MAE=%+.5f%%; ineligible labels=%d ok=%d positive=%.1f%% avg_gross=%+.5f%% avg_net=%+.5f%% "
         "MFE=%+.5f%% MAE=%+.5f%%; pending=%d",
+        float(cost_model.get("commission_pct_per_side", 0.0)),
+        float(cost_model.get("slippage_bps", 0.0)),
         eligible["labels"], eligible["ok"], eligible["positive_rate_pct"],
         eligible["average_gross_return_pct"], eligible["average_net_return_pct"],
         eligible["average_mfe_pct"], eligible["average_mae_pct"],
