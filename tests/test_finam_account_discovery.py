@@ -176,6 +176,20 @@ class FinamAccountDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(broker.account_id_source, "FINAM_CLIENT_ID_verified_by_account_endpoint")
         self.assertTrue(any("/v1/accounts/DEMO-6161" in item[0] for item in fake.gets))
 
+    async def test_legacy_client_id_accepts_account_resource_without_redundant_id_field(self):
+        os.environ["FINAM_CLIENT_ID"] = "DEMO-6363"
+        fake = _FakeAsyncClient(
+            {"account_ids": []},
+            {"DEMO-6363": {"type": "ACCOUNT_TYPE_DEMO", "status": "ACTIVE"}},
+        )
+        broker = FinamBrokerClient("secret", is_demo=True)
+        broker.jwt_token = "jwt"
+        with patch("exchange.finam_client.httpx.AsyncClient", return_value=fake):
+            selected = await broker.discover_accounts()
+
+        self.assertEqual(selected, "DEMO-6363")
+        self.assertEqual(broker.account_id_source, "FINAM_CLIENT_ID_verified_by_account_endpoint")
+
     async def test_legacy_client_id_direct_validation_rejects_conflicting_account_identity(self):
         os.environ["FINAM_CLIENT_ID"] = "DEMO-6262"
         fake = _FakeAsyncClient(
