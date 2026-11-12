@@ -207,7 +207,6 @@ class ShadowForwardTracker:
                 if str(item).strip()
             ][:12] if isinstance(shadow_result.get("reasons", []), (list, tuple, set)) else [],
             "queue_imbalance": _number(metrics, "queue_imbalance") if _number(metrics, "queue_imbalance_available") >= 0.5 else None,
-            "spread_atr_ratio": _number(shadow_result, "spread_atr_ratio", math.nan),
             "spread_pct": _number(metrics, "spread_pct"),
             "atr_pct": _number(metrics, "bar_atr_pct"),
             "spread_atr_ratio": _number(shadow_result, "spread_atr_ratio", math.nan),
