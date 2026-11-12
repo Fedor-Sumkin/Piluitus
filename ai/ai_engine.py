@@ -393,6 +393,8 @@ class AIEngine:
                 legacy_reason = legacy_match.group(1) if legacy_match else ""
                 if legacy_reason in MODEL_REASON_CODES:
                     reason_code = legacy_reason
+                elif f"HOLD_{legacy_reason}" in MODEL_REASON_CODES:
+                    reason_code = f"HOLD_{legacy_reason}"
                 elif "M1_NEUTRAL" in reason_code or "M1_UNAVAILABLE" in reason_code:
                     reason_code = "HOLD_INSUFFICIENT_SUPPORT"
                 elif reason_code == "HOLD":
