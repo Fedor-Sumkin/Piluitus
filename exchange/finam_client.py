@@ -406,12 +406,9 @@ class FinamBrokerClient:
                     payload_ok = isinstance(account_payload, dict) and bool(account_payload)
                     if payload_ok and identity_ok and mode_ok:
                         selected = candidate_id
-                        if candidate_source == "FINAM_ACCOUNT_ID":
-                            source = "FINAM_ACCOUNT_ID_verified_by_account_endpoint"
-                        elif explicit_rejected:
-                            source = "FINAM_CLIENT_ID_verified_by_account_endpoint_after_FINAM_ACCOUNT_ID_rejected"
-                        else:
-                            source = "FINAM_CLIENT_ID_verified_by_account_endpoint"
+                        # Keep source labels stable: callers should not need to
+                        # parse implementation details of how the ID was verified.
+                        source = candidate_source
                         account_ids = [candidate_id]
                         account_details[candidate_id] = account_payload
                         logger.info(
