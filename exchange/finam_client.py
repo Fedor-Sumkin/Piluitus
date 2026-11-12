@@ -114,6 +114,10 @@ class FinamBrokerClient:
         self.open_positions_provider: Callable[[], Iterable[str]] | None = None
         # Finam publishes per-instrument session intervals; cache them by Moscow date.
         self._asset_schedule_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+        # Public MOEX ISS instrument specifications are static during a session.
+        # Cache verified TQBR metadata to avoid re-querying all 88 symbols every 15 minutes.
+        self._moex_asset_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._moex_asset_cache_ttl_sec = 6.0 * 60.0 * 60.0
         self._asset_schedule_locks: dict[str, asyncio.Lock] = {}
         # Per-symbol throttle for detailed crossed-BBO diagnostics.
         self._crossed_bbo_log_last_at: dict[str, float] = {}
@@ -611,6 +615,11 @@ class FinamBrokerClient:
         if not normalized or not re.fullmatch(r"[A-Z0-9._-]{1,32}", normalized):
             return None
 
+        cached = self._moex_asset_cache.get(normalized)
+        now = time.monotonic()
+        if cached and now - cached[0] <= self._moex_asset_cache_ttl_sec:
+            return dict(cached[1])
+
         url = (
             "https://iss.moex.com/iss/engines/stock/markets/shares/"
             f"boards/TQBR/securities/{url_quote(normalized, safe='')}.json"
@@ -618,7 +627,7 @@ class FinamBrokerClient:
         params = {
             "iss.meta": "off",
             "iss.only": "securities",
-            "securities.columns": "SECID,BOARDID,LOTSIZE,MINSTEP,DECIMALS,SHORTNAME,SECNAME,CURRENCYID",
+            "securities.columns": "SECID,BOARDID,LOTSIZE,MINSTEP,DECIMALS,SHORTNAME,SECNAME",
         }
         try:
             async with httpx.AsyncClient(
@@ -694,7 +703,7 @@ class FinamBrokerClient:
                 except (TypeError, ValueError, ArithmeticError):
                     min_step_units = 0
 
-            return {
+            result = {
                 "symbol": f"{normalized}@MISX",
                 "ticker": normalized,
                 "mic": "MISX",
@@ -702,10 +711,12 @@ class FinamBrokerClient:
                 "decimals": decimals,
                 "min_step": min_step_units,
                 "lot_size": {"value": str(lot_size)},
-                "quote_currency": str(record.get("CURRENCYID") or "RUB"),
+                "quote_currency": "RUB",
                 "name": str(record.get("SECNAME") or record.get("SHORTNAME") or ""),
                 "metadata_source": "MOEX_ISS_TQBR",
             }
+            self._moex_asset_cache[normalized] = (time.monotonic(), dict(result))
+            return result
 
         logger.warning(
             "MOEX ISS metadata %s has no matching TQBR security row; exchange lot remains unconfirmed.",
