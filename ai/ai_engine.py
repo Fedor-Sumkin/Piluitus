@@ -540,7 +540,7 @@ class AIEngine:
         metrics: object,
         rag_context: str,
         *,
-        max_chars: int = 1150,
+        max_chars: int = 2100,
         include_rule_text: bool = True,
     ) -> str:
         """Короткий prompt с запасом под лимит vLLM 2048 токенов."""
