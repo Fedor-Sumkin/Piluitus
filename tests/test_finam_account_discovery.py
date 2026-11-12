@@ -176,6 +176,60 @@ class FinamAccountDiscoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(broker.account_id_source, "FINAM_CLIENT_ID_verified_by_account_endpoint")
         self.assertTrue(any("/v1/accounts/DEMO-6161" in item[0] for item in fake.gets))
 
+    async def test_legacy_client_id_is_tried_after_explicit_account_id_fails_direct_validation(self):
+        os.environ["FINAM_ACCOUNT_ID"] = "STALE-ACCOUNT"
+        os.environ["FINAM_CLIENT_ID"] = "DEMO-7171"
+        fake = _FakeAsyncClient(
+            {"account_ids": [], "readonly": False},
+            {
+                "STALE-ACCOUNT": {"account_id": "OTHER-ACCOUNT", "type": "ACCOUNT_TYPE_DEMO"},
+                "DEMO-7171": {"account_id": "DEMO-7171", "type": "ACCOUNT_TYPE_DEMO"},
+            },
+        )
+        broker = FinamBrokerClient("secret", is_demo=True)
+        broker.jwt_token = "jwt"
+        with patch("exchange.finam_client.httpx.AsyncClient", return_value=fake):
+            selected = await broker.discover_accounts()
+
+        self.assertEqual(selected, "DEMO-7171")
+        self.assertEqual(
+            broker.account_id_source,
+            "FINAM_CLIENT_ID_verified_by_account_endpoint_after_FINAM_ACCOUNT_ID_rejected",
+        )
+        self.assertEqual(
+            [url.rsplit("/", 1)[-1] for url, _ in fake.gets if "/v1/accounts/" in url],
+            ["STALE-ACCOUNT", "DEMO-7171"],
+        )
+
+    async def test_legacy_client_id_is_used_when_explicit_id_is_not_in_session_list(self):
+        os.environ["FINAM_ACCOUNT_ID"] = "NOT-IN-SESSION"
+        os.environ["FINAM_CLIENT_ID"] = "DEMO-7272"
+        fake = _FakeAsyncClient(
+            {"account_ids": ["DEMO-7272"]},
+            {"DEMO-7272": {"account_id": "DEMO-7272", "type": "ACCOUNT_TYPE_DEMO"}},
+        )
+        broker = FinamBrokerClient("secret", is_demo=True)
+        broker.jwt_token = "jwt"
+        with patch("exchange.finam_client.httpx.AsyncClient", return_value=fake):
+            selected = await broker.discover_accounts()
+
+        self.assertEqual(selected, "DEMO-7272")
+        self.assertEqual(broker.account_id_source, "FINAM_CLIENT_ID_matched_account_ids_after_explicit_reject")
+
+    async def test_direct_account_validation_can_recover_when_session_details_are_unavailable(self):
+        os.environ["FINAM_ACCOUNT_ID"] = "DEMO-7373"
+        fake = _FakeAsyncClient(
+            None,
+            {"DEMO-7373": {"account_id": "DEMO-7373", "type": "ACCOUNT_TYPE_DEMO"}},
+        )
+        broker = FinamBrokerClient("secret", is_demo=True)
+        broker.jwt_token = "jwt"
+        with patch("exchange.finam_client.httpx.AsyncClient", return_value=fake):
+            selected = await broker.discover_accounts()
+
+        self.assertEqual(selected, "DEMO-7373")
+        self.assertEqual(broker.account_id_source, "FINAM_ACCOUNT_ID_verified_by_account_endpoint")
+
     async def test_legacy_client_id_accepts_account_resource_without_redundant_id_field(self):
         os.environ["FINAM_CLIENT_ID"] = "DEMO-6363"
         fake = _FakeAsyncClient(
