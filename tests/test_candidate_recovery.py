@@ -86,6 +86,18 @@ class CandidateRecoveryTests(unittest.TestCase):
         self.assertIn("свежего подтверждения", reason)
         self.assertNotIn("spread_pct", metrics)
 
+    def test_rejects_stale_order_book_even_when_quote_sides_are_fresh(self):
+        now = 100.0
+        screener = FakeScreener(now)
+        screener.quotes["SBER"]["last_order_book_seen"] = now - 2.5
+        metrics = {}
+
+        ok, reason = refresh_candidate_bbo_metrics(screener, "SBER", metrics, now=now)
+
+        self.assertFalse(ok)
+        self.assertIn("ORDER_BOOK устарело", reason)
+        self.assertNotIn("spread_pct", metrics)
+
     def test_rejects_invalid_or_crossed_book(self):
         now = 100.0
         screener = FakeScreener(now)
