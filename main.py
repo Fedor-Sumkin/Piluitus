@@ -1063,13 +1063,15 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
     eligible = shadow["eligible"]
     ineligible = shadow["ineligible"]
     logger.info(
-        "[STRATEGY SHADOW SCORECARD] eligible labels=%d ok=%d positive=%.1f%% avg_net=%+.5f%% "
-        "MFE=%+.5f%% MAE=%+.5f%%; ineligible labels=%d ok=%d positive=%.1f%% avg_net=%+.5f%% "
+        "[STRATEGY SHADOW SCORECARD] eligible labels=%d ok=%d positive=%.1f%% avg_gross=%+.5f%% avg_net=%+.5f%% "
+        "MFE=%+.5f%% MAE=%+.5f%%; ineligible labels=%d ok=%d positive=%.1f%% avg_gross=%+.5f%% avg_net=%+.5f%% "
         "MFE=%+.5f%% MAE=%+.5f%%; pending=%d",
         eligible["labels"], eligible["ok"], eligible["positive_rate_pct"],
-        eligible["average_net_return_pct"], eligible["average_mfe_pct"], eligible["average_mae_pct"],
+        eligible["average_gross_return_pct"], eligible["average_net_return_pct"],
+        eligible["average_mfe_pct"], eligible["average_mae_pct"],
         ineligible["labels"], ineligible["ok"], ineligible["positive_rate_pct"],
-        ineligible["average_net_return_pct"], ineligible["average_mfe_pct"], ineligible["average_mae_pct"],
+        ineligible["average_gross_return_pct"], ineligible["average_net_return_pct"],
+        ineligible["average_mfe_pct"], ineligible["average_mae_pct"],
         scalping_shadow_tracker.pending_count(),
     )
     segments = shadow.get("segments", {})
@@ -1078,9 +1080,10 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         if row and int(row.get("labels", 0)) > 0:
             logger.info(
                 "[STRATEGY SHADOW SIDE] side=%s labels=%d ok=%d positive=%.1f%% "
-                "avg_net=%+.5f%% MFE=%+.5f%% MAE=%+.5f%%",
+                "avg_gross=%+.5f%% avg_net=%+.5f%% MFE=%+.5f%% MAE=%+.5f%%",
                 side, row["labels"], row["ok"], row["positive_rate_pct"],
-                row["average_net_return_pct"], row["average_mfe_pct"], row["average_mae_pct"],
+                row["average_gross_return_pct"], row["average_net_return_pct"],
+                row["average_mfe_pct"], row["average_mae_pct"],
             )
     ticker_rows = [
         (key, row) for key, row in segments.items()
@@ -1091,15 +1094,19 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
             "[STRATEGY SHADOW TICKER] %s labels=%d ok=%d positive=%.1f%% avg_net=%+.5f%%",
             key, row["labels"], row["ok"], row["positive_rate_pct"], row["average_net_return_pct"],
         )
-    for prefix in ("regime=", "score_band=", "horizon=", "hour_msk=", "hard_block="):
+    for prefix in (
+        "regime=", "score_band=", "horizon=", "hour_msk=", "hard_block=",
+        "spread_atr_bucket=", "trade_count_bucket=", "flow_alignment=", "side_flow_alignment=",
+    ):
         grouped = [
             (key, row) for key, row in segments.items()
             if key.startswith(prefix) and int(row.get("labels", 0)) >= 3
         ]
         for key, row in sorted(grouped, key=lambda item: int(item[1].get("labels", 0)), reverse=True)[:3]:
             logger.info(
-                "[STRATEGY SHADOW SEGMENT] %s labels=%d ok=%d positive=%.1f%% avg_net=%+.5f%%",
-                key, row["labels"], row["ok"], row["positive_rate_pct"], row["average_net_return_pct"],
+                "[STRATEGY SHADOW SEGMENT] %s labels=%d ok=%d positive=%.1f%% avg_gross=%+.5f%% avg_net=%+.5f%%",
+                key, row["labels"], row["ok"], row["positive_rate_pct"],
+                row["average_gross_return_pct"], row["average_net_return_pct"],
             )
     _log_open_position_bbo_diagnostics()
 
@@ -2275,7 +2282,11 @@ class MarketWorker:
                     "trade_data_mode": _parse_finite_float(metrics.get("trade_data_mode")),
                     "trade_data_ready": _parse_finite_float(metrics.get("trade_data_ready")),
                     "trade_vwap_60s": _parse_finite_float(metrics.get("trade_vwap_60s")),
+                    "trade_volume_5s": _parse_finite_float(metrics.get("trade_volume_5s")),
+                    "trade_volume_baseline_5s": _parse_finite_float(metrics.get("trade_volume_baseline_5s")),
                     "trade_flow_imbalance_30s": _parse_finite_float(metrics.get("trade_flow_imbalance_30s")),
+                    "trade_buy_volume_30s": _parse_finite_float(metrics.get("trade_buy_volume_30s")),
+                    "trade_sell_volume_30s": _parse_finite_float(metrics.get("trade_sell_volume_30s")),
                     "trade_count_60s": _parse_finite_float(metrics.get("trade_count_60s")),
                     "trade_history_coverage_sec": _parse_finite_float(metrics.get("trade_history_coverage_sec")),
                     "trade_metrics_age_sec": _parse_finite_float(metrics.get("trade_metrics_age_sec")),
