@@ -519,40 +519,77 @@ class FinamBrokerClient:
     async def get_asset(self, ticker: str, account_id: str | None = None) -> dict[str, Any] | None:
         """Fetch detailed instrument metadata (decimals, min_step, exchange lot_size)."""
         if not self.jwt_token:
+            logger.warning(
+                "Finam GetAsset %s skipped: JWT is empty; public exchange lot metadata unavailable.",
+                str(ticker or "").strip().upper()[:32] or "<empty>",
+            )
             return None
         normalized = str(ticker or "").strip().upper().split("@", 1)[0]
         if not normalized:
             return None
         symbol = f"{normalized}@MISX"
-        # GetAsset is public instrument metadata. Do not silently attach the
-        # client's current account when callers (notably PAPER) request the
-        # exchange lot size without brokerage context. LIVE account-specific
-        # permissions are checked separately through GetAssetParams.
+        # GetAsset metadata is requested without account context in PAPER.
+        # LIVE account-specific permissions remain a separate GetAssetParams call.
         account = str(account_id or "").strip()
         params = {"account_id": account} if account and account != "UNKNOWN_ACCOUNT" else None
         url = f"{self.base_url}/v1/assets/{url_quote(symbol, safe='@')}"
         request_jwt = self.jwt_token
         for attempt in range(2):
+            response: httpx.Response | None = None
             try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    response = await client.get(url, headers={
-                        "Authorization": f"Bearer {self.jwt_token}",
-                        "Accept": "application/json",
-                    }, params=params)
+                async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
+                    response = await client.get(
+                        url,
+                        headers={
+                            "Authorization": f"Bearer {self.jwt_token}",
+                            "Accept": "application/json",
+                        },
+                        params=params,
+                    )
                     response.raise_for_status()
-                    payload = response.json()
-                return payload if isinstance(payload, dict) else None
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 401 and attempt == 0:
-                    if await self._refresh_auth_if_unchanged(request_jwt):
-                        continue
-                if exc.response.status_code in {401, 429, 500, 503, 504}:
-                    logger.warning("Finam asset metadata %s: HTTP %s; static tick-size fallback remains active.", normalized, exc.response.status_code)
-                else:
-                    logger.debug("Finam asset metadata %s unavailable: HTTP %s; static fallback retained.", normalized, exc.response.status_code)
+                    try:
+                        payload = response.json()
+                    except (ValueError, TypeError) as exc:
+                        logger.warning(
+                            "Finam GetAsset %s returned invalid JSON: %s; HTTP %s; content_type=%s; body=%s",
+                            normalized, type(exc).__name__, response.status_code,
+                            response.headers.get("content-type", "<missing>"),
+                            self._safe_response_hint(response),
+                        )
+                        return None
+                if isinstance(payload, dict):
+                    return payload
+                logger.warning(
+                    "Finam GetAsset %s returned unexpected payload type=%s; HTTP %s; content_type=%s; body=%s",
+                    normalized, type(payload).__name__, response.status_code,
+                    response.headers.get("content-type", "<missing>"),
+                    self._safe_response_hint(response),
+                )
                 return None
-            except (httpx.RequestError, ValueError, TypeError) as exc:
-                logger.debug("Finam asset metadata %s unavailable (%s); static fallback remains active.", normalized, type(exc).__name__)
+            except httpx.HTTPStatusError as exc:
+                status = int(exc.response.status_code)
+                if status == 401 and attempt == 0:
+                    if await self._refresh_auth_if_unchanged(request_jwt):
+                        request_jwt = self.jwt_token
+                        continue
+                logger.warning(
+                    "Finam GetAsset %s failed: HTTP %s; request_symbol=%s; account_context=%s; response=%s",
+                    normalized, status, symbol, bool(params),
+                    self._safe_response_hint(exc.response),
+                )
+                return None
+            except httpx.RequestError as exc:
+                detail = re.sub(r"\\s+", " ", str(exc)).strip()[:180] or "<no detail>"
+                logger.warning(
+                    "Finam GetAsset %s request failed: error_type=%s; detail=%s; request_symbol=%s",
+                    normalized, type(exc).__name__, detail, symbol,
+                )
+                return None
+            except (ValueError, TypeError) as exc:
+                logger.warning(
+                    "Finam GetAsset %s response processing failed: error_type=%s; detail=%s",
+                    normalized, type(exc).__name__, str(exc)[:180],
+                )
                 return None
         return None
 
