@@ -1,4 +1,0 @@
-2026-11-12 15:45:21,257 [ERROR] [RUN=20261112_154518_4288_310a18c0] Piluitus.FinamGateway: ⛔ [FINAM ACCOUNT DISCOVERY] account_ids пуст/отсутствует, а FINAM_ACCOUNT_ID не прошёл проверку GET /v1/accounts/{id}; входы заблокированы.
-2026-11-12 15:45:21,260 [ERROR] [RUN=20261112_154518_4288_310a18c0] Piluitus.Main: ⛔ [FINAM ACCOUNT] счёт не определён; GetAssetParams и новые входы заблокированы.
-2026-11-12 15:45:22,839 [ERROR] [RUN=20261112_154518_4288_310a18c0] Piluitus.FinamGateway: ⛔ [FINAM ACCOUNT DISCOVERY] account_ids пуст/отсутствует, а FINAM_ACCOUNT_ID не прошёл проверку GET /v1/accounts/{id}; входы заблокированы.
-2026-11-12 15:54:35,994 [ERROR] [RUN=20261112_154518_4288_310a18c0] aiogram.dispatcher: Failed to fetch updates - TelegramNetworkError: HTTP Client says - ServerDisconnectedError: Server disconnected
