@@ -289,62 +289,103 @@ class RiskManager:
                         )
                         params_payload = None
 
-            asset_data = asset_payload
-            if isinstance(asset_payload, dict) and isinstance(asset_payload.get("asset"), dict):
-                asset_data = asset_payload["asset"]
+            # Finam REST payloads may expose the asset as a nested object and
+            # protobuf scalar wrappers may appear as {"value": "..."} or as
+            # attribute objects. Normalize both forms before reading lot_size.
+            def field(source, *names):
+                if isinstance(source, dict):
+                    for name in names:
+                        if name in source:
+                            return source[name]
+                else:
+                    for name in names:
+                        candidate = getattr(source, name, None)
+                        if candidate is not None:
+                            return candidate
+                return None
 
+            asset_data = field(asset_payload, "asset", "data") or asset_payload
+            if not isinstance(asset_data, dict):
+                try:
+                    asset_data = vars(asset_data)
+                except (TypeError, AttributeError):
+                    asset_data = None
+
+            def scalar(value):
+                # Unwrap common protobuf/JSON scalar wrappers without accepting
+                # arbitrary objects or silently coercing booleans.
+                for _ in range(3):
+                    if isinstance(value, dict):
+                        next_value = field(value, "value", "units", "amount")
+                        if next_value is None:
+                            return None
+                        value = next_value
+                    elif not isinstance(value, (str, int, float)) and value is not None:
+                        next_value = getattr(value, "value", None)
+                        if next_value is None:
+                            return None
+                        value = next_value
+                    else:
+                        break
+                if isinstance(value, bool):
+                    return None
+                return value
+
+            lot_raw = None
             if isinstance(asset_data, dict):
                 try:
-                    decimals = int(asset_data.get("decimals", -1))
-                    min_step = int(float(asset_data.get("min_step", 0)))
-                    lot_raw = asset_data.get("lot_size")
-                    if isinstance(lot_raw, dict):
-                        lot_raw = lot_raw.get("value", lot_raw.get("units", lot_raw.get("amount", 0)))
+                    decimals_raw = scalar(field(asset_data, "decimals"))
+                    min_step_raw = scalar(field(asset_data, "min_step", "minStep"))
+                    decimals = int(decimals_raw) if decimals_raw is not None else -1
+                    min_step = int(float(min_step_raw or 0))
+                    lot_raw = scalar(field(asset_data, "lot_size", "lotSize"))
                     exchange_lot = float(lot_raw or 0)
-                    mic = str(asset_data.get("mic") or "").strip().upper()
-                    asset_mic = mic or "UNSPECIFIED"
-                    asset_market_ok = mic in {"", "MISX"}
+                    mic = str(scalar(field(asset_data, "mic", "exchange_mic")) or "").strip().upper()
+                    symbol = str(scalar(field(asset_data, "symbol", "ticker")) or "")
+                    asset_mic = mic or ("MISX" if symbol.upper().endswith("@MISX") else "UNSPECIFIED")
+                    asset_market_ok = asset_mic == "MISX"
                     if decimals >= 0 and min_step > 0 and asset_market_ok:
                         ASSET_METADATA[normalized] = {
-                            "symbol": str(asset_data.get("symbol") or f"{normalized}@MISX"),
+                            "symbol": symbol or f"{normalized}@MISX",
                             "decimals": decimals,
                             "min_step": min_step,
                             "price_tick": min_step / (10 ** decimals),
                             "lot_size": exchange_lot,
-                            "quote_currency": str(asset_data.get("quote_currency") or ""),
+                            "quote_currency": str(scalar(field(asset_data, "quote_currency", "quoteCurrency")) or ""),
                             "metadata_source": "FINAM_GET_ASSET",
                         }
                         updated_metadata += 1
                     else:
                         failed_metadata += 1
-                except (TypeError, ValueError, OverflowError):
+                except (TypeError, ValueError, OverflowError, ZeroDivisionError):
                     failed_metadata += 1
             elif callable(asset_method):
                 failed_metadata += 1
 
             if is_paper:
-                # PAPER uses the exchange lot from public GetAsset metadata. It has
-                # no Finam brokerage account, so GetAssetParams/account discovery
-                # must never gate the internal simulator.
+                # Preserve a previously confirmed exchange lot during transient
+                # metadata failures; never replace it with a static guessed value.
                 try:
-                    lot_value = float(exchange_lot) if isinstance(asset_data, dict) else 0.0
+                    lot_value = float(exchange_lot)
                     paper_lot = int(lot_value)
                     if asset_market_ok and math.isfinite(lot_value) and lot_value > 0 and lot_value == paper_lot:
                         FINAM_TRADE_LOT_SIZES[normalized] = paper_lot
                         updated_lots += 1
                     else:
-                        FINAM_TRADE_LOT_SIZES.pop(normalized, None)
                         failed_lots += 1
                         if len(paper_lot_failure_examples) < 8:
-                            if not isinstance(asset_data, dict):
-                                reason = "GetAsset payload missing/invalid"
+                            payload_type = type(asset_payload).__name__
+                            payload_keys = ",".join(sorted(asset_payload.keys())) if isinstance(asset_payload, dict) else "-"
+                            if asset_payload is None:
+                                reason = "GetAsset returned empty response"
+                            elif not isinstance(asset_data, dict):
+                                reason = f"unsupported payload type={payload_type}"
                             elif not asset_market_ok:
-                                reason = f"unsupported MIC={asset_mic}"
+                                reason = f"exchange not confirmed ({asset_mic})"
                             else:
-                                reason = f"invalid/missing lot_size={lot_value!r}"
+                                reason = f"invalid/missing lot_size={lot_raw!r}; keys={payload_keys}"
                             paper_lot_failure_examples.append(f"{normalized}:{reason}")
                 except (TypeError, ValueError, OverflowError):
-                    FINAM_TRADE_LOT_SIZES.pop(normalized, None)
                     failed_lots += 1
             elif isinstance(params_payload, dict):
                 raw = params_payload.get("trade_lot_size")
