@@ -40,7 +40,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
                 "FINAM_METADATA_REQUEST_INTERVAL_SEC": "0",
                 "FINAM_ACCOUNT_ID": "",
             }):
-                asyncio.run(RiskManager.update_finam_lot_sizes(_FinamMetadataStub()))
+                asyncio.run(RiskManager.update_finam_lot_sizes(_FinamMetadataStub(), paper_mode=True))
 
             self.assertEqual(LOT_SIZES["TESTMETA"], 1)
             self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 10)
@@ -113,7 +113,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
                 "FINAM_ACCOUNT_ID": "",
                 "FINAM_CLIENT_ID": "",
             }):
-                asyncio.run(RiskManager.update_finam_lot_sizes(stub))
+                asyncio.run(RiskManager.update_finam_lot_sizes(stub, paper_mode=True))
             self.assertEqual(stub.calls, 0)
             self.assertEqual(stub.discovery_calls, 0)
             self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 10)
