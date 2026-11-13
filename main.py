@@ -2992,29 +2992,19 @@ async def _finam_metadata_refresh_loop() -> None:
         paper_mode = bool(getattr(execution_engine, "paper_mode", True))
         account_id = str(getattr(broker, "account_id", "") or "").strip()
         if paper_mode:
-            # GetAsset requires account_id even for exchange-level lot metadata.
-            # Resolve a read-only context from the JWT session; do not populate the
-            # LIVE execution account or route PAPER orders through Finam.
-            metadata_context = str(getattr(broker, "metadata_account_id", "") or "").strip()
-            discover_metadata = getattr(broker, "discover_metadata_account_id", None)
-            if callable(discover_metadata) and not metadata_context:
-                try:
-                    metadata_context = str(await discover_metadata() or "").strip()
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    logger.warning(
-                        "[FINAM METADATA WORKER] read-only metadata context discovery failed: %s",
-                        type(exc).__name__,
-                    )
-            if callable(discover_metadata) and not metadata_context:
-                logger.warning(
-                    "⏳ [FINAM METADATA WORKER] PAPER GetAsset refresh deferred: "
-                    "no session-authorized read-only account context; retry in %.0fs.",
-                    account_retry_sec,
+            # PAPER lot sizing uses the public MOEX ISS TQBR specification.
+            # It does not require a Finam account or read-only account context.
+            # Keep account discovery exclusive to LIVE brokerage execution.
+            if callable(getattr(broker, "get_moex_asset", None)):
+                logger.info(
+                    "[FINAM METADATA WORKER] PAPER lot refresh uses public MOEX ISS TQBR; "
+                    "Finam account context is not required."
                 )
-                await asyncio.sleep(account_retry_sec)
-                continue
+            else:
+                logger.warning(
+                    "[FINAM METADATA WORKER] public MOEX ISS provider unavailable; "
+                    "unconfirmed PAPER lots will remain blocked."
+                )
         elif not account_id:
             discover = getattr(broker, "discover_accounts", None)
             if callable(discover):
