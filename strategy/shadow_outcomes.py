@@ -223,7 +223,7 @@ class ShadowForwardTracker:
             "m1_pattern": str(metrics.get("bar_pattern_name") or ""),
             "m1_signal_gap_atr": _number(metrics, "bar_signal_gap_atr", math.nan),
             "m1_breakout_extension_atr": _number(metrics, "bar_breakout_extension_atr", math.nan),
-            "remaining_horizons": list(self.horizons_seconds)
+            "remaining_horizons": list(self.horizons_seconds),
             "mfe_executable_pct": 0.0,
             "mae_executable_pct": 0.0,
             "no_fresh_bbo_observations": 0,

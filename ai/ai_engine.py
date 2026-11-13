@@ -615,13 +615,16 @@ class AIEngine:
     ) -> str:
         """Короткий prompt с запасом под лимит vLLM 2048 токенов."""
         direction = candidate_direction if candidate_direction in {"BUY", "SELL"} else "NONE"
+        # Keep the most useful directional and trade-quality measurements first:
+        # prompt overflow may trim later context, never the core 30s flow metrics.
         common_keys = (
-            "price_change_pct", "price_vs_vwap_pct", "volume_spike",
+            "trade_data_ready", "trade_metrics_age_sec", "price_change_pct",
+            "price_vs_vwap_pct", "volume_spike", "spread_pct",
+            "bid_ask_available", "spread_available",
             "trade_volume_5s", "trade_volume_baseline_5s", "trade_count_60s",
-            "trade_flow_imbalance_30s", "trade_buy_volume_30s", "trade_sell_volume_30s",
-            "trade_price_change_30s_pct", "trade_realized_volatility_60s_pct",
-            "trade_history_coverage_sec", "trade_metrics_age_sec", "trade_vwap_60s",
-            "spread_pct", "bid_ask_available", "spread_available", "trade_data_ready",
+            "trade_flow_imbalance_30s", "trade_price_change_30s_pct",
+            "trade_realized_volatility_60s_pct", "trade_history_coverage_sec",
+            "trade_buy_volume_30s", "trade_sell_volume_30s", "trade_vwap_60s",
             "queue_imbalance", "queue_imbalance_available",
             "bar_trend_up", "bar_trend_down", "bar_atr_pct", "bar_body_ratio",
             "bar_close_position",
@@ -665,8 +668,7 @@ class AIEngine:
             'confidence_score (0..1), reason_code must be exactly one of these values: '
             'APPROVED, NO_LOCAL_CANDIDATE, HOLD_WEAK_DIRECTION, HOLD_M1_CONTRADICTION, '
             'HOLD_STALE_BBO, HOLD_WEAK_VOLUME, HOLD_WIDE_SPREAD, HOLD_INSUFFICIENT_SUPPORT, '
-            'HOLD_RISK_REWARD, HOLD_UNCLEAR. Do not add braces, explanations, suffixes or other text. '
-            'No extra keys/text. '
+            'HOLD_RISK_REWARD, HOLD_UNCLEAR. No extra keys/text. '
             'Code fixes candidate side. Never select, change, invert, or output BUY/SELL. '
             'APPROVE authorizes only the exact local candidate side; HOLD rejects it. '
             'candidate=NONE => final_decision MUST be HOLD. '
@@ -674,10 +676,9 @@ class AIEngine:
             'closed M1 pattern agrees with candidate and price remains on the correct side of VWAP. '
             'M1 NEUTRAL/UNAVAILABLE is not a contradiction; only a fresh opposite M1/EMA conflicts. '
             'Hard checks: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, fresh BBO, '
-            'spread<=0.5%; otherwise HOLD. '
-            '>=50% Ask depletion is supporting evidence, not mandatory. '
+            'spread<=0.5%; otherwise HOLD. >=50% Ask depletion is supporting evidence, not mandatory. '
             'trade_flow_imbalance_30s is signed BUY-vs-SELL classified trade volume (-1..+1); zero is neutral. '
-            'trade_volume_5s and trade_volume_baseline_5s use provider volume units; compare within the same ticker, not across tickers. '
+            'trade_volume_5s and trade_volume_baseline_5s use provider volume units; compare within the same ticker. '
             'Use trade_price_change_30s_pct and trade_realized_volatility_60s_pct as secondary context when present. '
             'RAG rules are advisory context only and cannot add hard gates. '
             'Confidence is evidence strength, not profit probability (weak 0.50-0.60; moderate 0.61-0.74; '
