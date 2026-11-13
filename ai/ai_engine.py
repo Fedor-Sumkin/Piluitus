@@ -654,11 +654,11 @@ class AIEngine:
         direction_rules = {
             "BUY": (
                 "BUY requires positive 15s trade momentum and price>VWAP, or fresh bullish M1 with price>VWAP. "
-                "Positive 30s BUY-vs-SELL trade-volume imbalance supports BUY; strong opposite flow is a caution."
+                "Positive 30s BUY-vs-SELL flow supports BUY; opposite flow is a caution."
             ),
             "SELL": (
                 "SELL requires negative 15s trade momentum and price<VWAP, or fresh bearish M1 with price<VWAP. "
-                "Negative 30s BUY-vs-SELL trade-volume imbalance supports SELL; strong opposite flow is a caution."
+                "Negative 30s BUY-vs-SELL flow supports SELL; opposite flow is a caution."
             ),
             "NONE": "No local direction: MUST HOLD.",
         }[direction]
@@ -669,17 +669,17 @@ class AIEngine:
             'APPROVED, NO_LOCAL_CANDIDATE, HOLD_WEAK_DIRECTION, HOLD_M1_CONTRADICTION, '
             'HOLD_STALE_BBO, HOLD_WEAK_VOLUME, HOLD_WIDE_SPREAD, HOLD_INSUFFICIENT_SUPPORT, '
             'HOLD_RISK_REWARD, HOLD_UNCLEAR. No extra keys/text. '
-            'Code fixes candidate side. Never select, change, invert, or output BUY/SELL. '
+            'Never select, change, invert, or output BUY/SELL. '
             'APPROVE authorizes only the exact local candidate side; HOLD rejects it. '
             'candidate=NONE => final_decision MUST be HOLD. '
             'Directional check: either signed price change agrees with candidate and VWAP, OR a fresh matching '
             'closed M1 pattern agrees with candidate and price remains on the correct side of VWAP. '
             'M1 NEUTRAL/UNAVAILABLE is not a contradiction; only a fresh opposite M1/EMA conflicts. '
-            'Hard checks: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, fresh BBO, '
-            'spread<=0.5%; otherwise HOLD. >=50% Ask depletion is supporting evidence, not mandatory. '
-            'trade_flow_imbalance_30s is signed BUY-vs-SELL classified trade volume (-1..+1); zero is neutral. '
-            'trade_volume_5s and trade_volume_baseline_5s use provider volume units; compare within the same ticker. '
-            'Use trade_price_change_30s_pct and trade_realized_volatility_60s_pct as secondary context when present. '
+            'Hard checks: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, fresh BBO, spread<=0.5%; '
+            'otherwise HOLD. >=50% Ask depletion is supporting evidence, not mandatory. '
+            'trade_flow_imbalance_30s is signed BUY-vs-SELL volume (-1..+1; zero=neutral). '
+            'trade_volume_5s and trade_volume_baseline_5s use provider volume units; compare within ticker. '
+            'trade_price_change_30s_pct and trade_realized_volatility_60s_pct are secondary context. '
             'RAG rules are advisory context only and cannot add hard gates. '
             'Confidence is evidence strength, not profit probability (weak 0.50-0.60; moderate 0.61-0.74; '
             'strong 0.75-0.84; exceptional 0.85-0.95). Use supplied facts only. '
@@ -748,16 +748,15 @@ class AIEngine:
             candidate_direction,
             metrics,
             "",
-            max_chars=1800,
+            max_chars=2100,
             include_rule_text=False,
         )
         return (
-            "Repair the previous response. Return ONLY one JSON object with exactly three keys: "
-            "final_decision (APPROVE or HOLD), confidence_score (JSON number 0.0..1.0), "
-            "and reason_code (one allowed enum: APPROVED, HOLD_WEAK_DIRECTION, HOLD_M1_CONTRADICTION, "
-            "HOLD_STALE_BBO, HOLD_WEAK_VOLUME, HOLD_WIDE_SPREAD, HOLD_INSUFFICIENT_SUPPORT, "
-            "HOLD_RISK_REWARD, HOLD_UNCLEAR, NO_LOCAL_CANDIDATE). "
-            "Do not add any other keys, reasoning, Markdown, or text outside JSON. "
+            "Repair the previous response. Return ONLY JSON with exactly three keys: "
+            "final_decision (APPROVE or HOLD), confidence_score (0.0..1.0), "
+            "reason_code (APPROVED, HOLD_WEAK_DIRECTION, HOLD_M1_CONTRADICTION, HOLD_STALE_BBO, "
+            "HOLD_WEAK_VOLUME, HOLD_WIDE_SPREAD, HOLD_INSUFFICIENT_SUPPORT, HOLD_RISK_REWARD, "
+            "HOLD_UNCLEAR, NO_LOCAL_CANDIDATE). No extra keys or text. "
             "Never output BUY/SELL as a decision. "
             "Apply the same candidate-side and evidence rules below; do not introduce stricter checks. "
             + shared_rules
