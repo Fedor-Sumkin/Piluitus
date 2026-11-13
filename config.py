@@ -137,6 +137,14 @@ class Settings:
     VLLM_TIMEOUT: int = int(os.getenv("VLLM_TIMEOUT", "30"))
     # Короткий JSON-контракт: эффективный max_tokens ограничен диапазоном 384..768.
     VLLM_MAX_TOKENS: int = int(os.getenv("VLLM_MAX_TOKENS", "768"))
+    # Consecutive vLLM connection failures open an exponential backoff circuit.
+    VLLM_CONNECT_BACKOFF_BASE_SEC: float = max(
+        1.0, float(os.getenv("PILUITUS_VLLM_CONNECT_BACKOFF_BASE_SEC", "5"))
+    )
+    VLLM_CONNECT_BACKOFF_MAX_SEC: float = max(
+        VLLM_CONNECT_BACKOFF_BASE_SEC,
+        float(os.getenv("PILUITUS_VLLM_CONNECT_BACKOFF_MAX_SEC", "60")),
+    )
 
     # PAPER depth-based partial fills are opt-in. Keep "unknown" until Finam's
     # ORDER_BOOK buy_size/sell_size unit is confirmed for this data feed.
