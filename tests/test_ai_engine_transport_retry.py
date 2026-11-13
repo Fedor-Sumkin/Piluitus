@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from ai_engine import AIEngine
+from ai_engine import AIEngine, VLLMCircuitOpenError
 from config import Settings
 
 
@@ -95,6 +95,44 @@ class AIEngineTransportRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["request_error_type"], "timeout")
         self.assertEqual(result["error_type"], "timeout")
         self.assertFalse(result["confidence_valid"])
+
+    async def test_connect_failures_open_circuit_and_suppress_followup_posts(self) -> None:
+        engine = self._engine([
+            httpx.ConnectError("server unavailable"),
+            httpx.ConnectError("server unavailable"),
+            self._response(),
+        ])
+        with (
+            patch.object(Settings, "VLLM_CONNECT_BACKOFF_BASE_SEC", 1.0),
+            patch.object(Settings, "VLLM_CONNECT_BACKOFF_MAX_SEC", 1.0),
+            patch("ai.ai_engine.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            with self.assertRaises(httpx.ConnectError):
+                await engine._post_with_retry(
+                    engine.api_path,
+                    json={"model": "test-model"},
+                )
+
+            self.assertEqual(engine.client.post.await_count, 2)
+            with self.assertRaises(VLLMCircuitOpenError):
+                await engine._post_with_retry(
+                    engine.api_path,
+                    json={"model": "test-model"},
+                )
+            # An open circuit must fail fast without making another network request.
+            self.assertEqual(engine.client.post.await_count, 2)
+
+            # A successful probe closes the circuit and clears the backoff state.
+            await engine._record_transport_success()
+            response = await engine._post_with_retry(
+                engine.api_path,
+                json={"model": "test-model"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(engine.client.post.await_count, 3)
+        self.assertEqual(engine._transport_failure_count, 0)
+        self.assertEqual(engine._transport_open_until, 0.0)
 
     async def test_caller_cancellation_is_not_retried_or_swallowed(self) -> None:
         engine = self._engine([asyncio.CancelledError()])
