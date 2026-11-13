@@ -3151,14 +3151,18 @@ async def lifespan(app: FastAPI):
         bot: Bot = cast(Bot, tg_bot.bot)          
         dp = tg_bot.dp                             
 
+        from interface.telegram_runtime import run_polling_with_retry
+
         async def _start_bot_safely() -> None:
-            try:
-                await dp.start_polling(bot, skip_updates=True)
-            except Exception as exc:
-                logger.error(f"❌ Telegram‑бот не смог запуститься: {exc}")
+            await run_polling_with_retry(
+                lambda: dp.start_polling(bot, skip_updates=True),
+                logger=logger,
+            )
 
         _spawn_background(_start_bot_safely(), name="telegram-polling")
-        logger.info("🟢 Telegram‑бот успешно инициализирован.")
+        logger.info(
+            "🤖 Telegram polling запланирован; доступность API проверяется в фоновой задаче."
+        )
     else:
         logger.warning("⚠️ Токен Telegram не найден – режим управления отключён.")
 
