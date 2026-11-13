@@ -221,7 +221,9 @@ class ShadowForwardTracker:
             "price_vs_vwap_pct": _number(metrics, "price_vs_vwap_pct"),
             "m1_pattern_confirmed": _number(metrics, "bar_pattern_confirmed"),
             "m1_pattern": str(metrics.get("bar_pattern_name") or ""),
-            "remaining_horizons": list(self.horizons_seconds),
+            "m1_signal_gap_atr": _number(metrics, "bar_signal_gap_atr", math.nan),
+            "m1_breakout_extension_atr": _number(metrics, "bar_breakout_extension_atr", math.nan),
+            "remaining_horizons": list(self.horizons_seconds)
             "mfe_executable_pct": 0.0,
             "mae_executable_pct": 0.0,
             "no_fresh_bbo_observations": 0,
@@ -339,6 +341,8 @@ class ShadowForwardTracker:
                         "price_vs_vwap_pct": row["price_vs_vwap_pct"],
                         "m1_pattern_confirmed": row["m1_pattern_confirmed"],
                         "m1_pattern": row["m1_pattern"],
+                        "m1_signal_gap_atr": row["m1_signal_gap_atr"],
+                        "m1_breakout_extension_atr": row["m1_breakout_extension_atr"],
                         "queue_imbalance": row["queue_imbalance"],
                         "spread_atr_ratio": row["spread_atr_ratio"],
                         "trade_count_60s": row["trade_count_60s"],
@@ -386,6 +390,8 @@ class ShadowForwardTracker:
                         "price_vs_vwap_pct": row["price_vs_vwap_pct"],
                         "m1_pattern_confirmed": row["m1_pattern_confirmed"],
                         "m1_pattern": row["m1_pattern"],
+                        "m1_signal_gap_atr": row["m1_signal_gap_atr"],
+                        "m1_breakout_extension_atr": row["m1_breakout_extension_atr"],
                         "queue_imbalance": row["queue_imbalance"],
                         "spread_atr_ratio": row["spread_atr_ratio"],
                         "trade_count_60s": row["trade_count_60s"],
@@ -450,6 +456,20 @@ class ShadowForwardTracker:
             else:
                 spread_atr_bucket = "gt_0.50"
 
+            m1_gap = _number(label, "m1_signal_gap_atr", math.nan)
+            if not math.isfinite(m1_gap) or m1_gap < 0.0:
+                m1_gap_bucket = "unavailable"
+            elif m1_gap <= 0.05:
+                m1_gap_bucket = "le_0.05"
+            elif m1_gap <= 0.10:
+                m1_gap_bucket = "0.05-0.10"
+            elif m1_gap <= 0.25:
+                m1_gap_bucket = "0.10-0.25"
+            elif m1_gap <= 0.35:
+                m1_gap_bucket = "0.25-0.35"
+            else:
+                m1_gap_bucket = "gt_0.35"
+
             trade_count = int(max(0.0, _number(label, "trade_count_60s")))
             if trade_count < 10:
                 trade_count_bucket = "lt_10"
@@ -486,6 +506,13 @@ class ShadowForwardTracker:
                 f"flow_alignment={flow_alignment}",
                 f"side_flow_alignment={side}|{flow_alignment}",
                 f"side_regime={side}|{regime}",
+                f"side_score_band={side}|{score_band}",
+                f"side_spread_atr_bucket={side}|{spread_atr_bucket}",
+                f"side_trade_count_bucket={side}|{trade_count_bucket}",
+                f"m1_pattern={str(label.get('m1_pattern') or 'NONE')}",
+                f"side_m1_pattern={side}|{str(label.get('m1_pattern') or 'NONE')}",
+                f"m1_gap_bucket={m1_gap_bucket}",
+                f"side_m1_gap_bucket={side}|{m1_gap_bucket}",
                 f"side_eligibility={side}|{eligibility}",
                 f"ticker_eligibility={ticker}|{eligibility}",
                 *(f"hard_block={reason}" for reason in label.get("hard_blocks", [])),

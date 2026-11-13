@@ -148,6 +148,11 @@ class MinuteBarPatternEngine:
             0.05,
             float(max_signal_gap_atr if max_signal_gap_atr is not None else _env_float("PILUITUS_PATTERN_MAX_GAP_ATR", 0.35)),
         )
+        # A breakout must close meaningfully beyond the prior range, not merely
+        # by a few ticks. Keep the parameter configurable for out-of-sample study.
+        self.breakout_extension_atr = min(
+            1.0, max(0.05, _env_float("PILUITUS_M1_BREAKOUT_EXTENSION_ATR", 0.10))
+        )
         self._states: dict[str, dict[str, Any]] = {}
 
     @staticmethod
@@ -197,6 +202,7 @@ class MinuteBarPatternEngine:
             "bar_body_ratio": 0.0,
             "bar_close_position": 0.5,
             "bar_signal_gap_atr": 0.0,
+            "bar_breakout_extension_atr": 0.0,
             "bar_pattern_name": "",
             "_bar_pattern_signal_at_monotonic": -1.0,
         }
@@ -322,13 +328,13 @@ class MinuteBarPatternEngine:
         prior_high = max(item.high for item in previous_five)
         prior_low = min(item.low for item in previous_five)
         breakout_up = (
-            bar.close > prior_high + 0.05 * atr
+            bar.close > prior_high + self.breakout_extension_atr * atr
             and bar.close > bar.open
             and body_ratio >= 0.55
             and close_position >= 0.75
         )
         breakout_down = (
-            bar.close < prior_low - 0.05 * atr
+            bar.close < prior_low - self.breakout_extension_atr * atr
             and bar.close < bar.open
             and body_ratio >= 0.55
             and close_position <= 0.25
@@ -366,6 +372,7 @@ class MinuteBarPatternEngine:
             "bar_body_ratio": body_ratio,
             "bar_close_position": close_position,
             "bar_signal_gap_atr": gap_atr,
+            "bar_breakout_extension_atr": self.breakout_extension_atr,
             "bar_breakout_up": float(breakout_up),
             "bar_breakout_down": float(breakout_down),
             "bar_pullback_buy": float(pullback_buy),

@@ -44,6 +44,10 @@ class ShadowScorecardTests(unittest.TestCase):
         self.assertEqual(sum(int(segments[key]["ok"]) for key in hour_keys), 2)
         self.assertEqual(segments["side_eligibility=BUY|eligible"]["ok"], 1)
         self.assertEqual(segments["ticker_eligibility=GAZP|ineligible"]["ok"], 1)
+        self.assertEqual(segments["side_score_band=BUY|90-100"]["ok"], 1)
+        self.assertEqual(segments["side_score_band=SELL|60-69"]["ok"], 1)
+        self.assertEqual(segments["side_m1_pattern=BUY|NONE"]["ok"], 1)
+        self.assertEqual(segments["side_m1_pattern=SELL|NONE"]["ok"], 1)
         self.assertEqual(segments["hard_block=atr_not_ready"]["ok"], 1)
 
     def test_completed_labels_are_aggregated_by_eligibility(self) -> None:

@@ -150,7 +150,7 @@ class Settings:
     # ORDER_BOOK buy_size/sell_size unit is confirmed for this data feed.
     PAPER_BOOK_SIZE_UNIT: str = os.getenv("PILUITUS_PAPER_BOOK_SIZE_UNIT", "unknown").strip().lower()
     PAPER_MAX_BOOK_PARTICIPATION_PCT: float = float(
-        os.getenv("PILUITUS_PAPER_MAX_BOOK_PARTICIPATION_PCT", "100.0")
+        os.getenv("PILUITUS_PAPER_MAX_BOOK_PARTICIPATION_PCT", "10.0")
     )
 
     # ---------- Finam ----------
