@@ -11,6 +11,16 @@ from rag_prompt_utils import normalise_rag_context, select_prompt_rules
 
 log = logging.getLogger("Piluitus.AIEngine")
 thought_log = logging.getLogger("Piluitus.EvolutionThoughts")
+
+
+class VLLMCircuitOpenError(httpx.ConnectError):
+    """Raised while vLLM is in a bounded connection-failure backoff window."""
+
+    def __init__(self, retry_after_sec: float):
+        self.retry_after_sec = max(0.0, float(retry_after_sec))
+        super().__init__(
+            f"vLLM connection circuit is open; retry after {self.retry_after_sec:.1f}s"
+        )
 MODEL_REASON_CODES = {
     "APPROVED",
     "HOLD_WEAK_DIRECTION",
@@ -56,6 +66,11 @@ class AIEngine:
 
         self.api_path = "/v1/chat/completions"
         self.model_name = Settings.VLLM_MODEL
+        # A connection outage must not trigger a fresh pair of failed HTTP calls
+        # for every queued candidate. The first request after cooldown is the probe.
+        self._transport_failure_count = 0
+        self._transport_open_until = 0.0
+        self._transport_state_lock = asyncio.Lock()
         
         limits = httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=30.0)
         timeout = httpx.Timeout(connect=5.0, read=45.0, write=10.0, pool=10.0)
@@ -76,6 +91,47 @@ class AIEngine:
             self._effective_max_tokens(),
         )
 
+    async def _transport_circuit_retry_after(self) -> float:
+        """Return remaining cooldown; do not send traffic while the circuit is open."""
+        lock = getattr(self, "_transport_state_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._transport_state_lock = lock
+        async with lock:
+            remaining = float(getattr(self, "_transport_open_until", 0.0) or 0.0) - time.monotonic()
+            return max(0.0, remaining)
+
+    async def _record_transport_failure(self) -> float:
+        """Open an exponentially backed-off circuit after a failed connection cycle."""
+        lock = getattr(self, "_transport_state_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._transport_state_lock = lock
+        try:
+            base = max(1.0, float(getattr(Settings, "VLLM_CONNECT_BACKOFF_BASE_SEC", 5.0)))
+        except (TypeError, ValueError, OverflowError):
+            base = 5.0
+        try:
+            maximum = max(base, float(getattr(Settings, "VLLM_CONNECT_BACKOFF_MAX_SEC", 60.0)))
+        except (TypeError, ValueError, OverflowError):
+            maximum = max(base, 60.0)
+        async with lock:
+            failures = int(getattr(self, "_transport_failure_count", 0) or 0) + 1
+            self._transport_failure_count = failures
+            delay = min(maximum, base * (2 ** min(failures - 1, 16)))
+            self._transport_open_until = time.monotonic() + delay
+            return delay
+
+    async def _record_transport_success(self) -> None:
+        """A successful HTTP response closes the connection circuit."""
+        lock = getattr(self, "_transport_state_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._transport_state_lock = lock
+        async with lock:
+            self._transport_failure_count = 0
+            self._transport_open_until = 0.0
+
     async def _post_with_retry(
         self,
         path: str,
@@ -84,17 +140,23 @@ class AIEngine:
         retries: int = 1,
         retry_timeouts: bool = True,
     ) -> httpx.Response:
-        """Retry one transient request failure without swallowing task cancellation."""
+        """Retry one transient failure; back off after a confirmed connection outage."""
+        retry_after = await self._transport_circuit_retry_after()
+        if retry_after > 0.0:
+            raise VLLMCircuitOpenError(retry_after)
+
         timeout_seconds = self._request_timeout_seconds()
         retry_limit = max(0, min(1, int(retries)))
         for attempt in range(retry_limit + 1):
             try:
                 async with asyncio.timeout(timeout_seconds):
-                    return await self.client.post(
+                    response = await self.client.post(
                         path,
                         json=json,
                         timeout=timeout_seconds,
                     )
+                await self._record_transport_success()
+                return response
             except (httpx.TimeoutException, TimeoutError) as exc:
                 if attempt >= retry_limit or not retry_timeouts:
                     log.error(
@@ -109,10 +171,18 @@ class AIEngine:
                 await asyncio.sleep(0.4)
             except httpx.TransportError as exc:
                 if attempt >= retry_limit:
-                    log.error(
-                        "[vLLM REQUEST FAILED] Транспортная ошибка после %d попыток: %s",
-                        attempt + 1, type(exc).__name__,
-                    )
+                    if isinstance(exc, httpx.ConnectError):
+                        backoff = await self._record_transport_failure()
+                        log.error(
+                            "[vLLM CONNECT CIRCUIT] соединение недоступно после %d попыток; "
+                            "backoff=%.1fs; дальнейшие запросы временно подавляются.",
+                            attempt + 1, backoff,
+                        )
+                    else:
+                        log.error(
+                            "[vLLM REQUEST FAILED] Транспортная ошибка после %d попыток: %s",
+                            attempt + 1, type(exc).__name__,
+                        )
                     raise
                 log.warning(
                     "[vLLM RETRY] Временный сетевой сбой (%s); повтор запроса 1/1 через 0.4s",
@@ -901,7 +971,18 @@ class AIEngine:
                 "latency": round(time.time() - start_inference_time, 3),
             }
         except httpx.TransportError as exc:
-            log.exception("[AIEngine v34] Сетевая ошибка запроса к vLLM (%s): %r", self.api_path, exc)
+            if isinstance(exc, VLLMCircuitOpenError):
+                log.debug(
+                    "[vLLM CIRCUIT OPEN] запрос пропущен; следующий пробный вызов через %.1fs.",
+                    exc.retry_after_sec,
+                )
+            else:
+                # Repeated connection failures are already summarized by the bounded
+                # retry/circuit logs above; avoid dumping a traceback per candidate.
+                log.error(
+                    "[AIEngine v34] Сетевая ошибка запроса к vLLM (%s): %s: %s",
+                    self.api_path, type(exc).__name__, exc,
+                )
             return {
                 "final_decision": "HOLD",
                 "model_decision": "HOLD",
