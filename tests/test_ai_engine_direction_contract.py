@@ -469,8 +469,10 @@ class AIEngineDirectionContractTests(unittest.TestCase):
                 "bar_pattern_direction_code": -1,
             },
         )
-        self.assertIn("Directional check: either signed price change agrees with candidate and VWAP, OR a fresh matching", prompt)
-        self.assertIn("closed M1 pattern agrees with candidate and price remains on the correct side of VWAP", prompt)
+        self.assertIn("Directional check: signed price momentum must agree with candidate", prompt)
+        self.assertIn("VWAP within +/-0.030% is NEUTRAL and must not veto", prompt)
+        self.assertIn("A fresh matching closed M1 pattern may support the candidate", prompt)
+        self.assertNotIn("price remains on the correct side of VWAP", prompt)
         self.assertNotIn("SELL needs negative price_change_pct and price_vs_vwap_pct", prompt)
 
     def test_local_opinions_are_built_from_structured_result_and_metrics(self) -> None:
