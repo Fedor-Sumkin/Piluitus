@@ -2361,7 +2361,9 @@ class MarketWorker:
                 llm_input_features = {
                     "price_change_pct": _parse_finite_float(metrics.get("price_change_pct")),
                     "price_vs_vwap_pct": _parse_finite_float(metrics.get("price_vs_vwap_pct")),
+                    "direction_evidence_state": str(metrics.get("direction_evidence_state") or "UNAVAILABLE"),
                     "volume_spike": _parse_finite_float(metrics.get("volume_spike")),
+                    "volume_spike_raw": _parse_finite_float(metrics.get("volume_spike_raw")),
                     "trade_data_mode": _parse_finite_float(metrics.get("trade_data_mode")),
                     "trade_data_ready": _parse_finite_float(metrics.get("trade_data_ready")),
                     "trade_vwap_60s": _parse_finite_float(metrics.get("trade_vwap_60s")),
