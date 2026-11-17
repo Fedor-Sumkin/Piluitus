@@ -41,7 +41,10 @@ from finam_client import FinamBrokerClient
 from screener_funnel import HFTMemoryScreener
 from execution_layer import BaseExecutionEngine
 from risk_manager import RiskManager
-from signal_guard import validate_signal_evidence, infer_candidate_direction, validate_atr_readiness
+from signal_guard import (
+    validate_signal_evidence, infer_candidate_direction, validate_atr_readiness,
+    classify_direction_evidence,
+)
 from rag_prompt_utils import select_prompt_rules
 from candidate_recovery import coalesce_pending_bbo_entry, refresh_candidate_bbo_metrics
 from scalping_strategy import evaluate_scalping_candidate
@@ -1960,10 +1963,18 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                     _trade_flow_inc("direction_prefilter_skipped")
                     _log_prefilter_blocked(
                         ticker,
-                        "Направление не подтверждено: краткосрочное изменение цены и отклонение от VWAP не совпадают по знаку.",
+                        "Локальное направление не подтверждено: нет импульса цены либо VWAP показывает сильное встречное движение.",
                     )
                 else:
+                    direction_state = classify_direction_evidence(candidate_direction, metrics_payload)
+                    metrics_payload["direction_evidence_state"] = direction_state
                     _trade_flow_inc("local_candidate_buy" if candidate_direction == "BUY" else "local_candidate_sell")
+                    logger.debug(
+                        "[DIRECTION GATE] %s side=%s state=%s price_change=%.5f%% vs_vwap=%.5f%%",
+                        ticker, candidate_direction, direction_state,
+                        float(metrics_payload.get("price_change_pct", 0.0) or 0.0),
+                        float(metrics_payload.get("price_vs_vwap_pct", 0.0) or 0.0),
+                    )
                     _log_scalping_shadow(ticker, candidate_direction, metrics_payload)
                     evidence_ok, evidence_reason = validate_signal_evidence(candidate_direction, metrics_payload)
                     if not evidence_ok:
