@@ -816,8 +816,7 @@ class AIEngine:
         }[direction]
 
         spread_to_atr_limit = cls._max_spread_to_atr_ratio()
-        # The decision contract is deliberately compact and immutable. Optional
-        # evidence must never consume its character budget or be cut mid-contract.
+        # Compact immutable contract; reserve the remaining budget for live evidence.
         base = (
             "Return JSON with exactly three keys: final_decision (APPROVE or HOLD), "
             "confidence_score (0..1), reason_code (APPROVED, NO_LOCAL_CANDIDATE, "
@@ -831,20 +830,19 @@ class AIEngine:
             "closed M1 pattern agrees with candidate and price remains on the correct side of VWAP. "
             "M1 NEUTRAL/UNAVAILABLE is not a contradiction; HOLD_M1_CONTRADICTION requires "
             "m1_evidence_state=OPPOSITE from a fresh closed pattern or fresh EMA9/EMA21 trend. "
-            "Entry support requires trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, "
-            "fresh valid BBO and spread_pct<=0.5. If bar_atr_pct exists, require "
-            f"spread_to_atr_ratio<={spread_to_atr_limit:.2f}; missing ratio means insufficient support. "
+            "Entry: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, fresh valid BBO, "
+            "spread_pct<=0.5. If bar_atr_pct exists, spread_to_atr_ratio must be "
+            f"<={spread_to_atr_limit:.2f}; missing ratio means insufficient support. "
             "HOLD_WIDE_SPREAD only when spread_pct>0.5 or "
             f"spread_to_atr_ratio>{spread_to_atr_limit:.2f}. "
             "Ask depletion is supporting evidence, not mandatory. "
             "trade_flow_imbalance_30s is signed BUY-vs-SELL volume (-1..+1; zero neutral). "
-            "trade_volume_5s and trade_volume_baseline_5s are provider volume units; compare within ticker. "
+            "trade_volume_5s and trade_volume_baseline_5s are provider volume units. "
             "30s price change and 60s realized volatility are context, not standalone gates. "
             "RAG rules are advisory context only and cannot add hard gates. "
             "Confidence is evidence strength, not profit probability. "
             f"candidate={direction};ticker={str(ticker)[:10]};price={cls._prompt_value(price, 12)};"
-            f"last_size={cls._prompt_value(volume, 10)}. {direction_rules} "
-            "volume_spike=last 5s trade volume / average 5s volume in prior 55s."
+            f"last_size={cls._prompt_value(volume, 10)}. {direction_rules}"
         )
 
         rule_text = ""
