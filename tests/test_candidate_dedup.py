@@ -36,6 +36,10 @@ class CandidateDeduplicatorTests(unittest.TestCase):
     def test_candidate_ttl_rejects_stale_market_snapshot(self):
         self.assertTrue(candidate_is_expired(100.0, now=105.1, ttl_sec=5.0))
 
+    def test_candidate_ttl_rejects_signal_after_slow_llm_inference(self):
+        # A slow model response must not authorize entry using expired market evidence.
+        self.assertTrue(candidate_is_expired(100.0, now=112.84, ttl_sec=5.0))
+
     def test_candidate_ttl_rejects_invalid_or_future_timestamp(self):
         self.assertTrue(candidate_is_expired(None, now=101.0, ttl_sec=5.0))
         self.assertTrue(candidate_is_expired(102.0, now=101.0, ttl_sec=5.0))
