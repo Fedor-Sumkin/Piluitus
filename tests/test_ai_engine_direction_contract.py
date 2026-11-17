@@ -112,6 +112,17 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertEqual(reason, "HOLD_INSUFFICIENT_SUPPORT")
         self.assertEqual(status, "RECLASSIFIED")
 
+    def test_neutral_vwap_does_not_support_weak_direction_hold_reason(self) -> None:
+        metrics = {
+            "trade_data_ready": 1.0, "trade_metrics_age_sec": 0.5,
+            "price_change_pct": 0.12, "price_vs_vwap_pct": 0.01,
+        }
+        reason, status = AIEngine._validate_model_reason_code(
+            "HOLD", "HOLD_WEAK_DIRECTION", "BUY", metrics
+        )
+        self.assertEqual(reason, "HOLD_INSUFFICIENT_SUPPORT")
+        self.assertEqual(status, "RECLASSIFIED")
+
     def test_wide_spread_reason_requires_absolute_or_atr_relative_evidence(self) -> None:
         narrow = {"spread_pct": 0.10, "spread_available": 1.0, "bar_atr_pct": 0.40}
         reason, status = AIEngine._validate_model_reason_code(
