@@ -97,6 +97,17 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(outcomes[0]["slippage_bps"], 1.0)
         self.assertEqual(snapshot["cost_model"]["commission_pct_per_side"], 0.10)
         self.assertEqual(snapshot["cost_model"]["slippage_bps"], 1.0)
+        self.assertEqual(snapshot["cost_model"]["status"], "CONFIGURED")
+
+    def test_zero_cost_assumptions_are_marked_incomplete(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,))
+        with patch.dict("os.environ", {
+            "PILUITUS_PAPER_COMMISSION_PCT": "0",
+            "PILUITUS_PAPER_SLIPPAGE_BPS": "0",
+        }):
+            snapshot = tracker.statistics_snapshot()
+        self.assertEqual(snapshot["cost_model"]["status"], "INCOMPLETE")
+        self.assertIn("not fully calibrated", snapshot["cost_model"]["note"])
 
     def test_fresh_bbo_can_label_candidate_even_without_full_book_confirmation(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
@@ -133,6 +144,9 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(len(second), 1)
         self.assertEqual(second[0]["horizon_sec"], 180)
         self.assertEqual(tracker.pending_count(), 0)
+        by_horizon = tracker.statistics_snapshot()["by_horizon"]
+        self.assertEqual(by_horizon["60s"]["ok"], 1)
+        self.assertEqual(by_horizon["180s"]["ok"], 1)
 
 
     def test_outcomes_segment_by_spread_atr_trade_count_and_directional_flow(self) -> None:

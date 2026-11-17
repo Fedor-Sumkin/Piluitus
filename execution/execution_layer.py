@@ -314,9 +314,9 @@ class BaseExecutionEngine:
                 )
             if self.paper_commission_pct <= 0.0 or self.paper_slippage_bps <= 0.0:
                 logger.warning(
-                    "⚠️ [PAPER COST SETTINGS] комиссия=%.4f%% за сторону, доп.проскальзывание=%.2f bps. "
-                    "Нулевые параметры не учитываются в PnL; укажите собственный тариф Finam и модель "
-                    "дополнительного проскальзывания в .env. Спред уже включён в Ask/Bid.",
+                    "⚠️ [PAPER COST MODEL INCOMPLETE] комиссия=%.4f%% за сторону, доп.проскальзывание=%.2f bps. "
+                    "При нулевом параметре PnL не является полностью net-of-costs; укажите подтверждённый тариф Finam "
+                    "и обоснованную дополнительную модель проскальзывания в .env. Спред уже включён в Ask/Bid.",
                     self.paper_commission_pct, self.paper_slippage_bps,
                 )
         else:

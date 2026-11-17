@@ -47,10 +47,10 @@ class FinamOrderBookParserDiagnosticsTests(unittest.TestCase):
         self.assertEqual(second, [])
         self.assertEqual(self.client._last_order_book_out_of_order_tickers, {"SBER"})
         self.assertNotIn("SBER", self.client._last_order_book_unrecognized_tickers)
-        self.assertGreater(
-            self.client._last_order_book_out_of_order_details["SBER"]["age_delta_ms"],
-            0.0,
-        )
+        detail = self.client._last_order_book_out_of_order_details["SBER"]
+        self.assertGreater(detail["age_delta_ms"], 0.0)
+        self.assertEqual(detail["event_timestamp"], (self.now - timedelta(seconds=3)).isoformat())
+        self.assertGreater(detail["prior_monotonic"], detail["event_monotonic"])
         state = self.client._order_book_state["SBER"]
         self.assertEqual(state["bids"][100.0], 10.0)
 

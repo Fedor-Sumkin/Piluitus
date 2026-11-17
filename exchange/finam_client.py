@@ -1958,6 +1958,7 @@ class FinamBrokerClient:
                     order_book_missing_envelope_timestamp = 0
                     order_book_queue_dropped = 0
                     order_book_out_of_order = 0
+                    order_book_out_of_order_age_deltas_ms: list[float] = []
                     order_book_subscribed: set[str] = set()
                     order_book_subscribed_since: dict[str, float] = {}
                     trade_subscribed: set[str] = set()
@@ -2385,6 +2386,17 @@ class FinamBrokerClient:
                                     order_book_unattributed_sample,
                                 )
 
+                            if order_book_out_of_order_age_deltas_ms:
+                                ordered_ooo_ages = sorted(order_book_out_of_order_age_deltas_ms)
+                                logger.info(
+                                    "📚 [ORDER_BOOK OUT_OF_ORDER 60s] events=%d age_delta_ms_min=%.1f "
+                                    "avg=%.1f max=%.1f",
+                                    len(ordered_ooo_ages), ordered_ooo_ages[0],
+                                    sum(ordered_ooo_ages) / len(ordered_ooo_ages), ordered_ooo_ages[-1],
+                                )
+                            else:
+                                logger.info("[ORDER_BOOK OUT_OF_ORDER 60s] events=0")
+                            order_book_out_of_order_age_deltas_ms.clear()
                             order_book_messages = 0
                             order_book_decode_failures = 0
                             order_book_valid_no_bbo_delta = 0
@@ -2496,6 +2508,13 @@ class FinamBrokerClient:
                             )
                             symbol_hints = self._extract_order_book_symbol_hints(payload)
                             book_updates = self._extract_order_book_updates(envelope)
+                            for ooo_detail in self._last_order_book_out_of_order_details.values():
+                                try:
+                                    age_delta_ms = float(ooo_detail.get("age_delta_ms", 0.0))
+                                except (TypeError, ValueError, OverflowError):
+                                    continue
+                                if math.isfinite(age_delta_ms) and age_delta_ms >= 0.0:
+                                    order_book_out_of_order_age_deltas_ms.append(age_delta_ms)
                             # A rejected out-of-order delta breaks confidence in the local
                             # delta chain. Resubscribe under a per-symbol cooldown and wait
                             # for a provider snapshot before accepting another book update.
@@ -2512,7 +2531,15 @@ class FinamBrokerClient:
                                     await asyncio.sleep(0.02)
                                     await ws.send(json.dumps({"action":"SUBSCRIBE","type":"ORDER_BOOK","data":{"symbol":stale_symbol},"token":self.jwt_token}))
                                     order_book_subscribed_since[stale_symbol] = message_received_monotonic
-                                    logger.warning("[ORDER_BOOK OUT_OF_ORDER RESYNC] %s: delta chain invalidated; waiting for full snapshot.", stale_ticker)
+                                    detail = self._last_order_book_out_of_order_details.get(stale_ticker, {})
+                                    logger.warning(
+                                        "[ORDER_BOOK OUT_OF_ORDER RESYNC] %s: delta chain invalidated; "
+                                        "age_delta_ms=%.1f event_ts=%s prior_event_monotonic=%.6f; waiting for full snapshot.",
+                                        stale_ticker,
+                                        float(detail.get("age_delta_ms", 0.0) or 0.0),
+                                        str(detail.get("event_timestamp") or "-")[:48],
+                                        float(detail.get("prior_monotonic", 0.0) or 0.0),
+                                    )
                                 except Exception as resync_exc:
                                     order_book_subscribed.discard(stale_symbol)
                                     order_book_subscribed_since.pop(stale_symbol, None)

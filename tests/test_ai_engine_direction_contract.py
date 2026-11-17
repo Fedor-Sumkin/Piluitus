@@ -57,6 +57,93 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertIn("M1 NEUTRAL/UNAVAILABLE is not a contradiction", prompt)
         self.assertIn("trade_flow_imbalance_30s=0.22", prompt)
 
+    def test_neutral_m1_cannot_support_contradiction_reason(self) -> None:
+        metrics = {
+            "bar_count": 30, "bar_atr_periods": 14, "bar_atr_age_sec": 5.0,
+            "bar_trend_up": 0.0, "bar_trend_down": 0.0,
+            "bar_pattern_confirmed": 0.0, "bar_pattern_direction_code": 0.0,
+        }
+        self.assertEqual(AIEngine._m1_evidence_state(metrics, "BUY"), "NEUTRAL")
+        reason, status = AIEngine._validate_model_reason_code(
+            "HOLD", "HOLD_M1_CONTRADICTION", "BUY", metrics
+        )
+        self.assertEqual(reason, "HOLD_INSUFFICIENT_SUPPORT")
+        self.assertEqual(status, "RECLASSIFIED")
+
+    def test_fresh_opposite_m1_is_the_only_m1_contradiction(self) -> None:
+        metrics = {
+            "bar_count": 30, "bar_atr_periods": 14, "bar_atr_age_sec": 5.0,
+            "bar_trend_up": 0.0, "bar_trend_down": 1.0,
+            "bar_pattern_confirmed": 0.0, "bar_pattern_direction_code": 0.0,
+        }
+        self.assertEqual(AIEngine._m1_evidence_state(metrics, "BUY"), "OPPOSITE")
+        reason, status = AIEngine._validate_model_reason_code(
+            "HOLD", "HOLD_M1_CONTRADICTION", "BUY", metrics
+        )
+        self.assertEqual(reason, "HOLD_M1_CONTRADICTION")
+        self.assertEqual(status, "CONSISTENT")
+
+    def test_m1_without_warmup_or_freshness_is_unavailable_not_opposite(self) -> None:
+        metrics = {
+            "bar_count": 8, "bar_atr_periods": 5, "bar_atr_age_sec": 5.0,
+            "bar_trend_up": 0.0, "bar_trend_down": 1.0,
+        }
+        self.assertEqual(AIEngine._m1_evidence_state(metrics, "BUY"), "UNAVAILABLE")
+        reason, _ = AIEngine._validate_model_reason_code(
+            "HOLD", "HOLD_M1_CONTRADICTION", "BUY", metrics
+        )
+        self.assertEqual(reason, "HOLD_INSUFFICIENT_SUPPORT")
+
+    def test_wide_spread_reason_requires_absolute_or_atr_relative_evidence(self) -> None:
+        narrow = {"spread_pct": 0.10, "spread_available": 1.0, "bar_atr_pct": 0.40}
+        reason, status = AIEngine._validate_model_reason_code(
+            "HOLD", "HOLD_WIDE_SPREAD", "BUY", narrow
+        )
+        self.assertEqual(reason, "HOLD_INSUFFICIENT_SUPPORT")
+        self.assertEqual(status, "RECLASSIFIED")
+        wide = {"spread_pct": 0.10, "spread_available": 1.0, "bar_atr_pct": 0.10}
+        reason, status = AIEngine._validate_model_reason_code(
+            "HOLD", "HOLD_WIDE_SPREAD", "BUY", wide
+        )
+        self.assertEqual(reason, "HOLD_WIDE_SPREAD")
+        self.assertEqual(status, "CONSISTENT")
+
+    def test_fresh_bbo_and_sufficient_volume_invalidate_stale_or_weak_reasons(self) -> None:
+        metrics = {
+            "volume_spike": 2.0, "spread_available": 1.0, "bid_ask_available": 1.0,
+            "bid": 100.0, "ask": 100.1, "bid_quote_age_sec": 0.2,
+            "ask_quote_age_sec": 0.3, "bbo_max_age_sec": 2.0,
+        }
+        reason, _ = AIEngine._validate_model_reason_code(
+            "HOLD", "HOLD_WEAK_VOLUME", "BUY", metrics
+        )
+        self.assertEqual(reason, "HOLD_INSUFFICIENT_SUPPORT")
+        reason, _ = AIEngine._validate_model_reason_code(
+            "HOLD", "HOLD_STALE_BBO", "BUY", metrics
+        )
+        self.assertEqual(reason, "HOLD_INSUFFICIENT_SUPPORT")
+
+    def test_approved_verdict_has_approved_reason_code(self) -> None:
+        reason, status = AIEngine._validate_model_reason_code(
+            "APPROVE", "HOLD_WIDE_SPREAD", "BUY", {"spread_pct": 0.1}
+        )
+        self.assertEqual(reason, "APPROVED")
+        self.assertEqual(status, "RECLASSIFIED")
+
+    def test_prompt_includes_derived_spread_to_atr_ratio_and_m1_state(self) -> None:
+        prompt = AIEngine._build_live_prompt(
+            "SBER", 100.0, 10.0, "BUY",
+            {
+                "spread_pct": 0.04, "spread_available": 1.0, "bar_atr_pct": 0.08,
+                "bar_count": 30, "bar_atr_periods": 14, "bar_atr_age_sec": 5.0,
+                "bar_trend_up": 0.0, "bar_trend_down": 0.0,
+            },
+            "", include_rule_text=False,
+        )
+        self.assertIn("spread_to_atr_ratio=0.5", prompt)
+        self.assertIn("m1_evidence_state=NEUTRAL", prompt)
+        self.assertIn("spread_to_atr_ratio>0.50", prompt)
+
     def test_missing_candidate_requires_hold(self) -> None:
         prompt = self._prompt("NONE")
         self.assertIn("candidate=NONE => final_decision MUST be HOLD.", prompt)

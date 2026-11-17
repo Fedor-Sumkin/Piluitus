@@ -548,10 +548,23 @@ class ShadowForwardTracker:
         snapshot["segments"] = {
             key: summarize(values) for key, values in self._segment_stats.items()
         }
+        # Expose the primary horizons directly for compact diagnostic comparisons.
+        snapshot["by_horizon"] = {
+            key.split("=", 1)[1]: summarize(values)
+            for key, values in self._segment_stats.items()
+            if key.startswith("horizon=")
+        }
         commission_pct, slippage_bps = _cost_settings()
+        costs_configured = commission_pct > 0.0 and slippage_bps > 0.0
         snapshot["cost_model"] = {
             "commission_pct_per_side": commission_pct,
             "slippage_bps": slippage_bps,
+            "status": "CONFIGURED" if costs_configured else "INCOMPLETE",
+            "note": (
+                "Both costs are configured; verify commission against the active Finam tariff."
+                if costs_configured else
+                "Net returns are not fully calibrated: configure the actual Finam commission and a justified additional-slippage assumption."
+            ),
         }
         return snapshot
 

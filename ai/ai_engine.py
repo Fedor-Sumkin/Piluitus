@@ -600,6 +600,120 @@ class AIEngine:
         text = re.sub(r"\s+", " ", str(value)).strip()
         return text[:max_len]
 
+    @staticmethod
+    def _metric_number(metrics: object, key: str, default: float = math.nan) -> float:
+        if not isinstance(metrics, dict):
+            return default
+        value = metrics.get(key)
+        if isinstance(value, bool):
+            return float(value)
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return default
+        return number if math.isfinite(number) else default
+
+    @classmethod
+    def _m1_evidence_state(cls, metrics: object, candidate_direction: str) -> str:
+        """Classify M1 as aligned/opposite/neutral/unavailable using fresh closed bars only."""
+        direction = str(candidate_direction or "").strip().upper()
+        if direction not in {"BUY", "SELL"} or not isinstance(metrics, dict):
+            return "UNAVAILABLE"
+        bar_count = cls._metric_number(metrics, "bar_count", 0.0)
+        atr_periods = cls._metric_number(metrics, "bar_atr_periods", 0.0)
+        atr_age = cls._metric_number(metrics, "bar_atr_age_sec", math.nan)
+        if not math.isfinite(atr_age) or atr_age < 0.0 or atr_age > 180.0 or atr_periods < 5.0:
+            return "UNAVAILABLE"
+        pattern_confirmed = cls._metric_number(metrics, "bar_pattern_confirmed", 0.0) >= 0.5
+        pattern_direction = cls._metric_number(metrics, "bar_pattern_direction_code", 0.0)
+        if pattern_confirmed and pattern_direction in {-1.0, 1.0}:
+            matching = (direction == "BUY" and pattern_direction > 0.0) or (
+                direction == "SELL" and pattern_direction < 0.0
+            )
+            return "ALIGNED" if matching else "OPPOSITE"
+        # EMA9/EMA21 are not meaningful until 21 contiguous closed M1 bars exist.
+        if bar_count < 21.0:
+            return "UNAVAILABLE"
+        trend_up = cls._metric_number(metrics, "bar_trend_up", 0.0) >= 0.5
+        trend_down = cls._metric_number(metrics, "bar_trend_down", 0.0) >= 0.5
+        if trend_up and trend_down:
+            return "UNAVAILABLE"
+        if direction == "BUY":
+            if trend_down:
+                return "OPPOSITE"
+            if trend_up:
+                return "ALIGNED"
+        else:
+            if trend_up:
+                return "OPPOSITE"
+            if trend_down:
+                return "ALIGNED"
+        return "NEUTRAL"
+
+    @classmethod
+    def _prepare_prompt_metrics(cls, metrics: object, candidate_direction: str) -> dict:
+        prepared = dict(metrics) if isinstance(metrics, dict) else {}
+        spread = cls._metric_number(prepared, "spread_pct", math.nan)
+        atr_pct = cls._metric_number(prepared, "bar_atr_pct", math.nan)
+        spread_available = cls._metric_number(
+            prepared, "spread_available", 1.0 if math.isfinite(spread) and spread >= 0.0 else 0.0
+        )
+        if spread_available >= 0.5 and math.isfinite(spread) and spread >= 0.0 and math.isfinite(atr_pct) and atr_pct > 0.0:
+            prepared["spread_to_atr_ratio"] = spread / atr_pct
+        else:
+            prepared["spread_to_atr_ratio"] = None
+        prepared["m1_evidence_state"] = cls._m1_evidence_state(prepared, candidate_direction)
+        return prepared
+
+    @classmethod
+    def _validate_model_reason_code(
+        cls,
+        model_decision: str,
+        reason_code: str,
+        candidate_direction: str,
+        metrics: object,
+    ) -> tuple[str, str]:
+        """Reconcile advisory LLM reason codes with measured evidence; never changes the verdict."""
+        decision = str(model_decision or "HOLD").strip().upper()
+        reason = str(reason_code or "NOT_PROVIDED").strip().upper()
+        prepared = cls._prepare_prompt_metrics(metrics, candidate_direction)
+        replacement = reason
+        if decision == "APPROVE":
+            replacement = "APPROVED"
+        elif decision == "HOLD":
+            if reason == "APPROVED":
+                replacement = "HOLD_UNCLEAR"
+            elif reason == "HOLD_M1_CONTRADICTION" and prepared.get("m1_evidence_state") != "OPPOSITE":
+                replacement = "HOLD_INSUFFICIENT_SUPPORT"
+            elif reason == "HOLD_WIDE_SPREAD":
+                spread = cls._metric_number(prepared, "spread_pct", math.nan)
+                ratio = cls._metric_number(prepared, "spread_to_atr_ratio", math.nan)
+                if not (math.isfinite(spread) and spread > 0.5) and not (
+                    math.isfinite(ratio) and ratio > 0.50
+                ):
+                    replacement = "HOLD_INSUFFICIENT_SUPPORT"
+            elif reason == "HOLD_WEAK_VOLUME":
+                volume_spike = cls._metric_number(prepared, "volume_spike", math.nan)
+                if math.isfinite(volume_spike) and volume_spike >= 1.5:
+                    replacement = "HOLD_INSUFFICIENT_SUPPORT"
+            elif reason == "HOLD_STALE_BBO":
+                max_age = cls._metric_number(prepared, "bbo_max_age_sec", 2.0)
+                bid_age = cls._metric_number(prepared, "bid_quote_age_sec", math.nan)
+                ask_age = cls._metric_number(prepared, "ask_quote_age_sec", math.nan)
+                bid = cls._metric_number(prepared, "bid", math.nan)
+                ask = cls._metric_number(prepared, "ask", math.nan)
+                flags_ok = (
+                    cls._metric_number(prepared, "bid_ask_available", 0.0) >= 0.5
+                    and cls._metric_number(prepared, "spread_available", 0.0) >= 0.5
+                )
+                if (
+                    flags_ok and math.isfinite(bid) and math.isfinite(ask) and bid > 0.0
+                    and ask >= bid and math.isfinite(bid_age) and math.isfinite(ask_age)
+                    and 0.0 <= bid_age <= max_age and 0.0 <= ask_age <= max_age
+                ):
+                    replacement = "HOLD_INSUFFICIENT_SUPPORT"
+        return replacement, "CONSISTENT" if replacement == reason else "RECLASSIFIED"
+
     @classmethod
     def _build_live_prompt(
         cls,
@@ -619,8 +733,10 @@ class AIEngine:
         # prompt overflow may trim later context, never the core 30s flow metrics.
         common_keys = (
             "trade_data_ready", "trade_metrics_age_sec", "price_change_pct",
-            "price_vs_vwap_pct", "volume_spike", "spread_pct",
-            "bid_ask_available", "spread_available",
+            "price_vs_vwap_pct", "volume_spike", "spread_pct", "spread_to_atr_ratio",
+            "bid_ask_available", "spread_available", "bid_quote_age_sec",
+            "ask_quote_age_sec", "bbo_max_age_sec", "bid", "ask",
+            "bar_count", "bar_atr_periods", "bar_atr_age_sec", "m1_evidence_state",
             "trade_volume_5s", "trade_volume_baseline_5s", "trade_count_60s",
             "trade_flow_imbalance_30s", "trade_price_change_30s_pct",
             "trade_realized_volatility_60s_pct", "trade_history_coverage_sec",
@@ -642,10 +758,11 @@ class AIEngine:
                 "ask_size_drop_age_sec",
             )
         metric_keys = common_keys + directional_keys + ("bar_pattern_name", "bar_signal_gap_atr")
+        prompt_metrics = cls._prepare_prompt_metrics(metrics, direction)
         metric_parts: list[str] = []
-        if isinstance(metrics, dict):
+        if prompt_metrics:
             for key in metric_keys:
-                value = metrics.get(key)
+                value = prompt_metrics.get(key)
                 if value is None:
                     continue
                 metric_parts.append(f"{key}={cls._prompt_value(value, 18)}")
@@ -674,9 +791,12 @@ class AIEngine:
             'candidate=NONE => final_decision MUST be HOLD. '
             'Directional check: either signed price change agrees with candidate and VWAP, OR a fresh matching '
             'closed M1 pattern agrees with candidate and price remains on the correct side of VWAP. '
-            'M1 NEUTRAL/UNAVAILABLE is not a contradiction; only a fresh opposite M1/EMA conflicts. '
-            'Hard checks: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, fresh BBO, spread<=0.5%; '
-            'otherwise HOLD. >=50% Ask depletion is supporting evidence, not mandatory. '
+            'M1 NEUTRAL/UNAVAILABLE is not a contradiction; only m1_evidence_state=OPPOSITE from a fresh closed pattern '
+            'or fresh EMA9/EMA21 trend may justify HOLD_M1_CONTRADICTION. '
+            'Hard checks: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, fresh BBO, spread<=0.5%. '
+            'When bar_atr_pct is available, also require spread_to_atr_ratio<=0.50; a missing ratio is insufficient support, '
+            'not proof of a wide spread. Do not use HOLD_WIDE_SPREAD unless spread_pct>0.5 or spread_to_atr_ratio>0.50. '
+            'Otherwise HOLD. >=50% Ask depletion is supporting evidence, not mandatory. '
             'trade_flow_imbalance_30s is signed BUY-vs-SELL volume (-1..+1; zero=neutral). '
             'trade_volume_5s and trade_volume_baseline_5s use provider volume units; compare within ticker. '
             'trade_price_change_30s_pct and trade_realized_volatility_60s_pct are secondary context. '
@@ -1171,6 +1291,26 @@ class AIEngine:
         
         model_decision = str(processed.get("model_decision", processed.get("final_decision", "HOLD"))).upper()
         processed["model_decision"] = model_decision
+        raw_reason_code = str(processed.get("model_reason_code") or "NOT_PROVIDED").upper()
+        validated_reason_code, reason_validation = self._validate_model_reason_code(
+            model_decision, raw_reason_code, candidate_direction, metrics_dict
+        )
+        processed["model_reason_code_raw"] = raw_reason_code
+        processed["model_reason_code"] = validated_reason_code
+        processed["model_reason_validation"] = reason_validation
+        prepared_metrics = self._prepare_prompt_metrics(metrics_dict, candidate_direction)
+        processed["m1_evidence_state"] = prepared_metrics.get("m1_evidence_state", "UNAVAILABLE")
+        processed["spread_to_atr_ratio"] = prepared_metrics.get("spread_to_atr_ratio")
+        if reason_validation == "RECLASSIFIED":
+            log.warning(
+                "[LLM REASON MISMATCH] ticker=%s candidate=%s decision=%s reported=%s normalized=%s "
+                "m1_state=%s spread_pct=%s spread_to_atr_ratio=%s volume_spike=%s",
+                ticker, candidate_direction, model_decision, raw_reason_code, validated_reason_code,
+                prepared_metrics.get("m1_evidence_state"),
+                self._prompt_value(prepared_metrics.get("spread_pct"), 12),
+                self._prompt_value(prepared_metrics.get("spread_to_atr_ratio"), 12),
+                self._prompt_value(prepared_metrics.get("volume_spike"), 12),
+            )
         processed["candidate_direction"] = candidate_direction
         processed["tactic_opinion"], processed["critic_opinion"] = self._build_local_opinions(
             model_decision, candidate_direction, metrics_dict
