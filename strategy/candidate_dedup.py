@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
+import math
 
 
 class CandidateDeduplicator:
@@ -55,3 +56,22 @@ class CandidateDeduplicator:
         with self._lock:
             self._pending.clear()
             self._last.clear()
+
+
+def candidate_is_expired(
+    created_monotonic: object,
+    *,
+    now: float | None = None,
+    ttl_sec: float = 5.0,
+) -> bool:
+    """Reject queued candidates that waited beyond their market-evidence TTL."""
+    try:
+        created = float(created_monotonic)
+        current = time.monotonic() if now is None else float(now)
+        ttl = max(0.1, float(ttl_sec))
+    except (TypeError, ValueError, OverflowError):
+        return True
+    if not all(math.isfinite(value) for value in (created, current, ttl)) or created <= 0.0:
+        return True
+    age = current - created
+    return age < -0.25 or age > ttl
