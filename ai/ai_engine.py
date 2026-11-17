@@ -1188,6 +1188,7 @@ class AIEngine:
         retry_recovered = False
         retry_failed = False
         retry_error_detail = ""
+        active_prompt_fingerprint = prompt_fingerprint
         if processed.get("error_type") == "text_parsing" or processed.get("model_contract_violation"):
             retry_attempted = True
             first_error_type = str(processed.get("contract_error_type") or "invalid_response")
@@ -1195,6 +1196,7 @@ class AIEngine:
             retry_prompt = self._build_contract_retry_prompt(
                 ticker, price, volume, candidate_direction, metrics_dict
             )
+            retry_prompt_fingerprint = hashlib.sha256(retry_prompt.encode("utf-8")).hexdigest()[:16]
             retry_body = {
                 "model": self.model_name,
                 "messages": [{"role": "user", "content": retry_prompt}],
@@ -1204,12 +1206,12 @@ class AIEngine:
             }
             log.warning(
                 "[LLM CONTRACT RETRY] ticker=%s candidate=%s error_type=%s finish_reason=%s "
-                "completion_tokens=%s max_tokens=%s prompt_chars=%d",
+                "completion_tokens=%s max_tokens=%s prompt_chars=%d fingerprint=%s",
                 ticker, candidate_direction, first_error_type,
                 processed.get("finish_reason", "не указан"),
                 (processed.get("usage") or {}).get("completion_tokens")
                 if isinstance(processed.get("usage"), dict) else None,
-                retry_body["max_tokens"], len(retry_prompt),
+                retry_body["max_tokens"], len(retry_prompt), retry_prompt_fingerprint,
             )
             retry_started = time.time()
             try:
@@ -1244,6 +1246,7 @@ class AIEngine:
                 if retry_valid:
                     processed = retry_processed
                     retry_recovered = True
+                    active_prompt_fingerprint = retry_prompt_fingerprint
                 else:
                     processed = retry_processed
                     retry_failed = True
@@ -1343,7 +1346,7 @@ class AIEngine:
         processed["model_reason_code"] = validated_reason_code
         processed["model_reason_validation"] = reason_validation
         processed["prompt_chars"] = len(user_prompt)
-        processed["prompt_fingerprint"] = prompt_fingerprint
+        processed["prompt_fingerprint"] = active_prompt_fingerprint
         prepared_metrics = self._prepare_prompt_metrics(metrics_dict, candidate_direction)
         processed["m1_evidence_state"] = prepared_metrics.get("m1_evidence_state", "UNAVAILABLE")
         processed["spread_to_atr_ratio"] = prepared_metrics.get("spread_to_atr_ratio")
