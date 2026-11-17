@@ -45,7 +45,7 @@ from signal_guard import (
     validate_signal_evidence, infer_candidate_direction, validate_atr_readiness,
     classify_direction_evidence,
 )
-from strategy.candidate_dedup import CandidateDeduplicator
+from strategy.candidate_dedup import CandidateDeduplicator, candidate_is_expired
 from rag_prompt_utils import select_prompt_rules
 from candidate_recovery import coalesce_pending_bbo_entry, refresh_candidate_bbo_metrics
 from scalping_strategy import evaluate_scalping_candidate
@@ -833,6 +833,10 @@ try:
 except (TypeError, ValueError, OverflowError):
     _AI_CANDIDATE_COOLDOWN_SEC = 8.0
 _ai_candidate_deduplicator = CandidateDeduplicator(_AI_CANDIDATE_COOLDOWN_SEC)
+try:
+    _AI_CANDIDATE_TTL_SEC = max(1.0, float(os.getenv("PILUITUS_AI_CANDIDATE_TTL_SEC", "5.0")))
+except (TypeError, ValueError, OverflowError):
+    _AI_CANDIDATE_TTL_SEC = 5.0
 _prefilter_last_logged: dict[tuple[str, str], float] = {}
 _prefilter_log_lock = threading.Lock()
 _pending_bbo_candidates: dict[str, dict[str, Any]] = {}
@@ -2012,6 +2016,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                         if _guard_reason_bucket(evidence_reason) == "quotes":
                             pending_payload = {
                                 "ticker": ticker,
+                                "candidate_created_monotonic": time_module.monotonic(),
                                 "price": price,
                                 "volume": volume,
                                 "bid": bid,
@@ -2045,6 +2050,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                         else:
                             event_payload = {
                                 "ticker": ticker,
+                                "candidate_created_monotonic": time_module.monotonic(),
                                 "price": price,
                                 "volume": volume,
                                 "bid": bid,
@@ -2353,6 +2359,18 @@ class MarketWorker:
                         getattr(execution_engine, "_maintenance_active", False)
                         or event_payload.get("paper_session_generation") != _paper_session_generation
                     ):
+                        continue
+                    created_at = event_payload.get("candidate_created_monotonic")
+                    if created_at is not None and candidate_is_expired(
+                        created_at, ttl_sec=_AI_CANDIDATE_TTL_SEC
+                    ):
+                        _trade_flow_inc("candidate_expired")
+                        logger.info(
+                            "[CANDIDATE TTL] %s side=%s expired before LLM; evidence age exceeded %.1fs.",
+                            pending_ticker,
+                            event_payload.get("candidate_direction", "NONE"),
+                            _AI_CANDIDATE_TTL_SEC,
+                        )
                         continue
                 
                 if priority == 0:
