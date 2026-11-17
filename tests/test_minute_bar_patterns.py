@@ -42,6 +42,12 @@ class MinuteBarBreakoutConfirmationTests(unittest.TestCase):
         self.assertEqual(result["bar_breakout_up"], 1.0)
         self.assertEqual(result["bar_pattern_name"], "M1_RANGE_BREAKOUT_BUY")
 
+    def test_unmeasured_candle_geometry_is_not_reported_as_neutral_numeric_data(self):
+        metrics = MinuteBarPatternEngine._empty()
+        self.assertIsNone(metrics["bar_body_ratio"])
+        self.assertIsNone(metrics["bar_close_position"])
+        self.assertIsNone(metrics["bar_signal_gap_atr"])
+
 
 if __name__ == "__main__":
     unittest.main()
