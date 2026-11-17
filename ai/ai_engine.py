@@ -866,7 +866,7 @@ class AIEngine:
             "trade_realized_volatility_60s_pct",
             "bar_count", "bar_atr_periods", "bar_atr_age_sec", "m1_evidence_state",
             "bar_trend_up", "bar_trend_down",
-            "price_change_pct", "price_vs_vwap_pct", "volume_spike",
+            "price_change_pct", "price_vs_vwap_pct", "volume_spike", "volume_spike_raw",
             "spread_pct", "spread_to_atr_ratio", "spread_to_atr_limit",
             "bid_ask_available", "spread_available", "bid_quote_age_sec",
             "ask_quote_age_sec", "bbo_max_age_sec",
