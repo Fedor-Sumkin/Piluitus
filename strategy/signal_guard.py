@@ -135,13 +135,13 @@ def infer_candidate_direction(metrics: dict[str, Any]) -> str | None:
     if pattern_direction in {"BUY", "SELL"}:
         return (
             pattern_direction
-            if classify_direction_evidence(pattern_direction, metrics) != "OPPOSITE"
+            if classify_direction_evidence(pattern_direction, metrics) in {"ALIGNED", "NEUTRAL"}
             else None
         )
     if change > 0.0:
-        return "BUY" if classify_direction_evidence("BUY", metrics) != "OPPOSITE" else None
+        return "BUY" if classify_direction_evidence("BUY", metrics) in {"ALIGNED", "NEUTRAL"} else None
     if change < 0.0:
-        return "SELL" if classify_direction_evidence("SELL", metrics) != "OPPOSITE" else None
+        return "SELL" if classify_direction_evidence("SELL", metrics) in {"ALIGNED", "NEUTRAL"} else None
     return None
 
 
