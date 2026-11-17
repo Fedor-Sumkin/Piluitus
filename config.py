@@ -191,7 +191,7 @@ class Settings:
     # One capital source for every subsystem. TRADE_DEPOSIT is canonical;
     # TRADING_DEPOSIT remains a backward-compatible fallback for existing .env files.
     _TRADE_DEPOSIT_RAW = os.getenv("TRADE_DEPOSIT")
-    if _TRADE_DEPOSIT_RAW is None:
+    if _TRADE_DEPOSIT_RAW is None or not str(_TRADE_DEPOSIT_RAW).strip():
         _TRADE_DEPOSIT_RAW = os.getenv("TRADING_DEPOSIT", "100000.0")
     TRADE_DEPOSIT: float = float(_TRADE_DEPOSIT_RAW)
 
