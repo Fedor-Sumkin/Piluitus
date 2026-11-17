@@ -1,6 +1,6 @@
 import unittest
 
-from strategy.candidate_dedup import CandidateDeduplicator
+from strategy.candidate_dedup import CandidateDeduplicator, candidate_is_expired
 
 
 class CandidateDeduplicatorTests(unittest.TestCase):
@@ -29,6 +29,16 @@ class CandidateDeduplicatorTests(unittest.TestCase):
         self.assertTrue(dedup.reserve("SBER", "BUY", "FLOW", now=100.0))
         dedup.release("SBER")
         self.assertTrue(dedup.reserve("SBER", "BUY", "M1_RANGE_BREAKOUT_BUY", now=101.0))
+
+    def test_candidate_ttl_accepts_fresh_market_snapshot(self):
+        self.assertFalse(candidate_is_expired(100.0, now=104.9, ttl_sec=5.0))
+
+    def test_candidate_ttl_rejects_stale_market_snapshot(self):
+        self.assertTrue(candidate_is_expired(100.0, now=105.1, ttl_sec=5.0))
+
+    def test_candidate_ttl_rejects_invalid_or_future_timestamp(self):
+        self.assertTrue(candidate_is_expired(None, now=101.0, ttl_sec=5.0))
+        self.assertTrue(candidate_is_expired(102.0, now=101.0, ttl_sec=5.0))
 
     def test_clear_resets_pending_and_cooldown(self):
         dedup = CandidateDeduplicator(cooldown_sec=8.0)
