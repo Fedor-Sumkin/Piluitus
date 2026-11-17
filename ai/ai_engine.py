@@ -765,14 +765,14 @@ class AIEngine:
         # Keep the most useful directional and trade-quality measurements first:
         # prompt overflow may trim later context, never the core 30s flow metrics.
         common_keys = (
-            "trade_data_ready", "trade_metrics_age_sec", "price_change_pct",
+            "trade_data_ready", "trade_history_coverage_sec", "trade_metrics_age_sec", "price_change_pct",
             "price_vs_vwap_pct", "volume_spike", "spread_pct", "spread_to_atr_ratio",
             "spread_to_atr_limit", "bid_ask_available", "spread_available", "bid_quote_age_sec",
             "ask_quote_age_sec", "bbo_max_age_sec", "bid", "ask",
             "bar_count", "bar_atr_periods", "bar_atr_age_sec", "m1_evidence_state",
             "trade_volume_5s", "trade_volume_baseline_5s", "trade_count_60s",
             "trade_flow_imbalance_30s", "trade_price_change_30s_pct",
-            "trade_realized_volatility_60s_pct", "trade_history_coverage_sec",
+            "trade_realized_volatility_60s_pct",
             "trade_buy_volume_30s", "trade_sell_volume_30s", "trade_vwap_60s",
             "queue_imbalance", "queue_imbalance_available",
             "bar_trend_up", "bar_trend_down", "bar_atr_pct", "bar_body_ratio",
@@ -819,7 +819,7 @@ class AIEngine:
             "confidence_score (0..1), reason_code (APPROVED, NO_LOCAL_CANDIDATE, "
             "HOLD_WEAK_DIRECTION, HOLD_M1_CONTRADICTION, HOLD_STALE_BBO, HOLD_WEAK_VOLUME, "
             "HOLD_WIDE_SPREAD, HOLD_INSUFFICIENT_SUPPORT, HOLD_RISK_REWARD, HOLD_UNCLEAR). "
-            "No extra keys or text. Never output BUY/SELL as a decision. "
+            "No extra keys or text. Never select, change, invert, or output BUY/SELL as the decision. "
             "APPROVE only the supplied local candidate; HOLD rejects it. "
             "candidate=NONE => final_decision MUST be HOLD. "
             "Directional check: either signed price change agrees with candidate and VWAP, OR a fresh matching "
@@ -911,7 +911,7 @@ class AIEngine:
             "reason_code (APPROVED, HOLD_WEAK_DIRECTION, HOLD_M1_CONTRADICTION, HOLD_STALE_BBO, "
             "HOLD_WEAK_VOLUME, HOLD_WIDE_SPREAD, HOLD_INSUFFICIENT_SUPPORT, HOLD_RISK_REWARD, "
             "HOLD_UNCLEAR, NO_LOCAL_CANDIDATE). No extra keys or text. "
-            "Never output BUY/SELL as a decision. "
+            "Never select, change, invert, or output BUY/SELL as the decision. "
             "Apply the same candidate-side and evidence rules below; do not introduce stricter checks. "
             + shared_rules
         )
