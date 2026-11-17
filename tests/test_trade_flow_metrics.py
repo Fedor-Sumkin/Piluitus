@@ -199,10 +199,11 @@ class TradeFlowMetricsTests(unittest.TestCase):
         screener = HFTMemoryScreener()
         engine = screener.minute_bar_patterns
         base_epoch = 1_800_000_000
+        base_monotonic = time.monotonic() - 6 * 60.0
         for minute in range(7):
             engine.update(
                 "SBER", 100.0 + minute,
-                now=1000.0 + minute * 60.0,
+                now=base_monotonic + minute * 60.0,
                 event_timestamp=base_epoch + minute * 60,
             )
         state_before = engine._states["SBER"]
@@ -212,7 +213,7 @@ class TradeFlowMetricsTests(unittest.TestCase):
 
         result = screener.push_trade(
             "SBER", 107.0, 10.0, "trade-clock-test", "SIDE_BUY",
-            received_monotonic=1000.0 + 6 * 60.0,
+            received_monotonic=time.monotonic(),
         )
 
         self.assertTrue(result["accepted"])
