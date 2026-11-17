@@ -1354,6 +1354,10 @@ class AIEngine:
             )
             return {
                 "error_type": "text_parsing",
+                "prompt_chars": active_prompt_chars,
+                "prompt_fingerprint": active_prompt_fingerprint,
+                "candidate_direction": candidate_direction,
+                "model_reason_code_raw": "NOT_PROVIDED",
                 "final_decision": "HOLD",
                 "model_decision": "HOLD",
                 "model_raw_decision": "INVALID_RESPONSE",
