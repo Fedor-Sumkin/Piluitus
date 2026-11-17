@@ -1427,7 +1427,7 @@ class HFTMemoryScreener:
         # buckets are not treated as evidence of a zero-volume normal regime.
         prior_bucket_volumes: dict[int, float] = {}
         for item in prior55:
-            bucket = int((now - item[0]) // 5.0)
+            bucket = int(float(item[0]) // 5.0)
             prior_bucket_volumes[bucket] = prior_bucket_volumes.get(bucket, 0.0) + max(0.0, float(item[2]))
         occupied_baseline = [value for value in prior_bucket_volumes.values() if value > 0.0]
         baseline5 = float(np.median(occupied_baseline)) if occupied_baseline else 0.0
