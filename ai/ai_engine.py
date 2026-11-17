@@ -853,7 +853,7 @@ class AIEngine:
             "reason_code=APPROVED|NO_LOCAL_CANDIDATE|HOLD_WEAK_DIRECTION|HOLD_M1_CONTRADICTION|"
             "HOLD_STALE_BBO|HOLD_WEAK_VOLUME|HOLD_WIDE_SPREAD|HOLD_INSUFFICIENT_SUPPORT|"
             "HOLD_RISK_REWARD|HOLD_UNCLEAR. No extras/text. Never select, change, invert, or output BUY/SELL. "
-            "APPROVE authorizes only the local candidate; HOLD rejects it. candidate=NONE => final_decision MUST be HOLD. "
+            "APPROVE authorizes only the exact local candidate side; HOLD rejects it. candidate=NONE => final_decision MUST be HOLD. "
             f"Directional check: signed price momentum must agree with candidate and exceed +/-{momentum_neutral_band_pct:.3f}%; "
             f"VWAP within +/-{vwap_neutral_band_pct:.3f}% is NEUTRAL and must not veto; "
             "VWAP beyond the opposite neutral band is contradictory. "
