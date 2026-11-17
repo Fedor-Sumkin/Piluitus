@@ -48,7 +48,13 @@ class TelegramPollingRetryTests(unittest.IsolatedAsyncioTestCase):
                 raise TelegramNetworkError("Telegram transport failed") from cause
 
         logger = logging.getLogger("Piluitus.Telegram")
-        with patch("interface.telegram_runtime.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        sleep_started = asyncio.Event()
+
+        async def blocked_sleep(_delay: float) -> None:
+            sleep_started.set()
+            await asyncio.Future()
+
+        with patch("interface.telegram_runtime.asyncio.sleep", side_effect=blocked_sleep):
             with self.assertLogs(logger, level="WARNING") as captured:
                 task = asyncio.create_task(
                     run_polling_with_retry(
@@ -58,7 +64,7 @@ class TelegramPollingRetryTests(unittest.IsolatedAsyncioTestCase):
                         max_delay_sec=2.0,
                     )
                 )
-                await asyncio.sleep(0)
+                await sleep_started.wait()
                 task.cancel()
                 with self.assertRaises(asyncio.CancelledError):
                     await task
@@ -92,7 +98,13 @@ class TelegramPollingRetryTests(unittest.IsolatedAsyncioTestCase):
             raise ValueError("programming defect")
 
         logger = logging.getLogger("Piluitus.Telegram")
-        with patch("interface.telegram_runtime.asyncio.sleep", new_callable=AsyncMock):
+        sleep_started = asyncio.Event()
+
+        async def blocked_sleep(_delay: float) -> None:
+            sleep_started.set()
+            await asyncio.Future()
+
+        with patch("interface.telegram_runtime.asyncio.sleep", side_effect=blocked_sleep):
             with self.assertLogs(logger, level="ERROR") as captured:
                 task = asyncio.create_task(
                     run_polling_with_retry(
@@ -102,7 +114,7 @@ class TelegramPollingRetryTests(unittest.IsolatedAsyncioTestCase):
                         max_delay_sec=1.0,
                     )
                 )
-                await asyncio.sleep(0)
+                await sleep_started.wait()
                 task.cancel()
                 with self.assertRaises(asyncio.CancelledError):
                     await task
