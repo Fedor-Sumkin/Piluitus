@@ -1101,6 +1101,8 @@ class AIEngine:
                         active_body = compact_body
                         user_prompt = compact_body["messages"][0]["content"]
                         prompt_fingerprint = hashlib.sha256(user_prompt.encode("utf-8")).hexdigest()[:16]
+                        active_prompt_fingerprint = prompt_fingerprint
+                        active_prompt_chars = len(user_prompt)
                         log.warning(
                             "[vLLM COMPAT] Переполнение контекста; повторяем компактный запрос, max_tokens=%s. Причина: %s",
                             compact_body["max_tokens"], error_detail,
@@ -1227,6 +1229,7 @@ class AIEngine:
         retry_failed = False
         retry_error_detail = ""
         active_prompt_fingerprint = prompt_fingerprint
+        active_prompt_chars = len(user_prompt)
         if processed.get("error_type") == "text_parsing" or processed.get("model_contract_violation"):
             retry_attempted = True
             first_error_type = str(processed.get("contract_error_type") or "invalid_response")
@@ -1285,6 +1288,7 @@ class AIEngine:
                     processed = retry_processed
                     retry_recovered = True
                     active_prompt_fingerprint = retry_prompt_fingerprint
+                    active_prompt_chars = len(retry_prompt)
                 else:
                     processed = retry_processed
                     retry_failed = True
@@ -1383,7 +1387,7 @@ class AIEngine:
         processed["model_reason_code_raw"] = raw_reason_code
         processed["model_reason_code"] = validated_reason_code
         processed["model_reason_validation"] = reason_validation
-        processed["prompt_chars"] = len(user_prompt)
+        processed["prompt_chars"] = active_prompt_chars
         processed["prompt_fingerprint"] = active_prompt_fingerprint
         prepared_metrics = self._prepare_prompt_metrics(metrics_dict, candidate_direction)
         processed["m1_evidence_state"] = prepared_metrics.get("m1_evidence_state", "UNAVAILABLE")
