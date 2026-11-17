@@ -67,7 +67,7 @@ load_dotenv()
 FINAM_TOKEN = os.getenv("FINAM_TOKEN", "")
 # PAPER orders are recorded against an internal simulator identity, never a Finam client/account ID.
 CLIENT_ID = "PILUITUS_PAPER" if Settings.PAPER_TRADING else os.getenv("FINAM_CLIENT_ID", "UNKNOWN_ACCOUNT")
-DEPOSIT = float(os.getenv("TRADING_DEPOSIT", 100000.0))
+DEPOSIT = float(Settings.TRADE_DEPOSIT)
 
 # --------------------------------------------------------------
 #  LOGGING REGIME
@@ -784,7 +784,7 @@ if not math.isclose(
         "Несогласованный стартовый капитал: ExecutionLayer и RiskManager должны использовать TRADING_DEPOSIT."
     )
 logger.info(
-    "💰 [CAPITAL SYNC] TRADING_DEPOSIT=%.2f ₽; ExecutionLayer=%.2f ₽; RiskManager=%.2f ₽.",
+    "💰 [CAPITAL SYNC] TRADE_DEPOSIT (TRADING_DEPOSIT legacy fallback)=%.2f ₽; ExecutionLayer=%.2f ₽; RiskManager=%.2f ₽.",
     DEPOSIT, execution_engine.initial_capital, risk_manager.initial_deposit,
 )
 
