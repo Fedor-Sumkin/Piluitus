@@ -75,6 +75,11 @@ class TradeFlowMetricsTests(unittest.TestCase):
         for field in (
             "trade_volume_5s",
             "trade_volume_baseline_5s",
+            "volume_spike_raw",
+            "trade_baseline_bucket_count",
+            "trade_baseline_min_bucket_count",
+            "trade_baseline_trade_count",
+            "trade_count_5s",
             "trade_flow_imbalance_30s",
             "trade_price_change_30s_pct",
             "trade_realized_volatility_60s_pct",
@@ -85,6 +90,26 @@ class TradeFlowMetricsTests(unittest.TestCase):
             self.assertIsNotNone(metrics[field])
         self.assertGreater(metrics["trade_volume_5s"], 0.0)
         self.assertGreater(metrics["trade_history_coverage_sec"], 0.0)
+
+        # These five diagnostics must survive the screener's public metrics
+        # payload; compare them with the underlying rolling trade calculation.
+        calculated = screener.refresh_trade_metrics("SBER")
+        for field in (
+            "volume_spike_raw",
+            "trade_baseline_bucket_count",
+            "trade_baseline_min_bucket_count",
+            "trade_baseline_trade_count",
+            "trade_count_5s",
+        ):
+            self.assertEqual(metrics[field], calculated[field], field)
+        self.assertGreater(metrics["volume_spike_raw"], 0.0)
+        self.assertGreaterEqual(metrics["trade_baseline_bucket_count"], 3)
+        self.assertGreaterEqual(
+            metrics["trade_baseline_min_bucket_count"],
+            3,
+        )
+        self.assertGreater(metrics["trade_baseline_trade_count"], 0)
+        self.assertGreater(metrics["trade_count_5s"], 0)
 
     def test_trade_flow_reset_does_not_erase_quote_driven_m1_history(self):
         screener = HFTMemoryScreener()
