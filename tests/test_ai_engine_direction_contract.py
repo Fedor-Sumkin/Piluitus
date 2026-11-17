@@ -70,6 +70,13 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertEqual(reason, "HOLD_INSUFFICIENT_SUPPORT")
         self.assertEqual(status, "RECLASSIFIED")
 
+    def test_fresh_opposite_closed_m1_pattern_is_a_contradiction(self) -> None:
+        metrics = {
+            "bar_count": 6, "bar_atr_periods": 5, "bar_atr_age_sec": 2.0,
+            "bar_pattern_confirmed": 1.0, "bar_pattern_direction_code": -1.0,
+        }
+        self.assertEqual(AIEngine._m1_evidence_state(metrics, "BUY"), "OPPOSITE")
+
     def test_fresh_opposite_m1_is_the_only_m1_contradiction(self) -> None:
         metrics = {
             "bar_count": 30, "bar_atr_periods": 14, "bar_atr_age_sec": 5.0,
@@ -93,6 +100,17 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             "HOLD", "HOLD_M1_CONTRADICTION", "BUY", metrics
         )
         self.assertEqual(reason, "HOLD_INSUFFICIENT_SUPPORT")
+
+    def test_weak_direction_reason_is_rejected_when_fresh_momentum_and_vwap_align(self) -> None:
+        metrics = {
+            "trade_data_ready": 1.0, "trade_metrics_age_sec": 0.5,
+            "price_change_pct": 0.12, "price_vs_vwap_pct": 0.08,
+        }
+        reason, status = AIEngine._validate_model_reason_code(
+            "HOLD", "HOLD_WEAK_DIRECTION", "BUY", metrics
+        )
+        self.assertEqual(reason, "HOLD_INSUFFICIENT_SUPPORT")
+        self.assertEqual(status, "RECLASSIFIED")
 
     def test_wide_spread_reason_requires_absolute_or_atr_relative_evidence(self) -> None:
         narrow = {"spread_pct": 0.10, "spread_available": 1.0, "bar_atr_pct": 0.40}

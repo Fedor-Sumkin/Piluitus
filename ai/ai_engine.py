@@ -685,6 +685,27 @@ class AIEngine:
                 replacement = "HOLD_UNCLEAR"
             elif reason == "HOLD_M1_CONTRADICTION" and prepared.get("m1_evidence_state") != "OPPOSITE":
                 replacement = "HOLD_INSUFFICIENT_SUPPORT"
+            elif reason == "HOLD_WEAK_DIRECTION":
+                direction = str(candidate_direction or "").strip().upper()
+                price_change = cls._metric_number(prepared, "price_change_pct", math.nan)
+                price_vs_vwap = cls._metric_number(prepared, "price_vs_vwap_pct", math.nan)
+                trade_ready = cls._metric_number(prepared, "trade_data_ready", 0.0) >= 0.5
+                metrics_age = cls._metric_number(prepared, "trade_metrics_age_sec", math.inf)
+                momentum_aligned = (
+                    (direction == "BUY" and price_change > 0.0 and price_vs_vwap > 0.0)
+                    or (direction == "SELL" and price_change < 0.0 and price_vs_vwap < 0.0)
+                )
+                m1_aligned = (
+                    prepared.get("m1_evidence_state") == "ALIGNED"
+                    and (
+                        (direction == "BUY" and price_vs_vwap > 0.0)
+                        or (direction == "SELL" and price_vs_vwap < 0.0)
+                    )
+                )
+                if trade_ready and math.isfinite(metrics_age) and 0.0 <= metrics_age <= 5.0 and (
+                    momentum_aligned or m1_aligned
+                ):
+                    replacement = "HOLD_INSUFFICIENT_SUPPORT"
             elif reason == "HOLD_WIDE_SPREAD":
                 spread = cls._metric_number(prepared, "spread_pct", math.nan)
                 ratio = cls._metric_number(prepared, "spread_to_atr_ratio", math.nan)
