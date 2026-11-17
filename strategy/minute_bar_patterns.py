@@ -233,6 +233,80 @@ class MinuteBarPatternEngine:
             self._states[ticker] = state
         return state
 
+    def load_closed_bars(
+        self,
+        ticker: str,
+        raw_bars: list[Mapping[str, Any]],
+        *,
+        now: float | None = None,
+        now_epoch: float | None = None,
+    ) -> int:
+        """Merge verified historical OHLC bars, excluding the currently open M1 bar.
+
+        Provider timestamps are bar-open times. Only bars whose full 60-second
+        interval ended before the current minute are admitted. Missing minutes
+        remain missing and therefore break the ATR contiguous suffix.
+        """
+        symbol = str(ticker or "").strip().upper().split("@")[0]
+        if not symbol or not isinstance(raw_bars, list):
+            return 0
+        stamp = time.monotonic() if now is None else float(now)
+        epoch_now = time.time() if now_epoch is None else float(now_epoch)
+        if not math.isfinite(stamp) or not math.isfinite(epoch_now):
+            return 0
+        current_bucket = int(epoch_now // self.bar_seconds)
+        state = self._state(symbol)
+        merged: dict[int, MinuteBar] = {
+            int(bar.bucket): bar for bar in list(state.get("bars", []))
+            if isinstance(bar, MinuteBar)
+        }
+
+        def number(value: object) -> float:
+            if isinstance(value, Mapping):
+                value = value.get("value", value.get("units", value.get("decimal", 0.0)))
+            try:
+                result = float(value)
+            except (TypeError, ValueError, OverflowError):
+                return 0.0
+            return result if math.isfinite(result) else 0.0
+
+        for item in raw_bars:
+            if not isinstance(item, Mapping):
+                continue
+            event_epoch = _event_epoch_seconds(item.get("timestamp") or item.get("time"))
+            if event_epoch is None:
+                continue
+            bucket = int(event_epoch // self.bar_seconds)
+            if bucket >= current_bucket:
+                continue
+            open_price = number(item.get("open"))
+            high = number(item.get("high"))
+            low = number(item.get("low"))
+            close = number(item.get("close"))
+            if min(open_price, high, low, close) <= 0.0 or high < low:
+                continue
+            if high < max(open_price, close) or low > min(open_price, close):
+                continue
+            merged[bucket] = MinuteBar(
+                bucket=bucket, open=open_price, high=high, low=low, close=close,
+                ticks=self.min_ticks_per_bar,
+            )
+
+        if not merged:
+            return 0
+        ordered = sorted(merged.values(), key=lambda bar: bar.bucket)[-self.history_bars:]
+        state["bars"] = deque(ordered, maxlen=self.history_bars)
+        # A partial live candle is retained only when it belongs to the exchange
+        # clock domain and is at or after the last imported closed bar.
+        current = state.get("current")
+        if isinstance(current, MinuteBar) and current.bucket < current_bucket:
+            state["current"] = None
+        state["clock_source"] = "exchange"
+        state["last_event_time"] = float(ordered[-1].bucket * self.bar_seconds)
+        last_close_epoch = (ordered[-1].bucket + 1) * self.bar_seconds
+        state["last_closed_bar_monotonic"] = stamp - max(0.0, epoch_now - last_close_epoch)
+        return len(ordered)
+
     def _summarize(self, state: dict[str, Any], price: float, now: float) -> dict[str, Any]:
         result = self._empty()
         bars = list(state["bars"])
