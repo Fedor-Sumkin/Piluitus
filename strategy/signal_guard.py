@@ -257,6 +257,9 @@ def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bo
     spread_pct = _num(metrics, "spread_pct", -1.0)
     if spread_pct < 0.0 or spread_pct > MAX_SPREAD_PCT:
         return False, f"Спред не проходит фильтр: {spread_pct:.3f}% при лимите {MAX_SPREAD_PCT:.2f}%."
+    spread_atr_ok, spread_atr_reason = validate_spread_to_atr(metrics)
+    if not spread_atr_ok:
+        return False, spread_atr_reason
 
     if _num(metrics, "trade_data_mode", 0.0) >= 0.5:
         if _num(metrics, "trade_data_ready", 0.0) < 0.5:
