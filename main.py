@@ -249,6 +249,7 @@ class _DiagnosticLogFilter(logging.Filter):
         "[RISK FINAL GATE]",
         "[EXECUTION RESULT]",
         "[EXECUTION OUTCOME]",
+        "[EXECUTION STALE SIGNAL BLOCK]",
         "[PAPER BBO ENTRY BLOCK]",
         "[PAPER BBO ENTRY RETRY]",
         "[PAPER FILL]",
@@ -1036,6 +1037,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "orderbook_out_of_order", "active_position_skipped", "atr_unready_candidates",
         "execution_bbo_blocked", "atr_history_blocked", "portfolio_cap_blocked",
         "portfolio_size_reduced", "entry_session_blocked", "execution_other_blocked",
+        "execution_stale_signal_blocked",
     )
     values = {key: counts.get(key, 0) for key in names}
     with _pending_bbo_lock:
@@ -1080,7 +1082,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "queue_full=%(bbo_resume_queue_full)d; "
         "после_LLM_исполнение: portfolio_cap_block=%(portfolio_cap_blocked)d, "
         "portfolio_size_reduced=%(portfolio_size_reduced)d, entry_session_block=%(entry_session_blocked)d, "
-        "other_block=%(execution_other_blocked)d; "
+        "other_block=%(execution_other_blocked)d, stale_signal_block=%(execution_stale_signal_blocked)d; "
         "strategy_shadow=%(strategy_shadow_pass)d/%(strategy_shadow_evaluated)d pass "
         "(reject=%(strategy_shadow_reject)d; hard_blocks: BBO_missing=%(shadow_block_bbo_unavailable)d, "
         "BBO_stale=%(shadow_block_bbo_stale)d, book_unconfirmed=%(shadow_block_order_book_not_confirmed)d, "
@@ -2219,7 +2221,7 @@ class MarketWorker:
         logger.info(
             "[EXECUTION OUTCOME] %s %s: status=%s mode=%s lots=%d message=%s",
             side, ticker, execution_status, result_mode, int(lots),
-            result_message.replace("\\n", " ")[:240] or "-",
+            result_message.replace(chr(10), " ").replace(chr(13), " ")[:240] or "-",
         )
         if "BBO_ENTRY_BLOCK" in result_message:
             _trade_flow_inc("execution_bbo_blocked")
