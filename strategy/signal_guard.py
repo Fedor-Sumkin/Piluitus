@@ -172,18 +172,23 @@ def validate_spread_to_atr(
         limit = 0.50
     limit = min(2.0, max(0.05, limit))
 
-    spread = float(spread_pct) if spread_pct is not None else _num(metrics, "spread_pct", -1.0)
+    try:
+        spread = float(spread_pct) if spread_pct is not None else _num(metrics, "spread_pct", -1.0)
+        atr = float(atr_value) if atr_value is not None else _num(metrics, "bar_atr", 0.0)
+        price = float(reference_price) if reference_price is not None else _num(
+            metrics, "current_price", _num(metrics, "price", 0.0)
+        )
+    except (TypeError, ValueError, OverflowError):
+        return False, "Метрики Spread/ATR содержат некорректные значения; вход заблокирован."
     if not math.isfinite(spread) or spread < 0.0:
         return False, "Спред для проверки Spread/ATR отсутствует или некорректен; вход заблокирован."
-    atr = float(atr_value) if atr_value is not None else _num(metrics, "bar_atr", 0.0)
-    price = float(reference_price) if reference_price is not None else _num(
-        metrics, "current_price", _num(metrics, "price", 0.0)
-    )
-    atr_pct = (atr / price * 100.0) if atr > 0.0 and price > 0.0 else _num(metrics, "bar_atr_pct", 0.0)
-    if not math.isfinite(atr_pct) or atr_pct <= 0.0:
+    if not math.isfinite(atr) or atr <= 0.0:
         if require_atr:
-            return False, "ATR или цена для проверки Spread/ATR отсутствуют; вход заблокирован."
+            return False, "ATR для проверки Spread/ATR отсутствует; вход заблокирован."
         return True, "Spread/ATR будет проверен после подтверждения готовности ATR."
+    atr_pct = (atr / price * 100.0) if math.isfinite(price) and price > 0.0 else _num(metrics, "bar_atr_pct", 0.0)
+    if not math.isfinite(atr_pct) or atr_pct <= 0.0:
+        return False, "Цена или процентный ATR для проверки Spread/ATR отсутствуют; вход заблокирован."
 
     if require_atr:
         try:
