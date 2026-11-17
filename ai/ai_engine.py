@@ -1457,10 +1457,10 @@ class AIEngine:
                 ticker, candidate_direction, validated_reason_code, reason_validation,
                 self._prepare_prompt_metrics(metrics_dict, candidate_direction).get("direction_evidence_state"),
                 self._m1_evidence_state(metrics_dict, candidate_direction),
-                cls._prompt_value(metrics_dict.get("trade_data_ready"), 10),
-                cls._prompt_value(metrics_dict.get("trade_metrics_age_sec"), 10),
-                cls._prompt_value(metrics_dict.get("volume_spike"), 10),
-                cls._prompt_value(metrics_dict.get("spread_pct"), 10),
+                self._prompt_value(metrics_dict.get("trade_data_ready"), 10),
+                self._prompt_value(metrics_dict.get("trade_metrics_age_sec"), 10),
+                self._prompt_value(metrics_dict.get("volume_spike"), 10),
+                self._prompt_value(metrics_dict.get("spread_pct"), 10),
             )
         processed["prompt_chars"] = active_prompt_chars
         processed["prompt_fingerprint"] = active_prompt_fingerprint
