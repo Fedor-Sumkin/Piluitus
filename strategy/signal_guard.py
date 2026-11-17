@@ -222,11 +222,18 @@ def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bo
                 f"Направление свежего 1-минутного паттерна {pattern_direction} "
                 f"не совпадает с решением {decision}."
             )
-        if decision == "BUY" and price_vs_vwap <= 0.0:
-            return False, "BUY по 1-минутному паттерну заблокирован: цена не выше VWAP."
-        if decision == "SELL" and price_vs_vwap >= 0.0:
-            return False, "SELL по 1-минутному паттерну заблокирован: цена не ниже VWAP."
-        direction_evidence = f"свежий M1-паттерн {str(metrics.get('bar_pattern_name', '')).strip()}"
+        direction_state = classify_direction_evidence(decision, metrics)
+        if direction_state == "OPPOSITE":
+            return False, (
+                f"{decision} по M1-паттерну заблокирован: измеряемые данные показывают "
+                "сильное встречное движение."
+            )
+        if direction_state == "UNAVAILABLE":
+            return False, "Недостаточно направленных метрик для проверки M1-паттерна."
+        direction_evidence = (
+            f"свежий M1-паттерн {str(metrics.get('bar_pattern_name', '')).strip()}"
+            + ("; VWAP нейтрален" if direction_state == "NEUTRAL" else "; цена/VWAP согласованы")
+        )
     else:
         direction_state = classify_direction_evidence(decision, metrics)
         if direction_state == "OPPOSITE":
