@@ -319,12 +319,6 @@ class BaseExecutionEngine:
                     "и обоснованную дополнительную модель проскальзывания в .env. Спред уже включён в Ask/Bid.",
                     self.paper_commission_pct, self.paper_slippage_bps,
                 )
-            else:
-                logger.info(
-                    "🧾 [PAPER COST MODEL] комиссия=%.4f%% за сторону, дополнительное проскальзывание=%.2f bps; "
-                    "проверьте соответствие действующему тарифу Finam.",
-                    self.paper_commission_pct, self.paper_slippage_bps,
-                )
         else:
             logger.warning("🔥 РЕЖИМ АГЕНТА: [LIVE TRADING] — Работа на реальном счёте Finam!")
 

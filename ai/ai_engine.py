@@ -650,6 +650,16 @@ class AIEngine:
                 return "ALIGNED"
         return "NEUTRAL"
 
+    @staticmethod
+    def _max_spread_to_atr_ratio() -> float:
+        try:
+            value = float(getattr(Settings, "MAX_SPREAD_TO_ATR_RATIO", 0.50))
+        except (TypeError, ValueError, OverflowError):
+            value = 0.50
+        if not math.isfinite(value):
+            return 0.50
+        return min(2.0, max(0.05, value))
+
     @classmethod
     def _prepare_prompt_metrics(cls, metrics: object, candidate_direction: str) -> dict:
         prepared = dict(metrics) if isinstance(metrics, dict) else {}
@@ -663,6 +673,7 @@ class AIEngine:
         else:
             prepared["spread_to_atr_ratio"] = None
         prepared["m1_evidence_state"] = cls._m1_evidence_state(prepared, candidate_direction)
+        prepared["spread_to_atr_limit"] = cls._max_spread_to_atr_ratio()
         return prepared
 
     @classmethod
@@ -709,8 +720,9 @@ class AIEngine:
             elif reason == "HOLD_WIDE_SPREAD":
                 spread = cls._metric_number(prepared, "spread_pct", math.nan)
                 ratio = cls._metric_number(prepared, "spread_to_atr_ratio", math.nan)
+                ratio_limit = cls._max_spread_to_atr_ratio()
                 if not (math.isfinite(spread) and spread > 0.5) and not (
-                    math.isfinite(ratio) and ratio > 0.50
+                    math.isfinite(ratio) and ratio > ratio_limit
                 ):
                     replacement = "HOLD_INSUFFICIENT_SUPPORT"
             elif reason == "HOLD_WEAK_VOLUME":
@@ -755,7 +767,7 @@ class AIEngine:
         common_keys = (
             "trade_data_ready", "trade_metrics_age_sec", "price_change_pct",
             "price_vs_vwap_pct", "volume_spike", "spread_pct", "spread_to_atr_ratio",
-            "bid_ask_available", "spread_available", "bid_quote_age_sec",
+            "spread_to_atr_limit", "bid_ask_available", "spread_available", "bid_quote_age_sec",
             "ask_quote_age_sec", "bbo_max_age_sec", "bid", "ask",
             "bar_count", "bar_atr_periods", "bar_atr_age_sec", "m1_evidence_state",
             "trade_volume_5s", "trade_volume_baseline_5s", "trade_count_60s",
@@ -801,6 +813,7 @@ class AIEngine:
             "NONE": "No local direction: MUST HOLD.",
         }[direction]
 
+        spread_to_atr_limit = cls._max_spread_to_atr_ratio()
         base = (
             'Return JSON only with exactly three keys: final_decision (APPROVE|HOLD), '
             'confidence_score (0..1), reason_code must be exactly one of these values: '
@@ -815,8 +828,9 @@ class AIEngine:
             'M1 NEUTRAL/UNAVAILABLE is not a contradiction; only m1_evidence_state=OPPOSITE from a fresh closed pattern '
             'or fresh EMA9/EMA21 trend may justify HOLD_M1_CONTRADICTION. '
             'Hard checks: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, fresh BBO, spread<=0.5%. '
-            'When bar_atr_pct is available, also require spread_to_atr_ratio<=0.50; a missing ratio is insufficient support, '
-            'not proof of a wide spread. Do not use HOLD_WIDE_SPREAD unless spread_pct>0.5 or spread_to_atr_ratio>0.50. '
+            f'When bar_atr_pct is available, also require spread_to_atr_ratio<={spread_to_atr_limit:.2f}; '
+            'a missing ratio is insufficient support, not proof of a wide spread. '
+            f'Do not use HOLD_WIDE_SPREAD unless spread_pct>0.5 or spread_to_atr_ratio>{spread_to_atr_limit:.2f}. '
             'Otherwise HOLD. >=50% Ask depletion is supporting evidence, not mandatory. '
             'trade_flow_imbalance_30s is signed BUY-vs-SELL volume (-1..+1; zero=neutral). '
             'trade_volume_5s and trade_volume_baseline_5s use provider volume units; compare within ticker. '

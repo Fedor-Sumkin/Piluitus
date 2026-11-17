@@ -145,6 +145,10 @@ class Settings:
         VLLM_CONNECT_BACKOFF_BASE_SEC,
         float(os.getenv("PILUITUS_VLLM_CONNECT_BACKOFF_MAX_SEC", "60")),
     )
+    # Maximum acceptable spread as a fraction of M1 ATR; tune from shadow outcomes.
+    MAX_SPREAD_TO_ATR_RATIO: float = min(
+        2.0, max(0.05, float(os.getenv("PILUITUS_MAX_SPREAD_TO_ATR_RATIO", "0.50")))
+    )
 
     # PAPER depth-based partial fills are opt-in. Keep "unknown" until Finam's
     # ORDER_BOOK buy_size/sell_size unit is confirmed for this data feed.
