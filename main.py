@@ -2376,6 +2376,7 @@ class MarketWorker:
                     "trade_count_5s": _parse_finite_float(metrics.get("trade_count_5s")),
                     "trade_baseline_bucket_count": _parse_finite_float(metrics.get("trade_baseline_bucket_count")),
                     "trade_baseline_trade_count": _parse_finite_float(metrics.get("trade_baseline_trade_count")),
+                    "trade_baseline_min_bucket_count": _parse_finite_float(metrics.get("trade_baseline_min_bucket_count")),
                     "volume_spike_raw": _parse_finite_float(metrics.get("volume_spike_raw")),
                     "trade_history_coverage_sec": _parse_finite_float(metrics.get("trade_history_coverage_sec")),
                     "trade_metrics_age_sec": _parse_finite_float(metrics.get("trade_metrics_age_sec")),
