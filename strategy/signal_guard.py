@@ -131,7 +131,6 @@ def infer_candidate_direction(metrics: dict[str, Any]) -> str | None:
         return None
     pattern_direction = _fresh_bar_pattern_direction(metrics)
     change = _num(metrics, "price_change_pct", 0.0)
-    vs_vwap = _num(metrics, "price_vs_vwap_pct", 0.0)
     if pattern_direction in {"BUY", "SELL"}:
         return (
             pattern_direction
@@ -214,7 +213,6 @@ def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bo
         )
 
     price_change = _num(metrics, "price_change_pct")
-    price_vs_vwap = _num(metrics, "price_vs_vwap_pct")
     pattern_direction = _fresh_bar_pattern_direction(metrics)
     if pattern_direction is not None:
         if pattern_direction != decision:
