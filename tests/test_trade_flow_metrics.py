@@ -24,6 +24,34 @@ class TradeFlowMetricsTests(unittest.TestCase):
         self.assertGreater(metrics["trade_vwap_60s"], 100.0)
         self.assertLess(metrics["trade_vwap_60s"], 105.0)
 
+    def test_volume_baseline_uses_median_and_resists_single_bucket_outlier(self):
+        state = {"trade_events": deque([
+            (940.0, 99.0, 10.0, "BUY"),
+            (950.0, 100.0, 10.0, "BUY"),
+            (960.0, 101.0, 1000.0, "BUY"),
+            (970.0, 102.0, 10.0, "SELL"),
+            (980.0, 103.0, 10.0, "BUY"),
+            (990.0, 104.0, 10.0, "BUY"),
+            (999.0, 105.0, 50.0, "BUY"),
+        ])}
+        metrics = HFTMemoryScreener._trade_metrics_locked(state, 1000.0)
+        self.assertEqual(metrics["trade_data_ready"], 1.0)
+        self.assertEqual(metrics["trade_volume_baseline_5s"], 10.0)
+        self.assertEqual(metrics["volume_spike"], 5.0)
+        self.assertEqual(metrics["trade_baseline_bucket_count"], 6)
+
+    def test_sparse_baseline_is_unknown_instead_of_inflating_volume_spike(self):
+        state = {"trade_events": deque([
+            (940.0, 99.0, 1.0, "BUY"),
+            (999.0, 105.0, 100.0, "BUY"),
+            (998.0, 104.9, 1.0, "SELL"),
+            (997.0, 104.8, 1.0, "BUY"),
+        ])}
+        metrics = HFTMemoryScreener._trade_metrics_locked(state, 1000.0)
+        self.assertEqual(metrics["trade_data_ready"], 0.0)
+        self.assertEqual(metrics["volume_spike"], 0.0)
+        self.assertLess(metrics["trade_baseline_bucket_count"], 3)
+
     def test_push_tick_exposes_full_trade_metrics_for_llm_and_shadow(self):
         screener = HFTMemoryScreener()
         screener.enable_trade_data_mode()
