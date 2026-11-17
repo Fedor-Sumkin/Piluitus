@@ -150,6 +150,66 @@ def infer_candidate_direction(metrics: dict[str, Any]) -> str | None:
     return None
 
 
+def validate_spread_to_atr(
+    metrics: dict[str, Any],
+    *,
+    spread_pct: float | None = None,
+    atr_value: float | None = None,
+    reference_price: float | None = None,
+    require_atr: bool = False,
+) -> tuple[bool, str]:
+    """Enforce the configured spread/ATR ceiling using measured values.
+
+    Spread and ATR are both converted to percentages. Execution callers supply
+    the fresh BBO spread, captured ATR and current mid-price; pre-LLM callers use
+    the market snapshot. Missing ATR is handled by the separate readiness gate.
+    """
+    try:
+        limit = float(os.getenv("PILUITUS_MAX_SPREAD_TO_ATR_RATIO", "0.50"))
+    except (TypeError, ValueError, OverflowError):
+        limit = 0.50
+    if not math.isfinite(limit) or limit <= 0.0:
+        limit = 0.50
+    limit = min(2.0, max(0.05, limit))
+
+    spread = float(spread_pct) if spread_pct is not None else _num(metrics, "spread_pct", -1.0)
+    if not math.isfinite(spread) or spread < 0.0:
+        return False, "Спред для проверки Spread/ATR отсутствует или некорректен; вход заблокирован."
+    atr = float(atr_value) if atr_value is not None else _num(metrics, "bar_atr", 0.0)
+    price = float(reference_price) if reference_price is not None else _num(
+        metrics, "current_price", _num(metrics, "price", 0.0)
+    )
+    atr_pct = (atr / price * 100.0) if atr > 0.0 and price > 0.0 else _num(metrics, "bar_atr_pct", 0.0)
+    if not math.isfinite(atr_pct) or atr_pct <= 0.0:
+        if require_atr:
+            return False, "ATR или цена для проверки Spread/ATR отсутствуют; вход заблокирован."
+        return True, "Spread/ATR будет проверен после подтверждения готовности ATR."
+
+    if require_atr:
+        try:
+            min_periods = min(14, max(2, int(os.getenv("PILUITUS_ATR_MIN_PERIODS", "5"))))
+        except (TypeError, ValueError, OverflowError):
+            min_periods = 5
+        periods = max(0, int(_num(metrics, "bar_atr_periods", 0.0)))
+        if atr <= 0.0 or periods < min_periods:
+            return False, f"Недостаточно истории ATR для исполнения: {periods}/{min_periods}; вход заблокирован."
+        age = _num(metrics, "bar_atr_age_sec", -1.0)
+        try:
+            max_age = max(1.0, float(os.getenv("PILUITUS_ATR_MAX_AGE_SEC", "120")))
+        except (TypeError, ValueError, OverflowError):
+            max_age = 120.0
+        if age < 0.0 or age > max_age:
+            return False, f"История ATR устарела перед исполнением: age={age:.1f}s; лимит={max_age:.1f}s."
+
+    ratio = spread / atr_pct
+    if not math.isfinite(ratio) or ratio > limit + 1e-12:
+        return False, (
+            f"Spread/ATR превышает лимит: ratio={ratio:.3f}, "
+            f"спред={spread:.4f}%, ATR={atr_pct:.4f}%, предел={limit:.2f}; вход заблокирован."
+        )
+    return True, f"Spread/ATR пройден: ratio={ratio:.3f} при лимите {limit:.2f}."
+
+
 def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bool, str]:
     """Validate independent entry evidence; top-size depletion is supporting, not mandatory.
 
