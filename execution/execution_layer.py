@@ -16,6 +16,7 @@ from uuid import uuid4
 
 # Единый справочник лотности хранится в config.py.
 from config import ASSET_METADATA, FINAM_TRADE_LOT_SIZES, LOT_SIZES, Settings, PAPER_TRADING
+from strategy.signal_guard import validate_spread_to_atr
 
 logger = logging.getLogger("Piluitus.ExecutionLayer")
 
@@ -1350,6 +1351,25 @@ class BaseExecutionEngine:
                         float(entry_bbo["bid_age_sec"]), float(entry_bbo["ask_age_sec"]),
                         float(entry_bbo["max_age_sec"]),
                     )
+                entry_mid = (
+                    _finite_or_default(entry_bbo.get("bid"), 0.0)
+                    + _finite_or_default(entry_bbo.get("ask"), 0.0)
+                ) / 2.0
+                spread_atr_ok, spread_atr_reason = validate_spread_to_atr(
+                    {
+                        "bar_atr_periods": ai_analysis.get("atr_periods_at_entry", 0),
+                        "bar_atr_age_sec": ai_analysis.get("atr_age_sec_at_entry", -1.0),
+                    },
+                    spread_pct=_finite_or_default(entry_bbo.get("spread_pct"), math.inf),
+                    atr_value=_finite_or_default(ai_analysis.get("atr_at_entry"), 0.0),
+                    reference_price=entry_mid,
+                    require_atr=True,
+                )
+                if not spread_atr_ok:
+                    message = f"SPREAD_ATR_ENTRY_BLOCK: {spread_atr_reason}"
+                    logger.warning("🧱 [PAPER SPREAD/ATR BLOCK] %s %s: %s", side, ticker, message)
+                    return {"status": "BLOCKED", "message": message}
+
                 executable_price = _finite_or_default(entry_bbo.get("executable_price"), 0.0)
                 if executable_price <= 0.0:
                     return {"status": "SKIPPED", "message": "Некорректная исполнимая цена BBO для PAPER-входа."}
