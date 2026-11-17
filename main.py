@@ -45,6 +45,7 @@ from signal_guard import (
     validate_signal_evidence, infer_candidate_direction, validate_atr_readiness,
     classify_direction_evidence,
 )
+from strategy.candidate_dedup import CandidateDeduplicator
 from rag_prompt_utils import select_prompt_rules
 from candidate_recovery import coalesce_pending_bbo_entry, refresh_candidate_bbo_metrics
 from scalping_strategy import evaluate_scalping_candidate
@@ -819,18 +820,18 @@ scalping_shadow_tracker = ShadowForwardTracker()
 
 # One outstanding AI event per ticker prevents repeated nearly identical
 # anomaly events from filling the queue while inference is still running.
-_ai_ticker_pending: set[str] = set()
 _m1_history_warmup_pending: set[str] = set()
 _m1_history_warmed: set[str] = set()
 _m1_history_last_attempt: dict[str, float] = {}
 _m1_history_warmup_lock = threading.Lock()
 _M1_HISTORY_RETRY_SEC = 30.0
-_ai_ticker_last_enqueued_at: dict[str, float] = {}
-_ai_ticker_pending_lock = threading.Lock()
 try:
-    _AI_TICKER_COOLDOWN_SEC = max(0.5, float(os.getenv("PILUITUS_AI_TICKER_COOLDOWN_SEC", "2.0")))
-except (TypeError, ValueError):
-    _AI_TICKER_COOLDOWN_SEC = 2.0
+    _AI_CANDIDATE_COOLDOWN_SEC = max(
+        0.5, float(os.getenv("PILUITUS_AI_CANDIDATE_COOLDOWN_SEC", "8.0"))
+    )
+except (TypeError, ValueError, OverflowError):
+    _AI_CANDIDATE_COOLDOWN_SEC = 8.0
+_ai_candidate_deduplicator = CandidateDeduplicator(_AI_CANDIDATE_COOLDOWN_SEC)
 _prefilter_last_logged: dict[tuple[str, str], float] = {}
 _prefilter_log_lock = threading.Lock()
 _pending_bbo_candidates: dict[str, dict[str, Any]] = {}
@@ -1210,30 +1211,20 @@ def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -
     return result
 
 
-def _reserve_ai_ticker(ticker: str) -> bool:
-    now = time_module.monotonic()
-    with _ai_ticker_pending_lock:
-        if ticker in _ai_ticker_pending:
-            return False
-        last = _ai_ticker_last_enqueued_at.get(ticker, 0.0)
-        if now - last < _AI_TICKER_COOLDOWN_SEC:
-            return False
-        _ai_ticker_pending.add(ticker)
-        _ai_ticker_last_enqueued_at[ticker] = now
-        # Keep the per-ticker cooldown map bounded during long sessions.
-        if len(_ai_ticker_last_enqueued_at) > 500:
-            cutoff = now - 300.0
-            for old_ticker, stamp in list(_ai_ticker_last_enqueued_at.items()):
-                if stamp < cutoff and old_ticker not in _ai_ticker_pending:
-                    _ai_ticker_last_enqueued_at.pop(old_ticker, None)
-        return True
+def _reserve_ai_ticker(
+    ticker: str,
+    direction: str = "NONE",
+    metrics: dict[str, Any] | None = None,
+) -> bool:
+    pattern = (
+        str((metrics or {}).get("bar_pattern_name") or "FLOW")
+        if isinstance(metrics, dict) else "FLOW"
+    )
+    return _ai_candidate_deduplicator.reserve(ticker, direction, pattern)
 
 
 def _release_ai_ticker(ticker: str) -> None:
-    if not ticker:
-        return
-    with _ai_ticker_pending_lock:
-        _ai_ticker_pending.discard(str(ticker).upper())
+    _ai_candidate_deduplicator.release(ticker)
 
 
 async def _warmup_selected_m1_history(tickers: tuple[str, ...] | list[str]) -> None:
@@ -1476,7 +1467,7 @@ async def _resume_pending_bbo_candidate(
         _trade_flow_inc("bbo_resume_payload_changed")
         return
 
-    if not _reserve_ai_ticker(key):
+    if not _reserve_ai_ticker(key, payload.get("candidate_direction"), metrics):
         _trade_flow_inc("bbo_resume_deduplicated")
         _cancel_pending_bbo_candidate(key, pending)
         _trade_flow_inc("candidate_deduplicated")
@@ -2009,7 +2000,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                             # reject an APPROVE after the model has answered.
                             _trade_flow_inc("atr_unready_candidates")
                             _log_prefilter_blocked(ticker, atr_reason, interval_sec=60.0)
-                        elif not _reserve_ai_ticker(ticker):
+                        elif not _reserve_ai_ticker(ticker, candidate_direction, metrics_payload):
                             _trade_flow_inc("candidate_deduplicated")
                         else:
                             event_payload = {
@@ -3497,9 +3488,7 @@ async def clear_paper_session(payload: dict[str, object] = Body(...)):
         for item in emergency_items:
             anomaly_queue.put_nowait(item)
 
-        with _ai_ticker_pending_lock:
-            _ai_ticker_pending.clear()
-            _ai_ticker_last_enqueued_at.clear()
+        _ai_candidate_deduplicator.clear()
 
         if execution_engine._opening_tickers or execution_engine._lock_closing:
             raise HTTPException(
