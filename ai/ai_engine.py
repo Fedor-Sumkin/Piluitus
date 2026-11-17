@@ -664,6 +664,14 @@ class AIEngine:
         return min(2.0, max(0.05, value))
 
     @staticmethod
+    def _direction_momentum_neutral_band_pct() -> float:
+        try:
+            value = float(os.getenv("PILUITUS_DIRECTION_MOMENTUM_NEUTRAL_PCT", "0.01"))
+        except (TypeError, ValueError, OverflowError):
+            value = 0.01
+        return min(1.0, max(0.0, value)) if math.isfinite(value) else 0.01
+
+    @staticmethod
     def _direction_vwap_neutral_band_pct() -> float:
         try:
             value = float(os.getenv("PILUITUS_DIRECTION_VWAP_NEUTRAL_PCT", "0.03"))
@@ -822,17 +830,20 @@ class AIEngine:
                 metric_parts.append(f"{key}={cls._prompt_value(value, 18)}")
         metrics_text = ";".join(metric_parts)
 
+        momentum_neutral_band_pct = cls._direction_momentum_neutral_band_pct()
         vwap_neutral_band_pct = cls._direction_vwap_neutral_band_pct()
         direction_rules = {
             "BUY": (
-                "BUY requires positive 15s trade momentum. VWAP above-neutral supports BUY; "
+                f"BUY requires positive 15s trade momentum beyond +{momentum_neutral_band_pct:.3f}%. "
+                "VWAP above-neutral supports BUY; "
                 f"VWAP within +/-{vwap_neutral_band_pct:.3f}% is NEUTRAL and does not veto; "
                 "materially below VWAP is opposite evidence. "
                 "A fresh bullish M1 pattern may support BUY only when VWAP is not materially opposite. "
                 "Positive 30s BUY-vs-SELL flow supports BUY; opposite flow is a caution."
             ),
             "SELL": (
-                "SELL requires negative 15s trade momentum. VWAP below-neutral supports SELL; "
+                f"SELL requires negative 15s trade momentum beyond -{momentum_neutral_band_pct:.3f}%. "
+                "VWAP below-neutral supports SELL; "
                 f"VWAP within +/-{vwap_neutral_band_pct:.3f}% is NEUTRAL and does not veto; "
                 "materially above VWAP is opposite evidence. "
                 "A fresh bearish M1 pattern may support SELL only when VWAP is not materially opposite. "
@@ -852,7 +863,8 @@ class AIEngine:
             "Never select, change, invert, or output BUY/SELL. "
             "APPROVE authorizes only the exact local candidate side; HOLD rejects it. "
             "candidate=NONE => final_decision MUST be HOLD. "
-            "Directional check: signed price momentum must agree with candidate; VWAP alignment strengthens it, "
+            f"Directional check: signed price momentum beyond +/-{momentum_neutral_band_pct:.3f}% must agree with candidate; "
+            "VWAP alignment strengthens it, "
             f"VWAP within +/-{vwap_neutral_band_pct:.3f}% is NEUTRAL and must not veto, and VWAP beyond that band in the opposite direction "
             "is a contradiction. A fresh matching closed M1 pattern may support the candidate when VWAP is not "
             "materially opposite. M1 NEUTRAL/UNAVAILABLE is not a contradiction; HOLD_M1_CONTRADICTION requires "
