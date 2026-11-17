@@ -21,6 +21,10 @@ def quote_metrics(bid: float, ask: float) -> dict[str, float]:
 
 
 class ShadowForwardTrackerTests(unittest.TestCase):
+    def test_default_paper_horizons_cover_one_three_five_and_ten_minutes(self) -> None:
+        tracker = ShadowForwardTracker()
+        self.assertEqual(tracker.horizons_seconds, (60, 180, 300, 600))
+
     def test_buy_labels_use_ask_entry_and_bid_exit_after_one_minute(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,), max_label_lag_sec=30)
         with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 160.0]):
