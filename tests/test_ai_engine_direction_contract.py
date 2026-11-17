@@ -152,6 +152,45 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         )
         self.assertEqual(reason, "HOLD_INSUFFICIENT_SUPPORT")
 
+    def test_missing_hold_reason_is_inferred_from_measured_sell_evidence(self) -> None:
+        metrics = {
+            "trade_data_ready": 1.0, "trade_metrics_age_sec": 0.4,
+            "price_change_pct": -0.12, "price_vs_vwap_pct": -0.01,
+            "volume_spike": 2.0, "spread_pct": 0.08,
+            "spread_available": 1.0, "bid_ask_available": 1.0,
+            "bid": 99.9, "ask": 100.0,
+            "bid_quote_age_sec": 0.2, "ask_quote_age_sec": 0.3,
+            "bar_count": 8, "bar_atr_periods": 5, "bar_atr_age_sec": 2.0,
+            "bar_pattern_confirmed": 0.0, "bar_pattern_direction_code": 0.0,
+        }
+        reason, status = AIEngine._validate_model_reason_code(
+            "HOLD", "NOT_PROVIDED", "SELL", metrics
+        )
+        self.assertEqual(reason, "HOLD_INSUFFICIENT_SUPPORT")
+        self.assertEqual(status, "RECLASSIFIED")
+
+    def test_missing_hold_reason_identifies_opposing_sell_momentum(self) -> None:
+        metrics = {
+            "trade_data_ready": 1.0, "trade_metrics_age_sec": 0.4,
+            "price_change_pct": 0.12, "price_vs_vwap_pct": 0.01,
+        }
+        reason = AIEngine._infer_hold_reason_code("SELL", metrics)
+        self.assertEqual(reason, "HOLD_WEAK_DIRECTION")
+
+    def test_missing_hold_reason_identifies_stale_bbo(self) -> None:
+        metrics = {
+            "trade_data_ready": 1.0, "trade_metrics_age_sec": 0.4,
+            "price_change_pct": 0.12, "price_vs_vwap_pct": 0.01,
+            "volume_spike": 2.0, "spread_pct": 0.08,
+            "spread_available": 1.0, "bid_ask_available": 1.0,
+            "bid": 99.9, "ask": 100.0,
+            "bid_quote_age_sec": 3.0, "ask_quote_age_sec": 0.3,
+        }
+        self.assertEqual(
+            AIEngine._infer_hold_reason_code("BUY", metrics),
+            "HOLD_STALE_BBO",
+        )
+
     def test_approved_verdict_has_approved_reason_code(self) -> None:
         reason, status = AIEngine._validate_model_reason_code(
             "APPROVE", "HOLD_WIDE_SPREAD", "BUY", {"spread_pct": 0.1}
