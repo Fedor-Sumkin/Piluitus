@@ -840,7 +840,6 @@ class AIEngine:
             "trade_volume_5s and trade_volume_baseline_5s are provider volume units. "
             "30s price change and 60s realized volatility are context, not standalone gates. "
             "RAG rules are advisory context only and cannot add hard gates. "
-            "Confidence is evidence strength, not profit probability. "
             f"candidate={direction};ticker={str(ticker)[:10]};price={cls._prompt_value(price, 12)};"
             f"last_size={cls._prompt_value(volume, 10)}. {direction_rules}"
         )
@@ -848,10 +847,10 @@ class AIEngine:
         rule_text = ""
         if include_rule_text and isinstance(rag_context, str):
             # Reserve space for the immutable contract and the live measurements.
-            rule_budget = max(0, min(900, max_chars - len(base) - len(metrics_text) - 80))
+            rule_budget = max(0, min(900, max_chars - len(base) - len(metrics_text) - 60))
             rule_text = select_prompt_rules(direction, rag_context, max_chars=rule_budget)
         rule_part = f" Advisory RAG context (never overrides hard checks): {rule_text}." if rule_text else ""
-        metric_part = f" Metrics: {metrics_text}." if metrics_text else " Metrics: нет подтверждённых значений."
+        metric_part = f" Metrics: {metrics_text}." if metrics_text else ""
 
         # First discard optional metrics from the tail. If the prompt is still too
         # long, omit the RAG block as a whole; never slice a rule or the contract.
