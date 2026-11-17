@@ -258,8 +258,18 @@ class MinuteBarPatternEngine:
             return 0
         current_bucket = int(epoch_now // self.bar_seconds)
         state = self._state(symbol)
+        prior_clock_source = state.get("clock_source")
+        # Historical timestamps are epoch-based. Never merge bars previously
+        # built from monotonic-relative fallback buckets into that epoch series.
+        existing_bars = (
+            list(state.get("bars", []))
+            if prior_clock_source in {None, "exchange", "exchange_fallback"} else []
+        )
+        if prior_clock_source == "monotonic":
+            state["current"] = None
+            state["last_closed_bar_monotonic"] = 0.0
         merged: dict[int, MinuteBar] = {
-            int(bar.bucket): bar for bar in list(state.get("bars", []))
+            int(bar.bucket): bar for bar in existing_bars
             if isinstance(bar, MinuteBar)
         }
 
