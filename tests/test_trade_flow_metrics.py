@@ -58,7 +58,10 @@ class TradeFlowMetricsTests(unittest.TestCase):
         screener.register_ticker("SBER")
         now = time.monotonic()
         screener.history["SBER"]["trade_events"] = deque([
-            (now - 60.0, 100.00, 10.0, "BUY"),
+            # Keep one event just outside the rolling 60s window so coverage
+            # remains >=60s after push_tick advances the real monotonic clock.
+            (now - 61.0, 99.99, 7.0, "SELL"),
+            (now - 55.0, 100.00, 10.0, "BUY"),
             (now - 45.0, 100.02, 12.0, "BUY"),
             (now - 30.0, 100.01, 8.0, "SELL"),
             (now - 15.0, 100.04, 15.0, "BUY"),
