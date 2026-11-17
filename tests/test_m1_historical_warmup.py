@@ -31,6 +31,7 @@ class HistoricalM1WarmupTests(unittest.TestCase):
         self.assertEqual(snapshot["periods"], 9.0)
         self.assertGreater(snapshot["atr"], 0.0)
         self.assertEqual(engine._states["SBER"]["bars"][-1].bucket, base_bucket - 1)
+        self.assertEqual(engine._states["SBER"]["bars"][-1].ticks, 0)
 
         metrics = engine._summarize(engine._states["SBER"], 106.0, 500.0)
         ready, reason = validate_atr_readiness(metrics)
