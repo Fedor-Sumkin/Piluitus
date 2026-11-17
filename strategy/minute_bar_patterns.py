@@ -497,17 +497,38 @@ class MinuteBarPatternEngine:
         stamp = time.monotonic() if now is None else float(now)
         if not math.isfinite(stamp) or stamp < 0:
             return result
-        event_epoch = _event_epoch_seconds(event_timestamp)
-        clock_source = "exchange" if event_epoch is not None else "monotonic"
-        bucket_time = event_epoch if event_epoch is not None else stamp
-        bucket = int(bucket_time // self.bar_seconds)
         state = self._state(symbol)
         prior_source = state.get("clock_source")
-        if prior_source is not None and prior_source != clock_source:
-            # Never combine monotonic-relative buckets with exchange-time buckets.
-            state["bars"].clear()
-            state["current"] = None
-            state["last_closed_bar_monotonic"] = 0.0
+        event_epoch = _event_epoch_seconds(event_timestamp)
+        if event_epoch is not None:
+            clock_source = "exchange"
+            bucket_time = event_epoch
+        elif prior_source in {"exchange", "exchange_fallback"}:
+            # Finam may omit event timestamps on individual QUOTES updates.
+            # Stay in the exchange epoch domain using local wall time rather than
+            # switching to monotonic buckets and erasing warmed historical ATR.
+            clock_source = "exchange_fallback"
+            bucket_time = time.time()
+        else:
+            clock_source = "monotonic"
+            bucket_time = stamp
+        bucket = int(bucket_time // self.bar_seconds)
+        if prior_source is not None:
+            prior_exchange = prior_source in {"exchange", "exchange_fallback"}
+            next_exchange = clock_source in {"exchange", "exchange_fallback"}
+            if prior_exchange != next_exchange:
+                # Bucket numbers from monotonic and epoch clocks are incomparable.
+                # Clear only when crossing between clock domains; missing exchange
+                # timestamps above no longer trigger this path.
+                state["bars"].clear()
+                state["current"] = None
+                state["last_closed_bar_monotonic"] = 0.0
+            elif prior_source != clock_source:
+                # exchange <-> wall-clock fallback share the same epoch domain;
+                # discard only a partial candle if a boundary was crossed.
+                current = state.get("current")
+                if isinstance(current, MinuteBar) and bucket < current.bucket:
+                    state["current"] = None
         state["clock_source"] = clock_source
         state["last_event_time"] = bucket_time
         current: MinuteBar | None = state.get("current")
