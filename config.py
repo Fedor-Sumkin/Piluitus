@@ -188,7 +188,12 @@ class Settings:
     # trading date; the next trading date starts with a fresh session streak.
     LOSS_STREAK_HARD_STOP: int = max(3, min(20, int(os.getenv("PILUITUS_LOSS_STREAK_HARD_STOP", "5"))))
     ATR_MULTIPLIER: float = float(os.getenv("ATR_MULTIPLIER", "1.5"))
-    TRADE_DEPOSIT: float = float(os.getenv("TRADE_DEPOSIT", "100000.0"))
+    # One capital source for every subsystem. TRADE_DEPOSIT is canonical;
+    # TRADING_DEPOSIT remains a backward-compatible fallback for existing .env files.
+    _TRADE_DEPOSIT_RAW = os.getenv("TRADE_DEPOSIT")
+    if _TRADE_DEPOSIT_RAW is None:
+        _TRADE_DEPOSIT_RAW = os.getenv("TRADING_DEPOSIT", "100000.0")
+    TRADE_DEPOSIT: float = float(_TRADE_DEPOSIT_RAW)
 
     # ---------- Прочие ----------
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
