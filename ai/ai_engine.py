@@ -849,11 +849,11 @@ class AIEngine:
         spread_to_atr_limit = cls._max_spread_to_atr_ratio()
         # Compact immutable contract; reserve the remaining budget for live evidence.
         base = (
-            "JSON only, exactly 3 keys: final_decision=APPROVE|HOLD, confidence_score=0..1, "
+            "JSON only, exactly three keys: final_decision=APPROVE|HOLD, confidence_score=0..1, "
             "reason_code=APPROVED|NO_LOCAL_CANDIDATE|HOLD_WEAK_DIRECTION|HOLD_M1_CONTRADICTION|"
             "HOLD_STALE_BBO|HOLD_WEAK_VOLUME|HOLD_WIDE_SPREAD|HOLD_INSUFFICIENT_SUPPORT|"
             "HOLD_RISK_REWARD|HOLD_UNCLEAR. No extras/text. Never output BUY/SELL. "
-            "APPROVE authorizes only the local candidate; HOLD rejects it. candidate=NONE => HOLD. "
+            "APPROVE authorizes only the local candidate; HOLD rejects it. candidate=NONE => final_decision MUST be HOLD. "
             f"Directional check: signed price momentum must agree with candidate and exceed +/-{momentum_neutral_band_pct:.3f}%; "
             f"VWAP within +/-{vwap_neutral_band_pct:.3f}% is NEUTRAL and must not veto; "
             "VWAP beyond the opposite neutral band is contradictory. "
@@ -861,8 +861,8 @@ class AIEngine:
             "M1 NEUTRAL/UNAVAILABLE is not a contradiction; HOLD_M1_CONTRADICTION requires fresh "
             "m1_evidence_state=OPPOSITE. "
             "Entry: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, fresh BBO, "
-            "spread_pct<=0.5; if ATR exists, spread_to_atr_ratio must be "
-            f"<={spread_to_atr_limit:.2f}; missing ratio means insufficient support. "
+            "spread_pct<=0.5; if ATR exists, spread_to_atr_ratio>"
+            f"{spread_to_atr_limit:.2f} is wide; require spread_to_atr_ratio<={spread_to_atr_limit:.2f}; missing ratio means insufficient support. "
             "HOLD_WIDE_SPREAD requires spread_pct>0.5 or ratio above limit. "
             "Ask depletion is supporting evidence, not mandatory. "
             "trade_flow_imbalance_30s is signed BUY-vs-SELL volume (-1..+1); "
