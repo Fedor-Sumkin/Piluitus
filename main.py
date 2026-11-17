@@ -824,6 +824,7 @@ _m1_history_warmup_pending: set[str] = set()
 _m1_history_warmed: set[str] = set()
 _m1_history_last_attempt: dict[str, float] = {}
 _m1_history_warmup_lock = threading.Lock()
+_m1_history_warmup_task: asyncio.Task | None = None
 _M1_HISTORY_RETRY_SEC = 30.0
 try:
     _AI_CANDIDATE_COOLDOWN_SEC = max(
@@ -1295,6 +1296,15 @@ async def _warmup_selected_m1_history(tickers: tuple[str, ...] | list[str]) -> N
             with _m1_history_warmup_lock:
                 _m1_history_warmup_pending.discard(ticker)
         await asyncio.sleep(max(0.1, float(os.getenv("FINAM_METADATA_REQUEST_INTERVAL_SEC", "0.36"))))
+
+
+def _schedule_m1_history_warmup(tickers: tuple[str, ...] | list[str]) -> None:
+    """Keep at most one warmup coroutine scheduled while quotes continue to arrive."""
+    global _m1_history_warmup_task
+    if _m1_history_warmup_task is None or _m1_history_warmup_task.done():
+        _m1_history_warmup_task = asyncio.create_task(
+            _warmup_selected_m1_history(tuple(tickers))
+        )
 
 
 def _drop_pending_bbo_candidate(ticker: str, expected: dict[str, Any] | None = None) -> bool:
@@ -1928,7 +1938,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
         now_mono = time_module.monotonic()
         selected_snapshot = tuple(funnel_status.get("selected_tickers", []))
         if funnel_status.get("ready") and selected_snapshot:
-            asyncio.create_task(_warmup_selected_m1_history(selected_snapshot))
+            _schedule_m1_history_warmup(selected_snapshot)
         if not funnel_status["ready"]:
             _last_funnel_ready = False
             if _last_funnel_log_at == 0.0 or now_mono - _last_funnel_log_at >= 30.0:
