@@ -817,12 +817,11 @@ class AIEngine:
 
         spread_to_atr_limit = cls._max_spread_to_atr_ratio()
         base = (
-            "Return JSON with exactly three keys: final_decision (APPROVE or HOLD), "
-            "confidence_score (0..1), reason_code (APPROVED, NO_LOCAL_CANDIDATE, "
-            "HOLD_WEAK_DIRECTION, HOLD_M1_CONTRADICTION, HOLD_STALE_BBO, HOLD_WEAK_VOLUME, "
-            "HOLD_WIDE_SPREAD, HOLD_INSUFFICIENT_SUPPORT, HOLD_RISK_REWARD, HOLD_UNCLEAR). "
-            "No extra keys or text. Never output BUY/SELL as a decision. "
-            "Never select, change, invert, or output BUY/SELL. "
+            "JSON only, exactly three keys: final_decision (APPROVE or HOLD), confidence_score (0..1), "
+            "reason_code (APPROVED, NO_LOCAL_CANDIDATE, HOLD_WEAK_DIRECTION, HOLD_M1_CONTRADICTION, "
+            "HOLD_STALE_BBO, HOLD_WEAK_VOLUME, HOLD_WIDE_SPREAD, HOLD_INSUFFICIENT_SUPPORT, "
+            "HOLD_RISK_REWARD, HOLD_UNCLEAR). No extra keys or text. "
+            "Never output BUY/SELL as a decision. Never select, change, invert, or output BUY/SELL. "
             "APPROVE authorizes only the exact local candidate side; HOLD rejects it. "
             "candidate=NONE => final_decision MUST be HOLD. "
             "Directional check: either signed price change agrees with candidate and VWAP, OR a fresh matching "
@@ -830,8 +829,8 @@ class AIEngine:
             "M1 NEUTRAL/UNAVAILABLE is not a contradiction. HOLD_M1_CONTRADICTION requires "
             "m1_evidence_state=OPPOSITE from a fresh closed pattern or fresh EMA9/EMA21 trend. "
             "Entry support: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, fresh valid BBO, "
-            "spread_pct<=0.5. If bar_atr_pct exists, require "
-            f"spread_to_atr_ratio<={spread_to_atr_limit:.2f}; missing ratio means insufficient support, not wide spread. "
+            "spread_pct<=0.5; if bar_atr_pct exists, spread_to_atr_ratio must be "
+            f"<={spread_to_atr_limit:.2f}. Missing ratio means insufficient support, not wide spread. "
             "HOLD_WIDE_SPREAD only if spread_pct>0.5 or "
             f"spread_to_atr_ratio>{spread_to_atr_limit:.2f}. "
             "Ask depletion is supporting evidence, not mandatory. "
