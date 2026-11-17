@@ -59,7 +59,7 @@ class ShadowForwardTracker:
 
     def __init__(
         self,
-        horizons_seconds: tuple[int, ...] = (60, 180, 300),
+        horizons_seconds: tuple[int, ...] = (60, 180, 300, 600),
         *,
         max_label_lag_sec: float = 30.0,
         on_time_label_lag_sec: float = 10.0,
