@@ -697,6 +697,69 @@ class AIEngine:
         return prepared
 
     @classmethod
+    def _infer_hold_reason_code(
+        cls,
+        candidate_direction: str,
+        metrics: object,
+    ) -> str:
+        """Infer a diagnostic HOLD reason from measured evidence; never changes the verdict."""
+        direction = str(candidate_direction or "").strip().upper()
+        prepared = cls._prepare_prompt_metrics(metrics, direction)
+
+        if direction not in {"BUY", "SELL"}:
+            return "NO_LOCAL_CANDIDATE"
+
+        if prepared.get("m1_evidence_state") == "OPPOSITE":
+            return "HOLD_M1_CONTRADICTION"
+
+        direction_state = str(prepared.get("direction_evidence_state") or "UNAVAILABLE")
+        if direction_state == "OPPOSITE":
+            return "HOLD_WEAK_DIRECTION"
+
+        trade_ready = cls._metric_number(prepared, "trade_data_ready", 0.0) >= 0.5
+        trade_age = cls._metric_number(prepared, "trade_metrics_age_sec", math.inf)
+        if not trade_ready or not math.isfinite(trade_age) or not 0.0 <= trade_age <= 5.0:
+            return "HOLD_INSUFFICIENT_SUPPORT"
+
+        bid = cls._metric_number(prepared, "bid", math.nan)
+        ask = cls._metric_number(prepared, "ask", math.nan)
+        bid_age = cls._metric_number(prepared, "bid_quote_age_sec", math.inf)
+        ask_age = cls._metric_number(prepared, "ask_quote_age_sec", math.inf)
+        bbo_available = (
+            cls._metric_number(prepared, "bid_ask_available", 0.0) >= 0.5
+            and cls._metric_number(prepared, "spread_available", 0.0) >= 0.5
+        )
+        if (
+            not bbo_available or not math.isfinite(bid) or not math.isfinite(ask)
+            or bid <= 0.0 or ask < bid or not 0.0 <= bid_age <= 2.0
+            or not 0.0 <= ask_age <= 2.0
+        ):
+            return "HOLD_STALE_BBO"
+
+        spread = cls._metric_number(prepared, "spread_pct", math.nan)
+        spread_ratio = cls._metric_number(prepared, "spread_to_atr_ratio", math.nan)
+        if (
+            (math.isfinite(spread) and spread > 0.5)
+            or (math.isfinite(spread_ratio) and spread_ratio > cls._max_spread_to_atr_ratio())
+        ):
+            return "HOLD_WIDE_SPREAD"
+
+        volume_spike = cls._metric_number(prepared, "volume_spike", math.nan)
+        if not math.isfinite(volume_spike) or volume_spike < 1.5:
+            return "HOLD_WEAK_VOLUME"
+
+        price_change = cls._metric_number(prepared, "price_change_pct", math.nan)
+        momentum_band = cls._direction_momentum_neutral_band_pct()
+        momentum_aligned = (
+            (direction == "BUY" and math.isfinite(price_change) and price_change > momentum_band)
+            or (direction == "SELL" and math.isfinite(price_change) and price_change < -momentum_band)
+        )
+        if not momentum_aligned and prepared.get("m1_evidence_state") != "ALIGNED":
+            return "HOLD_WEAK_DIRECTION"
+
+        return "HOLD_INSUFFICIENT_SUPPORT"
+
+    @classmethod
     def _validate_model_reason_code(
         cls,
         model_decision: str,
@@ -712,6 +775,10 @@ class AIEngine:
         if decision == "APPROVE":
             replacement = "APPROVED"
         elif decision == "HOLD":
+            if reason in {"NOT_PROVIDED", "HOLD_UNCLEAR"}:
+                inferred = cls._infer_hold_reason_code(candidate_direction, prepared)
+                if inferred != "HOLD_INSUFFICIENT_SUPPORT" or reason == "NOT_PROVIDED":
+                    replacement = inferred
             if reason == "APPROVED":
                 replacement = "HOLD_UNCLEAR"
             elif reason == "HOLD_M1_CONTRADICTION" and prepared.get("m1_evidence_state") != "OPPOSITE":
@@ -1383,6 +1450,18 @@ class AIEngine:
         processed["model_reason_code_raw"] = raw_reason_code
         processed["model_reason_code"] = validated_reason_code
         processed["model_reason_validation"] = reason_validation
+        if model_decision == "HOLD":
+            log.info(
+                "[LLM HOLD DIAGNOSTIC] ticker=%s candidate=%s reason=%s validation=%s "
+                "direction=%s m1=%s trade_ready=%s trade_age=%s volume_spike=%s spread=%s",
+                ticker, candidate_direction, validated_reason_code, reason_validation,
+                prepared_metrics_state := cls._prepare_prompt_metrics(metrics_dict, candidate_direction).get("direction_evidence_state"),
+                cls._m1_evidence_state(metrics_dict, candidate_direction),
+                cls._prompt_value(metrics_dict.get("trade_data_ready"), 10),
+                cls._prompt_value(metrics_dict.get("trade_metrics_age_sec"), 10),
+                cls._prompt_value(metrics_dict.get("volume_spike"), 10),
+                cls._prompt_value(metrics_dict.get("spread_pct"), 10),
+            )
         processed["prompt_chars"] = active_prompt_chars
         processed["prompt_fingerprint"] = active_prompt_fingerprint
         prepared_metrics = self._prepare_prompt_metrics(metrics_dict, candidate_direction)
