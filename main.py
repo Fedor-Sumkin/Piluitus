@@ -1242,12 +1242,21 @@ def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -
             counted_blocks.add(block)
     if observed_blocks - counted_blocks:
         _trade_flow_inc("shadow_block_other", len(observed_blocks - counted_blocks))
+    raw_components = result.get("components", {})
+    if isinstance(raw_components, dict):
+        component_text = ",".join(
+            f"{key}={float(value):.1f}"
+            for key, value in sorted(raw_components.items())
+            if isinstance(value, (int, float)) and math.isfinite(float(value))
+        ) or "-"
+    else:
+        component_text = "-"
     logger.info(
         "🧪 [STRATEGY SHADOW] %s id=%s side=%s eligible=%s score=%.1f/%.0f regime=%s "
-        "queue_imbalance=%s spread_ATR=%s hard_blocks=%s reasons=%s",
+        "queue_imbalance=%s spread_ATR=%s components=%s hard_blocks=%s reasons=%s",
         ticker, observation_id or "-", direction, bool(result.get("eligible")), float(result.get("score", 0.0)),
         float(result.get("threshold", 70.0)), result.get("regime", "UNKNOWN"),
-        result.get("queue_imbalance"), result.get("spread_atr_ratio"),
+        result.get("queue_imbalance"), result.get("spread_atr_ratio"), component_text,
         ",".join(result.get("hard_blocks", [])) or "-",
         ",".join(result.get("reasons", [])) or "-",
     )
