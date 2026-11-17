@@ -1052,7 +1052,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "orders_scheduled", "orderbook_updates", "orderbook_unusable",
         "orderbook_side_touches", "orderbook_heartbeats", "orderbook_invalid",
         "orderbook_out_of_order", "active_position_skipped", "atr_unready_candidates",
-        "execution_bbo_blocked", "atr_history_blocked", "portfolio_cap_blocked",
+        "execution_bbo_blocked", "execution_spread_atr_blocked", "atr_history_blocked", "portfolio_cap_blocked",
         "portfolio_size_reduced", "entry_session_blocked", "execution_other_blocked",
         "execution_stale_signal_blocked", "risk_final_gate_blocked",
         "candidate_expired", "finam_lot_unavailable",
@@ -1085,6 +1085,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "повторные кандидаты по открытым позициям=%(active_position_skipped)d; "
         "ATR ожидание до LLM (кандидаты отложены)=%(atr_unready_candidates)d; "
         "блок ATR после APPROVE=%(atr_history_blocked)d; "
+        "Spread/ATR execution block=%(execution_spread_atr_blocked)d; "
         "BBO wait=%(bbo_deferred)d, resumed=%(bbo_resumed)d, expired=%(bbo_expired)d, "
         "superseded=%(bbo_superseded)d, coalesced=%(bbo_coalesced)d, cancelled=%(bbo_cancelled)d, pending_now=%(bbo_pending)d, candidate_expired_pre_LLM=%(candidate_expired)d; "
         "BBO resume: attempts=%(bbo_resume_attempted)d (ORDER_BOOK=%(bbo_resume_from_book)d, QUOTES=%(bbo_resume_from_quotes)d), "
@@ -2253,6 +2254,8 @@ class MarketWorker:
         )
         if "BBO_ENTRY_BLOCK" in result_message:
             _trade_flow_inc("execution_bbo_blocked")
+        if "SPREAD_ATR_ENTRY_BLOCK" in result_message:
+            _trade_flow_inc("execution_spread_atr_blocked")
         if execution_status in {"OPENED", "ACCEPTED"}:
             # Count actual executor outcomes, not merely queued AI decisions.
             _trade_flow_inc("orders_scheduled")
@@ -2270,7 +2273,7 @@ class MarketWorker:
                 _trade_flow_inc("portfolio_cap_blocked")
             elif "ENTRY_SESSION_BLOCK" in result_message:
                 _trade_flow_inc("entry_session_blocked")
-            elif "BBO_ENTRY_BLOCK" not in result_message and "AI Decision is HOLD" not in result_message:
+            elif "BBO_ENTRY_BLOCK" not in result_message and "SPREAD_ATR_ENTRY_BLOCK" not in result_message and "AI Decision is HOLD" not in result_message:
                 _trade_flow_inc("execution_other_blocked")
         if (
             execution_status in {"OPENED", "ACCEPTED"}
