@@ -1421,7 +1421,17 @@ class HFTMemoryScreener:
         prior55 = [item for item in recent60 if 5.0 < now - item[0] <= 60.0]
         total60 = sum(item[2] for item in recent60)
         total5 = sum(item[2] for item in recent5)
-        baseline5 = sum(item[2] for item in prior55) / 11.0
+
+        # Robust 5-second baseline: median of occupied prior buckets rather than
+        # a mean that can collapse toward zero for sparse instruments. Empty
+        # buckets are not treated as evidence of a zero-volume normal regime.
+        prior_bucket_volumes: dict[int, float] = {}
+        for item in prior55:
+            bucket = int((now - item[0]) // 5.0)
+            prior_bucket_volumes[bucket] = prior_bucket_volumes.get(bucket, 0.0) + max(0.0, float(item[2]))
+        occupied_baseline = [value for value in prior_bucket_volumes.values() if value > 0.0]
+        baseline5 = float(np.median(occupied_baseline)) if occupied_baseline else 0.0
+
         vwap60 = sum(item[1] * item[2] for item in recent60) / total60 if total60 > 0 else 0.0
         latest = recent60[-1] if recent60 else None
         reference = next((item for item in reversed(recent60) if latest and item[0] <= latest[0] - 15.0), None)
@@ -1439,16 +1449,25 @@ class HFTMemoryScreener:
         imbalance30 = (buy30 - sell30) / known30 if known30 > 0 else 0.0
         last_age = max(0.0, now - latest[0]) if latest else math.inf
         coverage_sec = max(0.0, now - events[0][0]) if events else 0.0
-        # The 5s-vs-prior-55s baseline is valid only after a complete 60s
-        # observation window; otherwise the denominator would be understated.
+
+        # A valid comparison needs a complete 60s window, at least three prior
+        # occupied buckets and three prior prints. Otherwise the ratio is unknown,
+        # not an artificially huge anomaly caused by a tiny denominator.
         ready = bool(
-            len(recent60) >= 3 and reference is not None and coverage_sec >= 60.0
-            and baseline5 > 0 and last_age <= 5.0 and vwap60 > 0
+            len(recent60) >= 3 and len(prior55) >= 3
+            and len(occupied_baseline) >= 3 and reference is not None
+            and coverage_sec >= 60.0 and baseline5 > 0.0
+            and last_age <= 5.0 and vwap60 > 0.0
         )
+        raw_spike = total5 / baseline5 if ready and baseline5 > 0.0 else 0.0
+        volume_spike = min(100.0, max(0.0, raw_spike))
         return {
             "trade_data_ready": float(ready), "trade_vwap_60s": float(vwap60),
             "trade_volume_5s": float(total5), "trade_volume_baseline_5s": float(baseline5),
-            "volume_spike": float(total5 / baseline5) if ready and baseline5 > 0 else 0.0,
+            "volume_spike": float(volume_spike), "volume_spike_raw": float(raw_spike),
+            "trade_baseline_bucket_count": int(len(occupied_baseline)),
+            "trade_baseline_trade_count": int(len(prior55)),
+            "trade_count_5s": int(len(recent5)),
             "price_change_pct": float(price_change15) if ready else 0.0,
             "trade_price_change_30s_pct": float(price_change30) if ready and reference30 else 0.0,
             "trade_realized_volatility_60s_pct": float(realized_volatility60) if ready else 0.0,
