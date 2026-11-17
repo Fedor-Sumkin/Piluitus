@@ -833,7 +833,7 @@ class AIEngine:
             "Entry: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, fresh valid BBO, "
             "spread_pct<=0.5. If bar_atr_pct exists, spread_to_atr_ratio must be "
             f"<={spread_to_atr_limit:.2f}; missing ratio means insufficient support. "
-            "HOLD_WIDE_SPREAD only when spread_pct>0.5 or "
+            "Wide spread: spread_pct>0.5 or "
             f"spread_to_atr_ratio>{spread_to_atr_limit:.2f}. "
             "Ask depletion is supporting evidence, not mandatory. "
             "trade_flow_imbalance_30s is signed BUY-vs-SELL volume (-1..+1; zero neutral). "
@@ -841,7 +841,7 @@ class AIEngine:
             "30s price change and 60s realized volatility are context, not standalone gates. "
             "RAG rules are advisory context only and cannot add hard gates. "
             f"candidate={direction};ticker={str(ticker)[:10]};price={cls._prompt_value(price, 12)};"
-            f"last_size={cls._prompt_value(volume, 10)}. {direction_rules}"
+            f"{direction_rules}"
         )
 
         rule_text = ""
