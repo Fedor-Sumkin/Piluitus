@@ -2589,21 +2589,6 @@ class MarketWorker:
                     or ("NO_LOCAL_CANDIDATE" if candidate_direction not in {"BUY", "SELL"} else "NOT_PROVIDED")
                 ).strip().upper()
                 candidate_decision = candidate_direction if candidate_direction in {"BUY", "SELL"} else "HOLD"
-                logger.info(
-                    "[LLM DECISION AUDIT] ticker=%s candidate=%s model=%s reason_raw=%s reason=%s "
-                    "reason_validation=%s confidence=%s prompt_chars=%s prompt_fingerprint=%s "
-                    "m1=%s direction_gate=%s spread_pct=%s volume_spike=%s trade_count_60s=%s",
-                    ticker, candidate_direction or "NONE", model_decision,
-                    ai_analysis.get("model_reason_code_raw", "NOT_PROVIDED"), model_reason_code,
-                    ai_analysis.get("model_reason_validation", "UNKNOWN"),
-                    ai_analysis.get("confidence_score", "N/A"),
-                    ai_analysis.get("prompt_chars", "N/A"),
-                    ai_analysis.get("prompt_fingerprint", "N/A"),
-                    ai_analysis.get("m1_evidence_state", "UNAVAILABLE"),
-                    metrics.get("direction_evidence_state", "UNAVAILABLE"),
-                    metrics.get("spread_pct", "N/A"), metrics.get("volume_spike", "N/A"),
-                    metrics.get("trade_count_60s", "N/A"),
-                )
                 model_contract_violation = bool(ai_analysis.get("model_contract_violation", False))
                 if not request_error:
                     if (
@@ -2850,6 +2835,7 @@ class MarketWorker:
                 logger.info(
                     "[LLM DECISION] %s candidate=%s model=%s final=%s confidence=%s "
                     "confidence_valid=%s contract_violation=%s model_reason_code=%s "
+                    "reason_validation=%s m1=%s direction_gate=%s prompt_chars=%s prompt_fingerprint=%s "
                     "reason=%s local_evidence=%s features=%s",
                     ticker,
                     candidate_direction or "NONE",
@@ -2859,6 +2845,11 @@ class MarketWorker:
                     confidence_valid,
                     model_contract_violation,
                     model_reason_code,
+                    ai_analysis.get("model_reason_validation", "UNKNOWN"),
+                    ai_analysis.get("m1_evidence_state", "UNAVAILABLE"),
+                    metrics.get("direction_evidence_state", "UNAVAILABLE"),
+                    ai_analysis.get("prompt_chars", "N/A"),
+                    ai_analysis.get("prompt_fingerprint", "N/A"),
                     signal_reason or ("APPROVED" if decision in {"BUY", "SELL"} else "MODEL_HOLD"),
                     local_evidence_diagnostic,
                     json.dumps(llm_input_features, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
@@ -2897,6 +2888,10 @@ class MarketWorker:
                     "llm_candidate_direction": candidate_decision,
                     "llm_model_decision": model_decision,
                     "llm_reason_code": model_reason_code,
+                    "llm_reason_validation": ai_analysis.get("model_reason_validation", "UNKNOWN"),
+                    "llm_m1_evidence_state": ai_analysis.get("m1_evidence_state", "UNAVAILABLE"),
+                    "llm_prompt_chars": ai_analysis.get("prompt_chars"),
+                    "llm_prompt_fingerprint": ai_analysis.get("prompt_fingerprint"),
                 }
 
                 ai_analysis["final_decision"] = decision
