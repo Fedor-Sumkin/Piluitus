@@ -1455,8 +1455,8 @@ class AIEngine:
                 "[LLM HOLD DIAGNOSTIC] ticker=%s candidate=%s reason=%s validation=%s "
                 "direction=%s m1=%s trade_ready=%s trade_age=%s volume_spike=%s spread=%s",
                 ticker, candidate_direction, validated_reason_code, reason_validation,
-                prepared_metrics_state := cls._prepare_prompt_metrics(metrics_dict, candidate_direction).get("direction_evidence_state"),
-                cls._m1_evidence_state(metrics_dict, candidate_direction),
+                self._prepare_prompt_metrics(metrics_dict, candidate_direction).get("direction_evidence_state"),
+                self._m1_evidence_state(metrics_dict, candidate_direction),
                 cls._prompt_value(metrics_dict.get("trade_data_ready"), 10),
                 cls._prompt_value(metrics_dict.get("trade_metrics_age_sec"), 10),
                 cls._prompt_value(metrics_dict.get("volume_spike"), 10),
