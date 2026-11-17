@@ -1380,12 +1380,12 @@ class HFTMemoryScreener:
             if events and event_seen < events[-1][0] - 0.001:
                 return {"accepted": False, "reason": "out_of_order_trade"}
             events.append((event_seen, px, qty, side_norm))
-            bar_metrics = self.minute_bar_patterns.update(
-                symbol, px, now=event_seen, event_timestamp=event_timestamp
-            )
+            # M1 OHLC is built exclusively from the full-universe QUOTES stream.
+            # INSTRUMENT_TRADES has a different subscription scope and may omit or
+            # use a different timestamp clock; feeding it into the candle builder
+            # can reset the M1 clock domain and erase otherwise valid history.
             metrics = self._trade_metrics_locked(state, now)
             self.quotes[symbol]["trade_metrics"] = metrics
-            self.quotes[symbol]["bar_pattern_metrics"] = bar_metrics
             self.quotes[symbol]["last_trade_event_seen"] = event_seen
             self.quotes[symbol]["last_trade_price"] = px
             return {"accepted": True, **metrics}
