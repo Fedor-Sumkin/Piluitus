@@ -167,7 +167,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             "HOLD", "NOT_PROVIDED", "SELL", metrics
         )
         self.assertEqual(reason, "HOLD_INSUFFICIENT_SUPPORT")
-        self.assertEqual(status, "RECLASSIFIED")
+        self.assertEqual(status, "INFERRED")
 
     def test_missing_hold_reason_identifies_opposing_sell_momentum(self) -> None:
         metrics = {
