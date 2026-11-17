@@ -1234,8 +1234,22 @@ async def _warmup_selected_m1_history(tickers: tuple[str, ...] | list[str]) -> N
     with _m1_history_warmup_lock:
         for raw in tickers:
             ticker = str(raw or "").strip().upper().split("@")[0]
-            if not ticker or ticker in _m1_history_warmed or ticker in _m1_history_warmup_pending:
+            if not ticker or ticker in _m1_history_warmup_pending:
                 continue
+            if ticker in _m1_history_warmed:
+                engine = screener.minute_bar_patterns
+                snapshot = engine.get_atr_snapshot(ticker)
+                state = engine._states.get(ticker, {})
+                last_closed = float(state.get("last_closed_bar_monotonic", 0.0) or 0.0)
+                age = max(0.0, now - last_closed) if last_closed > 0.0 else -1.0
+                still_ready, _ = validate_atr_readiness({
+                    "bar_atr": snapshot.get("atr", 0.0),
+                    "bar_atr_periods": snapshot.get("periods", 0.0),
+                    "bar_atr_age_sec": age,
+                })
+                if still_ready:
+                    continue
+                _m1_history_warmed.discard(ticker)
             if now - _m1_history_last_attempt.get(ticker, 0.0) < _M1_HISTORY_RETRY_SEC:
                 continue
             _m1_history_warmup_pending.add(ticker)
