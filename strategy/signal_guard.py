@@ -138,9 +138,15 @@ def infer_candidate_direction(metrics: dict[str, Any]) -> str | None:
             if classify_direction_evidence(pattern_direction, metrics) in {"ALIGNED", "NEUTRAL"}
             else None
         )
-    if change > 0.0:
+    try:
+        momentum_band = max(
+            0.0, float(os.getenv("PILUITUS_DIRECTION_MOMENTUM_NEUTRAL_PCT", "0.01"))
+        )
+    except (TypeError, ValueError, OverflowError):
+        momentum_band = 0.01
+    if change > momentum_band:
         return "BUY" if classify_direction_evidence("BUY", metrics) in {"ALIGNED", "NEUTRAL"} else None
-    if change < 0.0:
+    if change < -momentum_band:
         return "SELL" if classify_direction_evidence("SELL", metrics) in {"ALIGNED", "NEUTRAL"} else None
     return None
 
