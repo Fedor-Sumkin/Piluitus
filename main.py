@@ -243,6 +243,23 @@ class _DiagnosticLogFilter(logging.Filter):
         "[vLLM RAW LATENCY]",
         "[PRE-LLM FILTER]",
         "[PRE-LLM WAIT]",
+        "[CANDIDATE TTL]",
+        "[POSITION SIZE]",
+        "[SIGNAL GUARD]",
+        "[RISK FINAL GATE]",
+        "[EXECUTION RESULT]",
+        "[EXECUTION OUTCOME]",
+        "[PAPER BBO ENTRY BLOCK]",
+        "[PAPER BBO ENTRY RETRY]",
+        "[PAPER FILL]",
+        "[PAPER PARTIAL ENTRY]",
+        "[PAPER EXIT TRIGGER]",
+        "[PAPER POSITION RESUMED]",
+        "[PAPER BBO GAP RECOVERED]",
+        "[PORTFOLIO GUARD]",
+        "[ENTRY SESSION GUARD]",
+        "[STOP COOLDOWN HYDRATION FAILED]",
+        "[PAPER CLOSE ALL]",
         "[M1 PATTERN]",
         "[DIAGNOSTIC LOGGER READY]",
         "[NUMPY ИМПУЛЬС]",
@@ -2108,8 +2125,9 @@ class MarketWorker:
         price: float,
         ai_analysis: dict,
         session_generation: int,
+        candidate_created_monotonic: object | None = None,
     ) -> None:
-        """Serialize order execution with PAPER reset and reject pre-reset signals."""
+        """Serialize order execution with PAPER reset and reject stale/pre-reset signals."""
         async with _paper_session_lock:
             if (
                 getattr(execution_engine, "_maintenance_active", False)
@@ -2120,6 +2138,7 @@ class MarketWorker:
             await self._execute_and_publish_locked(
                 verdict_id=verdict_id, ticker=ticker, lots=lots, side=side,
                 price=price, ai_analysis=ai_analysis,
+                candidate_created_monotonic=candidate_created_monotonic,
             )
 
     async def _execute_and_publish_locked(
@@ -2131,13 +2150,40 @@ class MarketWorker:
         side: str,
         price: float,
         ai_analysis: dict,
+        candidate_created_monotonic: object | None = None,
     ) -> None:
-        """Execute asynchronously, then publish and persist the actual result."""
+        """Execute only a fresh, risk-approved candidate and publish its final result."""
         try:
+            # The pre-LLM TTL check cannot protect against a slow inference call.
+            # Recheck the original market-evidence age immediately before execution.
+            if candidate_is_expired(
+                candidate_created_monotonic,
+                ttl_sec=_AI_CANDIDATE_TTL_SEC,
+            ):
+                try:
+                    candidate_age_sec = max(
+                        0.0,
+                        time_module.monotonic() - float(candidate_created_monotonic),
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    candidate_age_sec = -1.0
+                result = {
+                    "status": "BLOCKED",
+                    "message": (
+                        "SIGNAL_EXPIRED: рыночные данные кандидата устарели во время LLM/очереди; "
+                        "вход отменён без исполнения."
+                    ),
+                }
+                _trade_flow_inc("execution_stale_signal_blocked")
+                logger.warning(
+                    "[EXECUTION STALE SIGNAL BLOCK] %s %s: age=%.3fs ttl=%.3fs; "
+                    "устаревший сигнал не передан исполнителю.",
+                    side, ticker, candidate_age_sec, _AI_CANDIDATE_TTL_SEC,
+                )
             # Re-read the complete risk state immediately before execution.
             # A candidate may have waited in an async task while another trade
             # closed and activated the session hard stop.
-            if not await risk_manager.is_trading_allowed(self.db, force_refresh=True):
+            elif not await risk_manager.is_trading_allowed(self.db, force_refresh=True):
                 result = {
                     "status": "BLOCKED",
                     "message": (
@@ -2170,6 +2216,11 @@ class MarketWorker:
         result_mode = str(result.get("mode") or ("PAPER" if getattr(execution_engine, "paper_mode", True) else "LIVE")).upper()
         execution_status = normalise_execution_status(raw_status, result_mode)
         result_message = str(result.get("message", ""))
+        logger.info(
+            "[EXECUTION OUTCOME] %s %s: status=%s mode=%s lots=%d message=%s",
+            side, ticker, execution_status, result_mode, int(lots),
+            result_message.replace("\\n", " ")[:240] or "-",
+        )
         if "BBO_ENTRY_BLOCK" in result_message:
             _trade_flow_inc("execution_bbo_blocked")
         if execution_status in {"OPENED", "ACCEPTED"}:
@@ -2993,6 +3044,7 @@ class MarketWorker:
                                 price=price,
                                 ai_analysis=dict(ai_analysis),
                                 session_generation=int(event_payload.get("paper_session_generation", -1)),
+                                candidate_created_monotonic=event_payload.get("candidate_created_monotonic"),
                             )
                         )
 
