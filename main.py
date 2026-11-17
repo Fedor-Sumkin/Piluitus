@@ -2356,6 +2356,10 @@ class MarketWorker:
                     "trade_buy_volume_30s": _parse_finite_float(metrics.get("trade_buy_volume_30s")),
                     "trade_sell_volume_30s": _parse_finite_float(metrics.get("trade_sell_volume_30s")),
                     "trade_count_60s": _parse_finite_float(metrics.get("trade_count_60s")),
+                    "trade_count_5s": _parse_finite_float(metrics.get("trade_count_5s")),
+                    "trade_baseline_bucket_count": _parse_finite_float(metrics.get("trade_baseline_bucket_count")),
+                    "trade_baseline_trade_count": _parse_finite_float(metrics.get("trade_baseline_trade_count")),
+                    "volume_spike_raw": _parse_finite_float(metrics.get("volume_spike_raw")),
                     "trade_history_coverage_sec": _parse_finite_float(metrics.get("trade_history_coverage_sec")),
                     "trade_metrics_age_sec": _parse_finite_float(metrics.get("trade_metrics_age_sec")),
                     "trade_price_change_30s_pct": _parse_finite_float(metrics.get("trade_price_change_30s_pct")),
@@ -2398,10 +2402,13 @@ class MarketWorker:
                 trade_data_ready = (_parse_finite_float(metrics.get("trade_data_ready")) or 0.0) >= 0.5
                 volume_spike_text = f"{volume_spike:.2f}×" if volume_spike is not None else "Н/Д"
                 if trade_data_ready and volume_5s is not None and volume_baseline_5s is not None:
+                    baseline_buckets = int(_parse_finite_float(metrics.get("trade_baseline_bucket_count")) or 0)
+                    trades_5s = int(_parse_finite_float(metrics.get("trade_count_5s")) or 0)
                     volume_text = (
                         f"Всплеск объёма: {volume_spike_text}; "
-                        f"5с={volume_5s:.3f} ед. провайдера, база={volume_baseline_5s:.3f}; "
-                        f"сделок за 60с={int(trade_count_60s or 0)}."
+                        f"5с={volume_5s:.3f} ед. провайдера, медианная база={volume_baseline_5s:.3f}; "
+                        f"сделок 5с={trades_5s}, сделок 60с={int(trade_count_60s or 0)}, "
+                        f"активных 5с-интервалов базы={baseline_buckets}."
                     )
                 else:
                     volume_text = f"Объём сделок: Н/Д — история потока не готова; spike={volume_spike_text}."
@@ -2567,6 +2574,21 @@ class MarketWorker:
                     or ("NO_LOCAL_CANDIDATE" if candidate_direction not in {"BUY", "SELL"} else "NOT_PROVIDED")
                 ).strip().upper()
                 candidate_decision = candidate_direction if candidate_direction in {"BUY", "SELL"} else "HOLD"
+                logger.info(
+                    "[LLM DECISION AUDIT] ticker=%s candidate=%s model=%s reason_raw=%s reason=%s "
+                    "reason_validation=%s confidence=%s prompt_chars=%s prompt_fingerprint=%s "
+                    "m1=%s direction_gate=%s spread_pct=%s volume_spike=%s trade_count_60s=%s",
+                    ticker, candidate_direction or "NONE", model_decision,
+                    ai_analysis.get("model_reason_code_raw", "NOT_PROVIDED"), model_reason_code,
+                    ai_analysis.get("model_reason_validation", "UNKNOWN"),
+                    ai_analysis.get("confidence_score", "N/A"),
+                    ai_analysis.get("prompt_chars", "N/A"),
+                    ai_analysis.get("prompt_fingerprint", "N/A"),
+                    ai_analysis.get("m1_evidence_state", "UNAVAILABLE"),
+                    metrics.get("direction_evidence_state", "UNAVAILABLE"),
+                    metrics.get("spread_pct", "N/A"), metrics.get("volume_spike", "N/A"),
+                    metrics.get("trade_count_60s", "N/A"),
+                )
                 model_contract_violation = bool(ai_analysis.get("model_contract_violation", False))
                 if not request_error:
                     if (
