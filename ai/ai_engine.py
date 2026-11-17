@@ -768,7 +768,9 @@ class AIEngine:
         common_keys = (
             # Preserve the complete trade-flow evidence before optional book/bar detail.
             "trade_data_ready", "trade_history_coverage_sec", "trade_metrics_age_sec",
-            "trade_volume_5s", "trade_volume_baseline_5s", "trade_count_60s",
+            "trade_volume_5s", "trade_volume_baseline_5s", "trade_count_5s",
+            "trade_baseline_bucket_count", "trade_baseline_trade_count",
+            "trade_count_60s", "volume_spike_raw", "direction_evidence_state",
             "trade_flow_imbalance_30s", "trade_price_change_30s_pct",
             "trade_realized_volatility_60s_pct", "trade_buy_volume_30s",
             "trade_sell_volume_30s", "trade_vwap_60s",
@@ -806,11 +808,15 @@ class AIEngine:
 
         direction_rules = {
             "BUY": (
-                "BUY requires positive 15s trade momentum and price>VWAP, or fresh bullish M1 with price>VWAP. "
+                "BUY requires positive 15s trade momentum. VWAP above-neutral supports BUY; "
+                "VWAP within +/-0.03% is NEUTRAL and does not veto; materially below VWAP is opposite evidence. "
+                "A fresh bullish M1 pattern may support BUY only when VWAP is not materially opposite. "
                 "Positive 30s BUY-vs-SELL flow supports BUY; opposite flow is a caution."
             ),
             "SELL": (
-                "SELL requires negative 15s trade momentum and price<VWAP, or fresh bearish M1 with price<VWAP. "
+                "SELL requires negative 15s trade momentum. VWAP below-neutral supports SELL; "
+                "VWAP within +/-0.03% is NEUTRAL and does not veto; materially above VWAP is opposite evidence. "
+                "A fresh bearish M1 pattern may support SELL only when VWAP is not materially opposite. "
                 "Negative 30s BUY-vs-SELL flow supports SELL; opposite flow is a caution."
             ),
             "NONE": "No local direction: MUST HOLD.",
@@ -827,9 +833,10 @@ class AIEngine:
             "Never select, change, invert, or output BUY/SELL. "
             "APPROVE authorizes only the exact local candidate side; HOLD rejects it. "
             "candidate=NONE => final_decision MUST be HOLD. "
-            "Directional check: either signed price change agrees with candidate and VWAP, OR a fresh matching "
-            "closed M1 pattern agrees with candidate and price remains on the correct side of VWAP. "
-            "M1 NEUTRAL/UNAVAILABLE is not a contradiction; HOLD_M1_CONTRADICTION requires "
+            "Directional check: signed price momentum must agree with candidate; VWAP alignment strengthens it, "
+            "VWAP within +/-0.03% is NEUTRAL and must not veto, and VWAP beyond that band in the opposite direction "
+            "is a contradiction. A fresh matching closed M1 pattern may support the candidate when VWAP is not "
+            "materially opposite. M1 NEUTRAL/UNAVAILABLE is not a contradiction; HOLD_M1_CONTRADICTION requires "
             "m1_evidence_state=OPPOSITE from a fresh closed pattern or fresh EMA9/EMA21 trend. "
             "Entry: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, fresh valid BBO, "
             "spread_pct<=0.5. If bar_atr_pct exists, spread_to_atr_ratio must be "
