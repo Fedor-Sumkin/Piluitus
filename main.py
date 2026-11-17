@@ -1247,14 +1247,24 @@ async def _warmup_selected_m1_history(tickers: tuple[str, ...] | list[str]) -> N
             bars = await broker.get_historical_m1_bars(ticker, lookback_minutes=120)
             imported = screener.minute_bar_patterns.load_closed_bars(ticker, bars)
             if imported:
-                snapshot = screener.minute_bar_patterns.get_atr_snapshot(ticker)
-                if snapshot.get("periods", 0.0) >= 1:
+                engine = screener.minute_bar_patterns
+                snapshot = engine.get_atr_snapshot(ticker)
+                state = engine._states.get(ticker, {})
+                last_closed = float(state.get("last_closed_bar_monotonic", 0.0) or 0.0)
+                atr_age = max(0.0, time_module.monotonic() - last_closed) if last_closed > 0.0 else -1.0
+                atr_ready, atr_reason = validate_atr_readiness({
+                    "bar_atr": snapshot.get("atr", 0.0),
+                    "bar_atr_periods": snapshot.get("periods", 0.0),
+                    "bar_atr_age_sec": atr_age,
+                })
+                if atr_ready:
                     with _m1_history_warmup_lock:
                         _m1_history_warmed.add(ticker)
                 logger.info(
                     "[M1 HISTORY WARMUP] %s: получено=%d, загружено_закрытых=%d, "
-                    "ATR_ranges=%.0f; live feed continues to update history.",
+                    "ATR_ranges=%.0f, age=%.1fs, ready=%s; %s",
                     ticker, len(bars), imported, float(snapshot.get("periods", 0.0)),
+                    atr_age, atr_ready, atr_reason,
                 )
             else:
                 logger.warning(
