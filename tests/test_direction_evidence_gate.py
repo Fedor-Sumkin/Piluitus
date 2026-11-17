@@ -63,6 +63,26 @@ class DirectionEvidenceGateTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("сильное встречное", reason)
 
+    def test_fresh_matching_m1_pattern_is_not_vetoed_by_neutral_vwap(self):
+        import time
+        metrics = {
+            "price_change_pct": 0.12,
+            "price_vs_vwap_pct": 0.01,
+            "volume_spike": 2.0,
+            "spread_pct": 0.08,
+            "spread_available": 1.0,
+            "bid_ask_available": 1.0,
+            "trade_data_mode": 0.0,
+            "bar_pattern_confirmed": 1.0,
+            "bar_pattern_name": "M1_RANGE_BREAKOUT_BUY",
+            "bar_pattern_direction_code": 1.0,
+            "bar_breakout_up": 1.0,
+            "_bar_pattern_signal_at_monotonic": time.monotonic(),
+        }
+        ok, reason = validate_signal_evidence("BUY", metrics)
+        self.assertTrue(ok, reason)
+        self.assertIn("VWAP нейтрален", reason)
+
     def test_sell_direction_is_symmetric(self):
         neutral = {"price_change_pct": -0.10, "price_vs_vwap_pct": -0.01}
         opposite = {"price_change_pct": -0.10, "price_vs_vwap_pct": 0.08}
