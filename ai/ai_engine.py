@@ -1238,6 +1238,8 @@ class AIEngine:
                 ticker, price, volume, candidate_direction, metrics_dict
             )
             retry_prompt_fingerprint = hashlib.sha256(retry_prompt.encode("utf-8")).hexdigest()[:16]
+            active_prompt_fingerprint = retry_prompt_fingerprint
+            active_prompt_chars = len(retry_prompt)
             retry_body = {
                 "model": self.model_name,
                 "messages": [{"role": "user", "content": retry_prompt}],
