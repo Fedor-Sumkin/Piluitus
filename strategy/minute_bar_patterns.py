@@ -199,9 +199,11 @@ class MinuteBarPatternEngine:
             "bar_atr_pct": 0.0,
             "bar_atr_periods": 0.0,
             "bar_atr_age_sec": -1.0,
-            "bar_body_ratio": 0.0,
-            "bar_close_position": 0.5,
-            "bar_signal_gap_atr": 0.0,
+            # None means not yet measured; neutral-looking numeric defaults
+            # must not be presented to the model as observed candle evidence.
+            "bar_body_ratio": None,
+            "bar_close_position": None,
+            "bar_signal_gap_atr": None,
             "bar_breakout_extension_atr": 0.0,
             "bar_pattern_name": "",
             "_bar_pattern_signal_at_monotonic": -1.0,
