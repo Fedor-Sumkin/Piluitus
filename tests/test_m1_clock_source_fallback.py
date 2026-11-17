@@ -43,6 +43,20 @@ class M1ClockSourceFallbackTests(unittest.TestCase):
         self.assertEqual(after_exchange_timestamp["periods"], 9.0)
         self.assertGreater(after_exchange_timestamp["atr"], 0.0)
 
+    def test_historical_warmup_does_not_merge_monotonic_relative_bars(self):
+        engine = MinuteBarPatternEngine()
+        engine.update("SBER", 100.0, now=100.0, event_timestamp=None)
+        engine.update("SBER", 100.1, now=161.0, event_timestamp=None)
+        epoch_bucket = int(1_800_000_000 // 60)
+        engine.load_closed_bars(
+            "SBER", self._history(epoch_bucket - 10, epoch_bucket - 1),
+            now=200.0, now_epoch=epoch_bucket * 60 + 20,
+        )
+        buckets = [bar.bucket for bar in engine._states["SBER"]["bars"]]
+        self.assertEqual(len(buckets), 10)
+        self.assertTrue(all(bucket >= epoch_bucket - 10 for bucket in buckets))
+        self.assertEqual(engine._states["SBER"]["clock_source"], "exchange")
+
     def test_switch_from_monotonic_to_exchange_discards_incomparable_buckets(self):
         engine = MinuteBarPatternEngine()
         engine.update("SBER", 100.0, now=100.0, event_timestamp=None)
