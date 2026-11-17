@@ -675,6 +675,7 @@ class AIEngine:
         else:
             prepared["spread_to_atr_ratio"] = None
         prepared["m1_evidence_state"] = cls._m1_evidence_state(prepared, candidate_direction)
+        prepared["direction_evidence_state"] = classify_direction_evidence(candidate_direction, prepared)
         prepared["spread_to_atr_limit"] = cls._max_spread_to_atr_ratio()
         return prepared
 
