@@ -5,6 +5,7 @@ import logging
 import math
 import asyncio
 import time
+import os
 from httpx import AsyncClient, HTTPStatusError
 from config import Settings
 import httpx
