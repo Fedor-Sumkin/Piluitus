@@ -61,7 +61,9 @@ class HistoricalM1WarmupTests(unittest.TestCase):
         imported = engine.load_closed_bars(
             "SBER", bars, now=500.0, now_epoch=base_bucket * 60 + 10
         )
-        self.assertEqual(imported, 9)
+        # Ten valid prior-minute bars are fully closed. The malformed row is
+        # in the current minute and is excluded by the close-time guard.
+        self.assertEqual(imported, 10)
         self.assertEqual(engine._states["SBER"]["bars"][-1].bucket, base_bucket - 1)
 
     def test_old_history_remains_unready_due_to_freshness_guard(self):
