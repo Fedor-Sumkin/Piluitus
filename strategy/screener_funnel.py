@@ -1453,9 +1453,12 @@ class HFTMemoryScreener:
         # A valid comparison needs a complete 60s window, at least three prior
         # occupied buckets and three prior prints. Otherwise the ratio is unknown,
         # not an artificially huge anomaly caused by a tiny denominator.
+        min_baseline_buckets = _env_int(
+            "PILUITUS_VOLUME_BASELINE_MIN_BUCKETS", 4, minimum=3
+        )
         ready = bool(
-            len(recent60) >= 3 and len(prior55) >= 3
-            and len(occupied_baseline) >= 3 and reference is not None
+            len(recent60) >= 3 and len(prior55) >= min_baseline_buckets
+            and len(occupied_baseline) >= min_baseline_buckets and reference is not None
             and coverage_sec >= 60.0 and baseline5 > 0.0
             and last_age <= 5.0 and vwap60 > 0.0
         )
@@ -1466,6 +1469,7 @@ class HFTMemoryScreener:
             "trade_volume_5s": float(total5), "trade_volume_baseline_5s": float(baseline5),
             "volume_spike": float(volume_spike), "volume_spike_raw": float(raw_spike),
             "trade_baseline_bucket_count": int(len(occupied_baseline)),
+            "trade_baseline_min_bucket_count": int(min_baseline_buckets),
             "trade_baseline_trade_count": int(len(prior55)),
             "trade_count_5s": int(len(recent5)),
             "price_change_pct": float(price_change15) if ready else 0.0,
