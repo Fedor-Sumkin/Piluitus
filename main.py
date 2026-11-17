@@ -243,6 +243,8 @@ class _DiagnosticLogFilter(logging.Filter):
         "[vLLM RAW LATENCY]",
         "[PRE-LLM FILTER]",
         "[PRE-LLM WAIT]",
+        "[LLM DECISION]",
+        "[M1 HISTORY WARMUP]",
         "[CANDIDATE TTL]",
         "[POSITION SIZE]",
         "[SIGNAL GUARD]",
