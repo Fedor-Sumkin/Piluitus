@@ -50,6 +50,13 @@ class SpreadAtrGateTests(unittest.TestCase):
                 )
                 self.assertFalse(ok)
 
+    def test_missing_reference_price_cannot_silently_skip_ratio(self):
+        ok, reason = validate_spread_to_atr(
+            {}, spread_pct=0.05, atr_value=0.2, require_atr=True,
+        )
+        self.assertFalse(ok)
+        self.assertIn("Цена", reason)
+
     def test_pre_llm_evidence_gate_blocks_relative_spread_outlier(self):
         metrics = {
             "price_change_pct": 0.20,
