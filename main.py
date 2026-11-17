@@ -817,6 +817,11 @@ scalping_shadow_tracker = ShadowForwardTracker()
 # One outstanding AI event per ticker prevents repeated nearly identical
 # anomaly events from filling the queue while inference is still running.
 _ai_ticker_pending: set[str] = set()
+_m1_history_warmup_pending: set[str] = set()
+_m1_history_warmed: set[str] = set()
+_m1_history_last_attempt: dict[str, float] = {}
+_m1_history_warmup_lock = threading.Lock()
+_M1_HISTORY_RETRY_SEC = 30.0
 _ai_ticker_last_enqueued_at: dict[str, float] = {}
 _ai_ticker_pending_lock = threading.Lock()
 try:
@@ -1226,6 +1231,52 @@ def _release_ai_ticker(ticker: str) -> None:
         return
     with _ai_ticker_pending_lock:
         _ai_ticker_pending.discard(str(ticker).upper())
+
+
+async def _warmup_selected_m1_history(tickers: tuple[str, ...] | list[str]) -> None:
+    """Warm selected symbols from completed Finam M1 bars without blocking the quote loop."""
+    now = time_module.monotonic()
+    due: list[str] = []
+    with _m1_history_warmup_lock:
+        for raw in tickers:
+            ticker = str(raw or "").strip().upper().split("@")[0]
+            if not ticker or ticker in _m1_history_warmed or ticker in _m1_history_warmup_pending:
+                continue
+            if now - _m1_history_last_attempt.get(ticker, 0.0) < _M1_HISTORY_RETRY_SEC:
+                continue
+            _m1_history_warmup_pending.add(ticker)
+            _m1_history_last_attempt[ticker] = now
+            due.append(ticker)
+
+    for ticker in due:
+        try:
+            bars = await broker.get_historical_m1_bars(ticker, lookback_minutes=120)
+            imported = screener.minute_bar_patterns.load_closed_bars(ticker, bars)
+            if imported:
+                snapshot = screener.minute_bar_patterns.get_atr_snapshot(ticker)
+                if snapshot.get("periods", 0.0) >= 1:
+                    with _m1_history_warmup_lock:
+                        _m1_history_warmed.add(ticker)
+                logger.info(
+                    "[M1 HISTORY WARMUP] %s: получено=%d, загружено_закрытых=%d, "
+                    "ATR_ranges=%.0f; live feed continues to update history.",
+                    ticker, len(bars), imported, float(snapshot.get("periods", 0.0)),
+                )
+            else:
+                logger.warning(
+                    "[M1 HISTORY WARMUP] %s: закрытые исторические бары не получены; "
+                    "ATR будет прогреваться по live QUOTES.",
+                    ticker,
+                )
+        except Exception as exc:
+            logger.warning(
+                "[M1 HISTORY WARMUP] %s failed (%s); live-built ATR remains active.",
+                ticker, type(exc).__name__,
+            )
+        finally:
+            with _m1_history_warmup_lock:
+                _m1_history_warmup_pending.discard(ticker)
+        await asyncio.sleep(0.12)
 
 
 def _drop_pending_bbo_candidate(ticker: str, expected: dict[str, Any] | None = None) -> bool:
@@ -1858,6 +1909,8 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
             _trade_flow_inc("selected_quotes")
         now_mono = time_module.monotonic()
         selected_snapshot = tuple(funnel_status.get("selected_tickers", []))
+        if funnel_status.get("ready") and selected_snapshot:
+            asyncio.create_task(_warmup_selected_m1_history(selected_snapshot))
         if not funnel_status["ready"]:
             _last_funnel_ready = False
             if _last_funnel_log_at == 0.0 or now_mono - _last_funnel_log_at >= 30.0:
