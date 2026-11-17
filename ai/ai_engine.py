@@ -711,13 +711,18 @@ class AIEngine:
             elif reason == "HOLD_WEAK_DIRECTION":
                 direction = str(candidate_direction or "").strip().upper()
                 price_change = cls._metric_number(prepared, "price_change_pct", math.nan)
-                price_vs_vwap = cls._metric_number(prepared, "price_vs_vwap_pct", math.nan)
                 trade_ready = cls._metric_number(prepared, "trade_data_ready", 0.0) >= 0.5
                 metrics_age = cls._metric_number(prepared, "trade_metrics_age_sec", math.inf)
                 direction_state = classify_direction_evidence(direction, prepared)
+                try:
+                    momentum_band = max(
+                        0.0, float(os.getenv("PILUITUS_DIRECTION_MOMENTUM_NEUTRAL_PCT", "0.01"))
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    momentum_band = 0.01
                 momentum_aligned = (
-                    ((direction == "BUY" and price_change > 0.0)
-                     or (direction == "SELL" and price_change < 0.0))
+                    ((direction == "BUY" and price_change > momentum_band)
+                     or (direction == "SELL" and price_change < -momentum_band))
                     and direction_state in {"ALIGNED", "NEUTRAL"}
                 )
                 m1_aligned = (
