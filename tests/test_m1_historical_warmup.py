@@ -32,7 +32,7 @@ class HistoricalM1WarmupTests(unittest.TestCase):
         self.assertGreater(snapshot["atr"], 0.0)
         self.assertEqual(engine._states["SBER"]["bars"][-1].bucket, base_bucket - 1)
 
-        metrics = engine._summarize(engine._states["SBER"], 106.0, 1000.0)
+        metrics = engine._summarize(engine._states["SBER"], 106.0, 500.0)
         ready, reason = validate_atr_readiness(metrics)
         self.assertTrue(ready, reason)
 
@@ -71,7 +71,7 @@ class HistoricalM1WarmupTests(unittest.TestCase):
             now_epoch=base_bucket * 60 + 600,
         )
         self.assertEqual(imported, 10)
-        metrics = engine._summarize(engine._states["SBER"], 106.0, 500.0)
+        metrics = engine._summarize(engine._states["SBER"], 106.0, 1000.0)
         ready, reason = validate_atr_readiness(metrics)
         self.assertFalse(ready)
         self.assertIn("История ATR устарела", reason)
