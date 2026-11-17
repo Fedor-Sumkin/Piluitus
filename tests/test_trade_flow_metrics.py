@@ -195,6 +195,31 @@ class TradeFlowMetricsTests(unittest.TestCase):
         self.assertFalse(second["accepted"])
         self.assertEqual(second["reason"], "duplicate_trade")
 
+    def test_push_trade_does_not_mutate_quote_driven_m1_clock_or_candles(self):
+        screener = HFTMemoryScreener()
+        engine = screener.minute_bar_patterns
+        base_epoch = 1_800_000_000
+        for minute in range(7):
+            engine.update(
+                "SBER", 100.0 + minute,
+                now=1000.0 + minute * 60.0,
+                event_timestamp=base_epoch + minute * 60,
+            )
+        state_before = engine._states["SBER"]
+        bars_before = list(state_before["bars"])
+        current_before = state_before["current"]
+        clock_before = state_before["clock_source"]
+
+        result = screener.push_trade(
+            "SBER", 107.0, 10.0, "trade-clock-test", "SIDE_BUY",
+            received_monotonic=1000.0 + 6 * 60.0,
+        )
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(state_before["clock_source"], clock_before)
+        self.assertEqual(list(state_before["bars"]), bars_before)
+        self.assertIs(state_before["current"], current_before)
+
 
 if __name__ == "__main__":
     unittest.main()
