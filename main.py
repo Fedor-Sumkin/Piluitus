@@ -1054,7 +1054,8 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "orderbook_out_of_order", "active_position_skipped", "atr_unready_candidates",
         "execution_bbo_blocked", "atr_history_blocked", "portfolio_cap_blocked",
         "portfolio_size_reduced", "entry_session_blocked", "execution_other_blocked",
-        "execution_stale_signal_blocked",
+        "execution_stale_signal_blocked", "risk_final_gate_blocked",
+        "candidate_expired", "finam_lot_unavailable",
     )
     values = {key: counts.get(key, 0) for key in names}
     with _pending_bbo_lock:
@@ -1085,7 +1086,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "ATR ожидание до LLM (кандидаты отложены)=%(atr_unready_candidates)d; "
         "блок ATR после APPROVE=%(atr_history_blocked)d; "
         "BBO wait=%(bbo_deferred)d, resumed=%(bbo_resumed)d, expired=%(bbo_expired)d, "
-        "superseded=%(bbo_superseded)d, coalesced=%(bbo_coalesced)d, cancelled=%(bbo_cancelled)d, pending_now=%(bbo_pending)d; "
+        "superseded=%(bbo_superseded)d, coalesced=%(bbo_coalesced)d, cancelled=%(bbo_cancelled)d, pending_now=%(bbo_pending)d, candidate_expired_pre_LLM=%(candidate_expired)d; "
         "BBO resume: attempts=%(bbo_resume_attempted)d (ORDER_BOOK=%(bbo_resume_from_book)d, QUOTES=%(bbo_resume_from_quotes)d), "
         "expired=%(bbo_resume_expired)d, session_cancel=%(bbo_resume_session_cancelled)d, "
         "funnel_not_ready=%(bbo_resume_funnel_not_ready)d, not_selected=%(bbo_resume_not_selected)d, "
@@ -1099,7 +1100,8 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "queue_full=%(bbo_resume_queue_full)d; "
         "после_LLM_исполнение: portfolio_cap_block=%(portfolio_cap_blocked)d, "
         "portfolio_size_reduced=%(portfolio_size_reduced)d, entry_session_block=%(entry_session_blocked)d, "
-        "other_block=%(execution_other_blocked)d, stale_signal_block=%(execution_stale_signal_blocked)d; "
+        "other_block=%(execution_other_blocked)d, stale_signal_block=%(execution_stale_signal_blocked)d, "
+        "risk_final_gate_block=%(risk_final_gate_blocked)d, finam_lot_unavailable=%(finam_lot_unavailable)d; "
         "strategy_shadow=%(strategy_shadow_pass)d/%(strategy_shadow_evaluated)d pass "
         "(reject=%(strategy_shadow_reject)d; hard_blocks: BBO_missing=%(shadow_block_bbo_unavailable)d, "
         "BBO_stale=%(shadow_block_bbo_stale)d, book_unconfirmed=%(shadow_block_order_book_not_confirmed)d, "
