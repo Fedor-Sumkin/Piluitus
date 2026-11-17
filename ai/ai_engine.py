@@ -794,7 +794,7 @@ class AIEngine:
             "trade_volume_5s", "trade_volume_baseline_5s", "trade_count_5s",
             "trade_baseline_bucket_count", "trade_baseline_trade_count",
             "trade_baseline_min_bucket_count",
-            "trade_count_60s", "volume_spike_raw", "direction_evidence_state",
+            "trade_count_60s", "direction_evidence_state",
             "trade_flow_imbalance_30s", "trade_price_change_30s_pct",
             "trade_realized_volatility_60s_pct", "trade_buy_volume_30s",
             "trade_sell_volume_30s", "trade_vwap_60s",
