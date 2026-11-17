@@ -2873,6 +2873,7 @@ class MarketWorker:
                         ai_analysis["take_profit"] = take_profit
                         ai_analysis["atr_at_entry"] = atr_value
                         ai_analysis["atr_periods_at_entry"] = atr_periods
+                        ai_analysis["atr_age_sec_at_entry"] = finite_float(metrics.get("bar_atr_age_sec")) if isinstance(metrics, dict) else None
                         ai_analysis["atr_multiplier"] = finite_float(os.getenv("ATR_MULTIPLIER", "1.5")) or 1.5
                         ai_analysis["entry_bid"] = entry_bid
                         ai_analysis["entry_ask"] = entry_ask
