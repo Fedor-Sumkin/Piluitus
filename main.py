@@ -1294,7 +1294,7 @@ async def _warmup_selected_m1_history(tickers: tuple[str, ...] | list[str]) -> N
         finally:
             with _m1_history_warmup_lock:
                 _m1_history_warmup_pending.discard(ticker)
-        await asyncio.sleep(0.12)
+        await asyncio.sleep(max(0.1, float(os.getenv("FINAM_METADATA_REQUEST_INTERVAL_SEC", "0.36"))))
 
 
 def _drop_pending_bbo_candidate(ticker: str, expected: dict[str, Any] | None = None) -> bool:
