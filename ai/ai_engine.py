@@ -816,6 +816,8 @@ class AIEngine:
         }[direction]
 
         spread_to_atr_limit = cls._max_spread_to_atr_ratio()
+        # The decision contract is deliberately compact and immutable. Optional
+        # evidence must never consume its character budget or be cut mid-contract.
         base = (
             "Return JSON with exactly three keys: final_decision (APPROVE or HOLD), "
             "confidence_score (0..1), reason_code (APPROVED, NO_LOCAL_CANDIDATE, "
@@ -824,7 +826,7 @@ class AIEngine:
             "No extra keys or text. Never output BUY/SELL as a decision. "
             "Never select, change, invert, or output BUY/SELL. "
             "APPROVE authorizes only the exact local candidate side; HOLD rejects it. "
-            "candidate=NONE => HOLD. "
+            "candidate=NONE => final_decision MUST be HOLD. "
             "Directional check: either signed price change agrees with candidate and VWAP, OR a fresh matching "
             "closed M1 pattern agrees with candidate and price remains on the correct side of VWAP. "
             "M1 NEUTRAL/UNAVAILABLE is not a contradiction; HOLD_M1_CONTRADICTION requires "
@@ -839,38 +841,40 @@ class AIEngine:
             "trade_volume_5s and trade_volume_baseline_5s are provider volume units; compare within ticker. "
             "30s price change and 60s realized volatility are context, not standalone gates. "
             "RAG rules are advisory context only and cannot add hard gates. "
-            "Confidence is evidence strength, not profit probability; use supplied facts only. "
-            f"candidate={direction}; ticker={str(ticker)[:10]}; price={cls._prompt_value(price, 12)}; "
+            "Confidence is evidence strength, not profit probability. "
+            f"candidate={direction};ticker={str(ticker)[:10]};price={cls._prompt_value(price, 12)};"
             f"last_size={cls._prompt_value(volume, 10)}. {direction_rules} "
             "volume_spike=last 5s trade volume / average 5s volume in prior 55s."
         )
 
         rule_text = ""
         if include_rule_text and isinstance(rag_context, str):
-            # Include only the always-on risk rule and rules matching this candidate.
-            # Reserve prompt budget for the mandatory contract and live metrics.
+            # Reserve space for the immutable contract and the live measurements.
             rule_budget = max(0, min(900, max_chars - len(base) - len(metrics_text) - 80))
             rule_text = select_prompt_rules(direction, rag_context, max_chars=rule_budget)
         rule_part = f" Advisory RAG context (never overrides hard checks): {rule_text}." if rule_text else ""
         metric_part = f" Metrics: {metrics_text}." if metrics_text else " Metrics: нет подтверждённых значений."
+
+        # First discard optional metrics from the tail. If the prompt is still too
+        # long, omit the RAG block as a whole; never slice a rule or the contract.
+        parts = metric_parts[:]
         prompt = base + rule_part + metric_part
-        if len(prompt) > max_chars:
-            parts = metric_parts[:]
-            while parts and len(base + rule_part + " Metrics: " + ";".join(parts) + ".") > max_chars:
-                parts.pop()
+        while len(prompt) > max_chars and parts:
+            parts.pop()
             metric_part = f" Metrics: {';'.join(parts)}." if parts else ""
             prompt = base + rule_part + metric_part
-        if len(prompt) > max_chars and rule_text:
-            # Never cut a curated rule in the middle of a condition. The mandatory
-            # contract wins; omit the optional RAG block as a whole if the budget is tight.
+        if len(prompt) > max_chars and rule_part:
             rule_part = ""
             prompt = base + metric_part
-        # Never truncate the mandatory decision contract. The dynamic fields above are
-        # bounded, but keep this guard in case a caller supplies a smaller custom limit.
+        if len(prompt) > max_chars:
+            # Extreme custom limits: keep contract and candidate identity; optional
+            # market evidence is omitted rather than truncating a decision rule.
+            prompt = base
         if len(base) > max_chars:
-            max_chars = len(base)
-        # Optional RAG/metrics may be shortened; the mandatory contract always survives.
-        return prompt[:max_chars]
+            # The public/default limits are sized for this contract. If a caller
+            # supplies a smaller value, the contract still takes precedence.
+            return base
+        return prompt
 
     @classmethod
     def _build_compact_retry_prompt(
