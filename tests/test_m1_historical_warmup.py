@@ -65,6 +65,7 @@ class HistoricalM1WarmupTests(unittest.TestCase):
 
     def test_old_history_remains_unready_due_to_freshness_guard(self):
         engine = MinuteBarPatternEngine()
+        base_bucket = int(1_800_000_000 // 60)
         imported = engine.load_closed_bars(
             "SBER", self._bars(base_bucket - 10, base_bucket - 1), now=1000.0,
             now_epoch=base_bucket * 60 + 600,
