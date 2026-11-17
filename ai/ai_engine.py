@@ -836,6 +836,8 @@ class AIEngine:
                     and 0.0 <= bid_age <= max_age and 0.0 <= ask_age <= max_age
                 ):
                     replacement = "HOLD_INSUFFICIENT_SUPPORT"
+        if decision == "HOLD" and reason in {"NOT_PROVIDED", "HOLD_UNCLEAR"} and replacement != reason:
+            return replacement, "INFERRED"
         return replacement, "CONSISTENT" if replacement == reason else "RECLASSIFIED"
 
     @classmethod
