@@ -20,25 +20,27 @@ class HistoricalM1WarmupTests(unittest.TestCase):
 
     def test_imports_only_fully_closed_bars_and_warms_atr(self):
         engine = MinuteBarPatternEngine()
-        now_epoch = 600 * 60 + 20
+        base_bucket = int(1_800_000_000 // 60)
+        now_epoch = base_bucket * 60 + 20
         imported = engine.load_closed_bars(
-            "SBER", self._bars(590, 600), now=500.0, now_epoch=now_epoch
+            "SBER", self._bars(base_bucket - 10, base_bucket), now=500.0, now_epoch=now_epoch
         )
         snapshot = engine.get_atr_snapshot("SBER")
         self.assertEqual(imported, 10)
         self.assertEqual(snapshot["bars"], 10.0)
         self.assertEqual(snapshot["periods"], 9.0)
         self.assertGreater(snapshot["atr"], 0.0)
-        self.assertEqual(engine._states["SBER"]["bars"][-1].bucket, 599)
+        self.assertEqual(engine._states["SBER"]["bars"][-1].bucket, base_bucket - 1)
 
-        metrics = engine._summarize(engine._states["SBER"], 106.0, 500.0)
+        metrics = engine._summarize(engine._states["SBER"], 106.0, 1000.0)
         ready, reason = validate_atr_readiness(metrics)
         self.assertTrue(ready, reason)
 
     def test_gaps_are_not_synthesized_and_break_atr_contiguous_suffix(self):
         engine = MinuteBarPatternEngine()
-        now_epoch = 600 * 60 + 20
-        bars = self._bars(580, 585) + self._bars(590, 599)
+        base_bucket = int(1_800_000_000 // 60)
+        now_epoch = base_bucket * 60 + 20
+        bars = self._bars(base_bucket - 20, base_bucket - 15) + self._bars(base_bucket - 10, base_bucket - 1)
         imported = engine.load_closed_bars(
             "SBER", bars, now=500.0, now_epoch=now_epoch
         )
@@ -49,22 +51,23 @@ class HistoricalM1WarmupTests(unittest.TestCase):
 
     def test_current_minute_and_invalid_ohlc_are_excluded(self):
         engine = MinuteBarPatternEngine()
-        bars = self._bars(590, 599)
+        base_bucket = int(1_800_000_000 // 60)
+        bars = self._bars(base_bucket - 10, base_bucket - 1)
         bars.append({
-            "timestamp": 600 * 60, "open": 100, "high": 99,
+            "timestamp": base_bucket * 60, "open": 100, "high": 99,
             "low": 101, "close": 100, "volume": 100,
         })
         imported = engine.load_closed_bars(
-            "SBER", bars, now=500.0, now_epoch=600 * 60 + 10
+            "SBER", bars, now=500.0, now_epoch=base_bucket * 60 + 10
         )
         self.assertEqual(imported, 9)
-        self.assertEqual(engine._states["SBER"]["bars"][-1].bucket, 599)
+        self.assertEqual(engine._states["SBER"]["bars"][-1].bucket, base_bucket - 1)
 
     def test_old_history_remains_unready_due_to_freshness_guard(self):
         engine = MinuteBarPatternEngine()
         imported = engine.load_closed_bars(
-            "SBER", self._bars(590, 599), now=500.0,
-            now_epoch=600 * 60 + 600,
+            "SBER", self._bars(base_bucket - 10, base_bucket - 1), now=1000.0,
+            now_epoch=base_bucket * 60 + 600,
         )
         self.assertEqual(imported, 10)
         metrics = engine._summarize(engine._states["SBER"], 106.0, 500.0)
