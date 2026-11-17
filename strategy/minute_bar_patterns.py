@@ -289,7 +289,9 @@ class MinuteBarPatternEngine:
                 continue
             merged[bucket] = MinuteBar(
                 bucket=bucket, open=open_price, high=high, low=low, close=close,
-                ticks=self.min_ticks_per_bar,
+                # Historical OHLC has volume but not a trustworthy tick count;
+                # never let it satisfy live-pattern sample-count requirements.
+                ticks=0,
             )
 
         if not merged:
