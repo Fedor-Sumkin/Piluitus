@@ -250,6 +250,7 @@ class _DiagnosticLogFilter(logging.Filter):
         "[M1 HISTORY WARMUP]",
         "[ORDER_BOOK POSITION POLICY]",
         "[ORDER_BOOK POSITION RESYNC]",
+        "[ORDER_BOOK REST CONTROL]",
         "[PAPER EXIT GUARD]",
         "[CANDIDATE TTL]",
         "[POSITION SIZE]",
