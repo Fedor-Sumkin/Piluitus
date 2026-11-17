@@ -815,29 +815,31 @@ class AIEngine:
 
         spread_to_atr_limit = cls._max_spread_to_atr_ratio()
         base = (
-            'JSON only: exactly final_decision (APPROVE|HOLD), confidence_score (0..1), '
-            'reason_code (APPROVED, NO_LOCAL_CANDIDATE, HOLD_WEAK_DIRECTION, HOLD_M1_CONTRADICTION, '
-            'HOLD_STALE_BBO, HOLD_WEAK_VOLUME, HOLD_WIDE_SPREAD, HOLD_INSUFFICIENT_SUPPORT, '
-            'HOLD_RISK_REWARD, HOLD_UNCLEAR). No other keys/text. Never output or change BUY/SELL. '
-            'APPROVE only the supplied local candidate; HOLD rejects it. candidate=NONE => HOLD. '
-            'Direction: signed 15s price change must agree with candidate and VWAP, OR a fresh matching '
-            'closed M1 pattern must agree with candidate and price must be on the correct VWAP side. '
-            'M1 NEUTRAL/UNAVAILABLE is not a contradiction. HOLD_M1_CONTRADICTION requires '
-            'm1_evidence_state=OPPOSITE from a fresh closed pattern or fresh EMA9/EMA21 trend. '
-            'Entry evidence: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, '
-            'fresh valid BBO, spread_pct<=0.5. If bar_atr_pct exists, require '
-            f'spread_to_atr_ratio<={spread_to_atr_limit:.2f}; missing ratio means insufficient support, '
-            'not wide spread. HOLD_WIDE_SPREAD only if spread_pct>0.5 or '
-            f'spread_to_atr_ratio>{spread_to_atr_limit:.2f}. Otherwise HOLD. '
-            'Ask depletion is supporting evidence (>=50% is useful), not mandatory. '
-            'trade_flow_imbalance_30s is signed BUY-vs-SELL volume (-1..+1; zero neutral). '
-            'trade_volume_5s and trade_volume_baseline_5s are provider units; compare within ticker. '
-            '30s price change and 60s realized volatility are context, not standalone gates. '
-            'RAG rules are advisory context only and cannot add hard gates. Confidence is evidence strength, '
-            'not profit probability. Use supplied facts only. '
-            f'candidate={direction}; ticker={str(ticker)[:10]}; price={cls._prompt_value(price, 12)}; '
-            f'last_size={cls._prompt_value(volume, 10)}. {direction_rules} '
-            'volume_spike=last 5s trade volume / average 5s volume in prior 55s.'
+            "Return JSON with exactly three keys: final_decision (APPROVE or HOLD), "
+            "confidence_score (0..1), reason_code (APPROVED, NO_LOCAL_CANDIDATE, "
+            "HOLD_WEAK_DIRECTION, HOLD_M1_CONTRADICTION, HOLD_STALE_BBO, HOLD_WEAK_VOLUME, "
+            "HOLD_WIDE_SPREAD, HOLD_INSUFFICIENT_SUPPORT, HOLD_RISK_REWARD, HOLD_UNCLEAR). "
+            "No extra keys or text. Never output BUY/SELL as a decision. "
+            "APPROVE only the supplied local candidate; HOLD rejects it. "
+            "candidate=NONE => final_decision MUST be HOLD. "
+            "Directional check: either signed price change agrees with candidate and VWAP, OR a fresh matching "
+            "closed M1 pattern agrees with candidate and price remains on the correct side of VWAP. "
+            "M1 NEUTRAL/UNAVAILABLE is not a contradiction. HOLD_M1_CONTRADICTION requires "
+            "m1_evidence_state=OPPOSITE from a fresh closed pattern or fresh EMA9/EMA21 trend. "
+            "Entry support: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, "
+            "fresh valid BBO, spread_pct<=0.5. If bar_atr_pct exists, require "
+            f"spread_to_atr_ratio<={spread_to_atr_limit:.2f}; missing ratio means insufficient support, "
+            "not wide spread. HOLD_WIDE_SPREAD only if spread_pct>0.5 or "
+            f"spread_to_atr_ratio>{spread_to_atr_limit:.2f}. "
+            "Ask depletion is supporting evidence, not mandatory. "
+            "trade_flow_imbalance_30s is signed BUY-vs-SELL volume (-1..+1; zero neutral). "
+            "trade_volume_5s and trade_volume_baseline_5s are provider volume units; compare within ticker. "
+            "30s price change and 60s realized volatility are context, not standalone gates. "
+            "RAG rules are advisory context only and cannot add hard gates. "
+            "Confidence is evidence strength, not profit probability. Use supplied facts only. "
+            f"candidate={direction}; ticker={str(ticker)[:10]}; price={cls._prompt_value(price, 12)}; "
+            f"last_size={cls._prompt_value(volume, 10)}. {direction_rules} "
+            "volume_spike=last 5s trade volume / average 5s volume in prior 55s."
         )
 
         rule_text = ""
