@@ -2098,6 +2098,15 @@ class FinamBrokerClient:
                         position_rest_refresh_trigger_age_sec = 1.5
                         position_ws_idle_resync_sec = 3.0
 
+                    logger.info(
+                        "[ORDER_BOOK POSITION POLICY] stale_trigger=%.2fs ws_idle_resync=%.2fs "
+                        "resync_cooldown=%.2fs rest_control_interval=%.2fs",
+                        position_rest_refresh_trigger_age_sec,
+                        position_ws_idle_resync_sec,
+                        crossed_resubscribe_cooldown_sec,
+                        position_rest_refresh_interval_sec,
+                    )
+
                     async def _refresh_position_snapshot(symbol: str) -> None:
                         ticker = symbol.split("@", 1)[0].strip().upper()
                         try:
