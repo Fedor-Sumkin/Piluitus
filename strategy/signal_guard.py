@@ -93,6 +93,34 @@ def validate_atr_readiness(metrics: dict[str, Any]) -> tuple[bool, str]:
     return True, "Достаточная и актуальная M1-история для расчёта ATR подтверждена."
 
 
+def classify_direction_evidence(direction: str, metrics: dict[str, Any]) -> str:
+    """Classify price-momentum/VWAP evidence without treating neutral VWAP as a veto."""
+    side = str(direction or "").strip().upper()
+    if side not in {"BUY", "SELL"} or not isinstance(metrics, dict):
+        return "UNAVAILABLE"
+    if "price_change_pct" not in metrics or "price_vs_vwap_pct" not in metrics:
+        return "UNAVAILABLE"
+    momentum = _num(metrics, "price_change_pct", float("nan"))
+    vs_vwap = _num(metrics, "price_vs_vwap_pct", float("nan"))
+    if not math.isfinite(momentum) or not math.isfinite(vs_vwap):
+        return "UNAVAILABLE"
+    try:
+        momentum_band = max(0.0, float(os.getenv("PILUITUS_DIRECTION_MOMENTUM_NEUTRAL_PCT", "0.01")))
+        vwap_band = max(0.0, float(os.getenv("PILUITUS_DIRECTION_VWAP_NEUTRAL_PCT", "0.03")))
+    except (TypeError, ValueError, OverflowError):
+        momentum_band, vwap_band = 0.01, 0.03
+    sign = 1.0 if side == "BUY" else -1.0
+    signed_momentum = momentum * sign
+    signed_vwap = vs_vwap * sign
+    if signed_momentum < -momentum_band or signed_vwap < -vwap_band:
+        return "OPPOSITE"
+    if signed_momentum > momentum_band and signed_vwap > vwap_band:
+        return "ALIGNED"
+    if signed_momentum >= -momentum_band and signed_vwap >= -vwap_band:
+        return "NEUTRAL"
+    return "UNAVAILABLE"
+
+
 def infer_candidate_direction(metrics: dict[str, Any]) -> str | None:
     """Use a fresh, closed 1m pattern first; otherwise use momentum + VWAP.
 
@@ -104,14 +132,16 @@ def infer_candidate_direction(metrics: dict[str, Any]) -> str | None:
     pattern_direction = _fresh_bar_pattern_direction(metrics)
     change = _num(metrics, "price_change_pct", 0.0)
     vs_vwap = _num(metrics, "price_vs_vwap_pct", 0.0)
-    if pattern_direction == "BUY":
-        return "BUY" if vs_vwap > 0.0 else None
-    if pattern_direction == "SELL":
-        return "SELL" if vs_vwap < 0.0 else None
-    if change > 0.0 and vs_vwap > 0.0:
-        return "BUY"
-    if change < 0.0 and vs_vwap < 0.0:
-        return "SELL"
+    if pattern_direction in {"BUY", "SELL"}:
+        return (
+            pattern_direction
+            if classify_direction_evidence(pattern_direction, metrics) != "OPPOSITE"
+            else None
+        )
+    if change > 0.0:
+        return "BUY" if classify_direction_evidence("BUY", metrics) != "OPPOSITE" else None
+    if change < 0.0:
+        return "SELL" if classify_direction_evidence("SELL", metrics) != "OPPOSITE" else None
     return None
 
 
@@ -192,11 +222,19 @@ def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bo
             return False, "SELL по 1-минутному паттерну заблокирован: цена не ниже VWAP."
         direction_evidence = f"свежий M1-паттерн {str(metrics.get('bar_pattern_name', '')).strip()}"
     else:
-        if decision == "BUY" and (price_change <= 0.0 or price_vs_vwap <= 0.0):
-            return False, "BUY заблокирован: цена не растёт одновременно с положительным отклонением от VWAP."
-        if decision == "SELL" and (price_change >= 0.0 or price_vs_vwap >= 0.0):
-            return False, "SELL заблокирован: нет одновременно отрицательного импульса и цены ниже VWAP."
-        direction_evidence = "согласованный импульс цены и VWAP"
+        direction_state = classify_direction_evidence(decision, metrics)
+        if direction_state == "OPPOSITE":
+            return False, (
+                f"{decision} заблокирован: сильное встречное подтверждение цены/VWAP "
+                "против локального направления."
+            )
+        if direction_state == "UNAVAILABLE":
+            return False, "Направленные метрики цены/VWAP недоступны; вход заблокирован."
+        direction_evidence = (
+            "согласованный импульс цены и VWAP"
+            if direction_state == "ALIGNED"
+            else "направление цены подтверждено, VWAP нейтрален; противоречия нет"
+        )
 
     side = "ask" if decision == "BUY" else "bid"
     side_name = "Ask" if decision == "BUY" else "Bid"
