@@ -43,6 +43,34 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertIn("SELL requires negative 15s trade momentum", prompt)
         self.assertLessEqual(len(prompt), 2100)
 
+    def test_prompt_includes_raw_volume_spike_and_baseline_quality_metrics(self) -> None:
+        prompt = AIEngine._build_live_prompt(
+            ticker="SBER",
+            price=100.0,
+            volume=10,
+            candidate_direction="BUY",
+            metrics={
+                "trade_data_ready": 1.0,
+                "volume_spike": 8.0,
+                "volume_spike_raw": 8.25,
+                "trade_count_5s": 12,
+                "trade_baseline_bucket_count": 10,
+                "trade_baseline_min_bucket_count": 4,
+                "trade_baseline_trade_count": 48,
+            },
+            rag_context="",
+            max_chars=2100,
+            include_rule_text=False,
+        )
+        for expected in (
+            "volume_spike_raw=8.25",
+            "trade_count_5s=12",
+            "trade_baseline_bucket_count=10",
+            "trade_baseline_min_bucket_count=4",
+            "trade_baseline_trade_count=48",
+        ):
+            self.assertIn(expected, prompt)
+
     def test_prompt_distinguishes_neutral_m1_from_opposite_m1(self) -> None:
         prompt = AIEngine._build_live_prompt(
             ticker="SBER", price=100.0, volume=10, candidate_direction="BUY",
