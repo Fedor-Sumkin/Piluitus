@@ -73,6 +73,41 @@ def _event_timestamp_to_monotonic(value: object, receive_monotonic: float) -> fl
         return receive_monotonic
 
 
+def _should_resync_position_order_book(
+    bid_age_sec: object,
+    ask_age_sec: object,
+    book_event_age_sec: object,
+    *,
+    stale_after_sec: float,
+    stream_idle_sec: float,
+) -> bool:
+    """Resubscribe only when BBO is old and the ORDER_BOOK event stream is idle.
+
+    A resting best level may remain unchanged while valid deeper-level deltas
+    continue to maintain the reconstructed book. Its level-change timestamp
+    alone must not cause repeated subscription resets.
+    """
+    try:
+        bid_age = float(bid_age_sec)
+        ask_age = float(ask_age_sec)
+        event_age = float(book_event_age_sec)
+        stale_after = max(0.0, float(stale_after_sec))
+        stream_idle = max(0.0, float(stream_idle_sec))
+    except (TypeError, ValueError, OverflowError):
+        return True
+    if not math.isfinite(stale_after) or not math.isfinite(stream_idle):
+        return True
+    if max(bid_age, ask_age) < stale_after:
+        return False
+    # A recent, in-order provider event keeps the delta-chain alive even when
+    # the best price level itself has not changed. Execution freshness guards
+    # remain independent and continue to require a confirmed executable BBO.
+    return not (
+        math.isfinite(event_age)
+        and 0.0 <= event_age <= stream_idle
+    )
+
+
 class FinamBrokerClient:
     def __init__(self, token: str, is_demo: bool = True):
         self.token = token
@@ -2053,13 +2088,15 @@ class FinamBrokerClient:
                     try:
                         crossed_resubscribe_after_sec = max(2.0, float(os.getenv("FINAM_CROSSED_BBO_RESUBSCRIBE_AFTER_SEC", "5")))
                         crossed_resubscribe_cooldown_sec = max(10.0, float(os.getenv("FINAM_CROSSED_BBO_RESUBSCRIBE_COOLDOWN_SEC", "30")))
-                        position_rest_refresh_interval_sec = max(3.0, float(os.getenv("FINAM_POSITION_REST_BBO_REFRESH_SEC", "5")))
+                        position_rest_refresh_interval_sec = max(3.0, float(os.getenv("FINAM_POSITION_REST_BBO_REFRESH_SEC", "15")))
                         position_rest_refresh_trigger_age_sec = max(0.5, float(os.getenv("FINAM_POSITION_REST_BBO_TRIGGER_AGE_SEC", "1.5")))
+                        position_ws_idle_resync_sec = max(1.0, float(os.getenv("FINAM_POSITION_WS_IDLE_RESYNC_SEC", "3")))
                     except (TypeError, ValueError):
                         crossed_resubscribe_after_sec = 5.0
                         crossed_resubscribe_cooldown_sec = 30.0
-                        position_rest_refresh_interval_sec = 5.0
+                        position_rest_refresh_interval_sec = 15.0
                         position_rest_refresh_trigger_age_sec = 1.5
+                        position_ws_idle_resync_sec = 3.0
 
                     async def _refresh_position_snapshot(symbol: str) -> None:
                         ticker = symbol.split("@", 1)[0].strip().upper()
@@ -2207,18 +2244,28 @@ class FinamBrokerClient:
                                     ask_seen = _event_timestamp_to_monotonic(ask_stamp, now_loop)
                                     bid_age = now_loop - bid_seen if bid_stamp else math.inf
                                     ask_age = now_loop - ask_seen if ask_stamp else math.inf
-                                    if max(bid_age, ask_age) < position_rest_refresh_trigger_age_sec:
-                                        continue
+                                    book_event_seen = float(state.get("last_event_monotonic", 0.0) or 0.0)
+                                    book_event_age = (
+                                        now_loop - book_event_seen if book_event_seen > 0.0 else math.inf
+                                    )
+                                    should_resync = _should_resync_position_order_book(
+                                        bid_age,
+                                        ask_age,
+                                        book_event_age,
+                                        stale_after_sec=position_rest_refresh_trigger_age_sec,
+                                        stream_idle_sec=position_ws_idle_resync_sec,
+                                    )
 
-                                    # REST is diagnostic-only, so stale position BBO must
-                                    # recover through a fresh provider snapshot on the WS
-                                    # subscription. Restart the delta chain with a cooldown;
-                                    # never manufacture freshness from REST receive time.
+                                    # REST is diagnostic-only. A stale best-level change timestamp
+                                    # is not sufficient to reset an otherwise active delta-chain:
+                                    # resubscribe only after both the executable BBO age threshold
+                                    # and a genuine ORDER_BOOK stream-idle interval are exceeded.
                                     last_resubscribe = self._crossed_bbo_resubscribe_at.get(
                                         position_ticker, 0.0
                                     )
                                     if (
-                                        position_symbol in order_book_subscribed
+                                        should_resync
+                                        and position_symbol in order_book_subscribed
                                         and now_loop - last_resubscribe >= crossed_resubscribe_cooldown_sec
                                     ):
                                         self._order_book_snapshot_required.add(position_ticker)
@@ -2252,6 +2299,12 @@ class FinamBrokerClient:
                                                 "подписка будет повторена синхронизатором.",
                                                 position_ticker, type(resync_exc).__name__,
                                             )
+
+                                    # Fresh BBO needs no REST control request. If the BBO is
+                                    # stale but WS events are still flowing, keep the subscription
+                                    # and use only the throttled diagnostic snapshot below.
+                                    if max(bid_age, ask_age) < position_rest_refresh_trigger_age_sec:
+                                        continue
 
                                     if (
                                         position_ticker not in position_snapshot_inflight
