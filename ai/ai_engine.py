@@ -789,23 +789,23 @@ class AIEngine:
         # Keep the most useful directional and trade-quality measurements first:
         # prompt overflow may trim later context, never the core 30s flow metrics.
         common_keys = (
-            # Preserve the complete trade-flow evidence before optional book/bar detail.
-            "trade_data_ready", "trade_history_coverage_sec", "trade_metrics_age_sec",
-            "trade_volume_5s", "trade_volume_baseline_5s", "trade_count_5s",
-            "trade_baseline_bucket_count", "trade_baseline_trade_count",
-            "trade_baseline_min_bucket_count",
-            "trade_count_60s", "direction_evidence_state",
+            # The prompt is character-bounded. Keep decision-critical trade flow
+            # and M1 state first so optional diagnostics cannot crowd them out.
+            "trade_data_ready", "trade_metrics_age_sec", "trade_history_coverage_sec",
+            "trade_volume_5s", "trade_volume_baseline_5s", "trade_count_60s",
             "trade_flow_imbalance_30s", "trade_price_change_30s_pct",
-            "trade_realized_volatility_60s_pct", "trade_buy_volume_30s",
-            "trade_sell_volume_30s", "trade_vwap_60s",
+            "trade_realized_volatility_60s_pct",
+            "bar_count", "bar_atr_periods", "bar_atr_age_sec", "m1_evidence_state",
+            "bar_trend_up", "bar_trend_down",
             "price_change_pct", "price_vs_vwap_pct", "volume_spike",
             "spread_pct", "spread_to_atr_ratio", "spread_to_atr_limit",
             "bid_ask_available", "spread_available", "bid_quote_age_sec",
-            "ask_quote_age_sec", "bbo_max_age_sec", "bid", "ask",
-            "bar_count", "bar_atr_periods", "bar_atr_age_sec", "m1_evidence_state",
-            "queue_imbalance", "queue_imbalance_available",
-            "bar_trend_up", "bar_trend_down", "bar_atr_pct", "bar_body_ratio",
-            "bar_close_position",
+            "ask_quote_age_sec", "bbo_max_age_sec",
+            "trade_count_5s", "trade_baseline_bucket_count",
+            "trade_baseline_trade_count", "trade_baseline_min_bucket_count",
+            "trade_buy_volume_30s", "trade_sell_volume_30s", "trade_vwap_60s",
+            "bid", "ask", "queue_imbalance", "queue_imbalance_available",
+            "bar_atr_pct", "bar_body_ratio", "bar_close_position",
         )
         if direction == "SELL":
             directional_keys = (
@@ -855,30 +855,27 @@ class AIEngine:
         spread_to_atr_limit = cls._max_spread_to_atr_ratio()
         # Compact immutable contract; reserve the remaining budget for live evidence.
         base = (
-            "Return JSON with exactly three keys: final_decision (APPROVE or HOLD), "
-            "confidence_score (0..1), reason_code (APPROVED, NO_LOCAL_CANDIDATE, "
-            "HOLD_WEAK_DIRECTION, HOLD_M1_CONTRADICTION, HOLD_STALE_BBO, HOLD_WEAK_VOLUME, "
-            "HOLD_WIDE_SPREAD, HOLD_INSUFFICIENT_SUPPORT, HOLD_RISK_REWARD, HOLD_UNCLEAR). "
-            "No extra keys or text. Never output BUY/SELL as a decision. "
-            "Never select, change, invert, or output BUY/SELL. "
-            "APPROVE authorizes only the exact local candidate side; HOLD rejects it. "
+            "JSON only, exactly 3 keys: final_decision=APPROVE|HOLD, confidence_score=0..1, "
+            "reason_code=APPROVED|NO_LOCAL_CANDIDATE|HOLD_WEAK_DIRECTION|HOLD_M1_CONTRADICTION|"
+            "HOLD_STALE_BBO|HOLD_WEAK_VOLUME|HOLD_WIDE_SPREAD|HOLD_INSUFFICIENT_SUPPORT|"
+            "HOLD_RISK_REWARD|HOLD_UNCLEAR. No extra keys/text. Never output, choose, change or "
+            "invert BUY/SELL. APPROVE approves only the exact local candidate; HOLD rejects it. "
             "candidate=NONE => final_decision MUST be HOLD. "
-            f"Directional check: signed price momentum beyond +/-{momentum_neutral_band_pct:.3f}% must agree with candidate; "
-            "VWAP alignment strengthens it, "
-            f"VWAP within +/-{vwap_neutral_band_pct:.3f}% is NEUTRAL and must not veto, and VWAP beyond that band in the opposite direction "
-            "is a contradiction. A fresh matching closed M1 pattern may support the candidate when VWAP is not "
-            "materially opposite. M1 NEUTRAL/UNAVAILABLE is not a contradiction; HOLD_M1_CONTRADICTION requires "
-            "m1_evidence_state=OPPOSITE from a fresh closed pattern or fresh EMA9/EMA21 trend. "
-            "Entry: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, fresh valid BBO, "
-            "spread_pct<=0.5. If bar_atr_pct exists, spread_to_atr_ratio must be "
-            f"<={spread_to_atr_limit:.2f}; missing ratio means insufficient support. "
-            "HOLD_WIDE_SPREAD requires spread_pct>0.5 or "
-            f"spread_to_atr_ratio>{spread_to_atr_limit:.2f}. "
+            f"Directional check: signed price momentum must agree with candidate and exceed +/-{momentum_neutral_band_pct:.3f}%; "
+            f"VWAP within +/-{vwap_neutral_band_pct:.3f}% is NEUTRAL and must not veto; "
+            "VWAP beyond the neutral band in the opposite direction is contradictory. "
+            "A fresh matching closed M1 pattern may support the candidate if VWAP is not materially opposite. "
+            "M1 NEUTRAL/UNAVAILABLE is not a contradiction; HOLD_M1_CONTRADICTION requires fresh "
+            "m1_evidence_state=OPPOSITE (closed pattern or EMA9/EMA21 trend). "
+            "Entry requires trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, "
+            "fresh valid BBO and spread_pct<=0.5. If ATR exists, spread_to_atr_ratio must be "
+            f"<={spread_to_atr_limit:.2f}; missing ratio is insufficient support. "
+            "HOLD_WIDE_SPREAD requires spread_pct>0.5 or spread_to_atr_ratio above its limit. "
             "Ask depletion is supporting evidence, not mandatory. "
-            "trade_flow_imbalance_30s is signed BUY-vs-SELL volume (-1..+1; zero neutral). "
+            "trade_flow_imbalance_30s is signed BUY-vs-SELL volume (-1..+1; zero neutral); "
             "trade_volume_5s and trade_volume_baseline_5s are provider volume units. "
             "30s price change and 60s realized volatility are context, not standalone gates. "
-            "RAG rules are advisory context only and cannot add hard gates. "
+            "RAG rules are advisory only and cannot add hard gates. "
             f"candidate={direction};ticker={str(ticker)[:10]};price={cls._prompt_value(price, 12)};"
             f"{direction_rules}"
         )
