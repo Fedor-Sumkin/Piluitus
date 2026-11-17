@@ -833,7 +833,7 @@ class AIEngine:
             "Entry: trade_data_ready=1, trade_metrics_age_sec<=5, volume_spike>=1.5, fresh valid BBO, "
             "spread_pct<=0.5. If bar_atr_pct exists, spread_to_atr_ratio must be "
             f"<={spread_to_atr_limit:.2f}; missing ratio means insufficient support. "
-            "Wide spread: spread_pct>0.5 or "
+            "HOLD_WIDE_SPREAD requires spread_pct>0.5 or "
             f"spread_to_atr_ratio>{spread_to_atr_limit:.2f}. "
             "Ask depletion is supporting evidence, not mandatory. "
             "trade_flow_imbalance_30s is signed BUY-vs-SELL volume (-1..+1; zero neutral). "
