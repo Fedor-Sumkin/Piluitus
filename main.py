@@ -3612,9 +3612,7 @@ async def cleanup_stale_and_resume_paper_session():
         for item in emergency_items:
             anomaly_queue.put_nowait(item)
 
-        with _ai_ticker_pending_lock:
-            _ai_ticker_pending.clear()
-            _ai_ticker_last_enqueued_at.clear()
+        _ai_candidate_deduplicator.clear()
 
         try:
             storage_result = await db_manager.clear_unreconciled_paper_positions()
