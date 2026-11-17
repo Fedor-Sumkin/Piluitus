@@ -54,6 +54,12 @@ class HistoricalM1WarmupTests(unittest.TestCase):
         engine = MinuteBarPatternEngine()
         base_bucket = int(1_800_000_000 // 60)
         bars = self._bars(base_bucket - 10, base_bucket - 1)
+        # A malformed but otherwise closed bar must be rejected independently
+        # of the current-minute exclusion below.
+        bars.append({
+            "timestamp": (base_bucket - 11) * 60, "open": 100, "high": 99,
+            "low": 101, "close": 100, "volume": 100,
+        })
         bars.append({
             "timestamp": base_bucket * 60, "open": 100, "high": 99,
             "low": 101, "close": 100, "volume": 100,
