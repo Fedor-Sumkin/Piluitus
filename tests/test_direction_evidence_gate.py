@@ -26,6 +26,10 @@ class DirectionEvidenceGateTests(unittest.TestCase):
             self.assertEqual(classify_direction_evidence("BUY", metrics), "NEUTRAL")
             self.assertEqual(infer_candidate_direction(metrics), "BUY")
 
+    def test_subthreshold_price_noise_does_not_create_candidate(self):
+        metrics = {"price_change_pct": 0.005, "price_vs_vwap_pct": 0.01}
+        self.assertIsNone(infer_candidate_direction(metrics))
+
     def test_strong_opposing_vwap_blocks_candidate(self):
         metrics = {"price_change_pct": 0.12, "price_vs_vwap_pct": -0.08}
         self.assertEqual(classify_direction_evidence("BUY", metrics), "OPPOSITE")
