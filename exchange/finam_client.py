@@ -575,6 +575,58 @@ class FinamBrokerClient:
             raise ValueError("Finam schedule response is not a JSON object")
         return payload
 
+    async def get_historical_m1_bars(
+        self, ticker: str, lookback_minutes: int = 120
+    ) -> list[dict[str, Any]]:
+        """Fetch historical M1 OHLC bars; callers must discard the still-open bar."""
+        if not self.jwt_token:
+            return []
+        normalized = str(ticker or "").strip().upper().split("@", 1)[0]
+        if not normalized:
+            return []
+        symbol = f"{normalized}@MISX"
+        minutes = min(360, max(30, int(lookback_minutes)))
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(minutes=minutes)
+        params = {
+            "timeframe": "TIME_FRAME_M1",
+            "interval.start_time": start_time.isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "interval.end_time": end_time.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        }
+        url = f"{self.base_url}/v1/instruments/{url_quote(symbol, safe='@')}/bars"
+        request_jwt = self.jwt_token
+        for attempt in range(2):
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(8.0, connect=3.0)) as client:
+                    response = await client.get(
+                        url,
+                        headers={"Authorization": f"Bearer {self.jwt_token}", "Accept": "application/json"},
+                        params=params,
+                    )
+                    response.raise_for_status()
+                    payload = response.json()
+                bars = payload.get("bars", []) if isinstance(payload, dict) else []
+                if not isinstance(bars, list):
+                    return []
+                return [bar for bar in bars if isinstance(bar, dict)]
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 401 and attempt == 0:
+                    if await self._refresh_auth_if_unchanged(request_jwt):
+                        request_jwt = self.jwt_token
+                        continue
+                logger.warning(
+                    "Finam M1 history %s unavailable: HTTP %s; live-built ATR remains active.",
+                    normalized, exc.response.status_code,
+                )
+                return []
+            except (httpx.RequestError, ValueError, TypeError) as exc:
+                logger.warning(
+                    "Finam M1 history %s request failed (%s); live-built ATR remains active.",
+                    normalized, type(exc).__name__,
+                )
+                return []
+        return []
+
     async def get_assets(self) -> list[dict[str, Any]]:
         """Fetch Finam's tradable asset directory once for tick-size metadata."""
         if not self.jwt_token:
