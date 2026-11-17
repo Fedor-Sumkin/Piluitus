@@ -781,7 +781,7 @@ if not math.isclose(
     abs_tol=0.01,
 ):
     raise RuntimeError(
-        "Несогласованный стартовый капитал: ExecutionLayer и RiskManager должны использовать TRADING_DEPOSIT."
+        "Несогласованный стартовый капитал: ExecutionLayer и RiskManager должны использовать единый Settings.TRADE_DEPOSIT."
     )
 logger.info(
     "💰 [CAPITAL SYNC] TRADE_DEPOSIT (TRADING_DEPOSIT legacy fallback)=%.2f ₽; ExecutionLayer=%.2f ₽; RiskManager=%.2f ₽.",
