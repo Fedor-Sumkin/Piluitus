@@ -4,7 +4,7 @@ import unittest
 import time
 from datetime import datetime, timedelta, timezone
 
-from finam_client import FinamBrokerClient
+from finam_client import FinamBrokerClient, _should_resync_position_order_book
 
 
 class FinamOrderBookParserDiagnosticsTests(unittest.TestCase):
@@ -126,6 +126,21 @@ class FinamOrderBookParserDiagnosticsTests(unittest.TestCase):
         self.assertTrue(recovered[0]["book_valid"])
         self.assertNotIn("SBER", self.client._order_book_snapshot_required)
         self.assertEqual(self.client._order_book_state["SBER"]["bids"][100.0], 10.0)
+
+    def test_active_order_book_stream_does_not_resubscribe_for_unchanged_best_level(self) -> None:
+        self.assertFalse(_should_resync_position_order_book(
+            12.0, 11.0, 0.2, stale_after_sec=1.5, stream_idle_sec=3.0
+        ))
+
+    def test_idle_order_book_stream_resubscribes_when_bbo_is_stale(self) -> None:
+        self.assertTrue(_should_resync_position_order_book(
+            12.0, 11.0, 3.1, stale_after_sec=1.5, stream_idle_sec=3.0
+        ))
+
+    def test_fresh_bbo_does_not_resubscribe_even_if_stream_is_idle(self) -> None:
+        self.assertFalse(_should_resync_position_order_book(
+            0.4, 0.6, 10.0, stale_after_sec=1.5, stream_idle_sec=3.0
+        ))
 
     def test_unrecognized_symbol_is_not_misclassified_as_out_of_order(self) -> None:
         malformed = {"symbol": "GAZP@MISX", "message": "unsupported payload"}
