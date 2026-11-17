@@ -1,5 +1,6 @@
 import re
 import json
+import hashlib
 import logging
 import math
 import asyncio
@@ -8,6 +9,7 @@ from httpx import AsyncClient, HTTPStatusError
 from config import Settings
 import httpx
 from rag_prompt_utils import normalise_rag_context, select_prompt_rules
+from signal_guard import classify_direction_evidence
 
 log = logging.getLogger("Piluitus.AIEngine")
 thought_log = logging.getLogger("Piluitus.EvolutionThoughts")
@@ -702,16 +704,15 @@ class AIEngine:
                 price_vs_vwap = cls._metric_number(prepared, "price_vs_vwap_pct", math.nan)
                 trade_ready = cls._metric_number(prepared, "trade_data_ready", 0.0) >= 0.5
                 metrics_age = cls._metric_number(prepared, "trade_metrics_age_sec", math.inf)
+                direction_state = classify_direction_evidence(direction, prepared)
                 momentum_aligned = (
-                    (direction == "BUY" and price_change > 0.0 and price_vs_vwap > 0.0)
-                    or (direction == "SELL" and price_change < 0.0 and price_vs_vwap < 0.0)
+                    ((direction == "BUY" and price_change > 0.0)
+                     or (direction == "SELL" and price_change < 0.0))
+                    and direction_state in {"ALIGNED", "NEUTRAL"}
                 )
                 m1_aligned = (
                     prepared.get("m1_evidence_state") == "ALIGNED"
-                    and (
-                        (direction == "BUY" and price_vs_vwap > 0.0)
-                        or (direction == "SELL" and price_vs_vwap < 0.0)
-                    )
+                    and direction_state in {"ALIGNED", "NEUTRAL"}
                 )
                 if trade_ready and math.isfinite(metrics_age) and 0.0 <= metrics_age <= 5.0 and (
                     momentum_aligned or m1_aligned
@@ -1012,9 +1013,12 @@ class AIEngine:
             ticker, price, volume, candidate_direction, metrics_dict, rag_str,
             max_chars=2100, include_rule_text=True,
         )
+        prompt_fingerprint = hashlib.sha256(user_prompt.encode("utf-8")).hexdigest()[:16]
         log.debug(
-            "[vLLM PROMPT] ticker=%s direction=%s chars=%d metrics=%d",
-            ticker, candidate_direction, len(user_prompt), len(metrics_dict) if isinstance(metrics_dict, dict) else 0,
+            "[vLLM PROMPT] ticker=%s direction=%s chars=%d metrics=%d fingerprint=%s",
+            ticker, candidate_direction, len(user_prompt),
+            len(metrics_dict) if isinstance(metrics_dict, dict) else 0,
+            prompt_fingerprint,
         )
 
         start_inference_time = time.time()
@@ -1057,6 +1061,8 @@ class AIEngine:
                         }]
                         compact_body["max_tokens"] = min(configured_max_tokens, 320)
                         active_body = compact_body
+                        user_prompt = compact_body["messages"][0]["content"]
+                        prompt_fingerprint = hashlib.sha256(user_prompt.encode("utf-8")).hexdigest()[:16]
                         log.warning(
                             "[vLLM COMPAT] Переполнение контекста; повторяем компактный запрос, max_tokens=%s. Причина: %s",
                             compact_body["max_tokens"], error_detail,
@@ -1336,6 +1342,8 @@ class AIEngine:
         processed["model_reason_code_raw"] = raw_reason_code
         processed["model_reason_code"] = validated_reason_code
         processed["model_reason_validation"] = reason_validation
+        processed["prompt_chars"] = len(user_prompt)
+        processed["prompt_fingerprint"] = prompt_fingerprint
         prepared_metrics = self._prepare_prompt_metrics(metrics_dict, candidate_direction)
         processed["m1_evidence_state"] = prepared_metrics.get("m1_evidence_state", "UNAVAILABLE")
         processed["spread_to_atr_ratio"] = prepared_metrics.get("spread_to_atr_ratio")
