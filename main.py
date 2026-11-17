@@ -2871,7 +2871,7 @@ class MarketWorker:
                     local_evidence_diagnostic = "PRE_LLM_VALIDATED"
                 logger.info(
                     "[LLM DECISION] %s candidate=%s model=%s final=%s confidence=%s "
-                    "confidence_valid=%s contract_violation=%s model_reason_code=%s "
+                    "confidence_valid=%s contract_violation=%s model_reason_code=%s model_reason_raw=%s "
                     "reason_validation=%s m1=%s direction_gate=%s prompt_chars=%s prompt_fingerprint=%s "
                     "reason=%s local_evidence=%s features=%s",
                     ticker,
@@ -2882,6 +2882,7 @@ class MarketWorker:
                     confidence_valid,
                     model_contract_violation,
                     model_reason_code,
+                    ai_analysis.get("model_reason_code_raw", "NOT_PROVIDED"),
                     ai_analysis.get("model_reason_validation", "UNKNOWN"),
                     ai_analysis.get("m1_evidence_state", "UNAVAILABLE"),
                     metrics.get("direction_evidence_state", "UNAVAILABLE"),
@@ -2925,6 +2926,7 @@ class MarketWorker:
                     "llm_candidate_direction": candidate_decision,
                     "llm_model_decision": model_decision,
                     "llm_reason_code": model_reason_code,
+                    "llm_reason_code_raw": ai_analysis.get("model_reason_code_raw", "NOT_PROVIDED"),
                     "llm_reason_validation": ai_analysis.get("model_reason_validation", "UNKNOWN"),
                     "llm_m1_evidence_state": ai_analysis.get("m1_evidence_state", "UNAVAILABLE"),
                     "llm_prompt_chars": ai_analysis.get("prompt_chars"),
