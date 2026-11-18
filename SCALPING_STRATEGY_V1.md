@@ -246,11 +246,14 @@ candidate are correlated observations, not independent trades.
 ## PAPER executable-BBO replay journal
 
 The PAPER process now records a bounded, ordered journal of accepted Finam
-ORDER_BOOK best-quote states for the active Top-N universe and currently open
-PAPER positions. Each event stores the process session ID and sequence,
-ticker, exchange event time (or an explicit receive-time fallback), receive
-UTC/monotonic clocks, Bid/Ask, displayed best-level sizes, validity and the
-provider/parser invalidation reason.
+ORDER_BOOK and QUOTES best-quote states for the active Top-N universe and
+currently open PAPER positions. Both streams are captured because the PAPER
+exit monitor consumes the shared screener BBO, whose per-side confirmation
+clocks can be refreshed by either source. Each event stores the process
+session ID and sequence, ticker, source stream, exchange event time (or an
+explicit receive-time fallback), receive UTC/monotonic clocks, per-side
+confirmation clocks and ages, Bid/Ask, displayed best-level sizes, BBO
+validity, ORDER_BOOK validity and the provider/parser invalidation reason.
 
 Capture is observational and does not feed prices into the execution path.
 Price/validity transitions are retained immediately. Size-only changes are
