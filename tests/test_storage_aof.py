@@ -92,19 +92,16 @@ class InMemoryAOFTests(unittest.IsolatedAsyncioTestCase):
     async def test_atomic_trade_write_restores_trade_and_active_order_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = _InMemory(str(Path(directory) / "fallback.aof"))
-            previous = RedisClient._instance
-            RedisClient._instance = store
-            try:
-                trade = {
-                    "id": "PAPER_ATOMIC_1",
-                    "mode": "PAPER",
-                    "status": "OPEN",
-                    "ticker": "SBER",
-                    "volume": 10,
-                }
-                await DBManager().log_trade("PAPER_ATOMIC_1", trade)
-            finally:
-                RedisClient._instance = previous
+            database = DBManager()
+            database._redis = store
+            trade = {
+                "id": "PAPER_ATOMIC_1",
+                "mode": "PAPER",
+                "status": "OPEN",
+                "ticker": "SBER",
+                "volume": 10,
+            }
+            await database.log_trade("PAPER_ATOMIC_1", trade)
 
             restored = _InMemory(store.aof_path)
             trade_payload = await restored.get("piluitus:trade:PAPER_ATOMIC_1")
