@@ -1251,8 +1251,9 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
             key, row["labels"], row["ok"], row["positive_rate_pct"], row["average_net_return_pct"],
         )
     for prefix in (
-        "regime=", "score_band=", "horizon=", "hour_msk=", "hard_block=",
-        "ofi_alignment_5s=", "side_ofi_alignment_5s=",
+        "regime=", "market_regime=", "volatility_regime=", "liquidity_regime=",
+        "directional_regime=", "cost_to_atr_bucket=", "score_band=", "horizon=",
+        "hour_msk=", "hard_block=", "ofi_alignment_5s=", "side_ofi_alignment_5s=",
         "spread_atr_bucket=", "trade_count_bucket=", "flow_alignment=", "side_flow_alignment=",
         "llm_model_decision=", "llm_final_decision=", "llm_signal_status=",
         "llm_execution_status=", "llm_confidence_bucket=",
