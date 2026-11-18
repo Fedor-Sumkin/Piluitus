@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sys
 import tempfile
 
 
@@ -105,7 +106,18 @@ def patch_main(source: str) -> str:
     return ensure_http_exception_import(source)
 
 
+def _configure_console() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
 def main() -> int:
+    _configure_console()
     parser = argparse.ArgumentParser(description="Локальный установщик исправлений PILUITUS")
     parser.add_argument("--project", default=".", help="Корень проекта PILUITUS")
     project = Path(parser.parse_args().project).expanduser().resolve()
