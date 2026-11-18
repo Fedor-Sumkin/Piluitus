@@ -70,6 +70,8 @@ class PaperPerformanceTests(unittest.TestCase):
         self.assertEqual(overall["profit_factor"], 2.5)
         self.assertEqual(overall["max_drawdown_rub"], 50.0)
         self.assertEqual(overall["max_drawdown_pct_of_prior_peak"], 50.0)
+        self.assertEqual(overall["max_consecutive_losses"], 1)
+        self.assertEqual(overall["current_loss_streak"], 0)
         scorecard = tracker.scorecard()
         self.assertEqual(scorecard["by_side"]["BUY"]["trades"], 2)
         self.assertEqual(scorecard["by_exit_reason"]["STOP_LOSS"]["trades"], 1)
