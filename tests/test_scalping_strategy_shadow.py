@@ -16,6 +16,8 @@ def strong_buy_metrics() -> dict[str, float | str]:
         "bid_ask_available": 1.0,
         "spread_available": 1.0,
         "spread_pct": 0.025,
+        "bid": 100.0,
+        "ask": 100.025,
         "bbo_max_age_sec": 2.0,
         "bid_quote_age_sec": 0.2,
         "ask_quote_age_sec": 0.3,
@@ -81,6 +83,28 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
         metrics["_bar_pattern_signal_at_monotonic"] = time.monotonic() - 30.0
         result = evaluate_scalping_candidate("BUY", metrics)
         self.assertNotIn("fresh_matching_m1_pattern", result["reasons"])
+
+    def test_spread_to_atr_above_configured_limit_is_a_hard_block(self) -> None:
+        metrics = strong_buy_metrics()
+        metrics["bar_atr_pct"] = 0.01
+        result = evaluate_scalping_candidate("BUY", metrics)
+        self.assertGreater(result["spread_atr_ratio"], result["spread_atr_limit"])
+        self.assertFalse(result["eligible"])
+        self.assertIn("spread_to_atr_above_limit", result["hard_blocks"])
+
+    def test_missing_atr_percentage_cannot_receive_shadow_approval(self) -> None:
+        metrics = strong_buy_metrics()
+        metrics.pop("bar_atr_pct")
+        result = evaluate_scalping_candidate("BUY", metrics)
+        self.assertFalse(result["eligible"])
+        self.assertIn("spread_atr_unavailable", result["hard_blocks"])
+
+    def test_crossed_or_missing_bbo_prices_are_a_shadow_hard_block(self) -> None:
+        metrics = strong_buy_metrics()
+        metrics["ask"] = 99.9
+        result = evaluate_scalping_candidate("BUY", metrics)
+        self.assertFalse(result["eligible"])
+        self.assertIn("bbo_prices_invalid", result["hard_blocks"])
 
     def test_missing_queue_measurement_is_explicit_not_fabricated(self) -> None:
         metrics = strong_buy_metrics()
