@@ -37,6 +37,43 @@ def _confidence_bucket(value: object) -> str:
     return f"{lower:02d}-{upper:02d}"
 
 
+def _shadow_segment_metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    """Summarize unique candidate/horizon labels without treating them as fills."""
+    returns = [
+        value for row in rows
+        if (value := _number(row.get("net_executable_return_pct"))) is not None
+    ]
+    wins = [value for value in returns if value > 0.0]
+    losses = [value for value in returns if value < 0.0]
+    mfe = [
+        value for row in rows
+        if (value := _number(row.get("mfe_executable_pct"))) is not None
+    ]
+    mae = [
+        value for row in rows
+        if (value := _number(row.get("mae_executable_pct"))) is not None
+    ]
+    count = len(returns)
+    return {
+        "labels": count,
+        "sample_quality": (
+            "INSUFFICIENT_LT_30" if count < 30
+            else "PRELIMINARY_30_99" if count < 100
+            else "DEVELOPING_100_299" if count < 300
+            else "LARGE_300_PLUS"
+        ),
+        "mean_net_return_pct": round(sum(returns) / count, 6) if count else None,
+        "positive_rate_pct": round(len(wins) / count * 100.0, 3) if count else None,
+        "profit_factor": (
+            round(sum(wins) / abs(sum(losses)), 4) if losses else None
+        ),
+        "average_win_pct": round(sum(wins) / len(wins), 6) if wins else None,
+        "average_loss_pct": round(sum(losses) / len(losses), 6) if losses else None,
+        "average_mfe_net_pct": round(sum(mfe) / len(mfe), 6) if mfe else None,
+        "average_mae_net_pct": round(sum(mae) / len(mae), 6) if mae else None,
+    }
+
+
 def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     pnls = [_number(row.get("pnl")) for row in rows]
     valid = [value for value in pnls if value is not None]
@@ -283,6 +320,14 @@ class PaperPerformanceTracker:
         counted_candidate_horizons: set[tuple[str, int]] = set()
         matched_realized_net = 0.0
         matched_details: list[dict[str, Any]] = []
+        horizon_segments: dict[str, dict[str, list[Mapping[str, Any]]]] = {
+            "by_side": defaultdict(list),
+            "by_model_decision": defaultdict(list),
+            "by_final_decision": defaultdict(list),
+            "by_confidence": defaultdict(list),
+            "by_model_decision_confidence": defaultdict(list),
+            "by_execution_status": defaultdict(list),
+        }
         for trade in trades:
             candidate_id = _text(trade.get("shadow_candidate_id"), "")
             if not candidate_id:
@@ -318,6 +363,22 @@ class PaperPerformanceTracker:
                         horizon_returns[horizon].append(value)
                         horizon_observations[horizon].append(label)
                         counted_candidate_horizons.add((candidate_id, horizon))
+                        side = _text(label.get("side") or trade.get("side"))
+                        model_decision = _text(label.get("llm_model_decision"))
+                        final_decision = _text(label.get("llm_final_decision"))
+                        confidence = _confidence_bucket(label.get("llm_confidence"))
+                        execution_status = _text(label.get("llm_execution_status"))
+                        segment_prefix = f"{horizon}s|"
+                        horizon_segments["by_side"][segment_prefix + side].append(label)
+                        horizon_segments["by_model_decision"][segment_prefix + model_decision].append(label)
+                        horizon_segments["by_final_decision"][segment_prefix + final_decision].append(label)
+                        horizon_segments["by_confidence"][segment_prefix + confidence].append(label)
+                        horizon_segments["by_model_decision_confidence"][
+                            segment_prefix + model_decision + "|" + confidence
+                        ].append(label)
+                        horizon_segments["by_execution_status"][
+                            segment_prefix + execution_status
+                        ].append(label)
                     matched_horizons[str(horizon)] = round(value, 6)
             matched_details.append({
                 "trade_id": _text(trade.get("id"), ""),
@@ -358,6 +419,13 @@ class PaperPerformanceTracker:
             }
         unmatched = sum(unmatched_reasons.values())
         total = len(trades)
+        summarized_segments = {
+            group_name: {
+                key: _shadow_segment_metrics(rows)
+                for key, rows in sorted(groups.items())
+            }
+            for group_name, groups in horizon_segments.items()
+        }
         return {
             "matched_trades": len(matched),
             "unmatched_trades": unmatched,
@@ -367,6 +435,11 @@ class PaperPerformanceTracker:
             "join_key": "shadow_candidate_id",
             "matched_trade_details": matched_details[-200:],
             "horizons": horizons,
+            "horizon_segments": summarized_segments,
+            "horizon_segment_note": (
+                "Groups contain unique candidate_id+horizon labels joined to closed PAPER trades; "
+                "returns are hypothetical Shadow outcomes, not realized trade PnL."
+            ),
         }
 
 
