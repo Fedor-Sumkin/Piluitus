@@ -226,6 +226,7 @@ class PaperPerformanceTracker:
         matched: list[dict[str, Any]] = []
         unmatched = 0
         horizon_returns: dict[int, list[float]] = defaultdict(list)
+        counted_candidate_horizons: set[tuple[str, int]] = set()
         matched_realized_net = 0.0
         matched_details: list[dict[str, Any]] = []
         for trade in trades:
@@ -241,7 +242,9 @@ class PaperPerformanceTracker:
             for horizon, label in candidate_labels.items():
                 value = _number(label.get("net_executable_return_pct"))
                 if value is not None:
-                    horizon_returns[horizon].append(value)
+                    if (candidate_id, horizon) not in counted_candidate_horizons:
+                        horizon_returns[horizon].append(value)
+                        counted_candidate_horizons.add((candidate_id, horizon))
                     matched_horizons[str(horizon)] = round(value, 6)
             matched_details.append({
                 "trade_id": _text(trade.get("id"), ""),
