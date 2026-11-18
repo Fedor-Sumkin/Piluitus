@@ -692,7 +692,7 @@ class ShadowForwardTracker:
 
     def statistics_snapshot(self) -> dict[str, Any]:
         """Cumulative outcomes by eligibility and bounded research cross-sections."""
-        def summarize(values: Mapping[str, float | int]) -> dict[str, float | int]:
+        def summarize(values: Mapping[str, float | int]) -> dict[str, float | int | None]:
             row = dict(values)
             count = int(row["ok"])
             row["positive_rate_pct"] = (
