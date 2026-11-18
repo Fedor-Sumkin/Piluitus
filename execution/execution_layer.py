@@ -17,6 +17,11 @@ from uuid import uuid4
 # Единый справочник лотности хранится в config.py.
 from config import ASSET_METADATA, FINAM_TRADE_LOT_SIZES, LOT_SIZES, Settings, PAPER_TRADING
 from strategy.signal_guard import validate_spread_to_atr
+from strategy.paper_performance import (
+    PAPER_CLOSED_TRADES_STORAGE_KEY,
+    PAPER_CLOSED_TRADES_STORAGE_LIMIT,
+    paper_performance_tracker,
+)
 
 logger = logging.getLogger("Piluitus.ExecutionLayer")
 
@@ -2458,6 +2463,22 @@ class BaseExecutionEngine:
 
         await db.set_json(f"piluitus:trade:{order_id}", closed_trade)
         trade.update(closed_trade)
+
+        # Keep a dedicated bounded realized-PAPER journal; the dashboard's
+        # 100-row trade_history is intentionally not the analytics source.
+        try:
+            await db.push_to_list(
+                PAPER_CLOSED_TRADES_STORAGE_KEY,
+                closed_trade,
+                max_len=PAPER_CLOSED_TRADES_STORAGE_LIMIT,
+            )
+        except Exception as journal_exc:
+            logger.critical(
+                "PAPER trade %s закрыта, но durable performance journal не записан: %s",
+                order_id, journal_exc, exc_info=True,
+            )
+        paper_performance_tracker.record(closed_trade)
+
         try:
             await db.push_to_list("piluitus:trade_history", closed_trade, max_len=100)
         except Exception as history_exc:
