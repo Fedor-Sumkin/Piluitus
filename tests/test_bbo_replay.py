@@ -175,6 +175,43 @@ class BBOReplayRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["trigger_bbo_price"], 98.7)
         self.assertEqual(row["trade_id"], "PAPER-1")
 
+    def test_first_fresh_unchanged_bbo_after_exit_trigger_is_forced_into_journal(self):
+        recorder = BBOReplayRecorder(
+            queue_limit=100, heartbeat_interval_sec=5.0
+        )
+        snapshot = {
+            "updated": True, "valid": True, "bid": 100.0, "ask": 100.1,
+            "bid_size": 10.0, "ask_size": 12.0,
+        }
+        with patch("strategy.bbo_replay.time.monotonic", side_effect=[10.0, 10.1, 10.2]):
+            self.assertTrue(recorder.record(
+                "SBER", snapshot,
+                {"source": "FINAM_QUOTES", "received_monotonic": 10.0,
+                 "bid_confirmed_monotonic": 9.0, "ask_confirmed_monotonic": 9.0,
+                 "max_age_sec": 0.5},
+            ))
+            self.assertTrue(recorder.record_exit_trigger(
+                "SBER",
+                {"id": "PAPER-3", "side": "BUY",
+                 "pending_exit_reason": "STOP_LOSS",
+                 "pending_exit_trigger_price": 99.0},
+                None,
+            ))
+            self.assertTrue(recorder.record(
+                "SBER", snapshot,
+                {"source": "FINAM_QUOTES", "received_monotonic": 10.2,
+                 "bid_confirmed_monotonic": 10.2, "ask_confirmed_monotonic": 10.2,
+                 "max_age_sec": 0.5},
+            ))
+
+        first = recorder._queue.get_nowait()
+        trigger = recorder._queue.get_nowait()
+        recovered = recorder._queue.get_nowait()
+        self.assertEqual(trigger["event_kind"], "EXIT_TRIGGER")
+        self.assertEqual(recovered["event_kind"], "HEARTBEAT")
+        self.assertEqual(recovered["bid_age_sec_at_capture"], 0.0)
+        self.assertNotIn("SBER", recorder._pending_exit_tickers)
+
     def test_exit_trigger_without_fresh_bbo_is_retained_as_pending_context(self):
         recorder = BBOReplayRecorder(queue_limit=100)
         trade = {
