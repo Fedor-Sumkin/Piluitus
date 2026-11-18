@@ -55,7 +55,7 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         self.assertEqual(exit_row["raw_executable_price"], 98.9)
         self.assertAlmostEqual(exit_row["fill_price_after_slippage"], 98.8011)
         self.assertLess(exit_row["net_pnl_rub"], exit_row["gross_pnl_rub"])
-        self.assertEqual(result["engine"], "BBO_ONLY_EXIT_PROXY")
+        self.assertEqual(result["engine"], "PAPER_EXIT_REPLAY_V1")
 
     def test_sell_baseline_uses_ask_to_exit_short(self):
         rows = [event(1, bid=101.0, ask=101.1, epoch=1_800_000_001.0)]
