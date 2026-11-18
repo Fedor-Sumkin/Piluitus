@@ -350,6 +350,42 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(segments["llm_attribution_state=NOT_CALLED"]["ok"], 1)
         self.assertEqual(segments["llm_not_called_reason=ATR_NOT_READY"]["ok"], 1)
 
+    def test_market_regime_and_entry_economics_are_carried_into_forward_labels(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,))
+        metrics = quote_metrics(100.0, 100.2)
+        metrics.update({
+            "bar_atr_pct": 0.30,
+            "price_change_pct": 0.20,
+            "price_vs_vwap_pct": 0.15,
+            "bar_trend_up": 1.0,
+            "bar_trend_down": 0.0,
+            "trade_flow_imbalance_30s": 0.30,
+            "trade_count_60s": 40,
+            "trade_history_coverage_sec": 60.0,
+        })
+        with patch.dict("os.environ", {
+            "PILUITUS_PAPER_COMMISSION_PCT": "0.05",
+            "PILUITUS_PAPER_SLIPPAGE_BPS": "2",
+        }), patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 160.0]):
+            tracker.record_candidate(
+                "SBER", "BUY", metrics,
+                {"score": 90.0, "eligible": True, "regime": "TREND_ALIGNED"},
+            )
+            labels = tracker.observe_market_tick("SBER", quote_metrics(100.3, 100.4))
+
+        self.assertEqual(len(labels), 1)
+        label = labels[0]
+        self.assertEqual(label["market_regime"], "TREND")
+        self.assertEqual(label["directional_regime"], "TREND_UP")
+        self.assertEqual(label["volatility_regime"], "VOLATILITY_UNCLASSIFIED")
+        self.assertGreater(label["minimum_favorable_move_pct"], 0.0)
+        self.assertGreater(label["cost_to_atr_ratio"], 0.0)
+        self.assertEqual(label["entry_economics"]["cost_model_status"], "CONFIGURED")
+        segments = tracker.statistics_snapshot()["segments"]
+        self.assertEqual(segments["market_regime=TREND"]["ok"], 1)
+        self.assertEqual(segments["directional_regime=TREND_UP"]["ok"], 1)
+        self.assertEqual(segments["cost_to_atr_bucket=0.25-0.50"]["ok"], 1)
+
     def test_ofi_snapshot_is_carried_into_forward_label_and_segment(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
         metrics = quote_metrics(100.0, 100.1)
