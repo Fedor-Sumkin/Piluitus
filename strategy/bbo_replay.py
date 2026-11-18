@@ -200,12 +200,14 @@ class BBOReplayRecorder:
             "book_valid": valid,
             "book_reason": reason[:120],
         }
-        self._last_state[symbol] = (*state, now_mono)
         try:
             self._queue.put_nowait(row)
         except asyncio.QueueFull:
             self.dropped_queue_full += 1
             return False
+        # Advance the deduplication watermark only after enqueue succeeds. If the
+        # queue is full, the next repeated state can still be retried.
+        self._last_state[symbol] = (*state, now_mono)
         self.accepted += 1
         return True
 
