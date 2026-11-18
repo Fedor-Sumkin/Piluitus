@@ -41,6 +41,8 @@ def build_exit_execution_diagnostics(
     """
     fields = (
         "exit_executable_bbo_price",
+        "exit_bid",
+        "exit_ask",
         "exit_depth_vwap",
         "exit_bid_age_sec",
         "exit_ask_age_sec",
