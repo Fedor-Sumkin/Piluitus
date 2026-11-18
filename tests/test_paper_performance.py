@@ -47,6 +47,10 @@ class PaperPerformanceTests(unittest.TestCase):
             trade("middle", 200),
         ])
         self.assertEqual(restored, 3)
+        self.assertEqual(tracker.restore([
+            trade("newest", 3, exit_time="2026-11-18T12:00:00"),
+            trade("middle", 2, exit_time="2026-11-18T11:00:00"),
+        ]), 0)
         self.assertEqual({row["id"] for row in tracker.records}, {"middle", "newest"})
 
     def test_scorecard_calculates_net_metrics_groups_and_drawdown(self):
