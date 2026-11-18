@@ -216,6 +216,7 @@ class PaperMonitorBatchTests(unittest.IsolatedAsyncioTestCase):
 class PaperPartialExitTests(unittest.IsolatedAsyncioTestCase):
     def _engine(self):
         engine = BaseExecutionEngine.__new__(BaseExecutionEngine)
+        engine.paper_mode = True
         engine.paper_book_size_unit = "shares"
         engine.paper_max_book_participation_pct = 100.0
         engine.paper_commission_pct = 0.1
