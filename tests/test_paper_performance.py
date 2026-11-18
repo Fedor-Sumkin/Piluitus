@@ -506,7 +506,7 @@ class PaperEntryPerformanceCohortTests(unittest.TestCase):
                 "exit_reason": "TAKE_PROFIT",
             },
             {
-                **trade("third-trade", -4, exit_time="2026-11-18T10:06:00+03:00"),
+                **trade("third-trade", -4, exit_time="2026-11-18T10:08:00+03:00"),
                 "entry_timestamp": "2026-11-18T10:06:30+03:00",
             },
             {
