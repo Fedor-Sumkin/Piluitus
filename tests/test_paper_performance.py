@@ -135,6 +135,31 @@ class PaperPerformanceTests(unittest.TestCase):
         self.assertEqual(overall["max_exit_bbo_gap_sec"], 0.0)
         self.assertIsNone(overall["average_exit_bbo_gap_sec"])
 
+    def test_shadow_join_reports_distinct_unmatched_attribution_reasons(self):
+        tracker = PaperPerformanceTracker()
+        tracker.restore([
+            trade("matched", 5, candidate="candidate-ok"),
+            trade("no-id", 1, candidate=None),
+            trade("pending", -2, candidate="candidate-pending"),
+            trade("no-valid-label", -3, candidate="candidate-no-fresh"),
+        ])
+        labels = [
+            {"candidate_id": "candidate-ok", "result": "OK",
+             "horizon_sec": 60, "net_executable_return_pct": 0.12},
+            {"candidate_id": "candidate-no-fresh", "result": "NO_FRESH_BBO",
+             "horizon_sec": 60},
+        ]
+
+        comparison = tracker.scorecard(labels)["shadow_comparison"]
+        self.assertEqual(comparison["matched_trades"], 1)
+        self.assertEqual(comparison["unmatched_trades"], 3)
+        self.assertEqual(comparison["matched_trade_rate_pct"], 25.0)
+        self.assertEqual(comparison["unmatched_by_reason"], {
+            "NO_SHADOW_CANDIDATE_ID": 1,
+            "CANDIDATE_LABEL_NOT_YET_AVAILABLE": 1,
+            "CANDIDATE_HAS_NO_VALID_OK_LABEL": 1,
+        })
+
     def test_shadow_join_uses_candidate_id_and_deduplicates_candidate_horizon(self):
         tracker = PaperPerformanceTracker()
         tracker.restore([
