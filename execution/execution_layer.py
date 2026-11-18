@@ -1462,6 +1462,7 @@ class BaseExecutionEngine:
             )
 
             entry_bbo: BBOExitQuote | None = None
+            paper_depth_fill: dict[str, Any] | None = None
             entry_bbo_wait_attempts = 0
             if self.paper_mode:
                 # LLM inference can consume the quote TTL. Wait briefly for the
