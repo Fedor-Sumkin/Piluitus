@@ -35,7 +35,8 @@ class _InMemory:
     def __init__(self, aof_path: str = AOF_FILE) -> None:
         self._store: dict[str, Any] = {}
         self.aof_path = aof_path
-        self._lock = asyncio.Lock()  # Защита от race conditions при параллельной HFT-записи
+        self._lock = asyncio.Lock()
+        self._load_error: str | None = None
         self._load_from_aof()
 
     def _load_from_aof(self) -> None:
@@ -56,11 +57,18 @@ class _InMemory:
                     key = event.get("key")
                     val = event.get("val")
 
+                    if not isinstance(key, str) or not key:
+                        raise ValueError("AOF event has no valid key")
                     if cmd == "set":
                         self._store[key] = val
                     elif cmd == "del":
-                        if key in self._store:
-                            del self._store[key]
+                        self._store.pop(key, None)
+                    elif cmd == "del_many":
+                        keys = event.get("keys")
+                        if not isinstance(keys, list) or not all(isinstance(item, str) for item in keys):
+                            raise ValueError("AOF del_many event has invalid keys")
+                        for item in keys:
+                            self._store.pop(item, None)
                     elif cmd == "lpush":
                         self._store.setdefault(key, [])
                         self._store[key].insert(0, val)
@@ -69,29 +77,62 @@ class _InMemory:
                         lst = self._store.get(key, [])
                         left, right = self._redis_slice_bounds(len(lst), int(start), int(end))
                         self._store[key] = lst[left:right]
+                    elif cmd == "lpush_trim":
+                        list_val = event.get("list_val")
+                        limit = int(event.get("max_len", 0))
+                        if not isinstance(list_val, str) or limit < 1:
+                            raise ValueError("AOF lpush_trim event is invalid")
+                        self._store.setdefault(key, [])
+                        self._store[key].insert(0, list_val)
+                        self._store[key] = self._store[key][:limit]
+                    elif cmd == "trade_write":
+                        list_key = event.get("list_key")
+                        list_val = event.get("list_val")
+                        limit = int(event.get("max_len", 0))
+                        if not isinstance(list_key, str) or not list_key or not isinstance(list_val, str) or limit < 1:
+                            raise ValueError("AOF trade_write event is invalid")
+                        self._store[key] = val
+                        self._store.setdefault(list_key, [])
+                        self._store[list_key].insert(0, list_val)
+                        self._store[list_key] = self._store[list_key][:limit]
                     elif cmd == "clear_trades":
                         keys_to_del = [k for k in list(self._store.keys()) if k.startswith("piluitus:trade:")]
                         for k in keys_to_del:
                             del self._store[k]
-                        if "piluitus:active_orders" in self._store:
-                            del self._store["piluitus:active_orders"]
+                        self._store.pop("piluitus:active_orders", None)
+                    else:
+                        raise ValueError(f"Unknown AOF command: {cmd!r}")
             log.info("✅ _InMemory: Стейт успешно восстановлен. Ключей в ОЗУ: %d", len(self._store))
         except Exception as e:
-            log.error("❌ _InMemory: Не удалось прочитать бэкап-файл: %s", e)
+            self._load_error = f"{type(e).__name__}: {e}"
+            self._store.clear()
+            log.critical("❌ _InMemory: AOF повреждён; хранилище закрыто для записи/чтения: %s", self._load_error)
+
+    def _ensure_healthy(self) -> None:
+        if self._load_error:
+            raise RuntimeError(
+                "Fallback AOF is unreadable; storage is fail-closed: "
+                f"{self._load_error}"
+            )
 
     def _sync_write_aof(self, event: dict) -> None:
-        """Синхронная дозапись строки события в конец файла."""
-        try:
-            with open(self.aof_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(event, ensure_ascii=False) + "\n")
-        except Exception as e:
-            log.error("❌ _InMemory AOF Write Error: %s", e)
+        """Append and fsync one journal event; persistence errors must propagate."""
+        parent = os.path.dirname(os.path.abspath(self.aof_path))
+        os.makedirs(parent, exist_ok=True)
+        with open(self.aof_path, "a", encoding="utf-8") as stream:
+            stream.write(json.dumps(event, ensure_ascii=False, allow_nan=False) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+
+    async def _append_aof_locked(self, event: dict) -> None:
+        self._ensure_healthy()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, self._sync_write_aof, event)
 
     async def _append_aof(self, event: dict) -> None:
-        """Асинхронная обёртка для записи на диск с защитой от гонок данных."""
-        async with self._lock:  # Блокировка гарантирует атомарный порядок записи транзакций
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._sync_write_aof, event)
+        """Append under the same lock used by state mutations and compaction."""
+        async with self._lock:
+            await self._append_aof_locked(event)
 
     def _sync_compact_aof(self, snapshot: dict[str, Any]) -> None:
         """Atomically rewrite fallback AOF from current state (without deleted history)."""
@@ -125,30 +166,66 @@ class _InMemory:
             await loop.run_in_executor(None, self._sync_compact_aof, snapshot)
     # ---------- базовые операции ----------
     async def set(self, key: str, value: str, ex: Optional[int] = None, **_: Any) -> bool:
-        self._store[key] = value
-        await self._append_aof({"cmd": "set", "key": key, "val": value})
+        async with self._lock:
+            await self._append_aof_locked({"cmd": "set", "key": key, "val": value})
+            self._store[key] = value
         return True
 
     async def get(self, key: str, **_: Any) -> Optional[str]:
-        val = self._store.get(key)
-        return val if isinstance(val, str) else None
+        async with self._lock:
+            self._ensure_healthy()
+            val = self._store.get(key)
+            return val if isinstance(val, str) else None
 
     async def delete(self, *keys: str) -> int:
-        removed = 0
-        for k in keys:
-            if k in self._store:
-                del self._store[k]
-                removed += 1
-                await self._append_aof({"cmd": "del", "key": k})
-        return removed
+        normalized = list(dict.fromkeys(str(key) for key in keys))
+        if not normalized:
+            return 0
+        async with self._lock:
+            self._ensure_healthy()
+            existing = [key for key in normalized if key in self._store]
+            if not existing:
+                return 0
+            await self._append_aof_locked({"cmd": "del_many", "keys": existing, "key": "__delete__"})
+            for key in existing:
+                self._store.pop(key, None)
+            return len(existing)
 
     # ---------- list‑ops ----------
     async def lpush(self, key: str, value: str) -> int:
-        self._store.setdefault(key, [])
-        lst: List[str] = cast(List[str], self._store[key])
-        lst.insert(0, value)
-        await self._append_aof({"cmd": "lpush", "key": key, "val": value})
-        return len(lst)
+        async with self._lock:
+            await self._append_aof_locked({"cmd": "lpush", "key": key, "val": value})
+            self._store.setdefault(key, [])
+            lst: List[str] = cast(List[str], self._store[key])
+            lst.insert(0, value)
+            return len(lst)
+
+    async def lpush_trim(self, key: str, value: str, max_len: int) -> int:
+        limit = max(1, int(max_len))
+        async with self._lock:
+            await self._append_aof_locked({
+                "cmd": "lpush_trim", "key": key, "list_val": value, "max_len": limit,
+            })
+            self._store.setdefault(key, [])
+            lst: List[str] = cast(List[str], self._store[key])
+            lst.insert(0, value)
+            del lst[limit:]
+            return len(lst)
+
+    async def set_and_lpush_trim(
+        self, key: str, value: str, list_key: str, list_value: str, max_len: int
+    ) -> None:
+        limit = max(1, int(max_len))
+        async with self._lock:
+            await self._append_aof_locked({
+                "cmd": "trade_write", "key": key, "val": value,
+                "list_key": list_key, "list_val": list_value, "max_len": limit,
+            })
+            self._store[key] = value
+            self._store.setdefault(list_key, [])
+            rows: List[str] = cast(List[str], self._store[list_key])
+            rows.insert(0, list_value)
+            del rows[limit:]
 
     @staticmethod
     def _redis_slice_bounds(length: int, start: int, end: int) -> tuple[int, int]:
@@ -163,15 +240,20 @@ class _InMemory:
         return min(max(normalized_start, 0), length), min(max(normalized_end, 0), length)
 
     async def ltrim(self, key: str, start: int, end: int) -> None:
-        lst = cast(List[Any], self._store.get(key, []))
-        left, right = self._redis_slice_bounds(len(lst), start, end)
-        self._store[key] = lst[left:right]
-        await self._append_aof({"cmd": "ltrim", "key": key, "start": start, "end": end})
+        async with self._lock:
+            self._ensure_healthy()
+            lst = cast(List[Any], self._store.get(key, []))
+            left, right = self._redis_slice_bounds(len(lst), start, end)
+            trimmed = lst[left:right]
+            await self._append_aof_locked({"cmd": "ltrim", "key": key, "start": start, "end": end})
+            self._store[key] = trimmed
 
     async def lrange(self, key: str, start: int, end: int) -> List[str]:
-        lst = cast(List[Any], self._store.get(key, []))
-        left, right = self._redis_slice_bounds(len(lst), start, end)
-        return [str(item) for item in lst[left:right]]
+        async with self._lock:
+            self._ensure_healthy()
+            lst = cast(List[Any], self._store.get(key, []))
+            left, right = self._redis_slice_bounds(len(lst), start, end)
+            return [str(item) for item in lst[left:right]]
 
     # ---------- scan ----------
     async def scan(
@@ -180,15 +262,17 @@ class _InMemory:
         match: Optional[str] = None,
         count: int = 100,
     ) -> tuple[int, list[bytes]]:
-        keys = list(self._store.keys())
-        if match:
-            keys = [k for k in keys if fnmatch.fnmatch(k, match)]
-
-        byte_keys = [k.encode() for k in keys]
-        return 0, byte_keys
+        async with self._lock:
+            self._ensure_healthy()
+            keys = list(self._store.keys())
+            if match:
+                keys = [k for k in keys if fnmatch.fnmatch(k, match)]
+            byte_keys = [k.encode() for k in keys]
+            return 0, byte_keys
 
     # ---------- ping ----------
     async def ping(self) -> bool:
+        self._ensure_healthy()
         return True
 
 
@@ -202,43 +286,76 @@ class RedisClient:
     автоматически переключается на _InMemory‑мок.
     """
     _instance: Union[redis.Redis, _InMemory, None] = None
+    _connect_lock: asyncio.Lock | None = None
 
     @classmethod
     async def get_client(cls) -> Union[redis.Redis, _InMemory]:
-        """Возвращает готовый клиент, создавая его единожды."""
-        if cls._instance is None:
-            try:
-                log.info(
-                    "🔌 Попытка подключения к Redis %s:%s",
-                    Settings.REDIS_HOST,
-                    Settings.REDIS_PORT,
-                )
-                client = redis.Redis(
-                    host=Settings.REDIS_HOST,
-                    port=Settings.REDIS_PORT,
-                    db=Settings.REDIS_DB,
-                    password=Settings.REDIS_PASSWORD,
-                    decode_responses=True,
-                )
-                await client.ping()
-                cls._instance = client
-                log.info("✅ Redis‑соединение успешно установлено")
-            except Exception as exc:
-                log.error("❌ Не удалось подключиться к Redis: %s", exc)
-                cls._instance = _InMemory()
-                log.warning(
-                    "🚧 Запущен fallback‑Redis (in‑memory с персистентным AOF-файлом). "
-                    "Критическая история торгов защищена от рестартов приложения."
-                )
+        """Return one process-wide Redis-compatible client, even during concurrent startup."""
+        if cls._instance is not None:
+            return cast(Union[redis.Redis, _InMemory], cls._instance)
+        if cls._connect_lock is None:
+            cls._connect_lock = asyncio.Lock()
+        async with cls._connect_lock:
+            if cls._instance is None:
+                client = None
+                try:
+                    log.info(
+                        "🔌 Попытка подключения к Redis %s:%s",
+                        Settings.REDIS_HOST,
+                        Settings.REDIS_PORT,
+                    )
+                    client = redis.Redis(
+                        host=Settings.REDIS_HOST,
+                        port=Settings.REDIS_PORT,
+                        db=Settings.REDIS_DB,
+                        password=Settings.REDIS_PASSWORD,
+                        decode_responses=True,
+                    )
+                    await client.ping()
+                    cls._instance = client
+                    log.info("✅ Redis‑соединение успешно установлено")
+                except Exception as exc:
+                    if client is not None:
+                        try:
+                            await client.aclose()
+                        except Exception:
+                            pass
+                    log.error("❌ Не удалось подключиться к Redis: %s", exc)
+                    cls._instance = _InMemory()
+                    log.warning(
+                        "🚧 Запущен fallback‑Redis (in‑memory с персистентным AOF-файлом). "
+                        "Торговые операции будут доступны только при исправном AOF."
+                    )
         return cast(Union[redis.Redis, _InMemory], cls._instance)
 
     # ---------------- 3️⃣ Универсальные CRUD‑утилиты ----------------
     @classmethod
     async def set_json(cls, key: str, value: Any, ttl: Optional[int] = None) -> None:
         client = await cls.get_client()
-        payload = json.dumps(value, ensure_ascii=False)
+        payload = json.dumps(value, ensure_ascii=False, allow_nan=False)
         await client.set(key, payload, ex=ttl)
         log.debug("🔑 set_json %s (ttl=%s)", key, ttl)
+
+    @classmethod
+    async def write_trade(cls, order_id: str, trade_dict: dict, max_len: int = 500) -> None:
+        """Persist the authoritative trade key and its bounded index atomically."""
+        client = await cls.get_client()
+        trade_key = f"piluitus:trade:{order_id}"
+        trade_payload = json.dumps(trade_dict, ensure_ascii=False, allow_nan=False)
+        index_payload = json.dumps(
+            {"id": order_id, "data": trade_dict}, ensure_ascii=False, allow_nan=False
+        )
+        limit = max(1, int(max_len))
+        if isinstance(client, _InMemory):
+            await client.set_and_lpush_trim(
+                trade_key, trade_payload, "piluitus:active_orders", index_payload, limit
+            )
+            return
+        pipeline = client.pipeline(transaction=True)
+        pipeline.set(trade_key, trade_payload)
+        pipeline.lpush("piluitus:active_orders", index_payload)
+        pipeline.ltrim("piluitus:active_orders", 0, limit - 1)
+        await pipeline.execute()
 
     @classmethod
     async def get_json(cls, key: str) -> Optional[Any]:
@@ -258,9 +375,16 @@ class RedisClient:
     @classmethod
     async def push_to_list(cls, key: str, item: Any, max_len: int = 500) -> None:
         client = await cls.get_client()
-        await client.lpush(key, json.dumps(item, ensure_ascii=False))
-        await client.ltrim(key, 0, max_len - 1)
-        log.debug("📥 push_to_list %s (max_len=%d)", key, max_len)
+        payload = json.dumps(item, ensure_ascii=False, allow_nan=False)
+        limit = max(1, int(max_len))
+        if isinstance(client, _InMemory):
+            await client.lpush_trim(key, payload, limit)
+        else:
+            pipeline = client.pipeline(transaction=True)
+            pipeline.lpush(key, payload)
+            pipeline.ltrim(key, 0, limit - 1)
+            await pipeline.execute()
+        log.debug("📥 push_to_list %s (max_len=%d)", key, limit)
 
     @classmethod
     async def get_list(cls, key: str, start: int = 0, stop: int = -1) -> List[Any]:
@@ -614,10 +738,8 @@ class DBManager:
     # ----------------------- журнал сделок (trade journal) -----------------------
     async def log_trade(self, order_id: str, trade_dict: dict) -> None:
         """Сохраняет/обновляет запись о сделке в Redis."""
-        key = f"piluitus:trade:{order_id}"
-        await RedisClient.set_json(key, trade_dict)
-        await RedisClient.push_to_list("piluitus:active_orders", {"id": order_id, "data": trade_dict})
-        log.debug("📝 logged trade %s", order_id)
+        await RedisClient.write_trade(order_id, trade_dict)
+        log.debug("📝 atomically logged trade %s", order_id)
 
     async def get_active_positions(self) -> dict:
         """Возвращает словарь {order_id: trade_dict, ...} только для OPEN позиций."""
