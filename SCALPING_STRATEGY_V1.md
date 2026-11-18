@@ -502,3 +502,34 @@ separately preserved final period plus multiple-testing-aware diagnostics.
 The validation endpoint does not alter candidate scoring or PAPER execution.
 The consolidated `GET /api/v1/paper/research/report` includes the same
 walk-forward section using five folds and a 30-second embargo.
+
+
+## Shadow label quality, confidence cohorts and timestamp integrity
+
+The realized-vs-Shadow scorecard deduplicates labels by exact
+`candidate_id + horizon_sec` using the same quality ordering as the
+walk-forward report. A valid net-return observation is preferred over an
+unusable duplicate; among equally usable rows, on-time labels are preferred,
+then the lower label lag. This prevents the first persisted duplicate from
+silently replacing a better observation.
+
+The scorecard reports per-horizon label coverage separately from matched-trade
+performance, including observed rows, valid `OK` net-return labels, unusable
+rows and status counts such as `LABEL_LATE` and `NO_FRESH_BBO`. It also
+adds horizon × side × confidence and horizon × model-decision × confidence
+cohorts. Positive-rate segments include a 95% Wilson interval and sample-size
+quality. These intervals describe uncertainty in a finite sample; they do not
+correct dependence between candidates from the same session or between
+overlapping horizons.
+
+LLM confidence remains a model-provided score, not an assumed probability.
+The report therefore presents confidence alongside observed outcomes but does
+not calculate Brier score, expected calibration error, or claim probabilistic
+calibration. Any future probability calibration requires a documented
+probability contract and independent chronological evaluation.
+
+Realized-PAPER drawdown ordering parses timezone-aware ISO exit timestamps and
+compares their UTC instants, so mixed UTC/Moscow offsets cannot reorder the
+closed-trade equity sequence lexicographically. Records with malformed or
+timezone-naive timestamps remain after timestamped records and are not
+silently interpreted in a guessed timezone.
