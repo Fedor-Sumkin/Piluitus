@@ -110,6 +110,12 @@ confidence bands are descriptive until enough independent observations and
 chronological out-of-sample validation exist. Duplicate persisted rows for the
 same candidate and horizon do not increase segment sample counts.
 
+The realized scorecard also groups closed PAPER trades by observed holding
+duration (`<60s`, `60–179s`, `180–299s`, `300–599s`, and `600s+`).
+Each bucket reports the same net-PnL, expectancy, profit-factor, drawdown and
+execution-gap metrics as other scorecard groups. This is descriptive analysis;
+it does not recommend a holding-time rule or modify exits.
+
 The same endpoint now exposes `loss_diagnostics` for closed net-losing PAPER
 trades. It counts observable, overlapping evidence: gross loss before fees,
 gross-positive/net-negative outcomes, exit-BBO gaps, trigger-to-executable-BBO
