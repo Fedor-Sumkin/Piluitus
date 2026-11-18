@@ -122,6 +122,62 @@ class PaperExitTriggerTests(unittest.TestCase):
         )
 
 
+class PaperExitDepthTests(unittest.TestCase):
+    def setUp(self):
+        self.engine = BaseExecutionEngine.__new__(BaseExecutionEngine)
+        self.engine.paper_book_size_unit = "shares"
+        self.engine.paper_max_book_participation_pct = 100.0
+
+    def test_long_exit_consumes_bid_depth_and_uses_share_units(self):
+        trade = {
+            "side": "BUY", "volume": 20, "lots": 2, "lot_size": 10,
+        }
+        fill = self.engine._paper_exit_depth_fill(
+            "SBER", trade,
+            {
+                "bid_levels": [[99.9, 10], [99.8, 10]],
+                "ask_levels": [[100.0, 100]],
+            },
+        )
+        self.assertEqual(fill["filled_lots"], 2)
+        self.assertEqual(fill["filled_shares"], 20)
+        self.assertAlmostEqual(fill["average_price"], 99.85)
+        self.assertEqual(fill["levels_used"], 2)
+
+    def test_short_exit_consumes_ask_depth(self):
+        trade = {
+            "side": "SELL", "volume": 20, "lots": 2, "lot_size": 10,
+        }
+        fill = self.engine._paper_exit_depth_fill(
+            "SBER", trade,
+            {
+                "bid_levels": [[99.9, 100]],
+                "ask_levels": [[100.1, 10], [100.2, 10]],
+            },
+        )
+        self.assertEqual(fill["filled_lots"], 2)
+        self.assertAlmostEqual(fill["average_price"], 100.15)
+
+    def test_insufficient_depth_is_reported_as_partial_not_full_fill(self):
+        trade = {
+            "side": "BUY", "volume": 20, "lots": 2, "lot_size": 10,
+        }
+        fill = self.engine._paper_exit_depth_fill(
+            "SBER", trade, {"bid_levels": [[99.9, 10]]}
+        )
+        self.assertEqual(fill["filled_lots"], 1)
+        self.assertEqual(fill["fill_ratio"], 0.5)
+
+    def test_unknown_finam_book_unit_does_not_infer_size_semantics(self):
+        self.engine.paper_book_size_unit = "unknown"
+        fill = self.engine._paper_exit_depth_fill(
+            "SBER",
+            {"side": "BUY", "volume": 20, "lots": 2, "lot_size": 10},
+            {"bid_levels": [[99.9, 1000]]},
+        )
+        self.assertIsNone(fill)
+
+
 class PaperMonitorBatchTests(unittest.IsolatedAsyncioTestCase):
     async def test_bad_ticker_event_does_not_discard_other_positions(self) -> None:
         engine = BaseExecutionEngine.__new__(BaseExecutionEngine)
