@@ -204,6 +204,11 @@ class BBOReplayRecorder:
             self._queue.put_nowait(row)
         except asyncio.QueueFull:
             self.dropped_queue_full += 1
+            if self.dropped_queue_full == 1 or self.dropped_queue_full % 100 == 0:
+                logger.warning(
+                    "[PAPER BBO REPLAY] queue full; dropped=%d limit=%d",
+                    self.dropped_queue_full, self.queue_limit,
+                )
             return False
         # Advance the deduplication watermark only after enqueue succeeds. If the
         # queue is full, the next repeated state can still be retried.
@@ -246,7 +251,7 @@ class BBOReplayRecorder:
             self.persistence_errors += len(batch)
             logger.error(
                 "[PAPER BBO REPLAY] persist failed after retries batch=%d errors=%d: %s",
-                len(batch), self.persistence_errors, last_error, exc_info=True,
+                len(batch), self.persistence_errors, last_error,
             )
             return
         self.persisted += len(batch)
