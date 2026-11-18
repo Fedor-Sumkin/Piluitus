@@ -624,5 +624,21 @@ class BBOReplaySimulatorTests(unittest.TestCase):
 
 
 
+    def test_portfolio_capacity_processes_same_timestamp_exit_after_its_entry(self):
+        trade = {
+            "position_id": "P1", "entry_time_epoch": 1.0,
+            "entry_price": 100.0, "quantity": 10,
+            "scenarios": [{
+                "name": "BASELINE",
+                "exit": {"event_time_epoch": 1.0, "net_pnl_rub": -5.0},
+            }],
+        }
+        result = _portfolio_capacity_simulation([trade], "BASELINE", 10000.0, 15.0)
+        self.assertEqual(result["accepted_positions"], 1)
+        self.assertEqual(result["closed_positions"], 1)
+        self.assertEqual(result["open_positions_at_end"], 0)
+        self.assertAlmostEqual(result["realized_net_pnl_rub"], -5.0)
+
+
 if __name__ == "__main__":
     unittest.main()
