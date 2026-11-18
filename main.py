@@ -57,6 +57,7 @@ from strategy.bbo_replay import (
 )
 from strategy.bbo_replay_simulator import replay_exit_batch, replay_exit_scenarios
 from strategy.paper_reconciliation import build_shadow_reconciliation
+from strategy.paper_execution_reconciliation import build_actual_vs_replay_reconciliation
 from strategy.shadow_validation import build_shadow_walk_forward_validation
 from strategy.paper_performance import (
     PAPER_CLOSED_TRADES_STORAGE_KEY,
@@ -3862,6 +3863,9 @@ async def replay_paper_exit_batch(
                     "all_scenarios_common_cohort": None,
                 },
             },
+            "execution_reconciliation": build_actual_vs_replay_reconciliation(
+                [], {"trades": []}, limit=limit
+            ),
             "note": "Нет закрытых PAPER-сделок с bbo_replay_session_id, подходящих под фильтры.",
         }
 
@@ -3916,6 +3920,9 @@ async def replay_paper_exit_batch(
         "journal_events_loaded": len(replay_events),
         "retained_event_limit": BBO_REPLAY_STORAGE_LIMIT,
         "replay": replay,
+        "execution_reconciliation": build_actual_vs_replay_reconciliation(
+            selected, replay, scenario_name="BASELINE_SL_TP", limit=limit
+        ),
         "note": "Replay является исследовательской симуляцией; открытые в конце сценария позиции не включены в реализованный PnL.",
     }
 
@@ -4063,12 +4070,19 @@ async def replay_paper_exit_scenarios(order_id: str):
     except ValueError as replay_error:
         raise HTTPException(status_code=422, detail=str(replay_error)) from replay_error
 
+    execution_reconciliation = build_actual_vs_replay_reconciliation(
+        [trade] if str(trade.get("status") or "").upper() == "CLOSED" else [],
+        {"trades": [replay]},
+        scenario_name="BASELINE_SL_TP",
+        limit=1,
+    )
     return {
         "paper_mode": True,
         "trade_id": order_id,
         "journal_events_for_session": len(session_events),
         "retained_event_limit": BBO_REPLAY_STORAGE_LIMIT,
         "replay": replay,
+        "execution_reconciliation": execution_reconciliation,
     }
 
 
