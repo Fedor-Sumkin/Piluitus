@@ -485,8 +485,8 @@ class BBOReplaySimulatorTests(unittest.TestCase):
 
     def test_batch_replay_reports_invalid_positions_without_aborting_valid_ones(self):
         rows = [event(1, bid=98.8, ask=98.9, epoch=1_800_000_001.0)]
-        invalid = position(position_id="invalid", stop_loss=100.0)
-        valid = position(position_id="valid")
+        invalid = position(id="invalid", position_id="invalid", stop_loss=100.0)
+        valid = position(id="valid", position_id="valid")
         result = replay_exit_batch(
             rows, [invalid, valid],
             scenarios=[{"name": "base", "kind": "baseline"}],
