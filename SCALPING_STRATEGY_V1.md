@@ -299,8 +299,10 @@ ID. When the production monitor first latches `STOP_LOSS` or `TAKE_PROFIT`,
 the recorder also writes an `EXIT_TRIGGER` event with trade ID, position side,
 trigger source, trigger reason/price, observed trigger price and whether a
 fresh executable BBO was available at that exact monitor event. If it was not
-available, the replay keeps the trigger pending and closes only at the next
-fresh executable side observation.
+available, the replay keeps the trigger pending. The recorder forces the first
+subsequent fresh executable-side observation into the journal even when its
+price is unchanged and the regular heartbeat interval has not elapsed, so the
+simulated close does not wait for an artificial sampling delay.
 
 `strategy/bbo_replay_simulator.py` is an offline, pure-Python research engine.
 It accepts the persisted PAPER trade fields and the journal events for the
