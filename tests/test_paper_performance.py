@@ -81,6 +81,7 @@ class PaperPerformanceTests(unittest.TestCase):
         tracker = PaperPerformanceTracker()
         tracker.restore([
             trade("paper-1", 10, ticker="SBER", candidate="candidate-1"),
+            trade("paper-1-duplicate", 4, ticker="SBER", candidate="candidate-1"),
             trade("paper-2", -5, ticker="SBER", candidate="candidate-2"),
             trade("paper-3", 2, ticker="GAZP", candidate=None),
         ])
@@ -101,10 +102,10 @@ class PaperPerformanceTests(unittest.TestCase):
 
         comparison = tracker.scorecard(labels)["shadow_comparison"]
         self.assertEqual(comparison["join_key"], "shadow_candidate_id")
-        self.assertEqual(comparison["matched_trades"], 2)
+        self.assertEqual(comparison["matched_trades"], 3)
         self.assertEqual(comparison["unmatched_trades"], 1)
-        self.assertEqual(comparison["matched_realized_net_pnl_rub"], 5.0)
-        self.assertEqual(len(comparison["matched_trade_details"]), 2)
+        self.assertEqual(comparison["matched_realized_net_pnl_rub"], 9.0)
+        self.assertEqual(len(comparison["matched_trade_details"]), 3)
         self.assertEqual(
             comparison["matched_trade_details"][0]["shadow_net_return_pct_by_horizon"]["60"],
             0.2,
