@@ -45,14 +45,13 @@ class QueueImbalanceWindowTests(unittest.TestCase):
     def test_order_book_updates_publish_rolling_metric_and_invalid_book_clears_it(self):
         screener = HFTMemoryScreener()
 
-        # Keep provider event time and the mocked monotonic receive clock in
-        # the same domain. Backdating events while processing them "now"
-        # correctly makes their size observations stale and tests a different case.
+        # With no exchange timestamp, ORDER_BOOK uses the captured local
+        # monotonic receive clock. This keeps event ordering, freshness and the
+        # rolling-window clock in one domain without fabricating Unix timestamps.
         for event_time in (100.0, 101.0, 102.0):
             with patch("strategy.screener_funnel.time.monotonic", return_value=event_time):
                 result = asyncio.run(screener.push_order_book(
                     "SBER", 100.0, 100.1, 120.0, 80.0,
-                    order_book_timestamp=event_time,
                 ))
                 self.assertTrue(result.get("valid"))
 
@@ -67,7 +66,6 @@ class QueueImbalanceWindowTests(unittest.TestCase):
             asyncio.run(screener.push_order_book(
                 "SBER", 100.0, 100.1, 120.0, 80.0,
                 book_valid=False, book_reason="TEST_INVALID",
-                order_book_timestamp=103.0,
             ))
         with patch("strategy.screener_funnel.time.monotonic", return_value=103.0):
             invalidated = asyncio.run(screener.push_tick("SBER", 100.05, 0.0))
