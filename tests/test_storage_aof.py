@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from storage.db_manager import DBManager, RedisClient, _InMemory
+from storage.db_manager import DBManager, _InMemory
 
 
 class InMemoryAOFTests(unittest.IsolatedAsyncioTestCase):
