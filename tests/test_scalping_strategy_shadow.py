@@ -138,6 +138,14 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
         self.assertFalse(result["eligible"])
         self.assertIn("time_weighted_queue_imbalance_warmup_or_stale", result["reasons"])
 
+    def test_missing_or_stale_trade_flow_is_a_shadow_hard_block(self):
+        metrics = strong_buy_metrics()
+        metrics["trade_data_ready"] = 0.0
+        metrics["trade_metrics_age_sec"] = -1.0
+        result = evaluate_scalping_candidate("BUY", metrics)
+        self.assertFalse(result["eligible"])
+        self.assertIn("trade_flow_unavailable_or_stale", result["hard_blocks"])
+
 
 if __name__ == "__main__":
     unittest.main()
