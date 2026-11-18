@@ -45,7 +45,13 @@ class ShadowForwardTrackerTests(unittest.TestCase):
 
     def test_mfe_mae_capture_executable_extrema_times_and_quote_coverage(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
-        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 120.0, 140.0, 160.0]):
+        with (
+            patch.dict("os.environ", {
+                "PILUITUS_PAPER_COMMISSION_PCT": "0.05",
+                "PILUITUS_PAPER_SLIPPAGE_BPS": "0",
+            }),
+            patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 120.0, 140.0, 160.0]),
+        ):
             tracker.record_candidate(
                 "SBER", "BUY", quote_metrics(100.0, 100.1),
                 {"score": 90.0, "eligible": True, "regime": "TREND_ALIGNED"},
