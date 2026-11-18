@@ -210,6 +210,7 @@ def evaluate_scalping_candidate(
                 hard_blocks.append("queue_trade_flow_conflict")
         else:
             components["trade_flow_confirmation"] = 0.0
+            hard_blocks.append("trade_flow_unavailable_or_stale")
             reasons.append("aggressor_trade_flow_unavailable_or_stale")
 
     volume_spike = _number(metrics, "volume_spike")
