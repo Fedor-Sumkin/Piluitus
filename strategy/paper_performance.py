@@ -447,6 +447,52 @@ def _entry_spread_atr_bucket(value: object) -> str:
     )
 
 
+def _exit_shortfall_bucket(value: object) -> str:
+    number = _number(value)
+    if number is not None and number < 0.0:
+        return "EXIT_SHORTFALL_BETTER_THAN_BBO"
+    return _numeric_bucket(
+        value, prefix="EXIT_SHORTFALL_BPS", thresholds=(1.0, 3.0, 5.0),
+        suffixes=("LT_1", "1_3", "3_5", "GE_5"),
+    )
+
+
+def _exit_depth_impact_bucket(value: object) -> str:
+    number = _number(value)
+    if number is not None and number < 0.0:
+        return "EXIT_DEPTH_BETTER_THAN_TOP"
+    return _numeric_bucket(
+        value, prefix="EXIT_DEPTH_IMPACT_RUB", thresholds=(1.0, 3.0, 5.0),
+        suffixes=("LT_1", "1_3", "3_5", "GE_5"),
+    )
+
+
+def _exit_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    fields = {
+        "exit_execution_shortfall_rub": "execution_shortfall_rub",
+        "exit_execution_shortfall_bps": "execution_shortfall_bps",
+        "exit_depth_impact_rub": "depth_impact_rub",
+        "trigger_to_executable_bbo_delay_sec": "trigger_to_bbo_delay_sec",
+        "exit_depth_observation_count": "depth_observation_count",
+    }
+    coverage: dict[str, int] = {}
+    averages: dict[str, float | None] = {}
+    for field, label in fields.items():
+        values = [value for row in rows if (value := _number(row.get(field))) is not None]
+        coverage[label] = len(values)
+        averages[label] = round(sum(values) / len(values), 6) if values else None
+    return {
+        "trades": len(rows),
+        "coverage": coverage,
+        "average": averages,
+        "interpretation": (
+            "Positive exit shortfall and depth impact are adverse. "
+            "Depth impact is UNKNOWN when no confirmed depth VWAP was available; "
+            "BBO-only fills are not treated as zero-impact depth observations."
+        ),
+    }
+
+
 def _entry_signal_drift_bucket(value: object) -> str:
     number = _number(value)
     if number is None:
@@ -738,7 +784,14 @@ class PaperPerformanceTracker:
             "by_entry_signal_drift": self._group(
                 rows, "entry_signal_adverse_drift_pct", _entry_signal_drift_bucket
             ),
+            "by_exit_execution_shortfall": self._group(
+                rows, "exit_execution_shortfall_bps", _exit_shortfall_bucket
+            ),
+            "by_exit_depth_impact": self._group(
+                rows, "exit_depth_impact_rub", _exit_depth_impact_bucket
+            ),
             "entry_diagnostics": _entry_diagnostics(rows),
+            "exit_diagnostics": _exit_diagnostics(rows),
             "loss_diagnostics": _loss_diagnostics(rows),
             "reentry_diagnostics": _reentry_diagnostics(rows),
         }
