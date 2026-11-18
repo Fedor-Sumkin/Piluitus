@@ -438,7 +438,7 @@ def replay_exit_scenarios(
 
     return {
         "schema_version": 1,
-        "engine": "BBO_ONLY_EXIT_PROXY",
+        "engine": "PAPER_EXIT_REPLAY_V1",
         "session_id": session_id,
         "position_id": str(position.get("position_id") or position.get("id") or ""),
         "ticker": ticker,
@@ -539,7 +539,7 @@ def replay_exit_batch(
     if not position_rows:
         return {
             "schema_version": 1,
-            "engine": "BBO_ONLY_EXIT_PROXY",
+            "engine": "PAPER_EXIT_REPLAY_V1",
             "positions": 0,
             "trades": [],
             "summary_by_scenario": {},
@@ -595,7 +595,7 @@ def replay_exit_batch(
 
     return {
         "schema_version": 1,
-        "engine": "BBO_ONLY_EXIT_PROXY",
+        "engine": "PAPER_EXIT_REPLAY_V1",
         "positions": len(trade_results),
         "trades": trade_results,
         "summary_by_scenario": summaries,
