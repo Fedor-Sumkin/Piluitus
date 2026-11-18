@@ -51,13 +51,12 @@ class _InMemory:
                         continue
                     event = json.loads(line)
                     if not isinstance(event, dict):
-                        log.warning("Пропущена некорректная AOF-запись: ожидался JSON-объект")
-                        continue
+                        raise ValueError("AOF event is not a JSON object")
                     cmd = event.get("cmd")
                     key = event.get("key")
                     val = event.get("val")
 
-                    if not isinstance(key, str) or not key:
+                    if cmd != "clear_trades" and (not isinstance(key, str) or not key):
                         raise ValueError("AOF event has no valid key")
                     if cmd == "set":
                         self._store[key] = val
@@ -161,6 +160,7 @@ class _InMemory:
     async def compact_aof(self) -> None:
         """Remove obsolete fallback-AOF history while preserving the current keyspace."""
         async with self._lock:
+            self._ensure_healthy()
             snapshot = {key: list(value) if isinstance(value, list) else value for key, value in self._store.items()}
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._sync_compact_aof, snapshot)
