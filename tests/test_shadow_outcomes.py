@@ -354,7 +354,7 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
         metrics = quote_metrics(100.0, 100.2)
         metrics.update({
-            "bar_atr_pct": 0.30,
+            "bar_atr_pct": 0.60,
             "price_change_pct": 0.20,
             "price_vs_vwap_pct": 0.15,
             "bar_trend_up": 1.0,
