@@ -115,6 +115,28 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
         self.assertFalse(result["eligible"])
         self.assertIn("bbo_prices_invalid", result["hard_blocks"])
 
+    def test_ofi_is_reported_as_diagnostic_without_changing_shadow_score(self) -> None:
+        metrics = strong_buy_metrics()
+        baseline = evaluate_scalping_candidate("BUY", metrics)
+        metrics["ofi_5s_available"] = 1.0
+        metrics["ofi_5s"] = -0.25
+        metrics["ofi_5s_samples"] = 8
+        metrics["ofi_5s_coverage_sec"] = 2.0
+        with_ofi = evaluate_scalping_candidate("BUY", metrics)
+
+        self.assertEqual(with_ofi["score"], baseline["score"])
+        self.assertEqual(with_ofi["eligible"], baseline["eligible"])
+        self.assertEqual(with_ofi["ofi_5s"], -0.25)
+        self.assertEqual(with_ofi["ofi_directional_alignment"], "OPPOSES")
+        self.assertEqual(with_ofi["ofi_5s_samples"], 8)
+
+    def test_unavailable_ofi_is_not_reported_as_zero_signal(self) -> None:
+        result = evaluate_scalping_candidate("BUY", strong_buy_metrics())
+        self.assertIsNone(result["ofi_5s"])
+        self.assertEqual(
+            result["ofi_directional_alignment"], "NEUTRAL_OR_UNAVAILABLE"
+        )
+
     def test_missing_queue_measurement_is_explicit_not_fabricated(self) -> None:
         metrics = strong_buy_metrics()
         metrics["queue_imbalance_available"] = 0.0
