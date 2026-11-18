@@ -1265,6 +1265,7 @@ def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -
     """Log a research-only strategy score; it never changes the baseline order path."""
     result = evaluate_scalping_candidate(direction, metrics)
     observation_id = scalping_shadow_tracker.record_candidate(ticker, direction, metrics, result)
+    result["candidate_id"] = observation_id
     _trade_flow_inc("strategy_shadow_evaluated")
     _trade_flow_inc("strategy_shadow_pass" if result.get("eligible") else "strategy_shadow_reject")
     shadow_block_keys = {
@@ -1573,7 +1574,9 @@ async def _resume_pending_bbo_candidate(
         _trade_flow_inc("direction_prefilter_skipped")
         return
 
-    _log_scalping_shadow(key, direction, metrics)
+    if not payload.get("shadow_candidate_id"):
+        shadow_result = _log_scalping_shadow(key, direction, metrics)
+        payload["shadow_candidate_id"] = shadow_result.get("candidate_id")
     evidence_ok, evidence_reason = validate_signal_evidence(direction, metrics)
     if not evidence_ok:
         if _guard_reason_bucket(evidence_reason) == "quotes":
@@ -2109,7 +2112,8 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                         float(metrics_payload.get("price_change_pct", 0.0) or 0.0),
                         float(metrics_payload.get("price_vs_vwap_pct", 0.0) or 0.0),
                     )
-                    _log_scalping_shadow(ticker, candidate_direction, metrics_payload)
+                    shadow_result = _log_scalping_shadow(ticker, candidate_direction, metrics_payload)
+                    shadow_candidate_id = shadow_result.get("candidate_id")
                     evidence_ok, evidence_reason = validate_signal_evidence(candidate_direction, metrics_payload)
                     if not evidence_ok:
                         if _guard_reason_bucket(evidence_reason) == "quotes":
@@ -2124,6 +2128,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                                 "ask_size": ask_size,
                                 "day_volume": day_volume,
                                 "candidate_direction": candidate_direction,
+                                "shadow_candidate_id": shadow_candidate_id,
                                 "paper_session_generation": event_session_generation,
                                 "metrics": {
                                     key: value
@@ -2158,6 +2163,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                                 "ask_size": ask_size,
                                 "day_volume": day_volume,
                                 "candidate_direction": candidate_direction,
+                                "shadow_candidate_id": shadow_candidate_id,
                                 "paper_session_generation": event_session_generation,
                                 "metrics": {
                                     key: value
@@ -2208,6 +2214,7 @@ class MarketWorker:
         ai_analysis: dict,
         session_generation: int,
         candidate_created_monotonic: object | None = None,
+        shadow_candidate_id: str | None = None,
     ) -> None:
         """Serialize order execution with PAPER reset and reject stale/pre-reset signals."""
         async with _paper_session_lock:
@@ -2221,6 +2228,7 @@ class MarketWorker:
                 verdict_id=verdict_id, ticker=ticker, lots=lots, side=side,
                 price=price, ai_analysis=ai_analysis,
                 candidate_created_monotonic=candidate_created_monotonic,
+                shadow_candidate_id=shadow_candidate_id,
             )
 
     async def _execute_and_publish_locked(
@@ -2233,6 +2241,7 @@ class MarketWorker:
         price: float,
         ai_analysis: dict,
         candidate_created_monotonic: object | None = None,
+        shadow_candidate_id: str | None = None,
     ) -> None:
         """Execute only a fresh, risk-approved candidate and publish its final result."""
         try:
@@ -2297,6 +2306,10 @@ class MarketWorker:
         raw_status = str(result.get("status", "FAILED")).upper()
         result_mode = str(result.get("mode") or ("PAPER" if getattr(execution_engine, "paper_mode", True) else "LIVE")).upper()
         execution_status = normalise_execution_status(raw_status, result_mode)
+        if shadow_candidate_id:
+            scalping_shadow_tracker.update_execution_result(
+                shadow_candidate_id, execution_status=execution_status
+            )
         result_message = str(result.get("message", ""))
         logger.info(
             "[EXECUTION OUTCOME] %s %s: status=%s mode=%s lots=%d message=%s",
@@ -3037,6 +3050,7 @@ class MarketWorker:
                 now_local = datetime.now().astimezone()
                 verdict_data = {
                     "verdict_id": verdict_id,
+                    "shadow_candidate_id": event_payload.get("shadow_candidate_id"),
                     "timestamp": now_local.strftime("%H:%M:%S"),
                     "timestamp_iso": now_local.isoformat(timespec="milliseconds"),
                     "ticker": ticker,
@@ -3068,6 +3082,27 @@ class MarketWorker:
                     "llm_prompt_chars": ai_analysis.get("prompt_chars"),
                     "llm_prompt_fingerprint": ai_analysis.get("prompt_fingerprint"),
                 }
+                shadow_candidate_id = str(event_payload.get("shadow_candidate_id") or "")
+                if shadow_candidate_id:
+                    linked = scalping_shadow_tracker.attach_llm_verdict(
+                        shadow_candidate_id,
+                        verdict_id=verdict_id,
+                        model_decision=model_decision,
+                        final_decision=decision,
+                        signal_status=signal_status,
+                        confidence=candidate_confidence,
+                        reason_code=model_reason_code,
+                        local_guard=local_evidence_diagnostic,
+                        execution_status=execution_status,
+                    )
+                    verdict_data["shadow_linked"] = bool(linked)
+                    if not linked:
+                        logger.warning(
+                            "[STRATEGY SHADOW LINK MISS] candidate_id=%s verdict_id=%s ticker=%s",
+                            shadow_candidate_id, verdict_id, ticker,
+                        )
+                else:
+                    verdict_data["shadow_linked"] = False
 
                 ai_analysis["final_decision"] = decision
                 ai_analysis["confidence_score"] = (confidence / 100.0) if confidence_valid else 0.0
@@ -3130,6 +3165,7 @@ class MarketWorker:
                                 ai_analysis=dict(ai_analysis),
                                 session_generation=int(event_payload.get("paper_session_generation", -1)),
                                 candidate_created_monotonic=event_payload.get("candidate_created_monotonic"),
+                                shadow_candidate_id=shadow_candidate_id or None,
                             )
                         )
 
