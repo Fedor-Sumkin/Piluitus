@@ -132,6 +132,48 @@ def _finite_or_default(value: object, default: float = 0.0) -> float:
         return default
 
 
+def _decision_attribution_fields(ai_analysis: object) -> dict[str, object]:
+    """Return bounded, typed decision identifiers to persist with an opened trade."""
+    if not isinstance(ai_analysis, Mapping):
+        return {
+            "shadow_candidate_id": None,
+            "llm_verdict_id": None,
+            "llm_model_decision": "UNKNOWN",
+            "llm_final_decision": "UNKNOWN",
+            "llm_confidence_pct": None,
+            "llm_signal_status": "UNKNOWN",
+            "llm_reason_code": "UNKNOWN",
+            "llm_local_guard": None,
+            "candidate_direction": "UNKNOWN",
+        }
+
+    def bounded_text(key: str, default: str | None = None, limit: int = 160) -> str | None:
+        raw = ai_analysis.get(key)
+        if raw is None:
+            return default
+        value = str(raw).strip()
+        return value[:limit] if value else default
+
+    confidence_raw = ai_analysis.get("llm_confidence_pct")
+    confidence = _finite_or_default(confidence_raw, math.nan)
+    if not math.isfinite(confidence) or not 0.0 <= confidence <= 100.0:
+        confidence_value: float | None = None
+    else:
+        confidence_value = round(confidence, 3)
+
+    return {
+        "shadow_candidate_id": bounded_text("shadow_candidate_id", limit=64),
+        "llm_verdict_id": bounded_text("llm_verdict_id", limit=96),
+        "llm_model_decision": bounded_text("llm_model_decision", "UNKNOWN", 32),
+        "llm_final_decision": bounded_text("llm_final_decision", "UNKNOWN", 32),
+        "llm_confidence_pct": confidence_value,
+        "llm_signal_status": bounded_text("llm_signal_status", "UNKNOWN", 32),
+        "llm_reason_code": bounded_text("llm_reason_code", "UNKNOWN", 96),
+        "llm_local_guard": bounded_text("llm_local_guard", limit=240),
+        "candidate_direction": bounded_text("candidate_direction", "UNKNOWN", 16),
+    }
+
+
 def _as_string_mapping(value: object) -> Mapping[str, object] | None:
     """Narrow untrusted dynamic data before any mapping operation."""
     if not isinstance(value, Mapping):
@@ -1680,6 +1722,7 @@ class BaseExecutionEngine:
                     if self.paper_mode and paper_depth_fill is not None else None
                 ),
                 "session_id": self.session_id,
+                **_decision_attribution_fields(ai_analysis),
                 "ticker": ticker,
                 "entry_time": now.strftime("%H:%M:%S"),
                 "entry_timestamp": now.isoformat(timespec="milliseconds"),
