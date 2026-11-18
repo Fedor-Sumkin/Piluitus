@@ -360,11 +360,12 @@ class BBOReplaySimulatorTests(unittest.TestCase):
             event(1, bid=101.0, ask=101.1, epoch=1_800_000_001.0),
             event(2, bid=102.1, ask=102.2, epoch=1_800_000_002.0),
             event(3, bid=100.2, ask=100.3, epoch=1_800_000_003.0),
+            event(4, bid=100.2, ask=100.3, epoch=1_800_000_003.2),
         ]
         first = position(position_id="P1")
         second = position(
             position_id="P2",
-            entry_time_epoch=1_800_000_002.5,
+            entry_time_epoch=1_800_000_002.1,
         )
         result = replay_exit_batch(
             rows,
