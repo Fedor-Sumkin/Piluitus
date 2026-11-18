@@ -43,6 +43,32 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertGreater(row["net_executable_return_pct"], 0.0)
         self.assertEqual(tracker.pending_count(), 0)
 
+    def test_mfe_mae_capture_executable_extrema_times_and_quote_coverage(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,))
+        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 120.0, 140.0, 160.0]):
+            tracker.record_candidate(
+                "SBER", "BUY", quote_metrics(100.0, 100.1),
+                {"score": 90.0, "eligible": True, "regime": "TREND_ALIGNED"},
+            )
+            tracker.observe_market_tick("SBER", quote_metrics(100.5, 100.6))
+            tracker.observe_market_tick("SBER", quote_metrics(99.5, 99.6))
+            outcomes = tracker.observe_market_tick("SBER", quote_metrics(100.3, 100.4))
+
+        self.assertEqual(len(outcomes), 1)
+        label = outcomes[0]
+        self.assertGreater(label["mfe_executable_pct"], 0.0)
+        self.assertLess(label["mae_executable_pct"], 0.0)
+        self.assertGreater(label["mfe_gross_executable_pct"], label["mfe_executable_pct"])
+        self.assertGreater(label["mae_executable_pct"], label["mae_gross_executable_pct"])
+        self.assertEqual(label["time_to_mfe_sec"], 20.0)
+        self.assertEqual(label["time_to_mae_sec"], 40.0)
+        self.assertEqual(label["valid_bbo_observations"], 3)
+        self.assertEqual(label["first_valid_bbo_elapsed_sec"], 20.0)
+        self.assertEqual(label["last_valid_bbo_elapsed_sec"], 60.0)
+        self.assertEqual(label["bbo_observation_span_sec"], 40.0)
+        self.assertTrue(label["mfe_at_utc"])
+        self.assertTrue(label["mae_at_utc"])
+
     def test_sell_labels_use_bid_entry_and_ask_exit(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
         with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[10.0, 70.0]):
