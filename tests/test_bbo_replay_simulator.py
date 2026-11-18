@@ -231,6 +231,19 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         self.assertIsNotNone(summary["profit_factor"])
         self.assertEqual(set(result["summary_by_scenario"]["base"]["by_ticker"]), {"SBER", "GAZP"})
 
+    def test_batch_replay_accepts_scenario_generators_for_multiple_positions(self):
+        rows = [
+            event(1, bid=102.1, ask=102.2, epoch=1_800_000_001.0),
+            event(2, ticker="GAZP", bid=102.1, ask=102.2, epoch=1_800_000_002.0),
+        ]
+        scenarios = (item for item in [{"name": "only", "kind": "baseline"}])
+        result = replay_exit_batch(
+            rows,
+            [position(position_id="one"), position(ticker="GAZP", position_id="two")],
+            scenarios=scenarios,
+        )
+        self.assertEqual(result["summary_by_scenario"]["only"]["overall"]["closed"], 2)
+
     def test_invalid_position_contract_is_rejected(self):
         with self.assertRaises(ValueError):
             replay_exit_scenarios([], position(stop_loss=100.0))
