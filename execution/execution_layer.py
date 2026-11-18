@@ -22,6 +22,7 @@ from strategy.paper_performance import (
     PAPER_CLOSED_TRADES_STORAGE_LIMIT,
     paper_performance_tracker,
 )
+from strategy.paper_entry_diagnostics import build_entry_execution_diagnostics
 
 logger = logging.getLogger("Piluitus.ExecutionLayer")
 
@@ -1708,6 +1709,28 @@ class BaseExecutionEngine:
                 )
             else:
                 entry_quote_size = 0.0
+            entry_diagnostics = build_entry_execution_diagnostics(
+                side=side,
+                quantity=lots * lot_multiplier,
+                fill_price=price,
+                executable_bbo_price=(
+                    entry_bbo.get("executable_price") if entry_bbo is not None else None
+                ),
+                bid=entry_bid,
+                ask=entry_ask,
+                bid_age_sec=(
+                    entry_bbo.get("bid_age_sec") if entry_bbo is not None else None
+                ),
+                ask_age_sec=(
+                    entry_bbo.get("ask_age_sec") if entry_bbo is not None else None
+                ),
+                atr=atr_at_entry,
+                signal_reference_price=signal_reference_price,
+                depth_vwap=(
+                    paper_depth_fill.get("average_price")
+                    if isinstance(paper_depth_fill, Mapping) else None
+                ),
+            )
             # Finam's protobuf exposes buy_size/sell_size as decimals, but the
             # documented schema does not specify whether these quantities are
             # shares or lots. Keep the raw value for diagnostics; do not report a
@@ -1790,6 +1813,7 @@ class BaseExecutionEngine:
                 "entry_ask": entry_ask,
                 "entry_spread_pct": entry_spread_pct,
                 "entry_bbo_age_sec": entry_bbo_age_sec,
+                **entry_diagnostics,
                 "max_favorable_excursion_pct": 0.0,
                 "max_adverse_excursion_pct": 0.0,
                 "max_favorable_excursion_r": 0.0,
