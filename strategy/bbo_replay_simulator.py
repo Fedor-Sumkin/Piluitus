@@ -266,6 +266,13 @@ def replay_exit_scenarios(
             "raw_executable_price": round(raw_price, 8),
             "fill_price_after_slippage": round(fill, 8),
             "event_sequence": int(_number(row.get("sequence"), 0)),
+            "trigger_event_sequence": int(_number(
+                row.get("trigger_event_sequence", row.get("sequence")), 0
+            )),
+            "trigger_source": row.get("trigger_source"),
+            "trigger_market_time_epoch": _number(
+                row.get("trigger_market_time_epoch"), math.nan
+            ) if math.isfinite(_number(row.get("trigger_market_time_epoch"))) else None,
             "event_time_epoch": _epoch(row.get("event_time_epoch")),
             "elapsed_sec": round(elapsed, 3),
             "bbo_age_sec": round(age, 6),
@@ -339,10 +346,14 @@ def replay_exit_scenarios(
 
             if kind == "baseline" and state["pending_trigger"] is not None:
                 pending = state["pending_trigger"]
+                fill_context = dict(row)
+                fill_context["trigger_event_sequence"] = pending.get("sequence")
+                fill_context["trigger_source"] = pending.get("trigger_source")
+                fill_context["trigger_market_time_epoch"] = pending.get("trigger_market_time_epoch")
                 state["exit"] = _make_exit(
                     str(pending.get("trigger_reason") or "STOP_LOSS").upper(),
                     _number(pending.get("trigger_price"), stop),
-                    price, row, age, elapsed,
+                    price, fill_context, age, elapsed,
                 )
                 state["exit_trigger_mode"] = "ACTUAL_LATCHED_TRIGGER"
                 break
