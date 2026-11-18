@@ -2720,6 +2720,18 @@ class BaseExecutionEngine:
                         trade["exit_trigger_wait_logged"] = True
                     await db.set_json(f"piluitus:trade:{order_id}", trade)
                 now_mono = time.monotonic()
+                previous_gap_count = int(_finite_or_default(trade.get("exit_bbo_gap_count"), 0.0))
+                self._track_exit_bbo_gap(trade, now_mono, fresh=False)
+                if int(_finite_or_default(trade.get("exit_bbo_gap_count"), 0.0)) > previous_gap_count:
+                    # Persist the start/count of a new outage episode immediately;
+                    # the completed duration is persisted when fresh BBO returns.
+                    try:
+                        await db.set_json(f"piluitus:trade:{order_id}", trade)
+                    except Exception as persist_exc:
+                        logger.warning(
+                            "[PAPER BBO GAP PERSIST] %s: не удалось сохранить начало эпизода: %s",
+                            ticker, persist_exc,
+                        )
                 last_warn = self._last_bbo_exit_warning_at.get(ticker, 0.0)
                 if now_mono - last_warn >= 60.0:
                     quote_obj: object = (
@@ -2793,6 +2805,13 @@ class BaseExecutionEngine:
 
             gap_duration = self._track_exit_bbo_gap(trade, time.monotonic(), fresh=True)
             if gap_duration is not None:
+                try:
+                    await db.set_json(f"piluitus:trade:{order_id}", trade)
+                except Exception as persist_exc:
+                    logger.warning(
+                        "[PAPER BBO GAP PERSIST] %s: не удалось сохранить восстановленный BBO: %s",
+                        ticker, persist_exc,
+                    )
                 logger.warning(
                     "[PAPER BBO GAP RECOVERED] %s %s: gap=%.3fs max_gap=%.3fs total_gap=%.3fs; "
                     "SL/TP monitor resumed only on fresh executable BBO.",
