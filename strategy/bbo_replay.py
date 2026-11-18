@@ -1,7 +1,7 @@
 """Bounded PAPER best-bid/offer event journal for deterministic exit research.
 
-The recorder stores accepted ORDER_BOOK states for selected symbols and open
-PAPER positions. It is deliberately observational: it never feeds prices back
+The recorder stores accepted ORDER_BOOK and QUOTES states for selected symbols
+and open PAPER positions. It is deliberately observational: it never feeds prices back
 into the execution path.
 """
 from __future__ import annotations
@@ -101,12 +101,12 @@ class BBOReplayRecorder:
         heartbeat_interval_sec: float | None = None,
         storage_limit: int | None = None,
     ) -> None:
-        self.queue_limit = max(100, int(queue_limit or _positive_env_int(
+        self.queue_limit = min(100_000, max(100, int(queue_limit or _positive_env_int(
             "PILUITUS_BBO_REPLAY_QUEUE_LIMIT", 8192
-        )))
-        self.batch_size = max(1, int(batch_size or _positive_env_int(
+        ))))
+        self.batch_size = min(5_000, max(1, int(batch_size or _positive_env_int(
             "PILUITUS_BBO_REPLAY_BATCH_SIZE", 250
-        )))
+        ))))
         self.flush_interval_sec = max(
             0.05,
             float(flush_interval_sec if flush_interval_sec is not None else
@@ -117,11 +117,11 @@ class BBOReplayRecorder:
             float(heartbeat_interval_sec if heartbeat_interval_sec is not None else
                   _finite(os.getenv("PILUITUS_BBO_REPLAY_HEARTBEAT_SEC", "1.0"), 1.0)),
         )
-        self.storage_limit = max(1, int(
+        self.storage_limit = min(1_000_000, max(1, int(
             storage_limit if storage_limit is not None else _positive_env_int(
                 "PILUITUS_BBO_REPLAY_STORAGE_LIMIT", BBO_REPLAY_STORAGE_LIMIT
             )
-        ))
+        )))
         self.session_id = uuid4().hex
         self._sequence = 0
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self.queue_limit)
