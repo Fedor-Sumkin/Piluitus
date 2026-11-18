@@ -890,6 +890,60 @@ async def _persist_shadow_outcomes(labels: list[dict[str, Any]], *, source: str)
         )
 
 
+def _record_paper_bbo_replay(
+    ticker: str,
+    *,
+    source: str,
+    event_timestamp: object | None = None,
+    received_monotonic: object | None = None,
+    book_result: Mapping[str, Any] | None = None,
+    sides_present: bool = True,
+) -> None:
+    """Capture the same shared BBO state used by PAPER execution, without blocking it."""
+    if not execution_engine.paper_mode:
+        return
+    symbol = str(ticker or "").strip().upper().split("@")[0]
+    if not symbol:
+        return
+    selected = symbol in getattr(screener, "selected_tickers", [])
+    positioned = symbol in getattr(execution_engine, "paper_positions", {})
+    if not (selected or positioned):
+        return
+    quote = getattr(screener, "quotes", {}).get(symbol)
+    if not isinstance(quote, Mapping):
+        return
+    if book_result is not None:
+        if not bool(book_result.get("updated")):
+            return
+        valid = bool(book_result.get("valid", False))
+        reason = str(book_result.get("reason") or "")
+    else:
+        if not sides_present:
+            return
+        bid_value = finite_float(quote.get("bid"), 0.0)
+        ask_value = finite_float(quote.get("ask"), 0.0)
+        valid = bid_value > 0.0 and ask_value > 0.0 and ask_value >= bid_value
+        reason = str(quote.get("order_book_last_reason") or "")
+    snapshot = {
+        "updated": True,
+        "valid": valid,
+        "order_book_valid": bool(quote.get("order_book_valid", False)),
+        "reason": reason,
+        "bid": quote.get("bid", 0.0),
+        "ask": quote.get("ask", 0.0),
+        "bid_size": quote.get("bid_size", 0.0),
+        "ask_size": quote.get("ask_size", 0.0),
+    }
+    event = {
+        "source": str(source or "UNKNOWN").upper(),
+        "timestamp": event_timestamp,
+        "received_monotonic": received_monotonic,
+        "bid_confirmed_monotonic": quote.get("last_bid_confirmed_seen", 0.0),
+        "ask_confirmed_monotonic": quote.get("last_ask_confirmed_seen", 0.0),
+    }
+    paper_bbo_replay_recorder.record(symbol, snapshot, event)
+
+
 async def _restore_shadow_outcomes() -> None:
     """Rebuild cumulative strategy research statistics from the bounded outcome journal."""
     try:
@@ -2017,11 +2071,13 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                 _trade_flow_inc("orderbook_unusable")
                 return
             _record_position_order_book_event(book_ticker, book_result)
-            if execution_engine.paper_mode and book_result.get("updated"):
-                selected_for_replay = book_ticker in set(getattr(screener, "selected_tickers", []) or [])
-                position_for_replay = book_ticker in getattr(execution_engine, "paper_positions", {})
-                if selected_for_replay or position_for_replay:
-                    paper_bbo_replay_recorder.record(book_ticker, book_result, event)
+            _record_paper_bbo_replay(
+                book_ticker,
+                source="FINAM_ORDER_BOOK",
+                event_timestamp=event.get("order_book_timestamp"),
+                received_monotonic=event.get("received_monotonic"),
+                book_result=book_result,
+            )
             if book_result.get("updated") and book_result.get("valid", True):
                 _trade_flow_inc("orderbook_updates")
                 _trade_flow_inc("orderbook_side_touches", int(book_result.get("bbo_side_touch_count", 0) or 0))
@@ -2133,6 +2189,13 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
         )
 
         _trade_flow_inc("quotes_received")
+        _record_paper_bbo_replay(
+            ticker,
+            source="FINAM_QUOTES",
+            event_timestamp=event_timestamp,
+            received_monotonic=received_monotonic,
+            sides_present=bool(bid_present or ask_present),
+        )
         # ORDER_BOOK and QUOTES use independent provider streams. A valid recent
         # book can be confirmed by the newest two-sided QUOTES packet between
         # book deltas; this prevents a pending candidate from expiring merely
