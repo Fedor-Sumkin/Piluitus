@@ -952,6 +952,7 @@ def _record_paper_bbo_replay(
         "received_monotonic": received_monotonic,
         "bid_confirmed_monotonic": quote.get("last_bid_confirmed_seen", 0.0),
         "ask_confirmed_monotonic": quote.get("last_ask_confirmed_seen", 0.0),
+        "max_age_sec": getattr(screener, "bbo_max_age_sec", 2.0),
     }
     paper_bbo_replay_recorder.record(symbol, snapshot, event)
 
