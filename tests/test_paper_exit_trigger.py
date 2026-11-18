@@ -104,6 +104,25 @@ class PaperExitTriggerTests(unittest.TestCase):
         self.assertEqual(reason, "")
         self.assertNotIn("pending_exit_reason", trade)
 
+    def test_latched_trigger_is_forwarded_to_replay_recorder(self):
+        captured = []
+        self.engine.paper_exit_event_recorder = (
+            lambda ticker, trade, quote: captured.append((ticker, trade, quote))
+        )
+        self.engine._latest_fresh_exit_quote = lambda ticker, side: {
+            "executable_price": 98.7, "age_sec": 0.1, "max_age_sec": 2.0,
+        }
+        trade = self._trade("BUY")
+        reason = self.engine._capture_paper_exit_trigger(
+            "TEST", trade, 98.8, source="LAST_TRADE",
+            market_timestamp="2026-11-18T10:00:00+03:00",
+        )
+        self.assertEqual(reason, "STOP_LOSS")
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0][0], "TEST")
+        self.assertIs(captured[0][1], trade)
+        self.assertEqual(captured[0][2]["executable_price"], 98.7)
+
     def test_order_book_event_does_not_reinterpret_old_last_price_as_new_trigger(self):
         class ActiveTask:
             @staticmethod
