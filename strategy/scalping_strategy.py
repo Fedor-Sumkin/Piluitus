@@ -51,9 +51,9 @@ def evaluate_scalping_candidate(
 
     Queue imbalance uses a time-weighted five-second history of coherent visible
     best Bid/Ask sizes, combined with 30-second aggressor trade-flow evidence.
-    Finam's size unit is not assumed; the normalized ratio is dimensionless. This is not OFI:
-    true OFI requires signed changes in best bid/ask prices and quantities over
-    time, which is a separate future data-engineering task.
+    Event-based best-quote OFI is also supplied as a separate diagnostic. OFI
+    deliberately contributes no score and creates no eligibility block until
+    its per-ticker, out-of-sample relationship with executable outcomes is validated.
     """
     side = str(direction or "").strip().upper()
     empty = {
