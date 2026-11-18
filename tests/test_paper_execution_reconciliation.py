@@ -123,6 +123,25 @@ class PaperExecutionReconciliationTests(unittest.TestCase):
         self.assertEqual(result["counts_by_status"]["MISSING_ACTUAL_REPLAY_IDENTITY"], 1)
         self.assertEqual(result["matched_exact_identity"], 0)
 
+    def test_replay_rejection_is_distinct_from_missing_replay_position(self) -> None:
+        result = build_actual_vs_replay_reconciliation(
+            [actual_trade()],
+            {
+                "trades": [],
+                "rejected_positions": [{
+                    "position_id": "PAPER-1",
+                    "session_id": "REPLAY-SESSION-1",
+                    "reason": "missing finite entry fields",
+                }],
+            },
+        )
+        self.assertEqual(result["counts_by_status"]["REPLAY_POSITION_REJECTED"], 1)
+        self.assertEqual(result["counts_by_status"]["NO_REPLAY_POSITION"], 0)
+        self.assertEqual(
+            result["trades"][0]["replay_rejection_reason"],
+            "missing finite entry fields",
+        )
+
     def test_missing_replay_exit_is_not_imputed_as_zero_pnl(self) -> None:
         replay = replay_trade(scenarios=[{"name": "BASELINE_SL_TP", "exit": None}])
         result = build_actual_vs_replay_reconciliation(
