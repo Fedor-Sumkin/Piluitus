@@ -48,7 +48,8 @@ def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     equity = 0.0
     peak = 0.0
     max_drawdown = 0.0
-    max_drawdown_pct: float | None = None
+    max_drawdown_pct = 0.0
+    has_positive_peak = False
     max_loss_streak = 0
     current_loss_streak = 0
     ordered = sorted(
@@ -62,7 +63,9 @@ def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         drawdown = peak - equity
         if drawdown > max_drawdown:
             max_drawdown = drawdown
-            max_drawdown_pct = (drawdown / peak * 100.0) if peak > 0.0 else None
+        if peak > 0.0:
+            has_positive_peak = True
+            max_drawdown_pct = max(max_drawdown_pct, drawdown / peak * 100.0)
         current_loss_streak = current_loss_streak + 1 if realized < 0.0 else 0
         max_loss_streak = max(max_loss_streak, current_loss_streak)
 
@@ -94,7 +97,7 @@ def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         "profit_factor": round(gross_profit / gross_loss, 4) if gross_loss > 0.0 else None,
         "max_drawdown_rub": round(max_drawdown, 2),
         "max_drawdown_pct_of_prior_peak": (
-            round(max_drawdown_pct, 3) if max_drawdown_pct is not None else None
+            round(max_drawdown_pct, 3) if has_positive_peak else None
         ),
         "max_consecutive_losses": max_loss_streak,
         "current_loss_streak": current_loss_streak,
