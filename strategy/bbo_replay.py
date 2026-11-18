@@ -172,6 +172,14 @@ class BBOReplayRecorder:
         received_monotonic = _finite(
             source_event.get("received_monotonic"), now_mono
         )
+        bid_confirmed = _finite(
+            source_event.get("bid_confirmed_monotonic"), received_monotonic
+        )
+        ask_confirmed = _finite(
+            source_event.get("ask_confirmed_monotonic"), received_monotonic
+        )
+        bid_age = max(0.0, now_mono - bid_confirmed) if bid_confirmed > 0.0 else None
+        ask_age = max(0.0, now_mono - ask_confirmed) if ask_confirmed > 0.0 else None
         reason = str(book_result.get("reason") or source_event.get("book_reason") or "")
         event_kind = (
             "INVALIDATION" if not valid
@@ -185,7 +193,7 @@ class BBOReplayRecorder:
             "session_id": self.session_id,
             "sequence": self._sequence,
             "ticker": symbol,
-            "source": "FINAM_ORDER_BOOK",
+            "source": str(source_event.get("source") or "FINAM_ORDER_BOOK").upper(),
             "event_kind": event_kind,
             "event_time_epoch": round(timestamp_epoch, 6),
             "event_time_source": "EXCHANGE" if event_epoch is not None else "RECEIVE_FALLBACK",
@@ -193,11 +201,16 @@ class BBOReplayRecorder:
                 received_epoch, tz=timezone.utc
             ).isoformat(timespec="milliseconds"),
             "received_monotonic": round(received_monotonic, 6),
+            "bid_confirmed_monotonic": round(bid_confirmed, 6) if bid_confirmed > 0.0 else None,
+            "ask_confirmed_monotonic": round(ask_confirmed, 6) if ask_confirmed > 0.0 else None,
+            "bid_age_sec_at_capture": round(bid_age, 6) if bid_age is not None else None,
+            "ask_age_sec_at_capture": round(ask_age, 6) if ask_age is not None else None,
             "bid": bid,
             "ask": ask,
             "bid_size": bid_size,
             "ask_size": ask_size,
-            "book_valid": valid,
+            "bbo_valid": valid,
+            "book_valid": bool(book_result.get("order_book_valid", valid)),
             "book_reason": reason[:120],
         }
         try:
