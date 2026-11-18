@@ -795,6 +795,12 @@ def replay_exit_batch(
             "rejected_positions": [],
             "trades": [],
             "summary_by_scenario": {},
+            "matched_cohort_comparison": {
+                "available": False,
+                "reason": "NO_REPLAYED_POSITIONS",
+                "comparisons_vs_baseline": {},
+                "all_scenarios_common_cohort": None,
+            },
         }
 
     scenario_specs = list(scenarios) if scenarios is not None else None
