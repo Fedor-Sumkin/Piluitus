@@ -469,8 +469,11 @@ class BaseExecutionEngine:
         exit_price = stop
         fee_pct = 0.0
         if self.paper_mode:
-            exit_side = "SELL" if direction == "BUY" else "BUY"
-            exit_price = self._apply_paper_slippage(stop, exit_side)
+            slippage_bps = min(100.0, max(0.0, _finite_or_default(
+                getattr(self, "paper_slippage_bps", 0.0), 0.0
+            )))
+            slippage_rate = slippage_bps / 10_000.0
+            exit_price = stop * (1.0 - slippage_rate if direction == "BUY" else 1.0 + slippage_rate)
             fee_pct = min(1.0, max(0.0, _finite_or_default(
                 getattr(self, "paper_commission_pct", 0.0), 0.0
             )))
