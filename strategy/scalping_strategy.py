@@ -43,10 +43,10 @@ def evaluate_scalping_candidate(
     Components:
       * price/VWAP directional agreement (25);
       * M1 pattern/trend agreement (20);
-      * best-queue imbalance (20);
+      * persistent time-weighted best-queue imbalance (12);
       * trade-size impulse (10);
       * spread relative to M1 ATR (15);
-      * quote freshness (10).
+      * aggressor trade-flow confirmation (8);\n      * quote freshness (10).
 
     Queue imbalance uses only the visible best Bid/Ask sizes. Finam's size unit
     is not assumed; the normalized ratio is dimensionless. This is not OFI:
