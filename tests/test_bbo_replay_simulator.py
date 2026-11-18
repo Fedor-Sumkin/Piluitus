@@ -599,5 +599,30 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         self.assertAlmostEqual(capacity["mark_to_market"]["ending_equity_rub"], expected_equity)
 
 
+    def test_portfolio_mark_to_market_ignores_delayed_out_of_order_quote(self):
+        trade = {
+            "position_id": "LONG-1", "session_id": "session-a", "ticker": "SBER",
+            "side": "BUY", "entry_time_epoch": 1.0, "entry_price": 100.0,
+            "quantity": 10,
+            "cost_assumptions": {
+                "commission_pct_per_side": 0.0, "slippage_bps": 0.0,
+                "entry_commission_rub": 0.0,
+            },
+            "scenarios": [{"name": "BASELINE", "exit": None}],
+        }
+        rows = [
+            event(1, bid=100.0, ask=100.1, age=0.1, epoch=2.0),
+            event(2, bid=90.0, ask=90.1, age=1.5, epoch=3.0),
+        ]
+        result = _portfolio_capacity_simulation(
+            [trade], "BASELINE", 10000.0, 15.0, events=rows, max_bbo_age_sec=2.0,
+        )
+        marked = result["mark_to_market"]
+        self.assertEqual(marked["out_of_order_bbo_mark_events"], 1)
+        self.assertAlmostEqual(marked["ending_unrealized_net_pnl_rub"], 0.0)
+        self.assertAlmostEqual(marked["ending_equity_rub"], 10000.0)
+
+
+
 if __name__ == "__main__":
     unittest.main()
