@@ -121,7 +121,7 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
         metrics["queue_imbalance_5s_available"] = 0.0
         result = evaluate_scalping_candidate("BUY", metrics)
         self.assertIsNone(result["queue_imbalance"])
-        self.assertIn("best_queue_imbalance_unavailable_or_stale", result["reasons"])
+        self.assertIn("time_weighted_queue_imbalance_warmup_or_stale", result["reasons"])
 
     def test_queue_and_aggressor_flow_conflict_blocks_shadow_qualification(self):
         metrics = strong_buy_metrics()
