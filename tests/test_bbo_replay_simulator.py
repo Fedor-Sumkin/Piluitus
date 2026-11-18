@@ -23,6 +23,7 @@ def event(sequence, ticker="SBER", *, bid=100.0, ask=100.1, age=0.1,
 
 def position(side="BUY", **overrides):
     base = {
+        "id": "PAPER-TEST",
         "session_id": "session-a",
         "ticker": "SBER",
         "side": side,
@@ -159,7 +160,7 @@ class BBOReplaySimulatorTests(unittest.TestCase):
             event(1, bid=100.0, ask=100.1, epoch=1_800_000_001.0),
             {
                 "session_id": "session-a", "sequence": 2, "ticker": "SBER",
-                "event_kind": "EXIT_TRIGGER", "event_time_epoch": 1_800_000_002.0,
+                "event_kind": "EXIT_TRIGGER", "trade_id": "PAPER-TEST", "event_time_epoch": 1_800_000_002.0,
                 "trigger_reason": "STOP_LOSS", "trigger_price": 99.0,
                 "trigger_bbo_valid": True, "trigger_bbo_price": 98.8,
                 "trigger_bbo_age_sec": 0.2, "trigger_bbo_max_age_sec": 2.0,
@@ -179,7 +180,7 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         rows = [
             {
                 "session_id": "session-a", "sequence": 1, "ticker": "SBER",
-                "event_kind": "EXIT_TRIGGER", "event_time_epoch": 1_800_000_001.0,
+                "event_kind": "EXIT_TRIGGER", "trade_id": "PAPER-TEST", "event_time_epoch": 1_800_000_001.0,
                 "trigger_reason": "TAKE_PROFIT", "trigger_price": 102.0,
                 "trigger_source": "LAST_TRADE",
                 "trigger_market_time_epoch": 1_800_000_000.9,
@@ -204,7 +205,7 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         rows = [
             {
                 "session_id": "session-a", "sequence": 1, "ticker": "SBER",
-                "event_kind": "EXIT_TRIGGER", "event_time_epoch": 1_800_000_001.0,
+                "event_kind": "EXIT_TRIGGER", "trade_id": "PAPER-TEST", "event_time_epoch": 1_800_000_001.0,
                 "trigger_reason": "STOP_LOSS", "trigger_price": 99.0,
                 "trigger_bbo_valid": True, "trigger_bbo_price": 98.0,
                 "trigger_bbo_age_sec": 3.0, "trigger_bbo_max_age_sec": 2.0,
@@ -234,7 +235,7 @@ class BBOReplaySimulatorTests(unittest.TestCase):
     def test_research_variants_ignore_production_trigger_events(self):
         rows = [{
             "session_id": "session-a", "sequence": 1, "ticker": "SBER",
-            "event_kind": "EXIT_TRIGGER", "event_time_epoch": 1_800_000_001.0,
+            "event_kind": "EXIT_TRIGGER", "trade_id": "PAPER-TEST", "event_time_epoch": 1_800_000_001.0,
             "trigger_reason": "STOP_LOSS", "trigger_price": 99.0,
             "trigger_bbo_valid": True, "trigger_bbo_price": 98.0,
             "trigger_bbo_age_sec": 0.1, "trigger_bbo_max_age_sec": 2.0,
@@ -293,6 +294,36 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         )
         self.assertEqual(result["session_id"], "session-a")
         self.assertGreater(result["entry_time_epoch"], 0.0)
+
+    def test_pre_entry_quotes_are_excluded_from_exit_decisions(self):
+        rows = [
+            event(1, bid=98.0, ask=98.1, epoch=1_799_999_999.0),
+            event(2, bid=100.5, ask=100.6, epoch=1_800_000_001.0),
+        ]
+        result = replay_exit_scenarios(
+            rows, position(),
+            scenarios=[{"name": "baseline", "kind": "baseline"}],
+        )
+        self.assertEqual(result["coverage"]["pre_entry_events"], 1)
+        self.assertEqual(result["coverage"]["ticker_events"], 1)
+        self.assertEqual(result["scenarios"][0]["status"], "OPEN_AT_END")
+
+    def test_exit_trigger_from_another_trade_on_same_ticker_is_ignored(self):
+        rows = [{
+            "session_id": "session-a", "sequence": 1, "ticker": "SBER",
+            "event_kind": "EXIT_TRIGGER", "trade_id": "ANOTHER-PAPER-TRADE",
+            "event_time_epoch": 1_800_000_001.0,
+            "trigger_reason": "STOP_LOSS", "trigger_price": 99.0,
+            "trigger_bbo_valid": True, "trigger_bbo_price": 98.0,
+            "trigger_bbo_age_sec": 0.1, "trigger_bbo_max_age_sec": 2.0,
+        }, event(2, bid=100.5, ask=100.6, epoch=1_800_000_002.0)]
+        result = replay_exit_scenarios(
+            rows, position(),
+            scenarios=[{"name": "baseline", "kind": "baseline"}],
+        )
+        self.assertEqual(result["coverage"]["unmatched_exit_trigger_events"], 1)
+        self.assertEqual(result["scenarios"][0]["trigger_mode"], "BBO_THRESHOLD_PROXY")
+        self.assertEqual(result["scenarios"][0]["status"], "OPEN_AT_END")
 
     def test_invalid_position_contract_is_rejected(self):
         with self.assertRaises(ValueError):
