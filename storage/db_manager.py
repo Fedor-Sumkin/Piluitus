@@ -652,13 +652,22 @@ class DBManager:
                     continue
                 try:
                     trade = json.loads(raw)
-                    if not isinstance(trade, dict):
-                        log.warning("Пропущена некорректная запись сделки для ключа %s", key_str)
-                        continue
-                    order_id = key_str.split(":")[-1]
-                    result[order_id] = trade
-                except json.JSONDecodeError:
-                    log.error("❌ Corrupt trade JSON for key %s", key_str)
+                except (json.JSONDecodeError, TypeError, UnicodeDecodeError) as exc:
+                    # This method is the authoritative full journal used by
+                    # restart reconciliation and risk hydration. Silently
+                    # skipping a corrupt key could hide an OPEN/STALE PAPER
+                    # position and incorrectly release the entry lock.
+                    log.critical("❌ Corrupt trade JSON for key %s; full journal read aborted", key_str)
+                    raise RuntimeError(
+                        f"Некорректная запись сделки в полном журнале: {key_str}"
+                    ) from exc
+                if not isinstance(trade, dict):
+                    log.critical("❌ Invalid trade record shape for key %s; full journal read aborted", key_str)
+                    raise RuntimeError(
+                        f"Некорректный формат записи сделки в полном журнале: {key_str}"
+                    )
+                order_id = key_str.split(":")[-1]
+                result[order_id] = trade
 
             if cursor == 0:
                 break
