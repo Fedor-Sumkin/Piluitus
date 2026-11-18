@@ -1520,7 +1520,6 @@ class BaseExecutionEngine:
                 executable_price = _finite_or_default(entry_bbo.get("executable_price"), 0.0)
                 if executable_price <= 0.0:
                     return {"status": "SKIPPED", "message": "Некорректная исполнимая цена BBO для PAPER-входа."}
-                paper_depth_fill: dict[str, Any] | None = None
                 if self.paper_book_size_unit in {"shares", "lots"}:
                     depth_key = "ask_levels" if side == "BUY" else "bid_levels"
                     paper_depth_fill = self._simulate_paper_depth_fill(
