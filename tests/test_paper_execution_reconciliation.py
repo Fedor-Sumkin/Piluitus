@@ -112,6 +112,16 @@ class PaperExecutionReconciliationTests(unittest.TestCase):
         self.assertEqual(result["pnl_delta"]["observations"], 0)
         self.assertIsNone(result["pnl_delta"]["total_rub"])
 
+    def test_legacy_mode_less_paper_trade_is_included_by_explicit_paper_id(self) -> None:
+        legacy = actual_trade(id="PAPER_LEGACY_1", mode="")
+        replay = replay_trade(position_id="PAPER_LEGACY_1")
+        result = build_actual_vs_replay_reconciliation(
+            [legacy],
+            {"trades": [replay]},
+        )
+        self.assertEqual(result["actual_closed_paper_trades"], 1)
+        self.assertEqual(result["matched_exact_identity"], 1)
+
     def test_non_paper_and_open_trades_are_excluded(self) -> None:
         result = build_actual_vs_replay_reconciliation(
             [
