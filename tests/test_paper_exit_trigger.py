@@ -137,6 +137,9 @@ class PaperExitDepthTests(unittest.TestCase):
             {
                 "bid_levels": [[99.9, 10], [99.8, 10]],
                 "ask_levels": [[100.0, 100]],
+                "order_book_valid": True,
+                "order_book_age_sec": 0.1,
+                "max_age_sec": 2.0,
             },
         )
         self.assertEqual(fill["filled_lots"], 2)
@@ -153,6 +156,9 @@ class PaperExitDepthTests(unittest.TestCase):
             {
                 "bid_levels": [[99.9, 100]],
                 "ask_levels": [[100.1, 10], [100.2, 10]],
+                "order_book_valid": True,
+                "order_book_age_sec": 0.1,
+                "max_age_sec": 2.0,
             },
         )
         self.assertEqual(fill["filled_lots"], 2)
@@ -254,6 +260,9 @@ class PaperPartialExitTests(unittest.IsolatedAsyncioTestCase):
             "ask_levels": [[101.1, 100]],
             "age_sec": 0.1,
             "spread_pct": 0.1,
+            "order_book_valid": True,
+            "order_book_age_sec": 0.1,
+            "max_age_sec": 2.0,
         }
 
     async def test_partial_exit_keeps_residual_open_and_persists_cost_allocation(self):
