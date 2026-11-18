@@ -279,6 +279,7 @@ class PaperPerformanceTracker:
         matched: list[dict[str, Any]] = []
         unmatched_reasons: dict[str, int] = defaultdict(int)
         horizon_returns: dict[int, list[float]] = defaultdict(list)
+        horizon_observations: dict[int, list[dict[str, Any]]] = defaultdict(list)
         counted_candidate_horizons: set[tuple[str, int]] = set()
         matched_realized_net = 0.0
         matched_details: list[dict[str, Any]] = []
@@ -315,6 +316,7 @@ class PaperPerformanceTracker:
                 if value is not None:
                     if (candidate_id, horizon) not in counted_candidate_horizons:
                         horizon_returns[horizon].append(value)
+                        horizon_observations[horizon].append(label)
                         counted_candidate_horizons.add((candidate_id, horizon))
                     matched_horizons[str(horizon)] = round(value, 6)
             matched_details.append({
@@ -330,6 +332,15 @@ class PaperPerformanceTracker:
         for horizon, values in sorted(horizon_returns.items()):
             positive = [value for value in values if value > 0.0]
             negative = [value for value in values if value < 0.0]
+            observations = horizon_observations[horizon]
+
+            def average_field(field: str, digits: int = 3) -> float | None:
+                field_values = [
+                    value for label in observations
+                    if (value := _number(label.get(field))) is not None
+                ]
+                return round(sum(field_values) / len(field_values), digits) if field_values else None
+
             horizons[str(horizon)] = {
                 "labels": len(values),
                 "mean_net_return_pct": round(sum(values) / len(values), 6),
@@ -338,6 +349,12 @@ class PaperPerformanceTracker:
                     round(sum(positive) / abs(sum(negative)), 4)
                     if sum(negative) < 0.0 else None
                 ),
+                "average_mfe_net_pct": average_field("mfe_executable_pct", 6),
+                "average_mae_net_pct": average_field("mae_executable_pct", 6),
+                "average_time_to_mfe_sec": average_field("time_to_mfe_sec"),
+                "average_time_to_mae_sec": average_field("time_to_mae_sec"),
+                "average_valid_bbo_observations": average_field("valid_bbo_observations", 2),
+                "average_bbo_observation_span_sec": average_field("bbo_observation_span_sec"),
             }
         unmatched = sum(unmatched_reasons.values())
         total = len(trades)
