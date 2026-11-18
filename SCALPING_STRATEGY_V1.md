@@ -66,6 +66,20 @@ A high score is not enough. For every candidate, the next data-collection stage 
 
 The forward-return label is emitted at the first fresh quote at or after the target horizon. If no fresh BBO arrives within the configured label-lag allowance, the horizon is recorded as `NO_FRESH_BBO`, not assigned a stale price. Do not use future data in candidate features. Hypothetical fills use Ask to enter BUY, Bid to enter SELL, Bid to exit BUY and Ask to exit SELL. The tracker needs a fresh executable two-sided BBO for labels; full depth is not required for return calculation (but it remains required by the shadow queue-imbalance feature). The tracker applies the current `PILUITUS_PAPER_COMMISSION_PCT` and `PILUITUS_PAPER_SLIPPAGE_BPS` settings; the log records those assumptions for every label.
 
+
+### LLM decision attribution
+
+Every shadow candidate created from a fresh coherent BBO receives a `candidate_id`. The ID is carried through the local prefilter/queue into the final verdict, where the tracker records both independent decision layers:
+
+- `llm_model_decision`: the model's contract decision, `APPROVE` or `HOLD`;
+- `llm_final_decision`: the system's final directional decision, `BUY`, `SELL` or `HOLD`;
+- `llm_signal_status`, model confidence, reason code and local guard outcome;
+- `llm_execution_status`: updated after the asynchronous PAPER execution result.
+
+Each subsequent forward label copies these fields, so the scorecard can compare forward executable returns by model approval/rejection, final system decision, confidence band, reason code and actual execution status. A missing candidate link is explicitly reported and is not guessed from ticker/time proximity. The tracker also reports profit factor as the sum of positive net executable percentage returns divided by the absolute sum of negative net executable percentage returns; when there are no losses the value is `N/A`, not infinity.
+
+The attribution remains research-only. An LLM `APPROVE` is not itself an executed trade, and a positive hypothetical forward label is not a realized PAPER profit. Use the separate execution status and actual closed-trade ledger when evaluating realized performance.
+
 Report results separately by ticker, direction, tick-size/price group, spread-to-ATR bucket, time of day and market regime. Required metrics include:
 - trade count and coverage of the universe;
 - net expectancy in R and rubles;
