@@ -336,3 +336,78 @@ if __name__ == "__main__":
         self.assertEqual(groups["180_299S"]["trades"], 1)
         self.assertEqual(groups["600S_PLUS"]["trades"], 1)
         self.assertEqual(groups["UNKNOWN"]["trades"], 1)
+
+
+
+class PaperEntryPerformanceCohortTests(unittest.TestCase):
+    def test_scorecard_groups_realized_trades_by_entry_quality(self):
+        tracker = PaperPerformanceTracker()
+        tracker.restore([
+            {
+                **trade("entry-good", 5),
+                "entry_spread_pct": 0.03,
+                "entry_bbo_age_sec": 0.4,
+                "entry_execution_shortfall_bps": 2.0,
+                "entry_spread_to_atr_ratio": 0.20,
+                "entry_signal_adverse_drift_pct": 0.08,
+            },
+            {
+                **trade("entry-bad", -4, side="SELL"),
+                "entry_spread_pct": 0.12,
+                "entry_bbo_age_sec": 1.2,
+                "entry_execution_shortfall_bps": 6.0,
+                "entry_spread_to_atr_ratio": 0.60,
+                "entry_signal_adverse_drift_pct": 0.15,
+            },
+            {
+                **trade("entry-legacy", 1),
+                "entry_spread_pct": None,
+                "entry_bbo_age_sec": None,
+                "entry_execution_shortfall_bps": None,
+                "entry_spread_to_atr_ratio": None,
+                "entry_signal_adverse_drift_pct": None,
+            },
+        ])
+
+        scorecard = tracker.scorecard()
+        self.assertEqual(
+            scorecard["by_entry_spread"]["SPREAD_PCT_0_02_0_05"]["trades"], 1
+        )
+        self.assertEqual(
+            scorecard["by_entry_spread"]["SPREAD_PCT_GE_0_10"]["trades"], 1
+        )
+        self.assertEqual(
+            scorecard["by_entry_bbo_age"]["BBO_AGE_SEC_0_25_0_50"]["trades"], 1
+        )
+        self.assertEqual(
+            scorecard["by_entry_execution_shortfall"]["SHORTFALL_BPS_1_3"]["trades"], 1
+        )
+        self.assertEqual(
+            scorecard["by_entry_spread_to_atr"]["SPREAD_ATR_0_10_0_25"]["trades"], 1
+        )
+        self.assertEqual(
+            scorecard["by_entry_signal_drift"]["ADVERSE_0_05_TO_0_10"]["trades"], 1
+        )
+        diagnostics = scorecard["entry_diagnostics"]
+        self.assertEqual(diagnostics["trades"], 3)
+        self.assertEqual(diagnostics["coverage"]["spread_pct"], 2)
+        self.assertEqual(diagnostics["coverage"]["execution_shortfall_bps"], 2)
+        self.assertIn("descriptive cohorts", diagnostics["interpretation"])
+
+    def test_entry_quality_groups_keep_unknown_data_separate(self):
+        tracker = PaperPerformanceTracker()
+        tracker.record({
+            **trade("entry-unknown", -2),
+            "entry_spread_pct": None,
+            "entry_bbo_age_sec": None,
+            "entry_execution_shortfall_bps": None,
+            "entry_spread_to_atr_ratio": None,
+            "entry_signal_adverse_drift_pct": None,
+        })
+        scorecard = tracker.scorecard()
+        self.assertEqual(
+            scorecard["by_entry_spread"]["SPREAD_PCT_UNKNOWN"]["trades"], 1
+        )
+        self.assertEqual(
+            scorecard["by_entry_execution_shortfall"]["SHORTFALL_BPS_UNKNOWN"]["trades"], 1
+        )
