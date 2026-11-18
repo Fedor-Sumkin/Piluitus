@@ -110,6 +110,9 @@ The PAPER-only endpoint `GET /api/v1/paper/performance` returns:
 - gross/net realized PnL, win rate, expectancy, average win/loss and profit factor;
 - maximum drawdown in RUB and as a percentage of the prior realized-PnL peak, plus maximum/current loss streak;
 - average holding time and recorded commissions;
+- executable-BBO outage diagnostics: trades affected, gap episodes, total and
+  average gap duration, and maximum single gap; these metrics are also grouped
+  by ticker and PAPER session;
 - segments by independent PAPER session, BUY/SELL, ticker, model/final LLM
   decision, confidence band, LLM reason code and exit reason;
 - Shadow comparison matched strictly by `shadow_candidate_id`, with separate
@@ -128,7 +131,22 @@ not be treated as independent realized trades.
 The journal is bounded to the newest 20,000 records. An explicit PAPER-session
 reset and panic journal clear also remove this dedicated journal and reset the
 in-memory realized scorecard; Shadow forward labels remain a separate research
-history. The legacy fallback is
+history.
+
+### Executable BBO availability during position management
+
+The exit monitor records each interval in which the executable side (Bid for a
+BUY position, Ask for a SELL position) is unavailable or older than the same
+effective TTL used by the exit guard. It does not use stale prices to trigger
+or fill an exit. When a fresh executable quote returns, the interval is closed
+and its duration is retained on the trade as `exit_bbo_gap_count`,
+`total_exit_bbo_gap_sec`, `last_exit_bbo_gap_sec` and
+`max_exit_bbo_gap_sec`. The PAPER performance scorecard aggregates these fields
+overall and by ticker/session, including the share of closed trades affected.
+This measures data availability during position management; it does not imply
+that every measured gap delayed a stop or target crossing.
+
+The legacy fallback is
 limited to 100 recent records and is only used when the dedicated journal is
 empty. A journal write failure is logged as critical while the already-closed
 PAPER trade remains closed; operators should treat that run's persisted
