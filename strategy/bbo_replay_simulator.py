@@ -604,16 +604,13 @@ def replay_exit_batch(
     grouped: dict[str, list[dict[str, Any]]] = {}
 
     # Index once instead of rescanning the complete bounded journal for every trade.
-    events_by_session_ticker: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    events_by_session: dict[str, list[Mapping[str, Any]]] = {}
     for event in event_rows:
         if not isinstance(event, Mapping):
             continue
         event_session = str(event.get("session_id") or "").strip()
-        event_ticker = str(event.get("ticker") or "").strip().upper().split("@")[0]
-        if event_session and event_ticker:
-            events_by_session_ticker.setdefault(
-                (event_session, event_ticker), []
-            ).append(event)
+        if event_session:
+            events_by_session.setdefault(event_session, []).append(event)
 
     for index, position in enumerate(position_rows):
         if not isinstance(position, Mapping):
@@ -621,10 +618,7 @@ def replay_exit_batch(
         position_session = str(
             position.get("bbo_replay_session_id") or position.get("session_id") or ""
         ).strip()
-        position_ticker = str(position.get("ticker") or "").strip().upper().split("@")[0]
-        relevant_events = events_by_session_ticker.get(
-            (position_session, position_ticker), []
-        )
+        relevant_events = events_by_session.get(position_session, [])
         result = replay_exit_scenarios(
             relevant_events,
             position,
