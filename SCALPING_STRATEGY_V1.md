@@ -289,3 +289,53 @@ invalid states, and enforce the same freshness TTL as the original PAPER
 monitor. A replayed strategy must not be promoted to the active PAPER exit
 rules until it has been compared against the unchanged baseline on identical
 sessions and realistic commission/slippage assumptions.
+
+
+## PAPER exit replay and scenario comparison
+
+Every newly opened PAPER trade stores `bbo_replay_session_id`, linking it to
+the recorder's process session independently of the execution-engine session
+ID. When the production monitor first latches `STOP_LOSS` or `TAKE_PROFIT`,
+the recorder also writes an `EXIT_TRIGGER` event with trade ID, position side,
+trigger source, trigger reason/price, observed trigger price and whether a
+fresh executable BBO was available at that exact monitor event. If it was not
+available, the replay keeps the trigger pending and closes only at the next
+fresh executable side observation.
+
+`strategy/bbo_replay_simulator.py` is an offline, pure-Python research engine.
+It accepts the persisted PAPER trade fields and the journal events for the
+matching `bbo_replay_session_id`. It orders the journal by increasing session
+sequence, deduplicates repeated sequence IDs, reports global sequence gaps and
+per-ticker timestamp regressions, and enforces the same per-side executable
+BBO freshness threshold. BUY exits use Bid; SELL exits use Ask. Invalid,
+crossed, missing-side and stale observations are not used as fills.
+
+The default comparison set is:
+- `BASELINE_SL_TP`: uses actual latched production `EXIT_TRIGGER` events
+  when present, then fills at the trigger-time fresh BBO or the next fresh BBO.
+  Legacy sessions without trigger events use an explicitly labelled
+  `BBO_THRESHOLD_PROXY`.
+- `TIME_STOP_180S` and `TIME_STOP_300S`: preserve original SL/TP and close
+  at the first fresh executable quote at or after the time limit.
+- `BREAK_EVEN_1R`: arms a net break-even stop after +1R, including entry fee,
+  exit commission and adverse slippage in the threshold.
+- `TRAILING_1R_ARM_0_75R_GAP`: arms after +1R and trails the best observed
+  executable-side price by 0.75R, without loosening the original stop.
+
+All exit fills apply the configured per-side commission and adverse slippage.
+Batch summaries report closed/open counts, net PnL, expectancy in RUB and R,
+win rate, average win/loss, profit factor, maximum drawdown and holding time,
+overall and by ticker, side and replay session. Fewer than 30 closed outcomes
+are labelled insufficient; 30–99 preliminary; 100–299 developing; 300+ larger
+sample. A profit factor with no losses is reported as N/A, not infinity.
+Open-at-end positions are not counted as realized PnL.
+
+This engine is intentionally not wired into active position management and
+does not read/write Memurai or alter PAPER positions. It is a research
+calculation over a caller-supplied set of journal events and trade records.
+It does not model portfolio overlap/capital contention, queue position,
+passive fills, full-depth impact or exchange latency. The time-stop is
+event-driven and can only act on the first fresh BBO observed after timeout.
+Results must be compared on the same closed-position cohort and same cost
+assumptions; changing the number or composition of closed trades can bias a
+simple scenario comparison.
