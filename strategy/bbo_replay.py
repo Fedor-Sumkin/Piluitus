@@ -19,7 +19,7 @@ from uuid import uuid4
 logger = logging.getLogger("Piluitus.BBOReplay")
 
 BBO_REPLAY_STORAGE_KEY = "piluitus:paper:bbo_replay"
-BBO_REPLAY_STORAGE_LIMIT = 100_000
+BBO_REPLAY_STORAGE_LIMIT = 250_000
 
 
 def _positive_env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -100,7 +100,7 @@ class BBOReplayRecorder:
         batch_size: int | None = None,
         flush_interval_sec: float | None = None,
         heartbeat_interval_sec: float | None = None,
-        storage_limit: int = BBO_REPLAY_STORAGE_LIMIT,
+        storage_limit: int | None = None,
     ) -> None:
         self.queue_limit = max(100, int(queue_limit or _positive_env_int(
             "PILUITUS_BBO_REPLAY_QUEUE_LIMIT", 8192
@@ -118,7 +118,11 @@ class BBOReplayRecorder:
             float(heartbeat_interval_sec if heartbeat_interval_sec is not None else
                   _finite(os.getenv("PILUITUS_BBO_REPLAY_HEARTBEAT_SEC", "1.0"), 1.0)),
         )
-        self.storage_limit = max(1, int(storage_limit))
+        self.storage_limit = max(1, int(
+            storage_limit if storage_limit is not None else _positive_env_int(
+                "PILUITUS_BBO_REPLAY_STORAGE_LIMIT", BBO_REPLAY_STORAGE_LIMIT
+            )
+        ))
         self.session_id = uuid4().hex
         self._sequence = 0
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self.queue_limit)
@@ -157,9 +161,15 @@ class BBOReplayRecorder:
         source_name = str(source_event.get("source") or "FINAM_ORDER_BOOK").upper()
         prior = self._last_state.get(symbol)
         state = (bid, ask, bid_size, ask_size, valid, source_name)
-        changed = prior is None or state != prior[:6]
+        price_state_changed = prior is None or (
+            bid != prior[0] or ask != prior[1]
+            or valid != prior[4] or source_name != prior[5]
+        )
         heartbeat_due = prior is None or now_mono - prior[6] >= self.heartbeat_interval_sec
-        if not changed and not heartbeat_due:
+        if not price_state_changed and not heartbeat_due:
+            # Keep the latest sizes for the next price transition/heartbeat,
+            # but do not persist every queue-size-only update.
+            self._last_state[symbol] = (*state, prior[6])
             self.skipped_unchanged += 1
             return False
 
