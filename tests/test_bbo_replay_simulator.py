@@ -1,6 +1,10 @@
 import unittest
 
-from strategy.bbo_replay_simulator import (\n    _portfolio_capacity_simulation,\n    replay_exit_batch,\n    replay_exit_scenarios,\n)
+from strategy.bbo_replay_simulator import (
+    _portfolio_capacity_simulation,
+    replay_exit_batch,
+    replay_exit_scenarios,
+)
 
 
 def event(sequence, ticker="SBER", *, bid=100.0, ask=100.1, age=0.1,
