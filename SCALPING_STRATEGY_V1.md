@@ -125,7 +125,10 @@ candidate/horizon labels are counted once. It never joins by ticker or time.
 Shadow horizon observations are still correlated within a candidate and must
 not be treated as independent realized trades.
 
-The journal is bounded to the newest 20,000 records. The legacy fallback is
+The journal is bounded to the newest 20,000 records. An explicit PAPER-session
+reset and panic journal clear also remove this dedicated journal and reset the
+in-memory realized scorecard; Shadow forward labels remain a separate research
+history. The legacy fallback is
 limited to 100 recent records and is only used when the dedicated journal is
 empty. A journal write failure is logged as critical while the already-closed
 PAPER trade remains closed; operators should treat that run's persisted
