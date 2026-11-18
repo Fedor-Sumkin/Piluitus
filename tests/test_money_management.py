@@ -4,12 +4,14 @@ from __future__ import annotations
 import asyncio
 import json
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from config import FINAM_TRADE_LOT_SIZES
 from execution_layer import BaseExecutionEngine
 from risk_manager import RiskManager
+
+MSK = timezone(timedelta(hours=3))
 
 
 class FakeRedis:
@@ -69,7 +71,7 @@ class RiskManagerMoneyManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db.redis.values["piluitus:risk:persistent_balance"], "40000.00")
 
     async def test_daily_loss_uses_full_ledger_not_only_last_100_history_rows(self) -> None:
-        now = datetime.now()
+        now = datetime.now(MSK)
         rows = {
             f"order-{index}": closed_trade(
                 f"order-{index}", 1.0 if index == 103 else -3.0,
@@ -90,7 +92,7 @@ class RiskManagerMoneyManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager._blocked_date, now.date())
 
     async def test_high_water_drawdown_blocks_new_entries(self) -> None:
-        yesterday = datetime.now() - timedelta(days=1)
+        yesterday = datetime.now(MSK) - timedelta(days=1)
         rows = {"old-loss": closed_trade("old-loss", -1_000.0, yesterday)}
         db = FakeDB(rows)
         manager = RiskManager(
@@ -108,7 +110,7 @@ class RiskManagerMoneyManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db.redis.values["piluitus:risk:high_water_mark:PAPER"], "20000.00")
 
     async def test_hwm_reconstructs_previous_realized_equity_peak(self) -> None:
-        now = datetime.now()
+        now = datetime.now(MSK)
         two_days_ago = now - timedelta(days=2)
         yesterday = now - timedelta(days=1)
         rows = {
@@ -133,7 +135,7 @@ class RiskManagerMoneyManagementTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_three_consecutive_losses_start_global_pause(self) -> None:
-        now = datetime.now()
+        now = datetime.now(MSK)
         rows = {
             f"loss-{index}": closed_trade(
                 f"loss-{index}", -1.0, now - timedelta(seconds=30 - index * 10)
@@ -150,7 +152,7 @@ class RiskManagerMoneyManagementTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager._loss_streak_count, 3)
 
     async def test_winning_trade_breaks_global_loss_streak(self) -> None:
-        now = datetime.now()
+        now = datetime.now(MSK)
         outcomes = [-1.0, -1.0, 2.0, -1.0, -1.0]
         rows = {
             f"trade-{index}": closed_trade(
