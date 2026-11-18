@@ -80,10 +80,14 @@ class PaperPerformanceTests(unittest.TestCase):
     def test_shadow_join_uses_candidate_id_and_deduplicates_candidate_horizon(self):
         tracker = PaperPerformanceTracker()
         tracker.restore([
-            trade("paper-1", 10, ticker="SBER", candidate="candidate-1"),
-            trade("paper-1-duplicate", 4, ticker="SBER", candidate="candidate-1"),
-            trade("paper-2", -5, ticker="SBER", candidate="candidate-2"),
-            trade("paper-3", 2, ticker="GAZP", candidate=None),
+            trade("paper-3", 2, ticker="GAZP", candidate=None,
+                  exit_time="2026-11-18T12:00:00"),
+            trade("paper-2", -5, ticker="SBER", candidate="candidate-2",
+                  exit_time="2026-11-18T11:00:00"),
+            trade("paper-1-duplicate", 4, ticker="SBER", candidate="candidate-1",
+                  exit_time="2026-11-18T10:01:00"),
+            trade("paper-1", 10, ticker="SBER", candidate="candidate-1",
+                  exit_time="2026-11-18T10:00:00"),
         ])
         labels = [
             {"candidate_id": "candidate-1", "ticker": "OTHER", "result": "OK",
