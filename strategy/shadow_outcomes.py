@@ -71,8 +71,13 @@ class ShadowForwardTracker:
         self.horizons_seconds = normalized
         self.max_label_lag_sec = max(1.0, float(max_label_lag_sec))
         self.on_time_label_lag_sec = max(0.0, float(on_time_label_lag_sec))
+        # This is a warning threshold, not a hard cap. Dropping the oldest
+        # candidate here silently destroys forward-label coverage precisely
+        # during high-activity periods. Keep every candidate until its horizons
+        # are labelled and expose sustained backlog through a rate-limited log.
         self.max_pending_per_ticker = max(1, int(max_pending_per_ticker))
         self._pending: dict[str, list[dict[str, Any]]] = {}
+        self._pending_backlog_warned: set[str] = set()
         self.max_segment_groups = 1200
         self._label_stats: dict[str, dict[str, float | int]] = {
             "eligible": self._new_stats_bucket(),
@@ -230,13 +235,14 @@ class ShadowForwardTracker:
             "last_bbo_unavailable_reason": None,
         }
         pending = self._pending.setdefault(symbol, [])
-        if len(pending) >= self.max_pending_per_ticker:
-            removed = pending.pop(0)
-            logger.warning(
-                "[STRATEGY SHADOW DROP] id=%s ticker=%s reason=pending_limit",
-                removed["candidate_id"], symbol,
-            )
         pending.append(row)
+        if len(pending) >= self.max_pending_per_ticker and symbol not in self._pending_backlog_warned:
+            self._pending_backlog_warned.add(symbol)
+            logger.warning(
+                "[STRATEGY SHADOW BACKLOG] ticker=%s pending=%d warning_threshold=%d; "
+                "no candidates were discarded; all forward horizons remain queued.",
+                symbol, len(pending), self.max_pending_per_ticker,
+            )
         logger.info(
             "[STRATEGY SHADOW SAMPLE] id=%s ticker=%s side=%s score=%.1f eligible=%s "
             "entry=%s entry_fill=%.6f commission=%.4f%%/side slippage=%.2fbps "
@@ -427,8 +433,11 @@ class ShadowForwardTracker:
 
         if survivors:
             self._pending[symbol] = survivors
+            if len(survivors) < self.max_pending_per_ticker:
+                self._pending_backlog_warned.discard(symbol)
         else:
             self._pending.pop(symbol, None)
+            self._pending_backlog_warned.discard(symbol)
         for label in completed:
             eligible = bool(label.get("shadow_eligible"))
             self._accumulate_stats(

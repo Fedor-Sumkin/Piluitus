@@ -135,22 +135,28 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertIsNone(candidate_id)
         self.assertEqual(tracker.pending_count(), 0)
 
-    def test_each_horizon_is_emitted_once_and_tracker_is_bounded(self) -> None:
+    def test_each_horizon_is_emitted_once_without_dropping_over_capacity_candidates(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60, 180), max_pending_per_ticker=1)
-        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[0.0, 1.0, 61.0, 181.0]):
-            tracker.record_candidate("SBER", "BUY", quote_metrics(100.0, 100.1), {"score": 90.0})
-            tracker.record_candidate("SBER", "BUY", quote_metrics(100.0, 100.1), {"score": 90.0})
-            self.assertEqual(tracker.pending_count("SBER"), 1)
+        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[0.0, 1.0, 60.0, 61.0, 180.0, 181.0]):
+            first_id = tracker.record_candidate("SBER", "BUY", quote_metrics(100.0, 100.1), {"score": 90.0})
+            second_id = tracker.record_candidate("SBER", "BUY", quote_metrics(100.0, 100.1), {"score": 91.0})
+            self.assertNotEqual(first_id, second_id)
+            self.assertEqual(tracker.pending_count("SBER"), 2)
             first = tracker.observe_market_tick("SBER", quote_metrics(100.2, 100.3))
             second = tracker.observe_market_tick("SBER", quote_metrics(100.4, 100.5))
-        self.assertEqual(len(first), 1)
-        self.assertEqual(first[0]["horizon_sec"], 60)
-        self.assertEqual(len(second), 1)
-        self.assertEqual(second[0]["horizon_sec"], 180)
+            third = tracker.observe_market_tick("SBER", quote_metrics(100.6, 100.7))
+            fourth = tracker.observe_market_tick("SBER", quote_metrics(100.8, 100.9))
+        self.assertEqual(len(first), 2)
+        self.assertEqual({row["candidate_id"] for row in first}, {first_id, second_id})
+        self.assertEqual({row["horizon_sec"] for row in first}, {60})
+        self.assertEqual(len(second), 0)
+        self.assertEqual({row["horizon_sec"] for row in third}, {180})
+        self.assertEqual({row["candidate_id"] for row in third}, {first_id, second_id})
+        self.assertEqual(len(fourth), 0)
         self.assertEqual(tracker.pending_count(), 0)
         by_horizon = tracker.statistics_snapshot()["by_horizon"]
-        self.assertEqual(by_horizon["60s"]["ok"], 1)
-        self.assertEqual(by_horizon["180s"]["ok"], 1)
+        self.assertEqual(by_horizon["60s"]["ok"], 2)
+        self.assertEqual(by_horizon["180s"]["ok"], 2)
 
 
     def test_outcomes_segment_by_spread_atr_trade_count_and_directional_flow(self) -> None:
