@@ -68,6 +68,19 @@ A high score is not enough. For every candidate, the next data-collection stage 
 
 The forward-return label is emitted at the first fresh quote at or after the target horizon. If no fresh BBO arrives within the configured label-lag allowance, the horizon is recorded as `NO_FRESH_BBO`, not assigned a stale price. Do not use future data in candidate features. Hypothetical fills use Ask to enter BUY, Bid to enter SELL, Bid to exit BUY and Ask to exit SELL. The tracker needs a fresh executable two-sided BBO for labels; full depth is not required for return calculation (but it remains required by the shadow queue-imbalance feature). The tracker applies the current `PILUITUS_PAPER_COMMISSION_PCT` and `PILUITUS_PAPER_SLIPPAGE_BPS` settings; the log records those assumptions for every label.
 
+MFE and MAE are updated on each fresh executable-side observation while the
+candidate remains pending. The existing `mfe_executable_pct` and
+`mae_executable_pct` fields are **net** of the configured two-sided
+commission/slippage assumptions; separate gross excursion fields are retained.
+The tracker records elapsed seconds and UTC timestamps at the observed
+favorable/adverse extrema, plus valid-BBO observation count, first/last valid
+observation offsets, total observation span and invalid/stale observation
+count. These are observed extrema, not continuous-market guarantees: gaps
+between accepted quotes can hide a more extreme price. The coverage span is
+not a percentage uptime metric, and quote observations are not independent
+samples. Each horizon label snapshots excursions only up to that horizon.
+
+
 
 ### LLM decision attribution
 
