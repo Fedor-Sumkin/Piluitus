@@ -144,10 +144,19 @@ class PaperPerformanceTracker:
     def restore(self, trades: object) -> int:
         if not isinstance(trades, (list, tuple)):
             return 0
+        # LPUSH journals are newest-first. Keep the newest copy of a duplicate ID,
+        # then replay unique rows oldest-first so bounded eviction retains the newest.
+        newest_unique: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for trade in trades:
+            row = self._valid_trade(trade)
+            if row is None or row["id"] in seen_ids:
+                continue
+            seen_ids.add(row["id"])
+            newest_unique.append(row)
         restored = 0
-        # The storage list is newest-first; replay oldest-first for stable eviction.
-        for trade in reversed(trades):
-            restored += int(self.record(trade))
+        for row in reversed(newest_unique):
+            restored += int(self.record(row))
         return restored
 
     @property
