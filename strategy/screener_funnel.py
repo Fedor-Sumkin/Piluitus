@@ -948,12 +948,14 @@ class HFTMemoryScreener:
 
             bid_queue_size = float(self._current_top_size(quote, "bid", now))
             ask_queue_size = float(self._current_top_size(quote, "ask", now))
+            queue_history = quote.setdefault("queue_imbalance_history", deque(maxlen=1024))
             if bid_queue_size > 0.0 and ask_queue_size > 0.0:
                 queue_total = bid_queue_size + ask_queue_size
                 queue_value = (bid_queue_size - ask_queue_size) / queue_total
-                queue_history = quote.setdefault("queue_imbalance_history", deque(maxlen=1024))
                 if not queue_history or book_seen_at > float(queue_history[-1][0]):
                     queue_history.append((book_seen_at, queue_value))
+            else:
+                queue_history.clear()
             return {
                 "updated": True,
                 "valid": True,
