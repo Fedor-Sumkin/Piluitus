@@ -50,6 +50,7 @@ from rag_prompt_utils import select_prompt_rules
 from candidate_recovery import coalesce_pending_bbo_entry, refresh_candidate_bbo_metrics
 from scalping_strategy import evaluate_scalping_candidate
 from shadow_outcomes import ShadowForwardTracker
+from strategy.bbo_replay import BBOReplayRecorder
 from strategy.paper_performance import (
     PAPER_CLOSED_TRADES_STORAGE_KEY,
     PAPER_CLOSED_TRADES_STORAGE_LIMIT,
@@ -857,6 +858,7 @@ _trade_flow_counts: dict[str, int] = {}
 _trade_flow_last_log_at = time_module.monotonic()
 # Forward labels are research-only and bounded in memory; all observations are logged.
 scalping_shadow_tracker = ShadowForwardTracker()
+paper_bbo_replay_recorder = BBOReplayRecorder()
 SHADOW_OUTCOMES_STORAGE_KEY = "piluitus:strategy:shadow:outcomes"
 SHADOW_OUTCOMES_STORAGE_LIMIT = 20000
 paper_shadow_labels: list[dict[str, Any]] = []
@@ -2015,6 +2017,11 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                 _trade_flow_inc("orderbook_unusable")
                 return
             _record_position_order_book_event(book_ticker, book_result)
+            if execution_engine.paper_mode and book_result.get("updated"):
+                selected_for_replay = book_ticker in set(getattr(screener, "selected_tickers", []) or [])
+                position_for_replay = book_ticker in getattr(execution_engine, "paper_positions", {})
+                if selected_for_replay or position_for_replay:
+                    paper_bbo_replay_recorder.record(book_ticker, book_result, event)
             if book_result.get("updated") and book_result.get("valid", True):
                 _trade_flow_inc("orderbook_updates")
                 _trade_flow_inc("orderbook_side_touches", int(book_result.get("bbo_side_touch_count", 0) or 0))
@@ -3515,6 +3522,14 @@ async def lifespan(app: FastAPI):
 
     try:
         await db_manager.connect()
+        paper_bbo_replay_recorder.start(db_manager)
+        logger.info(
+            "[PAPER BBO REPLAY] recorder started; selected Top-N + open positions, "
+            "queue_limit=%d batch_size=%d storage_limit=%d",
+            paper_bbo_replay_recorder.queue_limit,
+            paper_bbo_replay_recorder.batch_size,
+            paper_bbo_replay_recorder.storage_limit,
+        )
         await _restore_shadow_outcomes()
         await _restore_paper_performance()
         maintenance_state = await db_manager.get_json("piluitus:paper:maintenance")
@@ -3594,6 +3609,11 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         logger.info("🛑 Начинаем штатную остановку фоновых задач PILUITUS...")
+        try:
+            await paper_bbo_replay_recorder.close()
+            logger.info("[PAPER BBO REPLAY] shutdown drain: %s", paper_bbo_replay_recorder.status())
+        except Exception as replay_close_err:
+            logger.error("[PAPER BBO REPLAY] shutdown drain failed: %s", replay_close_err, exc_info=True)
         for task in tuple(background_tasks):
             if not task.done():
                 task.cancel()
