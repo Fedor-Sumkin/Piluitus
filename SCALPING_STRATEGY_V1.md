@@ -409,3 +409,43 @@ event-driven and can only act on the first fresh BBO observed after timeout.
 Results must be compared on the same closed-position cohort and same cost
 assumptions; changing the number or composition of closed trades can bias a
 simple scenario comparison.
+
+
+## PAPER entry execution quality diagnostics
+
+Newly opened positions persist a point-in-time entry execution snapshot in
+addition to the existing entry spread and maximum BBO age:
+
+- entry midpoint and executable top-of-book price;
+- Bid and Ask confirmation ages separately;
+- full quoted spread divided by the M1 ATR;
+- depth impact between the executable top level and simulated depth VWAP;
+- configured adverse slippage after the depth reference;
+- total entry execution shortfall versus the executable top-of-book, in RUB
+  and basis points;
+- adverse/favorable movement from the pre-execution signal reference price to
+  the final simulated fill.
+
+For BUY, adverse shortfall is measured as fill minus executable Ask; for SELL,
+it is executable Bid minus fill. Depth impact and configured slippage are
+reported separately, while total shortfall is their combined execution effect.
+Positive `entry_signal_adverse_drift_pct` means the market moved against the
+candidate between its signal reference and the final fill; negative means the
+fill benefited from that movement. This drift is descriptive and is not pure
+broker slippage because the signal reference can predate LLM inference.
+
+`GET /api/v1/paper/performance` now groups realized closed PAPER outcomes by
+entry spread, BBO age, execution shortfall, spread-to-ATR ratio and signal-to-
+fill drift. `entry_diagnostics.coverage` reports how many closed trades contain
+each field, so legacy rows and missing observations remain visible as UNKNOWN
+rather than being imputed. The buckets are descriptive research cohorts, not
+entry filters or recommended thresholds. They do not change candidate ranking,
+LLM decisions, order sizing or execution.
+
+Interpret the cohorts jointly and only with adequate sample size. For example,
+a weak result in a wide-spread cohort may reflect instrument liquidity, adverse
+market selection or both; the grouping alone does not establish causality.
+The current PAPER execution model still has explicit fill assumptions: the
+measured shortfall is relative to the recorded executable BBO and simulated
+depth VWAP, not a claim about actual exchange queue position or live market
+impact.
