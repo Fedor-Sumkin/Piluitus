@@ -83,7 +83,6 @@ class FunnelTimeSamplingTests(unittest.TestCase):
         events = [
             (940.0, 100.0),
             (955.0, 101.0),
-            (970.0, 102.0),
             (985.0, 103.0),
             (1000.0, 104.0),
         ]
