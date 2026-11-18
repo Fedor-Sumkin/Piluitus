@@ -1,6 +1,6 @@
 import unittest
 
-from strategy.bbo_replay_simulator import (\n    _portfolio_capacity_simulation, replay_exit_batch, replay_exit_scenarios,\n)
+from strategy.bbo_replay_simulator import (\n    _portfolio_capacity_simulation,\n    replay_exit_batch,\n    replay_exit_scenarios,\n)
 
 
 def event(sequence, ticker="SBER", *, bid=100.0, ask=100.1, age=0.1,
@@ -455,10 +455,6 @@ class BBOReplaySimulatorTests(unittest.TestCase):
 
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
     def test_batch_replay_indexes_events_by_session_and_ticker(self):
         rows = [
             event(1, bid=98.8, ask=98.9, epoch=1_800_000_001.0),
@@ -495,3 +491,7 @@ if __name__ == "__main__":
         self.assertEqual(len(result["rejected_positions"]), 1)
         self.assertEqual(result["rejected_positions"][0]["position_id"], "invalid")
         self.assertEqual(result["trades"][0]["position_id"], "valid")
+
+
+if __name__ == "__main__":
+    unittest.main()
