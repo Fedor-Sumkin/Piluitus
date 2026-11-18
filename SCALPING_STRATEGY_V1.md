@@ -53,7 +53,7 @@ M1 bars in trade-flow mode are updated only by unique instrument trades, not rep
 
 ## Finam instrument metadata and protective prices
 
-At startup PILUITUS refreshes the asset directory and account-aware trade_lot_size. Protective SL/TP levels are rounded directionally to Finam min_step/decimals. Configured LOT_SIZES remain a fallback when the API is unavailable; an instrument with no confirmed lot size is not allowed to open a position. Top-15 ranking uses the same quote-derived 30-second momentum and 60-second volatility windows for all 88 symbols; it does not reward symbols merely because they already have trade subscriptions.
+At startup PILUITUS refreshes the asset directory and account-aware trade_lot_size. Protective SL/TP levels are rounded directionally to Finam min_step/decimals. Configured LOT_SIZES remain a fallback when the API is unavailable; an instrument with no confirmed lot size is not allowed to open a position. Top-15 ranking uses the same quote-derived 30-second momentum and 60-second volatility windows for all 88 symbols; it does not reward symbols merely because they already have trade subscriptions. In trade-data mode, the 60-second volatility measure is now sampled on a fixed five-second grid (13 boundary prices), so per-event update frequency cannot inflate or suppress one ticker's score relative to another. The last price observation must be no older than `PILUITUS_FUNNEL_PRICE_EVENT_MAX_AGE_SEC` (default 10 seconds); a sparse 30-second reference is not stretched into a longer momentum window. Volatility is populated only when at least eight adjacent five-second returns are valid; otherwise it remains zero until the window is sufficiently covered.
 
 ## How to judge the strategy
 
