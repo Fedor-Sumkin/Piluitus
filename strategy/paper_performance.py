@@ -183,6 +183,23 @@ def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+
+def _holding_time_bucket(value: object) -> str:
+    seconds = _number(value)
+    if seconds is None or seconds < 0.0:
+        return "UNKNOWN"
+    if seconds < 60.0:
+        return "LT_60S"
+    if seconds < 180.0:
+        return "60_179S"
+    if seconds < 300.0:
+        return "180_299S"
+    if seconds < 600.0:
+        return "300_599S"
+    return "600S_PLUS"
+
+
+
 def _loss_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Describe observable loss contributors without asserting unsupported causality."""
     losses = [row for row in rows if (_number(row.get("pnl")) or 0.0) < 0.0]
@@ -372,6 +389,7 @@ class PaperPerformanceTracker:
             "by_confidence": self._group(rows, "llm_confidence_pct", _confidence_bucket),
             "by_llm_reason": self._group(rows, "llm_reason_code"),
             "by_exit_reason": self._group(rows, "exit_reason"),
+            "by_holding_time": self._group(rows, "time_in_trade_sec", _holding_time_bucket),
             "loss_diagnostics": _loss_diagnostics(rows),
         }
         result["shadow_comparison"] = self._compare_shadow(rows, shadow_labels)
