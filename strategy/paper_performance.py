@@ -257,31 +257,50 @@ class PaperPerformanceTracker:
         trades: list[dict[str, Any]], labels: object
     ) -> dict[str, Any]:
         label_rows = labels if isinstance(labels, (list, tuple)) else []
+        labels_by_candidate: dict[str, list[dict[str, Any]]] = defaultdict(list)
         by_candidate: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
         for label in label_rows:
-            if not isinstance(label, Mapping) or str(label.get("result") or "") != "OK":
+            if not isinstance(label, Mapping):
                 continue
             candidate_id = _text(label.get("candidate_id"), "")
+            if not candidate_id:
+                continue
+            labels_by_candidate[candidate_id].append(dict(label))
+            if str(label.get("result") or "") != "OK":
+                continue
             horizon = _number(label.get("horizon_sec"))
             net_return = _number(label.get("net_executable_return_pct"))
-            if not candidate_id or horizon is None or net_return is None or horizon <= 0:
+            if horizon is None or net_return is None or horizon <= 0:
                 continue
             # A candidate has at most one observation per horizon; ignore duplicate
             # persisted rows rather than inflating the matched sample.
             by_candidate[candidate_id].setdefault(int(horizon), dict(label))
 
         matched: list[dict[str, Any]] = []
-        unmatched = 0
+        unmatched_reasons: dict[str, int] = defaultdict(int)
         horizon_returns: dict[int, list[float]] = defaultdict(list)
         counted_candidate_horizons: set[tuple[str, int]] = set()
         matched_realized_net = 0.0
         matched_details: list[dict[str, Any]] = []
         for trade in trades:
             candidate_id = _text(trade.get("shadow_candidate_id"), "")
-            candidate_labels = by_candidate.get(candidate_id) if candidate_id else None
-            if not candidate_labels:
-                unmatched += 1
+            if not candidate_id:
+                unmatched_reasons["NO_SHADOW_CANDIDATE_ID"] += 1
                 continue
+            all_candidate_labels = labels_by_candidate.get(candidate_id, [])
+            candidate_labels = by_candidate.get(candidate_id, {})
+            if not all_candidate_labels:
+                unmatched_reasons["CANDIDATE_LABEL_NOT_YET_AVAILABLE"] += 1
+                continue
+            if not candidate_labels:
+                results = sorted({
+                    str(label.get("result") or "UNKNOWN").upper()
+                    for label in all_candidate_labels
+                })
+                reason = "CANDIDATE_HAS_NO_VALID_OK_LABEL"
+                unmatched_reasons[reason] += 1
+                continue
+
             matched.append(trade)
             realized_net = _number(trade.get("pnl")) or 0.0
             matched_realized_net += realized_net
@@ -315,9 +334,13 @@ class PaperPerformanceTracker:
                     if sum(negative) < 0.0 else None
                 ),
             }
+        unmatched = sum(unmatched_reasons.values())
+        total = len(trades)
         return {
             "matched_trades": len(matched),
             "unmatched_trades": unmatched,
+            "matched_trade_rate_pct": round(len(matched) / total * 100.0, 3) if total else None,
+            "unmatched_by_reason": dict(sorted(unmatched_reasons.items())),
             "matched_realized_net_pnl_rub": round(matched_realized_net, 2),
             "join_key": "shadow_candidate_id",
             "matched_trade_details": matched_details[-200:],
