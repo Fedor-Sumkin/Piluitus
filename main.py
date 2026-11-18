@@ -1278,6 +1278,7 @@ def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -
         "spread_to_atr_above_limit": "shadow_block_spread_atr_too_wide",
         "bbo_prices_invalid": "shadow_block_bbo_prices_invalid",
         "queue_trade_flow_conflict": "shadow_block_queue_trade_flow_conflict",
+        "trade_flow_unavailable_or_stale": "shadow_block_trade_flow_unavailable",
     }
     observed_blocks = set(result.get("hard_blocks", []))
     counted_blocks = set()
