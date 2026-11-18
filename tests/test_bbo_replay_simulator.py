@@ -356,3 +356,25 @@ class BBOReplaySimulatorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+    def test_batch_replay_indexes_events_by_session_and_ticker(self):
+        rows = [
+            event(1, bid=98.8, ask=98.9, epoch=1_800_000_001.0),
+            event(1, ticker="GAZP", bid=98.7, ask=98.8, epoch=1_800_000_001.0),
+            event(1, bid=102.1, ask=102.2, epoch=1_800_000_001.0, session="other-session"),
+        ]
+        positions = [
+            position(position_id="SBER-1"),
+            position(ticker="GAZP", position_id="GAZP-1"),
+            position(position_id="SBER-OTHER", session_id="other-session"),
+        ]
+        result = replay_exit_batch(
+            rows, positions,
+            scenarios=[{"name": "base", "kind": "baseline"}],
+        )
+        self.assertEqual(result["positions"], 3)
+        by_id = {row["position_id"]: row for row in result["trades"]}
+        self.assertEqual(by_id["SBER-1"]["scenarios"][0]["exit"]["event_sequence"], 1)
+        self.assertEqual(by_id["GAZP-1"]["scenarios"][0]["exit"]["event_sequence"], 1)
+        self.assertEqual(by_id["SBER-OTHER"]["scenarios"][0]["exit"]["event_sequence"], 1)
