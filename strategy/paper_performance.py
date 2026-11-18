@@ -622,6 +622,86 @@ def _loss_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _moscow_exit_date(row: Mapping[str, Any]) -> str:
+    """Return the Moscow calendar date for an aware exit timestamp only."""
+    raw = row.get("exit_timestamp")
+    if not isinstance(raw, str) or not raw.strip():
+        return "UNKNOWN"
+    try:
+        stamp = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+        if stamp.tzinfo is None or stamp.utcoffset() is None:
+            return "UNKNOWN"
+        return stamp.astimezone(timezone(timedelta(hours=3))).date().isoformat()
+    except (TypeError, ValueError, OverflowError):
+        return "UNKNOWN"
+
+
+def _session_stability(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Summarize independent PAPER sessions rather than counting trades as independent."""
+    buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    missing_identity_trades = 0
+    invalid_pnl_trades = 0
+    for row in rows:
+        session_id = _text(row.get("session_id"), "")
+        pnl = _number(row.get("pnl"))
+        if not session_id or session_id == "UNKNOWN":
+            missing_identity_trades += 1
+            continue
+        if pnl is None:
+            invalid_pnl_trades += 1
+            continue
+        buckets[session_id].append(row)
+
+    session_pnls = {
+        session_id: sum(float(_number(row.get("pnl")) or 0.0) for row in session_rows)
+        for session_id, session_rows in buckets.items()
+    }
+    values = list(session_pnls.values())
+    positive = sum(value > 0.0 for value in values)
+    negative = sum(value < 0.0 for value in values)
+    flat = len(values) - positive - negative
+    ordered_values = sorted(values)
+    median = None
+    if ordered_values:
+        middle = len(ordered_values) // 2
+        median = (
+            ordered_values[middle] if len(ordered_values) % 2
+            else (ordered_values[middle - 1] + ordered_values[middle]) / 2.0
+        )
+
+    return {
+        "sessions": len(values),
+        "trades_in_identified_sessions": sum(len(items) for items in buckets.values()),
+        "trades_missing_session_identity": missing_identity_trades,
+        "trades_with_invalid_pnl": invalid_pnl_trades,
+        "profitable_sessions": positive,
+        "losing_sessions": negative,
+        "flat_sessions": flat,
+        "profitable_session_rate_pct": (
+            round(positive / len(values) * 100.0, 3) if values else None
+        ),
+        "profitable_session_rate_wilson_95_pct": (
+            _wilson_interval_pct(positive, len(values)) if values else None
+        ),
+        "total_session_net_pnl_rub": round(sum(values), 2) if values else None,
+        "mean_session_net_pnl_rub": round(sum(values) / len(values), 2) if values else None,
+        "median_session_net_pnl_rub": round(median, 2) if median is not None else None,
+        "best_session_net_pnl_rub": round(max(values), 2) if values else None,
+        "worst_session_net_pnl_rub": round(min(values), 2) if values else None,
+        "session_results": {
+            session_id: {
+                "trades": len(buckets[session_id]),
+                "net_pnl_rub": round(session_pnls[session_id], 2),
+                "outcome": (
+                    "PROFITABLE" if session_pnls[session_id] > 0.0
+                    else "LOSING" if session_pnls[session_id] < 0.0 else "FLAT"
+                ),
+            }
+            for session_id in sorted(buckets)
+        },
+    }
+
+
 class PaperPerformanceTracker:
     """Bounded, idempotent in-memory view of the durable closed-trade journal."""
 
@@ -767,6 +847,8 @@ class PaperPerformanceTracker:
             "by_liquidity_regime": self._group(rows, "liquidity_regime"),
             "by_directional_regime": self._group(rows, "directional_regime"),
             "by_session": self._group(rows, "session_id"),
+            "by_moscow_exit_date": self._group_rows(rows, _moscow_exit_date),
+            "session_stability": _session_stability(rows),
             "by_llm_model_decision": self._group(rows, "llm_model_decision"),
             "by_llm_final_decision": self._group(rows, "llm_final_decision"),
             "by_confidence": self._group(rows, "llm_confidence_pct", _confidence_bucket),
