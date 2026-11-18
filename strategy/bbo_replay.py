@@ -163,6 +163,29 @@ class BBOReplayRecorder:
         now_mono = time.monotonic()
         source_event = event if isinstance(event, Mapping) else {}
         source_name = str(source_event.get("source") or "FINAM_ORDER_BOOK").upper()
+        received_monotonic = _finite(
+            source_event.get("received_monotonic"), now_mono
+        )
+        bid_confirmed = _finite(
+            source_event.get("bid_confirmed_monotonic"), received_monotonic
+        )
+        ask_confirmed = _finite(
+            source_event.get("ask_confirmed_monotonic"), received_monotonic
+        )
+        bid_age = now_mono - bid_confirmed if bid_confirmed > 0.0 else None
+        ask_age = now_mono - ask_confirmed if ask_confirmed > 0.0 else None
+        max_age = _finite(source_event.get("max_age_sec"), 2.0)
+        if not math.isfinite(max_age) or max_age <= 0.0:
+            max_age = 2.0
+        max_age = min(5.0, max(0.25, max_age))
+        pending_side = self._pending_exit_tickers.get(symbol)
+        pending_age = bid_age if pending_side == "BUY" else ask_age
+        pending_price = bid if pending_side == "BUY" else ask
+        pending_fresh = (
+            bool(pending_side) and valid and pending_price > 0.0
+            and pending_age is not None and math.isfinite(pending_age)
+            and 0.0 <= pending_age <= max_age
+        )
         prior = self._last_state.get(symbol)
         state = (bid, ask, bid_size, ask_size, valid, source_name)
         price_state_changed = prior is None or (
@@ -170,7 +193,7 @@ class BBOReplayRecorder:
             or valid != prior[4] or source_name != prior[5]
         )
         heartbeat_due = prior is None or now_mono - prior[6] >= self.heartbeat_interval_sec
-        if not price_state_changed and not heartbeat_due:
+        if not price_state_changed and not heartbeat_due and not pending_fresh:
             # Keep the latest sizes for the next price transition/heartbeat,
             # but do not persist every queue-size-only update.
             self._last_state[symbol] = (*state, prior[6])
@@ -188,17 +211,6 @@ class BBOReplayRecorder:
         if event_epoch is not None and event_epoch > received_epoch + 2.0:
             event_epoch = None
         timestamp_epoch = event_epoch if event_epoch is not None else received_epoch
-        received_monotonic = _finite(
-            source_event.get("received_monotonic"), now_mono
-        )
-        bid_confirmed = _finite(
-            source_event.get("bid_confirmed_monotonic"), received_monotonic
-        )
-        ask_confirmed = _finite(
-            source_event.get("ask_confirmed_monotonic"), received_monotonic
-        )
-        bid_age = max(0.0, now_mono - bid_confirmed) if bid_confirmed > 0.0 else None
-        ask_age = max(0.0, now_mono - ask_confirmed) if ask_confirmed > 0.0 else None
         reason = str(book_result.get("reason") or source_event.get("book_reason") or "")
         event_kind = (
             "INVALIDATION" if not valid
@@ -245,6 +257,8 @@ class BBOReplayRecorder:
         # Advance the deduplication watermark only after enqueue succeeds. If the
         # queue is full, the next repeated state can still be retried.
         self._last_state[symbol] = (*state, now_mono)
+        if pending_fresh:
+            self._pending_exit_tickers.pop(symbol, None)
         self.accepted += 1
         return True
 
@@ -318,6 +332,8 @@ class BBOReplayRecorder:
                     self.dropped_queue_full, self.queue_limit,
                 )
             return False
+        if not quote_fresh:
+            self._pending_exit_tickers[symbol] = str(trade.get("side") or "").upper()
         self.accepted += 1
         return True
 
