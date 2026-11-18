@@ -30,7 +30,7 @@ class PaperPerformanceTests(unittest.TestCase):
     def test_only_final_closed_records_are_accepted_and_duplicate_ids_are_ignored(self):
         tracker = PaperPerformanceTracker(max_records=10)
         self.assertFalse(tracker.record({**trade("open", 10), "status": "OPEN"}))
-        self.assertFalse(tracker.record({**trade("bad", "NaN")}))
+        self.assertFalse(tracker.record({**trade("bad", 0), "pnl": "NaN"}))
         self.assertFalse(tracker.record({**trade("live-1", 12), "mode": "LIVE"}))
         self.assertTrue(tracker.record(trade("closed-1", 12)))
         self.assertFalse(tracker.record(trade("closed-1", 999)))
