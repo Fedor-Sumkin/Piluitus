@@ -3137,6 +3137,17 @@ class MarketWorker:
 
                 ai_analysis["final_decision"] = decision
                 ai_analysis["confidence_score"] = (confidence / 100.0) if confidence_valid else 0.0
+                ai_analysis.update({
+                    "shadow_candidate_id": shadow_candidate_id or None,
+                    "llm_verdict_id": verdict_id,
+                    "llm_model_decision": model_decision,
+                    "llm_final_decision": decision,
+                    "llm_confidence_pct": candidate_confidence,
+                    "llm_signal_status": signal_status,
+                    "llm_reason_code": model_reason_code,
+                    "llm_local_guard": local_evidence_diagnostic,
+                    "candidate_direction": candidate_decision,
+                })
                 ai_analysis["tactic_opinion"] = tactic_text
                 ai_analysis["critic_opinion"] = critic_text
 
