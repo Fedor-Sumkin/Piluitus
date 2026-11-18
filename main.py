@@ -1194,6 +1194,8 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
     for prefix in (
         "regime=", "score_band=", "horizon=", "hour_msk=", "hard_block=",
         "spread_atr_bucket=", "trade_count_bucket=", "flow_alignment=", "side_flow_alignment=",
+        "llm_model_decision=", "llm_final_decision=", "llm_signal_status=",
+        "llm_execution_status=", "llm_confidence_bucket=",
     ):
         grouped = [
             (key, row) for key, row in segments.items()
@@ -1201,9 +1203,11 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         ]
         for key, row in sorted(grouped, key=lambda item: int(item[1].get("labels", 0)), reverse=True)[:3]:
             logger.info(
-                "[STRATEGY SHADOW SEGMENT] %s labels=%d ok=%d positive=%.1f%% avg_gross=%+.5f%% avg_net=%+.5f%%",
+                "[STRATEGY SHADOW SEGMENT] %s labels=%d ok=%d positive=%.1f%% "
+                "avg_gross=%+.5f%% avg_net=%+.5f%% PF=%s",
                 key, row["labels"], row["ok"], row["positive_rate_pct"],
                 row["average_gross_return_pct"], row["average_net_return_pct"],
+                f'{row["profit_factor"]:.3f}' if row.get("profit_factor") is not None else "N/A",
             )
     _log_open_position_bbo_diagnostics()
 
