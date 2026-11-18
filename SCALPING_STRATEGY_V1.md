@@ -468,3 +468,33 @@ transaction or a permanently archived session artifact. Compare the same
 PAPER session/cohort when evaluating changes. Realized trade PnL, Shadow
 forward labels and simulated exit scenarios remain distinct and must not be
 added together or interpreted as independent samples.
+
+
+## Chronological Shadow walk-forward validation
+
+The PAPER-only endpoint
+`GET /api/v1/paper/shadow/walk-forward?folds=5&embargo_seconds=30&limit=20000`
+adds a descriptive expanding-window temporal evaluation. The earliest time
+block is the initial history; each later block is evaluated as a forward test
+window. Training candidates must be older than the test start by the full
+configured maximum Shadow horizon (currently 600 seconds) plus the requested
+embargo. Candidate IDs are the sampling unit: every horizon belonging to one
+candidate stays in the same time block. Duplicate candidate/horizon rows are
+deduplicated, preferring an OK/on-time observation over a delayed or unusable
+duplicate. Returns use only valid `OK` rows and net executable percentage
+returns, separated by horizon and BUY/SELL.
+
+The report includes training, purged and test candidate counts per fold,
+train/test metrics by horizon and side, and the combined out-of-sample
+cross-section. It explicitly reports insufficient timestamp coverage instead
+of fabricating folds. New Shadow labels persist both UTC and Moscow entry
+timestamps; older labels can use their timezone-aware Moscow timestamp.
+
+This is not model fitting, parameter selection, or proof of predictive edge.
+The current fold metrics are descriptive, and small samples remain
+insufficient regardless of an attractive profit factor. The folds are not an
+untouched final holdout, and repeated strategy tuning still requires a
+separately preserved final period plus multiple-testing-aware diagnostics.
+The validation endpoint does not alter candidate scoring or PAPER execution.
+The consolidated `GET /api/v1/paper/research/report` includes the same
+walk-forward section using five folds and a 30-second embargo.
