@@ -183,6 +183,93 @@ def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _loss_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Describe observable loss contributors without asserting unsupported causality."""
+    losses = [row for row in rows if (_number(row.get("pnl")) or 0.0) < 0.0]
+    flags = {
+        "GROSS_LOSS_BEFORE_COSTS": 0,
+        "COSTS_TURNED_GROSS_WIN_INTO_NET_LOSS": 0,
+        "EXIT_BBO_GAP_PRESENT": 0,
+        "TRIGGER_TO_FILL_DELAY_PRESENT": 0,
+        "FAVORABLE_EXCURSION_WITH_NET_LOSS": 0,
+        "EXIT_SPREAD_RECORDED": 0,
+        "INSUFFICIENT_ATTRIBUTION_DATA": 0,
+    }
+    gross_coverage = commission_coverage = excursion_coverage = 0
+    by_reason: dict[str, dict[str, int]] = defaultdict(lambda: {
+        key: 0 for key in flags
+    })
+    by_side: dict[str, dict[str, int]] = defaultdict(lambda: {
+        key: 0 for key in flags
+    })
+
+    for row in losses:
+        gross = _number(row.get("gross_pnl"))
+        commission = _number(row.get("total_commission_rub"))
+        mfe = _number(row.get("max_favorable_excursion_pct"))
+        gap_count = _number(row.get("exit_bbo_gap_count"))
+        gap_sec = _number(row.get("total_exit_bbo_gap_sec"))
+        current_gap = _number(row.get("current_exit_bbo_gap_sec"))
+        delay = _number(row.get("trigger_to_executable_bbo_delay_sec"))
+        spread = _number(row.get("exit_spread_pct"))
+        trade_flags: list[str] = []
+
+        if gross is not None:
+            gross_coverage += 1
+            if gross < 0.0:
+                trade_flags.append("GROSS_LOSS_BEFORE_COSTS")
+            elif gross > 0.0:
+                trade_flags.append("COSTS_TURNED_GROSS_WIN_INTO_NET_LOSS")
+        if commission is not None:
+            commission_coverage += 1
+        if mfe is not None:
+            excursion_coverage += 1
+            if mfe > 0.0:
+                trade_flags.append("FAVORABLE_EXCURSION_WITH_NET_LOSS")
+        if max(0.0, gap_count or 0.0) > 0 or max(0.0, gap_sec or 0.0) > 0 or max(0.0, current_gap or 0.0) > 0:
+            trade_flags.append("EXIT_BBO_GAP_PRESENT")
+        if delay is not None and delay > 0.0:
+            trade_flags.append("TRIGGER_TO_FILL_DELAY_PRESENT")
+        if spread is not None and spread > 0.0:
+            trade_flags.append("EXIT_SPREAD_RECORDED")
+        if gross is None and commission is None and mfe is None and gap_count is None and gap_sec is None and delay is None and spread is None:
+            trade_flags.append("INSUFFICIENT_ATTRIBUTION_DATA")
+
+        reason = _text(row.get("exit_reason"))
+        side = _text(row.get("side"))
+        for flag in trade_flags:
+            flags[flag] += 1
+            by_reason[reason][flag] += 1
+            by_side[side][flag] += 1
+
+    def _counts(source: Mapping[str, Mapping[str, int]]) -> dict[str, dict[str, int]]:
+        return {key: dict(value) for key, value in sorted(source.items())}
+
+    count = len(losses)
+    return {
+        "losing_trades": count,
+        "sample_quality": (
+            "INSUFFICIENT_LT_30" if count < 30
+            else "PRELIMINARY_30_99" if count < 100
+            else "DEVELOPING_100_299" if count < 300
+            else "LARGE_300_PLUS"
+        ),
+        "data_coverage": {
+            "gross_pnl_records": gross_coverage,
+            "commission_records": commission_coverage,
+            "favorable_excursion_records": excursion_coverage,
+        },
+        "observable_flags": flags,
+        "by_exit_reason": _counts(by_reason),
+        "by_side": _counts(by_side),
+        "interpretation": (
+            "Flags are overlapping observations, not mutually exclusive causes. "
+            "A positive favorable excursion does not prove that a different exit "
+            "would have improved realized PnL. Missing fields are not inferred."
+        ),
+    }
+
+
 class PaperPerformanceTracker:
     """Bounded, idempotent in-memory view of the durable closed-trade journal."""
 
@@ -285,6 +372,7 @@ class PaperPerformanceTracker:
             "by_confidence": self._group(rows, "llm_confidence_pct", _confidence_bucket),
             "by_llm_reason": self._group(rows, "llm_reason_code"),
             "by_exit_reason": self._group(rows, "exit_reason"),
+            "loss_diagnostics": _loss_diagnostics(rows),
         }
         result["shadow_comparison"] = self._compare_shadow(rows, shadow_labels)
         return result
