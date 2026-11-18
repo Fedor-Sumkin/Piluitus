@@ -100,6 +100,8 @@ class ShadowForwardTracker:
             "positive": 0, "negative": 0, "net_sum_pct": 0.0, "gross_sum_pct": 0.0,
             "net_positive_sum_pct": 0.0, "net_negative_sum_pct": 0.0,
             "mfe_sum_pct": 0.0, "mae_sum_pct": 0.0,
+            "mfe_time_sum_sec": 0.0, "mae_time_sum_sec": 0.0,
+            "valid_bbo_observations_sum": 0, "bbo_observation_span_sum_sec": 0.0,
         }
 
     @staticmethod
@@ -122,6 +124,10 @@ class ShadowForwardTracker:
                 bucket["gross_sum_pct"] = float(bucket["gross_sum_pct"]) + gross
             bucket["mfe_sum_pct"] = float(bucket["mfe_sum_pct"]) + _number(label, "mfe_executable_pct")
             bucket["mae_sum_pct"] = float(bucket["mae_sum_pct"]) + _number(label, "mae_executable_pct")
+            bucket["mfe_time_sum_sec"] = float(bucket["mfe_time_sum_sec"]) + _number(label, "time_to_mfe_sec")
+            bucket["mae_time_sum_sec"] = float(bucket["mae_time_sum_sec"]) + _number(label, "time_to_mae_sec")
+            bucket["valid_bbo_observations_sum"] = int(bucket["valid_bbo_observations_sum"]) + int(max(0.0, _number(label, "valid_bbo_observations")))
+            bucket["bbo_observation_span_sum_sec"] = float(bucket["bbo_observation_span_sum_sec"]) + max(0.0, _number(label, "bbo_observation_span_sec"))
         elif result == "LABEL_LATE":
             bucket["late"] = int(bucket["late"]) + 1
         elif result == "NO_FRESH_BBO":
@@ -274,8 +280,21 @@ class ShadowForwardTracker:
             "m1_signal_gap_atr": _number(metrics, "bar_signal_gap_atr", math.nan),
             "m1_breakout_extension_atr": _number(metrics, "bar_breakout_extension_atr", math.nan),
             "remaining_horizons": list(self.horizons_seconds),
+            # Excursions are net of configured two-sided costs; gross values are
+            # retained separately. Zero is the entry-time baseline when no
+            # favorable/adverse movement has yet been observed.
             "mfe_executable_pct": 0.0,
             "mae_executable_pct": 0.0,
+            "mfe_gross_executable_pct": 0.0,
+            "mae_gross_executable_pct": 0.0,
+            "time_to_mfe_sec": 0.0,
+            "time_to_mae_sec": 0.0,
+            "mfe_at_utc": created_at_utc.isoformat(timespec="milliseconds"),
+            "mae_at_utc": created_at_utc.isoformat(timespec="milliseconds"),
+            "valid_bbo_observations": 0,
+            "first_valid_bbo_elapsed_sec": None,
+            "last_valid_bbo_elapsed_sec": None,
+            "bbo_observation_span_sec": 0.0,
             "no_fresh_bbo_observations": 0,
             "last_bbo_unavailable_reason": None,
             "llm_linked": False,
@@ -445,6 +464,25 @@ class ShadowForwardTracker:
         net_pct = net_rub_per_share / entry_fill_price * 100.0
         return gross_pct, net_pct, exit_fill
 
+    @staticmethod
+    def _excursion_label_fields(row: Mapping[str, Any]) -> dict[str, Any]:
+        """Snapshot executable-side excursions and the quality of quote observations."""
+        return {
+            "mfe_executable_pct": round(_number(row, "mfe_executable_pct"), 6),
+            "mae_executable_pct": round(_number(row, "mae_executable_pct"), 6),
+            "mfe_gross_executable_pct": round(_number(row, "mfe_gross_executable_pct"), 6),
+            "mae_gross_executable_pct": round(_number(row, "mae_gross_executable_pct"), 6),
+            "time_to_mfe_sec": round(_number(row, "time_to_mfe_sec"), 3),
+            "time_to_mae_sec": round(_number(row, "time_to_mae_sec"), 3),
+            "mfe_at_utc": row.get("mfe_at_utc"),
+            "mae_at_utc": row.get("mae_at_utc"),
+            "valid_bbo_observations": int(max(0.0, _number(row, "valid_bbo_observations"))),
+            "first_valid_bbo_elapsed_sec": row.get("first_valid_bbo_elapsed_sec"),
+            "last_valid_bbo_elapsed_sec": row.get("last_valid_bbo_elapsed_sec"),
+            "bbo_observation_span_sec": round(_number(row, "bbo_observation_span_sec"), 3),
+            "no_fresh_bbo_observations": int(max(0.0, _number(row, "no_fresh_bbo_observations"))),
+        }
+
     def observe_market_tick(self, ticker: str, metrics: Mapping[str, Any]) -> list[dict[str, Any]]:
         """Update excursions and emit any horizon labels reached on a fresh quote."""
         symbol = str(ticker or "").strip().upper().split("@")[0]
@@ -455,6 +493,7 @@ class ShadowForwardTracker:
         fresh, quote = self._fresh_bbo(metrics) if isinstance(metrics, Mapping) else (False, {})
         completed: list[dict[str, Any]] = []
         survivors: list[dict[str, Any]] = []
+        observed_at_utc = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
         for row in pending:
             elapsed = max(0.0, now_mono - float(row["created_monotonic"]))
@@ -465,8 +504,25 @@ class ShadowForwardTracker:
             )
             if fresh:
                 gross_pct, net_pct, exit_fill = self._executable_return_pct(row, float(exit_raw))
-                row["mfe_executable_pct"] = max(float(row["mfe_executable_pct"]), net_pct)
-                row["mae_executable_pct"] = min(float(row["mae_executable_pct"]), net_pct)
+                row["valid_bbo_observations"] = int(row.get("valid_bbo_observations", 0)) + 1
+                if row.get("first_valid_bbo_elapsed_sec") is None:
+                    row["first_valid_bbo_elapsed_sec"] = round(elapsed, 3)
+                row["last_valid_bbo_elapsed_sec"] = round(elapsed, 3)
+                row["bbo_observation_span_sec"] = round(
+                    max(0.0, elapsed - float(row["first_valid_bbo_elapsed_sec"])), 3
+                )
+                if net_pct > float(row["mfe_executable_pct"]):
+                    row["mfe_executable_pct"] = net_pct
+                    row["time_to_mfe_sec"] = round(elapsed, 3)
+                    row["mfe_at_utc"] = observed_at_utc
+                if net_pct < float(row["mae_executable_pct"]):
+                    row["mae_executable_pct"] = net_pct
+                    row["time_to_mae_sec"] = round(elapsed, 3)
+                    row["mae_at_utc"] = observed_at_utc
+                if gross_pct > float(row["mfe_gross_executable_pct"]):
+                    row["mfe_gross_executable_pct"] = gross_pct
+                if gross_pct < float(row["mae_gross_executable_pct"]):
+                    row["mae_gross_executable_pct"] = gross_pct
                 row["last_bbo_unavailable_reason"] = None
             else:
                 gross_pct = net_pct = exit_fill = math.nan
@@ -487,6 +543,7 @@ class ShadowForwardTracker:
                     label = {
                         "candidate_id": row["candidate_id"],
                         **self._llm_label_fields(row),
+                        **self._excursion_label_fields(row),
                         "ticker": symbol,
                         "side": side,
                         "entry_time_msk": row["created_at_msk"],
@@ -507,8 +564,6 @@ class ShadowForwardTracker:
                         "mid_return_pct": round(mid_return_pct, 6),
                         "gross_executable_return_pct": round(gross_pct, 6),
                         "net_executable_return_pct": round(net_pct, 6),
-                        "mfe_executable_pct": round(float(row["mfe_executable_pct"]), 6),
-                        "mae_executable_pct": round(float(row["mae_executable_pct"]), 6),
                         "score": row["score"],
                         "shadow_eligible": row["shadow_eligible"],
                         "regime": row["regime"],
@@ -874,8 +929,14 @@ class ShadowForwardTracker:
                 ("average_gross_return_pct", "gross_sum_pct"),
                 ("average_mfe_pct", "mfe_sum_pct"),
                 ("average_mae_pct", "mae_sum_pct"),
+                ("average_time_to_mfe_sec", "mfe_time_sum_sec"),
+                ("average_time_to_mae_sec", "mae_time_sum_sec"),
+                ("average_bbo_observation_span_sec", "bbo_observation_span_sum_sec"),
             ):
-                row[metric] = round(float(row[total]) / count, 6) if count else 0.0
+                row[metric] = round(float(row[total]) / count, 3 if metric.endswith("_sec") else 6) if count else 0.0
+            row["average_valid_bbo_observations"] = (
+                round(int(row["valid_bbo_observations_sum"]) / count, 2) if count else 0.0
+            )
             return row
 
         snapshot: dict[str, Any] = {
