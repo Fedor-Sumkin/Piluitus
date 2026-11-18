@@ -157,7 +157,7 @@ class PaperPerformanceTests(unittest.TestCase):
         self.assertEqual(comparison["unmatched_by_reason"], {
             "NO_SHADOW_CANDIDATE_ID": 1,
             "CANDIDATE_LABEL_NOT_YET_AVAILABLE": 1,
-            "CANDIDATE_HAS_NO_VALID_OK_LABEL": 1,
+            "CANDIDATE_LABEL_NO_FRESH_BBO": 1,
         })
 
     def test_shadow_join_uses_candidate_id_and_deduplicates_candidate_horizon(self):
