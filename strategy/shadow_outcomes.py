@@ -623,6 +623,7 @@ class ShadowForwardTracker:
                     label = {
                         "candidate_id": row["candidate_id"],
                         **self._llm_label_fields(row),
+                        **self._excursion_label_fields(row),
                         "ticker": symbol,
                         "side": side,
                         "entry_time_msk": row["created_at_msk"],
