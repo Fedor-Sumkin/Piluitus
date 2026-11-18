@@ -751,7 +751,7 @@ class DBManager:
 
     async def get_active_positions(self) -> dict:
         """Возвращает словарь {order_id: trade_dict, ...} только для OPEN позиций."""
-        client = await RedisClient.get_client()
+        client = await self._get_client()
         if client is None:
             raise RuntimeError("DBManager: Redis-клиент недоступен при чтении активных позиций")
         pattern = "piluitus:trade:*"
@@ -792,7 +792,7 @@ class DBManager:
     # ----------------------- сквозной суточный риск-аудит -----------------------
     async def get_all_daily_trades(self) -> dict:
         """Возвращает ВСЕ сделки за день (OPEN и CLOSED) по маске ``piluitus:trade:*``."""
-        client = await RedisClient.get_client()
+        client = await self._get_client()
         pattern = "piluitus:trade:*"
         cursor: int = 0
         result: dict = {}
@@ -879,7 +879,7 @@ class DBManager:
     # ----------------------- паника / очистка -----------------------
     async def clear_journal(self) -> None:
         """Полностью очищает журнал позиций – используется кнопкой «Паника»."""
-        client = await RedisClient.get_client()
+        client = await self._get_client()
         pattern = "piluitus:trade:*"
         cursor: int = 0
         while True:
