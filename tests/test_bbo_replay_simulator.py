@@ -591,7 +591,12 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         self.assertIn("mark_to_market", capacity)
         self.assertEqual(capacity["mark_to_market"]["complete_equity_snapshots"], 1)
         self.assertTrue(capacity["mark_to_market"]["ending_snapshot_complete"])
-        self.assertAlmostEqual(capacity["mark_to_market"]["ending_equity_rub"], 10004.0 - 0.5 - 0.505)
+        expected_exit_fill = 100.5 * 0.999
+        expected_equity = (
+            10000.0 + (expected_exit_fill - 100.0) * 10.0
+            - 0.5 - expected_exit_fill * 10.0 * 0.05 / 100.0
+        )
+        self.assertAlmostEqual(capacity["mark_to_market"]["ending_equity_rub"], expected_equity)
 
 
 if __name__ == "__main__":
