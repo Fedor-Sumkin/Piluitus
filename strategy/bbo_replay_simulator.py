@@ -43,8 +43,8 @@ def _epoch(value: object) -> float:
     if isinstance(value, str) and value.strip():
         try:
             parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                return math.nan
+            # Legacy PAPER entry_timestamp values were serialized from naive
+            # datetime.now(); datetime.timestamp() preserves the host-local zone.
             return parsed.timestamp()
         except (TypeError, ValueError, OverflowError):
             return math.nan
