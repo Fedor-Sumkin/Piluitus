@@ -1249,6 +1249,18 @@ def _guard_reason_bucket(reason: str) -> str:
     return "other"
 
 
+def _mark_shadow_llm_not_called(candidate_id: object, reason_code: str) -> None:
+    """Keep known pre-LLM rejects distinct from missing candidate/verdict links."""
+    identifier = str(candidate_id or "").strip()
+    if not identifier:
+        return
+    if scalping_shadow_tracker.mark_llm_not_called(
+        identifier, reason_code=reason_code,
+    ):
+        _trade_flow_inc("shadow_llm_not_called")
+        _trade_flow_inc("shadow_llm_not_called_" + _guard_reason_bucket(reason_code))
+
+
 def _log_prefilter_blocked(ticker: str, reason: str, *, interval_sec: float = 15.0) -> None:
     """Rate-limit identical prefilter warnings per ticker and reason category."""
     bucket = _guard_reason_bucket(reason)
@@ -1573,6 +1585,7 @@ async def _resume_pending_bbo_candidate(
     direction = infer_candidate_direction(metrics)
     original_direction = str(payload.get("candidate_direction", "")).upper()
     if direction not in {"BUY", "SELL"} or direction != original_direction:
+        _mark_shadow_llm_not_called(payload.get("shadow_candidate_id"), "DIRECTION_CHANGED")
         _trade_flow_inc("bbo_resume_direction_changed")
         _cancel_pending_bbo_candidate(key, pending)
         _trade_flow_inc("direction_prefilter_skipped")
@@ -1586,6 +1599,7 @@ async def _resume_pending_bbo_candidate(
         if _guard_reason_bucket(evidence_reason) == "quotes":
             _trade_flow_inc("bbo_resume_evidence_quotes")
             return
+        _mark_shadow_llm_not_called(payload.get("shadow_candidate_id"), "SIGNAL_EVIDENCE_BLOCKED")
         _trade_flow_inc("bbo_resume_evidence_blocked")
         _cancel_pending_bbo_candidate(key, pending)
         _trade_flow_inc("prefilter_blocked")
@@ -1595,6 +1609,7 @@ async def _resume_pending_bbo_candidate(
 
     atr_ready, atr_reason = validate_atr_readiness(metrics)
     if not atr_ready:
+        _mark_shadow_llm_not_called(payload.get("shadow_candidate_id"), "ATR_NOT_READY")
         _trade_flow_inc("bbo_resume_atr_blocked")
         _trade_flow_inc("atr_unready_candidates")
         _cancel_pending_bbo_candidate(key, pending)
@@ -1610,10 +1625,12 @@ async def _resume_pending_bbo_candidate(
             and pending.get("payload") is payload
         )
     if not still_current:
+        _mark_shadow_llm_not_called(payload.get("shadow_candidate_id"), "PAYLOAD_SUPERSEDED")
         _trade_flow_inc("bbo_resume_payload_changed")
         return
 
     if not _reserve_ai_ticker(key, payload.get("candidate_direction"), metrics):
+        _mark_shadow_llm_not_called(payload.get("shadow_candidate_id"), "AI_DEDUPLICATED")
         _trade_flow_inc("bbo_resume_deduplicated")
         _cancel_pending_bbo_candidate(key, pending)
         _trade_flow_inc("candidate_deduplicated")
@@ -1636,6 +1653,7 @@ async def _resume_pending_bbo_candidate(
         )
         update_numpy_impulse_status(key)
     except asyncio.QueueFull:
+        _mark_shadow_llm_not_called(payload.get("shadow_candidate_id"), "AI_QUEUE_FULL")
         _release_ai_ticker(key)
         _drop_pending_bbo_candidate(key, pending)
         _trade_flow_inc("bbo_resume_queue_full")
@@ -2142,18 +2160,21 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                             }
                             _store_pending_bbo_candidate(ticker, pending_payload, received_monotonic)
                         else:
+                            _mark_shadow_llm_not_called(shadow_candidate_id, "SIGNAL_EVIDENCE_BLOCKED")
                             _trade_flow_inc("prefilter_blocked")
                             _trade_flow_guard_block(evidence_reason)
                             _log_prefilter_blocked(ticker, evidence_reason)
                     else:
                         atr_ready, atr_reason = validate_atr_readiness(metrics_payload)
                         if not atr_ready:
+                            _mark_shadow_llm_not_called(shadow_candidate_id, "ATR_NOT_READY")
                             # ATR is a hard pre-LLM prerequisite. Re-evaluate on a
                             # later fresh tick instead of spending inference only to
                             # reject an APPROVE after the model has answered.
                             _trade_flow_inc("atr_unready_candidates")
                             _log_prefilter_blocked(ticker, atr_reason, interval_sec=60.0)
                         elif not _reserve_ai_ticker(ticker, candidate_direction, metrics_payload):
+                            _mark_shadow_llm_not_called(shadow_candidate_id, "AI_DEDUPLICATED")
                             _trade_flow_inc("candidate_deduplicated")
                         else:
                             event_payload = {
@@ -2181,6 +2202,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                                 _trade_flow_inc("prefilter_pass_buy" if candidate_direction == "BUY" else "prefilter_pass_sell")
                                 update_numpy_impulse_status(ticker)
                             except asyncio.QueueFull:
+                                _mark_shadow_llm_not_called(shadow_candidate_id, "AI_QUEUE_FULL")
                                 _release_ai_ticker(ticker)
                                 _trade_flow_inc("queue_dropped")
                                 logger.error("Очередь AI-сигналов заполнена; аномалия %s отброшена.", ticker)
