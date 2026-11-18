@@ -629,3 +629,22 @@ ticker dependence or parameter selection. Small cohorts remain explicitly
 insufficient; do not rank or tune strategy parameters from isolated small
 buckets. Net expectancy, profit factor, costs and chronological out-of-sample
 stability must be considered together.
+
+
+## PAPER exit execution-cost diagnostics
+
+Every completed PAPER exit fill now stores a point-in-time execution-cost
+breakdown relative to the executable closing-side BBO. BUY positions are
+liquidated against Bid; SELL positions are covered against Ask. When a
+confirmed depth model supplies a VWAP, the report separates adverse
+multi-level depth impact from configured slippage applied after that VWAP.
+It also records total adverse shortfall versus top-of-book in RUB and basis
+points, the Bid/Ask and order-book ages, depth fill ratio and levels used.
+
+Partial exits retain their own per-fill diagnostic snapshot. The final closed
+trade aggregates shortfall across all recorded exit tranches and computes
+weighted basis points against their combined executable reference notional.
+Depth impact remains UNKNOWN for BBO-only fills; it is never fabricated as
+zero when the depth reference is unavailable. These fields are observational
+and do not change exit triggers, fill prices, participation limits or position
+management.
