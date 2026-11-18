@@ -56,6 +56,7 @@ from strategy.bbo_replay import (
     BBO_REPLAY_STORAGE_LIMIT,
 )
 from strategy.bbo_replay_simulator import replay_exit_batch, replay_exit_scenarios
+from strategy.paper_reconciliation import build_shadow_reconciliation
 from strategy.paper_performance import (
     PAPER_CLOSED_TRADES_STORAGE_KEY,
     PAPER_CLOSED_TRADES_STORAGE_LIMIT,
@@ -3902,71 +3903,12 @@ async def get_paper_shadow_reconciliation(limit: int = 100):
     _require_paper_mode()
     if limit < 1 or limit > 500:
         raise HTTPException(status_code=422, detail="limit должен быть от 1 до 500.")
-
-    labels_by_candidate: dict[str, list[dict[str, Any]]] = {}
-    for label in paper_shadow_labels:
-        if not isinstance(label, Mapping):
-            continue
-        candidate_id = str(label.get("candidate_id") or "").strip()
-        if candidate_id:
-            labels_by_candidate.setdefault(candidate_id, []).append(dict(label))
-
-    records = [
-        dict(row) for row in paper_performance_tracker.records
-        if isinstance(row, Mapping)
-    ]
-    records.sort(
-        key=lambda row: str(row.get("exit_timestamp") or ""),
-        reverse=True,
+    result = build_shadow_reconciliation(
+        paper_performance_tracker.records,
+        paper_shadow_labels,
+        limit=limit,
     )
-    counts = {
-        "MATCHED_EXACT_ID": 0,
-        "MISSING_TRADE_CANDIDATE_ID": 0,
-        "NO_SHADOW_LABEL_FOR_CANDIDATE": 0,
-    }
-    reconciled: list[dict[str, Any]] = []
-    for trade in records:
-        candidate_id = str(trade.get("shadow_candidate_id") or "").strip()
-        if not candidate_id:
-            status = "MISSING_TRADE_CANDIDATE_ID"
-            matched_labels: list[dict[str, Any]] = []
-        else:
-            matched_labels = labels_by_candidate.get(candidate_id, [])
-            status = "MATCHED_EXACT_ID" if matched_labels else "NO_SHADOW_LABEL_FOR_CANDIDATE"
-        counts[status] += 1
-        reconciled.append({
-            "trade_id": str(trade.get("id") or ""),
-            "ticker": str(trade.get("ticker") or ""),
-            "side": str(trade.get("side") or ""),
-            "net_pnl_rub": trade.get("pnl"),
-            "exit_reason": trade.get("exit_reason"),
-            "shadow_candidate_id": candidate_id or None,
-            "status": status,
-            "shadow_label_count": len(matched_labels),
-            "shadow_horizons_sec": sorted({
-                int(float(label["horizon_sec"]))
-                for label in matched_labels
-                if label.get("horizon_sec") is not None
-                and str(label.get("horizon_sec")).replace(".", "", 1).isdigit()
-            }),
-        })
-
-    matched_ids = {
-        row["shadow_candidate_id"] for row in reconciled
-        if row["status"] == "MATCHED_EXACT_ID"
-    }
-    label_candidate_ids = set(labels_by_candidate)
-    return {
-        "paper_mode": True,
-        "realized_closed_trades": len(records),
-        "shadow_candidates_with_labels": len(label_candidate_ids),
-        "matched_trades": counts["MATCHED_EXACT_ID"],
-        "unmatched_trades": len(records) - counts["MATCHED_EXACT_ID"],
-        "counts_by_status": counts,
-        "shadow_candidates_without_realized_trade": len(label_candidate_ids - matched_ids),
-        "trades": reconciled[:limit],
-        "note": "Совпадение выполняется только по точному shadow_candidate_id/candidate_id; временная близость и совпадение тикера не считаются связью.",
-    }
+    return {"paper_mode": True, **result}
 
 
 @app.get("/api/v1/paper/replay/{order_id}")
