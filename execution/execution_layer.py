@@ -1819,20 +1819,31 @@ class BaseExecutionEngine:
                 pending = self._pending_monitor_prices
                 self._pending_monitor_prices = {}
                 for ticker, pending_value in pending.items():
-                    if isinstance(pending_value, tuple) and len(pending_value) == 3:
-                        price, source, event_timestamp = pending_value
-                    elif isinstance(pending_value, tuple) and len(pending_value) == 2:
-                        price, source = pending_value
-                        event_timestamp = None
-                    else:
-                        price, source, event_timestamp = pending_value, "LAST_TRADE", None
-                    await self.monitor_paper_positions(
-                        ticker,
-                        float(price),
-                        db,
-                        event_source=str(source),
-                        event_timestamp=event_timestamp,
-                    )
+                    try:
+                        if isinstance(pending_value, tuple) and len(pending_value) == 3:
+                            price, source, event_timestamp = pending_value
+                        elif isinstance(pending_value, tuple) and len(pending_value) == 2:
+                            price, source = pending_value
+                            event_timestamp = None
+                        else:
+                            price, source, event_timestamp = pending_value, "LAST_TRADE", None
+                        await self.monitor_paper_positions(
+                            ticker,
+                            float(price),
+                            db,
+                            event_source=str(source),
+                            event_timestamp=event_timestamp,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as ticker_exc:
+                        # A malformed event for one instrument must not discard
+                        # the rest of the coalesced batch.
+                        logger.error(
+                            "[PAPER MONITOR ISOLATED FAILURE] ticker=%s: %s",
+                            ticker, ticker_exc, exc_info=True,
+                        )
+                        continue
         except asyncio.CancelledError:
             raise
         except Exception as exc:
