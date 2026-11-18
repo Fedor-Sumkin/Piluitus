@@ -493,5 +493,44 @@ class PaperEntryPerformanceCohortTests(unittest.TestCase):
         )
 
 
+    def test_reentry_diagnostics_pair_only_closed_same_ticker_session_trades(self):
+        tracker = PaperPerformanceTracker()
+        tracker.restore([
+            {
+                **trade("first-stop", -10, exit_time="2026-11-18T10:01:00+03:00"),
+                "entry_timestamp": "2026-11-18T10:00:00+03:00",
+            },
+            {
+                **trade("second-trade", 6, exit_time="2026-11-18T10:03:00+03:00"),
+                "entry_timestamp": "2026-11-18T10:01:30+03:00",
+                "exit_reason": "TAKE_PROFIT",
+            },
+            {
+                **trade("third-trade", -4, exit_time="2026-11-18T10:06:00+03:00"),
+                "entry_timestamp": "2026-11-18T10:06:30+03:00",
+            },
+            {
+                **trade("other-session", 100, exit_time="2026-11-18T10:02:00+03:00", session="session-2"),
+                "entry_timestamp": "2026-11-18T10:01:15+03:00",
+            },
+            {
+                **trade("naive-time", 100, exit_time="2026-11-18T10:04:00"),
+                "entry_timestamp": "2026-11-18T10:03:00",
+            },
+        ])
+
+        diagnostics = tracker.scorecard()["reentry_diagnostics"]
+        self.assertEqual(diagnostics["paired_reentries"], 2)
+        self.assertEqual(diagnostics["eligible_trades"], 4)
+        self.assertEqual(diagnostics["trades_without_valid_aware_entry_exit_timestamps"], 1)
+        self.assertEqual(diagnostics["by_gap"]["LT_60S"]["trades"], 1)
+        self.assertEqual(diagnostics["by_previous_exit_reason"]["STOP_LOSS"]["trades"], 1)
+        self.assertEqual(diagnostics["by_previous_exit_reason"]["TAKE_PROFIT"]["trades"], 1)
+        self.assertEqual(diagnostics["by_previous_trade_outcome"]["LOSS"]["trades"], 1)
+        self.assertEqual(diagnostics["by_previous_trade_outcome"]["WIN"]["trades"], 1)
+        self.assertEqual(diagnostics["pairs"][0]["previous_trade_id"], "first-stop")
+        self.assertEqual(diagnostics["pairs"][0]["gap_sec"], 30.0)
+
+
 if __name__ == "__main__":
     unittest.main()
