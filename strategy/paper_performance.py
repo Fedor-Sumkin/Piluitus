@@ -8,8 +8,7 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from typing import Any, Mapping
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone, timedelta
 
 from strategy.shadow_label_quality import (
     deduplicate_shadow_labels,
@@ -350,10 +349,17 @@ def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
 
     return {
         "trades": len(valid),
+        "sample_quality": (
+            "INSUFFICIENT_LT_30" if len(valid) < 30
+            else "PRELIMINARY_30_99" if len(valid) < 100
+            else "DEVELOPING_100_299" if len(valid) < 300
+            else "LARGE_300_PLUS"
+        ),
         "wins": len(wins),
         "losses": len(losses),
         "breakeven": len(valid) - len(wins) - len(losses),
         "win_rate_pct": round(len(wins) / len(valid) * 100.0, 3) if valid else None,
+        "win_rate_95_wilson_pct": _wilson_interval_pct(len(wins), len(valid)),
         "net_pnl_rub": round(sum(valid), 2),
         "gross_pnl_rub": round(sum(gross_values), 2),
         "gross_profit_rub": round(gross_profit, 2),
@@ -675,7 +681,7 @@ class PaperPerformanceTracker:
             stamp = datetime.fromisoformat(raw.strip())
             if stamp.tzinfo is None or stamp.utcoffset() is None:
                 return "UNKNOWN"
-            local = stamp.astimezone(ZoneInfo("Europe/Moscow"))
+            local = stamp.astimezone(timezone(timedelta(hours=3)))
         except (TypeError, ValueError, OverflowError):
             return "UNKNOWN"
         minute = local.hour * 60 + local.minute
