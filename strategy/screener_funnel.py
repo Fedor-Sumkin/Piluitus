@@ -1174,6 +1174,7 @@ class HFTMemoryScreener:
             quote_bid = float(quote.get("bid", 0.0) or 0.0)
             quote_ask = float(quote.get("ask", 0.0) or 0.0)
             if quote_bid > 0.0 and quote_ask > 0.0 and quote_ask < quote_bid:
+                quote.setdefault("queue_imbalance_history", deque(maxlen=1024)).clear()
                 quote["last_bid_confirmed_seen"] = 0.0
                 quote["last_ask_confirmed_seen"] = 0.0
                 quote["last_bbo_seen"] = 0.0
