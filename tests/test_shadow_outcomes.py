@@ -284,6 +284,39 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(segments["llm_final_decision=BUY"]["labels"], 1)
         self.assertEqual(segments["llm_execution_status=OPENED"]["labels"], 1)
 
+    def test_llm_scorecard_splits_decisions_and_confidence_by_horizon(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60, 180))
+        with patch("strategy.shadow_outcomes.time.monotonic", return_value=100.0):
+            candidate_id = tracker.record_candidate(
+                "SBER", "BUY", quote_metrics(100.0, 100.1),
+                {"score": 91.0, "eligible": True, "regime": "TREND_ALIGNED"},
+            )
+        self.assertTrue(tracker.attach_llm_verdict(
+            candidate_id,
+            verdict_id="verdict-horizon",
+            model_decision="APPROVE",
+            final_decision="BUY",
+            signal_status="APPROVED",
+            confidence=87.0,
+            reason_code="TREND_CONFIRMED",
+            local_guard="PRE_LLM_VALIDATED",
+            execution_status="OPENED",
+        ))
+        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=(160.0, 280.0)):
+            first = tracker.observe_market_tick("SBER", quote_metrics(100.2, 100.3))
+            second = tracker.observe_market_tick("SBER", quote_metrics(100.4, 100.5))
+
+        self.assertEqual([row["horizon_sec"] for row in first], [60])
+        self.assertEqual([row["horizon_sec"] for row in second], [180])
+        segments = tracker.statistics_snapshot()["segments"]
+        self.assertEqual(segments["horizon_llm_model_decision=60s|APPROVE"]["ok"], 1)
+        self.assertEqual(segments["horizon_llm_model_decision=180s|APPROVE"]["ok"], 1)
+        self.assertEqual(segments["horizon_llm_decision_confidence=60s|APPROVE|80-89"]["ok"], 1)
+        self.assertEqual(segments["horizon_llm_execution=180s|OPENED"]["ok"], 1)
+        self.assertEqual(segments["horizon_llm_final_decision=60s|BUY"]["ok"], 1)
+        self.assertEqual(segments["horizon_llm_confidence=180s|80-89"]["ok"], 1)
+        self.assertEqual(segments["horizon_llm_model_decision=60s|APPROVE"]["sample_quality"], "INSUFFICIENT_LT_30")
+
     def test_llm_approved_group_reports_profit_factor_from_net_returns(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
         with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 100.0]):
@@ -315,6 +348,10 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(approved["ok"], 2)
         self.assertGreater(approved["profit_factor"], 0.0)
         self.assertEqual(approved["positive"], 1)
+        self.assertEqual(approved["negative"], 1)
+        self.assertGreater(approved["average_win_pct"], 0.0)
+        self.assertGreater(approved["average_loss_pct"], 0.0)
+        self.assertEqual(approved["sample_quality"], "INSUFFICIENT_LT_30")
 
 
 if __name__ == "__main__":
