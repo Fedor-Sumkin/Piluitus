@@ -162,6 +162,12 @@ class PaperPerformanceTracker:
             restored += int(self.record(row))
         return restored
 
+    def clear(self) -> int:
+        """Clear the in-memory view when the operator explicitly resets PAPER."""
+        removed = len(self._by_id)
+        self._by_id.clear()
+        return removed
+
     @property
     def records(self) -> list[dict[str, Any]]:
         return list(self._by_id.values())
