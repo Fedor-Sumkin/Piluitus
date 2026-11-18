@@ -57,6 +57,7 @@ def test_patch_launchers_show_help_from_outside_project(tmp_path: Path) -> None:
             cwd=tmp_path,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=20,
             check=False,
         )
