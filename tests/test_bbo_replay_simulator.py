@@ -1,6 +1,6 @@
 import unittest
 
-from strategy.bbo_replay_simulator import replay_exit_batch, replay_exit_scenarios
+from strategy.bbo_replay_simulator import (\n    _portfolio_capacity_simulation, replay_exit_batch, replay_exit_scenarios,\n)
 
 
 def event(sequence, ticker="SBER", *, bid=100.0, ask=100.1, age=0.1,
@@ -404,6 +404,56 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         self.assertEqual(paired["cohort"]["paired_closed"], 0)
         self.assertIsNone(paired["paired_difference"]["mean_delta_net_pnl_rub"])
         self.assertEqual(paired["cohort"]["sample_quality"], "INSUFFICIENT_LT_30")
+
+    def test_portfolio_capacity_rejects_overlapping_entries_and_releases_capital(self):
+        def trade(position_id, entry, exit_time, pnl):
+            return {
+                "position_id": position_id,
+                "trade_index": int(position_id[-1]),
+                "entry_time_epoch": entry,
+                "entry_price": 100.0,
+                "quantity": 10,
+                "scenarios": [{
+                    "name": "BASELINE",
+                    "exit": {"event_time_epoch": exit_time, "net_pnl_rub": pnl},
+                }],
+            }
+
+        rows = [
+            trade("P1", 1.0, 3.0, 50.0),
+            trade("P2", 2.0, 4.0, 20.0),
+            trade("P3", 3.5, 5.0, -10.0),
+        ]
+        result = _portfolio_capacity_simulation(rows, "BASELINE", 10000.0, 15.0)
+        self.assertEqual(result["accepted_positions"], 2)
+        self.assertEqual(result["rejected_for_capacity"], 1)
+        self.assertEqual(result["closed_positions"], 2)
+        self.assertEqual(result["open_positions_at_end"], 0)
+        self.assertAlmostEqual(result["realized_net_pnl_rub"], 40.0)
+        self.assertAlmostEqual(result["peak_reserved_capital_rub"], 1000.0)
+
+    def test_portfolio_capacity_keeps_open_position_reserved_at_end(self):
+        rows = [{
+            "position_id": "P1",
+            "entry_time_epoch": 1.0,
+            "entry_price": 100.0,
+            "quantity": 10,
+            "scenarios": [{"name": "BASELINE", "exit": None}],
+        }]
+        result = _portfolio_capacity_simulation(rows, "BASELINE", 10000.0, 15.0)
+        self.assertEqual(result["accepted_positions"], 1)
+        self.assertEqual(result["closed_positions"], 0)
+        self.assertEqual(result["open_positions_at_end"], 1)
+        self.assertEqual(result["ending_reserved_capital_rub"], 1000.0)
+        self.assertIsNone(result["expectancy_per_closed_position_rub"])
+
+    def test_portfolio_capacity_validates_capital_and_allocation(self):
+        with self.assertRaises(ValueError):
+            _portfolio_capacity_simulation([], "BASELINE", 0.0, 15.0)
+        with self.assertRaises(ValueError):
+            _portfolio_capacity_simulation([], "BASELINE", 10000.0, 0.0)
+
+
 
 if __name__ == "__main__":
     unittest.main()
