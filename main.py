@@ -55,7 +55,7 @@ from strategy.bbo_replay import (
     BBO_REPLAY_STORAGE_KEY,
     BBO_REPLAY_STORAGE_LIMIT,
 )
-from strategy.bbo_replay_simulator import replay_exit_scenarios
+from strategy.bbo_replay_simulator import replay_exit_batch, replay_exit_scenarios
 from strategy.paper_performance import (
     PAPER_CLOSED_TRADES_STORAGE_KEY,
     PAPER_CLOSED_TRADES_STORAGE_LIMIT,
@@ -3782,6 +3782,190 @@ async def get_paper_performance():
         "paper_mode": True,
         "retained_trade_limit": PAPER_CLOSED_TRADES_STORAGE_LIMIT,
         "scorecard": paper_performance_tracker.scorecard(paper_shadow_labels),
+    }
+
+
+@app.get("/api/v1/paper/replay/batch")
+async def replay_paper_exit_batch(
+    limit: int = 30,
+    ticker: str | None = None,
+    session_id: str | None = None,
+):
+    """Read-only batch replay of recent closed PAPER positions."""
+    _require_paper_mode()
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=422, detail="limit должен быть от 1 до 100.")
+
+    all_trades = await db_manager.get_all_daily_trades()
+    if not isinstance(all_trades, Mapping):
+        all_trades = {}
+    normalized_ticker = str(ticker or "").strip().upper().split("@")[0]
+    normalized_session = str(session_id or "").strip()
+    candidates: list[dict[str, Any]] = []
+    skipped = {"NOT_CLOSED_PAPER": 0, "NO_REPLAY_SESSION": 0, "TICKER_FILTERED": 0, "SESSION_FILTERED": 0}
+    for order_id, raw in all_trades.items():
+        if not isinstance(raw, Mapping) or not DBManager.is_paper_trade(raw, str(order_id)):
+            skipped["NOT_CLOSED_PAPER"] += 1
+            continue
+        if str(raw.get("status") or "").upper() != "CLOSED":
+            skipped["NOT_CLOSED_PAPER"] += 1
+            continue
+        trade_ticker = str(raw.get("ticker") or "").strip().upper().split("@")[0]
+        trade_session = str(raw.get("bbo_replay_session_id") or "").strip()
+        if normalized_ticker and trade_ticker != normalized_ticker:
+            skipped["TICKER_FILTERED"] += 1
+            continue
+        if normalized_session and trade_session != normalized_session:
+            skipped["SESSION_FILTERED"] += 1
+            continue
+        if not trade_session:
+            skipped["NO_REPLAY_SESSION"] += 1
+            continue
+        candidates.append(dict(raw, id=str(raw.get("id") or order_id)))
+
+    candidates.sort(
+        key=lambda row: str(row.get("exit_timestamp") or row.get("exit_time") or ""),
+        reverse=True,
+    )
+    selected = candidates[:limit]
+    if not selected:
+        return {
+            "paper_mode": True,
+            "selected_positions": 0,
+            "skipped": skipped,
+            "replay": {
+                "schema_version": 1,
+                "engine": "PAPER_EXIT_REPLAY_V1",
+                "positions": 0,
+                "trades": [],
+                "summary_by_scenario": {},
+            },
+            "note": "Нет закрытых PAPER-сделок с bbo_replay_session_id, подходящих под фильтры.",
+        }
+
+    required_sessions = {str(row["bbo_replay_session_id"]) for row in selected}
+    stored_events = await db_manager.get_list(
+        BBO_REPLAY_STORAGE_KEY,
+        start=0,
+        stop=BBO_REPLAY_STORAGE_LIMIT - 1,
+    )
+    replay_events = [
+        row for row in stored_events
+        if isinstance(row, Mapping)
+        and str(row.get("session_id") or "") in required_sessions
+    ]
+    if not replay_events:
+        raise HTTPException(
+            status_code=409,
+            detail="В журнале BBO нет событий для выбранных replay-сессий.",
+        )
+
+    configured_age = getattr(screener, "bbo_max_age_sec", None)
+    if configured_age is None:
+        configured_age = os.getenv(
+            "PILUITUS_BBO_MAX_AGE_SEC",
+            os.getenv("PILUITUS_BBO_EXIT_MAX_AGE_SEC", "2.0"),
+        )
+    try:
+        max_age = float(configured_age)
+    except (TypeError, ValueError, OverflowError):
+        max_age = 2.0
+    if not math.isfinite(max_age) or max_age <= 0.0:
+        max_age = 2.0
+    max_age = min(5.0, max(0.25, max_age))
+
+    try:
+        replay = replay_exit_batch(
+            replay_events,
+            selected,
+            max_bbo_age_sec=max_age,
+        )
+    except ValueError as replay_error:
+        raise HTTPException(status_code=422, detail=str(replay_error)) from replay_error
+
+    return {
+        "paper_mode": True,
+        "selected_positions": len(selected),
+        "candidate_positions": len(candidates),
+        "limit": limit,
+        "skipped": skipped,
+        "journal_events_loaded": len(replay_events),
+        "retained_event_limit": BBO_REPLAY_STORAGE_LIMIT,
+        "replay": replay,
+        "note": "Replay является исследовательской симуляцией; открытые в конце сценария позиции не включены в реализованный PnL.",
+    }
+
+
+@app.get("/api/v1/paper/reconciliation/shadow")
+async def get_paper_shadow_reconciliation(limit: int = 100):
+    """Reconcile realized closed PAPER trades to Shadow candidates by exact ID."""
+    _require_paper_mode()
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=422, detail="limit должен быть от 1 до 500.")
+
+    labels_by_candidate: dict[str, list[dict[str, Any]]] = {}
+    for label in paper_shadow_labels:
+        if not isinstance(label, Mapping):
+            continue
+        candidate_id = str(label.get("candidate_id") or "").strip()
+        if candidate_id:
+            labels_by_candidate.setdefault(candidate_id, []).append(dict(label))
+
+    records = [
+        dict(row) for row in paper_performance_tracker.records
+        if isinstance(row, Mapping)
+    ]
+    records.sort(
+        key=lambda row: str(row.get("exit_timestamp") or ""),
+        reverse=True,
+    )
+    counts = {
+        "MATCHED_EXACT_ID": 0,
+        "MISSING_TRADE_CANDIDATE_ID": 0,
+        "NO_SHADOW_LABEL_FOR_CANDIDATE": 0,
+    }
+    reconciled: list[dict[str, Any]] = []
+    for trade in records:
+        candidate_id = str(trade.get("shadow_candidate_id") or "").strip()
+        if not candidate_id:
+            status = "MISSING_TRADE_CANDIDATE_ID"
+            matched_labels: list[dict[str, Any]] = []
+        else:
+            matched_labels = labels_by_candidate.get(candidate_id, [])
+            status = "MATCHED_EXACT_ID" if matched_labels else "NO_SHADOW_LABEL_FOR_CANDIDATE"
+        counts[status] += 1
+        reconciled.append({
+            "trade_id": str(trade.get("id") or ""),
+            "ticker": str(trade.get("ticker") or ""),
+            "side": str(trade.get("side") or ""),
+            "net_pnl_rub": trade.get("pnl"),
+            "exit_reason": trade.get("exit_reason"),
+            "shadow_candidate_id": candidate_id or None,
+            "status": status,
+            "shadow_label_count": len(matched_labels),
+            "shadow_horizons_sec": sorted({
+                int(float(label["horizon_sec"]))
+                for label in matched_labels
+                if label.get("horizon_sec") is not None
+                and str(label.get("horizon_sec")).replace(".", "", 1).isdigit()
+            }),
+        })
+
+    matched_ids = {
+        row["shadow_candidate_id"] for row in reconciled
+        if row["status"] == "MATCHED_EXACT_ID"
+    }
+    label_candidate_ids = set(labels_by_candidate)
+    return {
+        "paper_mode": True,
+        "realized_closed_trades": len(records),
+        "shadow_candidates_with_labels": len(label_candidate_ids),
+        "matched_trades": counts["MATCHED_EXACT_ID"],
+        "unmatched_trades": len(records) - counts["MATCHED_EXACT_ID"],
+        "counts_by_status": counts,
+        "shadow_candidates_without_realized_trade": len(label_candidate_ids - matched_ids),
+        "trades": reconciled[:limit],
+        "note": "Совпадение выполняется только по точному shadow_candidate_id/candidate_id; временная близость и совпадение тикера не считаются связью.",
     }
 
 
