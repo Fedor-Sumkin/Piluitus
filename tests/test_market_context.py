@@ -17,6 +17,8 @@ class MarketContextTests(unittest.TestCase):
             "spread_pct": 0.02,
             "trade_count_60s": 40,
             "trade_history_coverage_sec": 60.0,
+            "trade_data_ready": 1.0,
+            "trade_metrics_age_sec": 0.2,
         }
         warm = classify_market_regime(
             metrics, atr_reference_pct=0.20, atr_reference_samples=19
@@ -39,6 +41,9 @@ class MarketContextTests(unittest.TestCase):
             "price_vs_vwap_pct": 0.10,
             "bar_trend_up": 1.0,
             "bar_trend_down": 0.0,
+            "trade_data_ready": 1.0,
+            "trade_metrics_age_sec": 0.2,
+            "trade_history_coverage_sec": 60.0,
         })
         self.assertEqual(result["liquidity_regime"], "LOW_LIQUIDITY")
         self.assertEqual(result["directional_regime"], "TREND_UP")
@@ -51,6 +56,9 @@ class MarketContextTests(unittest.TestCase):
             "bar_trend_up": 0.0,
             "bar_trend_down": 0.0,
             "trade_flow_imbalance_30s": 0.20,
+            "trade_data_ready": 1.0,
+            "trade_metrics_age_sec": 0.2,
+            "trade_history_coverage_sec": 60.0,
         })
         self.assertEqual(result["directional_regime"], "RANGE_OR_MIXED")
 
