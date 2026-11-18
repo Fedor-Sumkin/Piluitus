@@ -3,7 +3,12 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
-from strategy.screener_funnel import HFTMemoryScreener, _queue_imbalance_window
+from strategy.screener_funnel import (
+    HFTMemoryScreener,
+    _best_quote_ofi_delta,
+    _ofi_window,
+    _queue_imbalance_window,
+)
 
 
 class QueueImbalanceWindowTests(unittest.TestCase):
@@ -41,6 +46,47 @@ class QueueImbalanceWindowTests(unittest.TestCase):
         self.assertEqual(result["samples"], 2)
         self.assertEqual(result["available"], 0.0)
         self.assertAlmostEqual(result["coverage_sec"], 4.0)
+
+    def test_best_quote_ofi_delta_captures_bid_addition_and_ask_cancellation(self):
+        delta = _best_quote_ofi_delta(
+            100.0, 100.0, 100.1, 80.0,
+            100.0, 130.0, 100.1, 60.0,
+        )
+        self.assertEqual(delta, 50.0)
+
+    def test_best_quote_ofi_delta_handles_price_improvement_and_worsening(self):
+        bid_improvement = _best_quote_ofi_delta(
+            100.0, 100.0, 100.2, 80.0,
+            100.1, 70.0, 100.2, 80.0,
+        )
+        ask_improvement = _best_quote_ofi_delta(
+            100.0, 100.0, 100.2, 80.0,
+            100.0, 100.0, 100.1, 60.0,
+        )
+        self.assertEqual(bid_improvement, 70.0)
+        self.assertEqual(ask_improvement, -60.0)
+
+    def test_ofi_window_is_depth_normalized_and_requires_fresh_coverage(self):
+        history = [
+            (1.0, 20.0, 100.0),
+            (1.5, -10.0, 100.0),
+            (2.0, 30.0, 100.0),
+        ]
+        result = _ofi_window(history, 2.2, min_samples=3, min_coverage_sec=1.0)
+        self.assertEqual(result["available"], 1.0)
+        self.assertAlmostEqual(result["value"], 40.0 / 300.0)
+        self.assertEqual(result["raw"], 40.0)
+        stale = _ofi_window(history, 5.0, min_samples=3, min_coverage_sec=1.0)
+        self.assertEqual(stale["available"], 0.0)
+        self.assertEqual(stale["value"], 0.0)
+
+    def test_ofi_window_rejects_duplicate_timestamps_for_coverage(self):
+        result = _ofi_window(
+            [(1.0, 10.0, 100.0), (1.0, 20.0, 100.0), (1.0, 30.0, 100.0)],
+            1.1, min_samples=3, min_coverage_sec=0.5,
+        )
+        self.assertEqual(result["samples"], 1)
+        self.assertEqual(result["available"], 0.0)
 
     def test_order_book_updates_publish_rolling_metric_and_invalid_book_clears_it(self):
         screener = HFTMemoryScreener()
