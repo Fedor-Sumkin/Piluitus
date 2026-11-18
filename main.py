@@ -3609,11 +3609,6 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         logger.info("🛑 Начинаем штатную остановку фоновых задач PILUITUS...")
-        try:
-            await paper_bbo_replay_recorder.close()
-            logger.info("[PAPER BBO REPLAY] shutdown drain: %s", paper_bbo_replay_recorder.status())
-        except Exception as replay_close_err:
-            logger.error("[PAPER BBO REPLAY] shutdown drain failed: %s", replay_close_err, exc_info=True)
         for task in tuple(background_tasks):
             if not task.done():
                 task.cancel()
@@ -3622,6 +3617,13 @@ async def lifespan(app: FastAPI):
             for result in results:
                 if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
                     logger.warning("Ошибка при завершении фоновой задачи: %r", result)
+
+        # Stop producers first (broker/market workers), then drain the replay writer.
+        try:
+            await paper_bbo_replay_recorder.close()
+            logger.info("[PAPER BBO REPLAY] shutdown drain: %s", paper_bbo_replay_recorder.status())
+        except Exception as replay_close_err:
+            logger.error("[PAPER BBO REPLAY] shutdown drain failed: %s", replay_close_err, exc_info=True)
 
         _trade_flow_maybe_log(force=True)
         try:
