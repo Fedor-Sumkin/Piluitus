@@ -3856,6 +3856,7 @@ async def clear_paper_session(payload: dict[str, object] = Body(...)):
 
         removed_memory_positions = len(execution_engine.paper_positions)
         removed_memory_closed = len(execution_engine.closed_trades)
+        removed_memory_performance = paper_performance_tracker.clear()
         removed_memory_stale = len(execution_engine._unreconciled_paper_positions)
         execution_engine.paper_positions.clear()
         execution_engine.closed_trades.clear()
@@ -3899,6 +3900,7 @@ async def clear_paper_session(payload: dict[str, object] = Body(...)):
             "memory": {
                 "removed_open_positions": removed_memory_positions,
                 "removed_closed_trades": removed_memory_closed,
+                "removed_performance_records": removed_memory_performance,
                 "removed_stale_positions": removed_memory_stale,
             },
             "balance": balance,
