@@ -91,6 +91,7 @@ class FunnelTimeSamplingTests(unittest.TestCase):
 
         self.assertIsNotNone(features)
         self.assertEqual(features["momentum_pct"], 0.0)
+        self.assertEqual(features["volatility_pct"], 0.0)
 
 
 if __name__ == "__main__":
