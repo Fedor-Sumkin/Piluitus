@@ -137,7 +137,7 @@ class ShadowForwardTrackerTests(unittest.TestCase):
 
     def test_each_horizon_is_emitted_once_without_dropping_over_capacity_candidates(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60, 180), max_pending_per_ticker=1)
-        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[0.0, 1.0, 60.0, 61.0, 180.0, 181.0]):
+        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[0.0, 0.0, 60.0, 61.0, 180.0, 181.0]):
             first_id = tracker.record_candidate("SBER", "BUY", quote_metrics(100.0, 100.1), {"score": 90.0})
             second_id = tracker.record_candidate("SBER", "BUY", quote_metrics(100.0, 100.1), {"score": 91.0})
             self.assertNotEqual(first_id, second_id)
