@@ -15,6 +15,13 @@ class ShadowScorecardTests(unittest.TestCase):
             "bid_quote_age_sec": 0.1, "ask_quote_age_sec": 0.1,
             "bbo_max_age_sec": 2.0, "bid_ask_available": 1,
             "spread_available": 1, "spread_pct": 0.1,
+            "queue_imbalance_available": 1.0,
+            "queue_imbalance": 0.2,
+            "queue_imbalance_5s_available": 1.0,
+            "queue_imbalance_5s": 0.2,
+            "queue_imbalance_5s_coverage_sec": 3.0,
+            "queue_imbalance_5s_samples": 10,
+            "queue_imbalance_5s_positive_time_pct": 80.0,
         }
         with patch("shadow_outcomes.time.monotonic", side_effect=(100.0, 160.0, 200.0, 260.0)):
             tracker.record_candidate(
@@ -47,6 +54,7 @@ class ShadowScorecardTests(unittest.TestCase):
         self.assertEqual(segments["side_score_band=BUY|90-100"]["ok"], 1)
         self.assertEqual(segments["side_score_band=SELL|60-69"]["ok"], 1)
         self.assertEqual(segments["side_m1_pattern=BUY|NONE"]["ok"], 1)
+        self.assertEqual(segments["side_queue_alignment_5s=BUY|aligned"]["ok"], 1)
         self.assertEqual(segments["side_m1_pattern=SELL|NONE"]["ok"], 1)
         self.assertEqual(segments["hard_block=atr_not_ready"]["ok"], 1)
 
