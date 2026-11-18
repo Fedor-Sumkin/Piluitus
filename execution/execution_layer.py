@@ -179,6 +179,10 @@ def _decision_attribution_fields(ai_analysis: object) -> dict[str, object]:
         "llm_local_guard": bounded_text("llm_local_guard", limit=240),
         "candidate_direction": bounded_text("candidate_direction", "UNKNOWN", 16),
         "llm_shadow_linked": bool(ai_analysis.get("llm_shadow_linked", False)),
+        "market_regime": bounded_text("market_regime", "UNKNOWN", 32),
+        "volatility_regime": bounded_text("volatility_regime", "UNKNOWN", 32),
+        "liquidity_regime": bounded_text("liquidity_regime", "UNKNOWN", 32),
+        "directional_regime": bounded_text("directional_regime", "UNKNOWN", 32),
     }
 
 
