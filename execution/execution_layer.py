@@ -443,6 +443,56 @@ class BaseExecutionEngine:
 
         return round(total, 2)
 
+    def _stop_risk_with_costs(
+        self,
+        entry_price: float,
+        stop_price: float,
+        quantity: int,
+        side: str,
+        *,
+        entry_commission_rub: float | None = None,
+    ) -> float:
+        """Estimate loss at the stop including configured PAPER exit costs.
+
+        The entry price is already the simulated fill price. Additional slippage
+        is therefore applied only to the stop exit; commissions cover both sides.
+        LIVE sizing keeps the existing gross stop-distance model because broker
+        fees are not inferred from the PAPER tariff settings.
+        """
+        entry = _finite_or_default(entry_price, 0.0)
+        stop = _finite_or_default(stop_price, 0.0)
+        qty = max(0, int(quantity))
+        direction = str(side or "").strip().upper()
+        if entry <= 0.0 or stop <= 0.0 or qty <= 0 or direction not in {"BUY", "SELL"}:
+            return math.inf
+
+        exit_price = stop
+        fee_pct = 0.0
+        if self.paper_mode:
+            exit_side = "SELL" if direction == "BUY" else "BUY"
+            exit_price = self._apply_paper_slippage(stop, exit_side)
+            fee_pct = min(1.0, max(0.0, _finite_or_default(
+                getattr(self, "paper_commission_pct", 0.0), 0.0
+            )))
+
+        gross_loss = (
+            (entry - exit_price) * qty
+            if direction == "BUY"
+            else (exit_price - entry) * qty
+        )
+        if not math.isfinite(gross_loss) or gross_loss < 0.0:
+            return math.inf
+        if not self.paper_mode:
+            return round(gross_loss, 2)
+
+        if entry_commission_rub is None:
+            entry_fee = entry * qty * fee_pct / 100.0
+        else:
+            entry_fee = max(0.0, _finite_or_default(entry_commission_rub, 0.0))
+        exit_fee = exit_price * qty * fee_pct / 100.0
+        total = gross_loss + entry_fee + exit_fee
+        return round(total, 2) if math.isfinite(total) else math.inf
+
     def _open_stop_risk(self, positions: object) -> float:
         """Sum downside from entry to stop for every OPEN position; fail closed on unknown data."""
         if isinstance(positions, Mapping):
@@ -477,7 +527,21 @@ class BaseExecutionEngine:
                     "новые входы заблокированы.", ticker, side, entry, stop
                 )
                 return math.inf
-            total += distance * qty
+            entry_fee_raw = trade.get("entry_commission_rub")
+            entry_fee = (
+                _finite_or_default(entry_fee_raw, 0.0)
+                if entry_fee_raw is not None else None
+            )
+            position_risk = self._stop_risk_with_costs(
+                entry, stop, qty, side, entry_commission_rub=entry_fee
+            )
+            if not math.isfinite(position_risk):
+                logger.error(
+                    "[MONEY MANAGEMENT] Не удалось оценить риск позиции %s с учётом издержек; "
+                    "новые входы заблокированы.", ticker
+                )
+                return math.inf
+            total += position_risk
         return round(total, 2)
 
     async def _reserve_order_size(
@@ -545,7 +609,11 @@ class BaseExecutionEngine:
             stop_distance = price - stop_loss if side == "BUY" else stop_loss - price
             if not math.isfinite(stop_distance) or stop_distance <= 0:
                 return 0, "Некорректный стоп-уровень: риск нового ордера не рассчитан."
-            risk_per_lot = stop_distance * lot_size
+            risk_per_lot = self._stop_risk_with_costs(
+                price, stop_loss, lot_size, side
+            )
+            if not math.isfinite(risk_per_lot) or risk_per_lot <= 0.0:
+                return 0, "Не удалось достоверно рассчитать риск лота с учётом издержек."
 
             already_reserved = sum(self._reserved_notional.values())
             already_reserved_risk = sum(self._reserved_stop_risk.values())
