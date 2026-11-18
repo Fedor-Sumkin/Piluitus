@@ -213,8 +213,12 @@ be interpreted as a complete Finam cost estimate. Verify the actual account
 tariff and calibrate slippage from PAPER fills before drawing conclusions.
 
 The new fields are copied into forward labels and grouped by market regime,
-volatility, liquidity, direction and cost-to-ATR bucket. They do not add score
-points, change Shadow eligibility, block the LLM, change position sizing, or
-modify PAPER orders. Compare net executable outcomes by ticker, side, horizon
-and regime only after adequate sample sizes; overlapping horizons from one
+volatility, liquidity, direction and cost-to-ATR bucket. Queue Imbalance,
+30-second aggressor Trade Flow and 5-second OFI are also grouped separately
+inside each market regime and side, plus a combined confluence segment. This
+allows the scorecard to compare each feature and their agreement without
+silently changing strategy weights. These fields do not add score points,
+change Shadow eligibility, block the LLM, change position sizing, or modify
+PAPER orders. Compare net executable outcomes by ticker, side, horizon and
+regime only after adequate sample sizes; overlapping horizons from one
 candidate are correlated observations, not independent trades.
