@@ -361,8 +361,8 @@ if __name__ == "__main__":
     def test_batch_replay_indexes_events_by_session_and_ticker(self):
         rows = [
             event(1, bid=98.8, ask=98.9, epoch=1_800_000_001.0),
-            event(1, ticker="GAZP", bid=98.7, ask=98.8, epoch=1_800_000_001.0),
-            event(1, bid=102.1, ask=102.2, epoch=1_800_000_001.0, session="other-session"),
+            event(2, ticker="GAZP", bid=98.7, ask=98.8, epoch=1_800_000_001.0),
+            event(3, bid=102.1, ask=102.2, epoch=1_800_000_001.0, session="other-session"),
         ]
         positions = [
             position(position_id="SBER-1"),
@@ -376,8 +376,10 @@ if __name__ == "__main__":
         self.assertEqual(result["positions"], 3)
         by_id = {row["position_id"]: row for row in result["trades"]}
         self.assertEqual(by_id["SBER-1"]["scenarios"][0]["exit"]["event_sequence"], 1)
-        self.assertEqual(by_id["GAZP-1"]["scenarios"][0]["exit"]["event_sequence"], 1)
-        self.assertEqual(by_id["SBER-OTHER"]["scenarios"][0]["exit"]["event_sequence"], 1)
+        self.assertEqual(by_id["GAZP-1"]["scenarios"][0]["exit"]["event_sequence"], 2)
+        self.assertEqual(by_id["SBER-OTHER"]["scenarios"][0]["exit"]["event_sequence"], 3)
+        self.assertEqual(by_id["SBER-1"]["coverage"]["session_events"], 2)
+        self.assertEqual(by_id["SBER-1"]["coverage"]["ticker_events"], 1)
 
 
     def test_batch_replay_reports_invalid_positions_without_aborting_valid_ones(self):
