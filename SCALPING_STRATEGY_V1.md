@@ -78,6 +78,8 @@ Every shadow candidate created from a fresh coherent BBO receives a `candidate_i
 
 Each subsequent forward label copies these fields, so the scorecard can compare forward executable returns by model approval/rejection, final system decision, confidence band, reason code and actual execution status. A missing candidate link is explicitly reported and is not guessed from ticker/time proximity. The tracker also reports profit factor as the sum of positive net executable percentage returns divided by the absolute sum of negative net executable percentage returns; when there are no losses the value is `N/A`, not infinity.
 
+The scorecard also creates horizon-conditioned interaction groups (for example, `60s|APPROVE|80-89`) so confidence and decision performance at one minute are not blended with ten-minute outcomes. Each group reports positive-return rate, expectancy, average win, average loss and profit factor. `sample_quality` marks fewer than 30 valid outcomes as insufficient, 30–99 as preliminary, 100–299 as developing and 300+ as a larger sample. These are descriptive sample-size labels, not a guarantee of statistical significance; horizons from the same candidate overlap and are not independent observations.
+
 The attribution remains research-only. An LLM `APPROVE` is not itself an executed trade, and a positive hypothetical forward label is not a realized PAPER profit. Use the separate execution status and actual closed-trade ledger when evaluating realized performance.
 
 Report results separately by ticker, direction, tick-size/price group, spread-to-ATR bucket, time of day and market regime. Required metrics include:
