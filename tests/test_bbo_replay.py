@@ -80,6 +80,20 @@ class BBOReplayRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(heartbeat["event_kind"], "HEARTBEAT")
         self.assertEqual(heartbeat["bid_size"], 16.0)
 
+    def test_retains_single_executable_side_for_exit_replay(self):
+        recorder = BBOReplayRecorder(queue_limit=100)
+        self.assertTrue(recorder.record(
+            "ONE_SIDE",
+            {"updated": True, "valid": True, "bid": 0.0, "ask": 100.1,
+             "bid_size": 0.0, "ask_size": 8.0},
+            {"source": "FINAM_QUOTES", "ask_confirmed_monotonic": 50.0},
+        ))
+        row = recorder._queue.get_nowait()
+        self.assertTrue(row["bbo_valid"])
+        self.assertEqual(row["bid"], 0.0)
+        self.assertEqual(row["ask"], 100.1)
+        self.assertEqual(row["event_kind"], "STATE_CHANGE")
+
     def test_rejects_invalid_executable_bbo(self):
         recorder = BBOReplayRecorder(queue_limit=100)
         result = recorder.record(
