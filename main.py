@@ -3309,6 +3309,12 @@ class MarketWorker:
                     "llm_local_guard": local_evidence_diagnostic,
                     "candidate_direction": candidate_decision,
                     "llm_shadow_linked": bool(verdict_data.get("shadow_linked", False)),
+                    # Persist point-in-time regime labels with the trade. Missing
+                    # source fields remain UNKNOWN rather than being inferred later.
+                    "market_regime": metrics.get("market_regime", metrics.get("regime", "UNKNOWN")),
+                    "volatility_regime": metrics.get("volatility_regime", "UNKNOWN"),
+                    "liquidity_regime": metrics.get("liquidity_regime", "UNKNOWN"),
+                    "directional_regime": metrics.get("directional_regime", "UNKNOWN"),
                 })
                 ai_analysis["tactic_opinion"] = tactic_text
                 ai_analysis["critic_opinion"] = critic_text
