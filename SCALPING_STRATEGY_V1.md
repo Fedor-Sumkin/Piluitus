@@ -133,7 +133,10 @@ The PAPER-only endpoint `GET /api/v1/paper/performance` returns:
 - segments by independent PAPER session, BUY/SELL, ticker, model/final LLM
   decision, confidence band, LLM reason code and exit reason;
 - Shadow comparison matched strictly by `shadow_candidate_id`, with separate
-  forward-label statistics for each horizon.
+  forward-label statistics for each horizon, matched-trade coverage percentage
+  and unmatched reasons: missing candidate ID, candidate whose forward labels
+  are not yet available, no fresh BBO at the label horizon, or late/unusable
+  forward labels. It never falls back to ticker/time matching.
 
 Only final CLOSED rows with a valid finite net `pnl` and BUY/SELL direction
 enter realized statistics. The net `pnl` field is the realized RUB result
