@@ -50,6 +50,12 @@ def _epoch(value: object) -> float:
     return math.nan
 
 
+def _observation_epoch(event: Mapping[str, Any]) -> float:
+    """Prefer local receive time for holding-time calculations and entry filtering."""
+    received = _epoch(event.get("received_at_utc"))
+    return received if math.isfinite(received) else _epoch(event.get("event_time_epoch"))
+
+
 def _fresh_side(event: Mapping[str, Any], side: str, max_age_sec: float) -> tuple[float, float, str]:
     if not bool(event.get("bbo_valid", False)):
         return 0.0, math.inf, "INVALID_BBO"
@@ -120,6 +126,7 @@ def _prepare_events(
     *,
     session_id: str,
     ticker: str,
+    entry_epoch: float,
 ) -> tuple[list[Mapping[str, Any]], dict[str, int]]:
     rows: list[Mapping[str, Any]] = []
     seen: set[int] = set()
@@ -134,6 +141,7 @@ def _prepare_events(
         "fresh_executable_observations": 0,
         "missing_event_timestamps": 0,
         "event_time_regressions": 0,
+        "pre_entry_events": 0,
     }
     for event in events:
         if not isinstance(event, Mapping) or str(event.get("session_id") or "") != session_id:
@@ -165,10 +173,20 @@ def _prepare_events(
         if math.isfinite(previous_epoch) and stamp < previous_epoch:
             stats["event_time_regressions"] += 1
         previous_epoch_by_ticker[symbol] = stamp
-    selected = [
+    ticker_rows = [
         row for row in rows
         if str(row.get("ticker") or "").strip().upper().split("@")[0] == ticker
     ]
+    selected: list[Mapping[str, Any]] = []
+    for row in ticker_rows:
+        observed_at = _observation_epoch(row)
+        if not math.isfinite(observed_at):
+            stats["missing_event_timestamps"] += 1
+            continue
+        if observed_at < entry_epoch:
+            stats["pre_entry_events"] += 1
+            continue
+        selected.append(row)
     stats["ticker_events"] = len(selected)
     stats["ticker_bbo_events"] = sum(
         1 for row in selected if str(row.get("event_kind") or "").upper() != "EXIT_TRIGGER"
@@ -228,7 +246,25 @@ def replay_exit_scenarios(
     if not math.isfinite(entry_fee):
         entry_fee = entry * quantity * commission / 100.0
     risk_per_unit = abs(entry - stop)
-    rows, coverage = _prepare_events(events, session_id=session_id, ticker=ticker)
+    position_id = str(position.get("id") or position.get("position_id") or "").strip()
+    rows, coverage = _prepare_events(
+        events, session_id=session_id, ticker=ticker, entry_epoch=entry_epoch
+    )
+    all_trigger_rows = [
+        row for row in rows
+        if str(row.get("event_kind") or "").upper() == "EXIT_TRIGGER"
+    ]
+    trigger_rows = [
+        row for row in all_trigger_rows
+        if position_id and str(row.get("trade_id") or "").strip() == position_id
+    ]
+    coverage["unmatched_exit_trigger_events"] = len(all_trigger_rows) - len(trigger_rows)
+    coverage["ticker_exit_trigger_events"] = len(trigger_rows)
+    rows = [
+        row for row in rows
+        if str(row.get("event_kind") or "").upper() != "EXIT_TRIGGER"
+    ] + trigger_rows
+    rows.sort(key=lambda item: int(_number(item.get("sequence"), 0)))
     # Coverage describes BBO observations once, not once per strategy.
     bbo_rows = [
         row for row in rows
@@ -273,7 +309,8 @@ def replay_exit_scenarios(
             "trigger_market_time_epoch": _number(
                 row.get("trigger_market_time_epoch"), math.nan
             ) if math.isfinite(_number(row.get("trigger_market_time_epoch"))) else None,
-            "event_time_epoch": _epoch(row.get("event_time_epoch")),
+            "event_time_epoch": _observation_epoch(row),
+            "market_event_time_epoch": _epoch(row.get("event_time_epoch")),
             "elapsed_sec": round(elapsed, 3),
             "bbo_age_sec": round(age, 6),
             "gross_pnl_rub": round(gross, 4),
@@ -317,7 +354,7 @@ def replay_exit_scenarios(
                         and math.isfinite(immediate_price) and immediate_price > 0.0
                         and math.isfinite(immediate_age) and 0.0 <= immediate_age <= immediate_ttl
                     ):
-                        stamp = _epoch(pending.get("event_time_epoch"))
+                        stamp = _observation_epoch(pending)
                         elapsed = max(state["last_elapsed_sec"], stamp - entry_epoch, 0.0)
                         state["last_elapsed_sec"] = elapsed
                         state["exit"] = _make_exit(
@@ -336,7 +373,7 @@ def replay_exit_scenarios(
                     state["invalid_observations"] += 1
 
                 continue
-            received_epoch = _epoch(row.get("event_time_epoch"))
+            received_epoch = _observation_epoch(row)
             if not math.isfinite(received_epoch):
                 continue
             elapsed = max(state["last_elapsed_sec"], received_epoch - entry_epoch, 0.0)
@@ -450,7 +487,7 @@ def replay_exit_scenarios(
         "schema_version": 1,
         "engine": "PAPER_EXIT_REPLAY_V1",
         "session_id": session_id,
-        "position_id": str(position.get("position_id") or position.get("id") or ""),
+        "position_id": str(position.get("position_id") or position_id),
         "ticker": ticker,
         "side": side,
         "entry_price": entry,
