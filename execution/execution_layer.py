@@ -2193,12 +2193,10 @@ class BaseExecutionEngine:
         depth_fill = self._paper_exit_depth_fill(ticker, trade, bbo)
         depth_confirmed = self.paper_book_size_unit in {"shares", "lots"}
         if depth_confirmed:
-            requested_lots = max(1, int(_finite_or_default(
-                trade.get("lots"),
-                math.ceil(share_qty / max(1, int(_finite_or_default(
-                    trade.get("lot_size", LOT_SIZES.get(ticker, 1)), 1.0
-                )))),
+            lot_size = max(1, int(_finite_or_default(
+                trade.get("lot_size", LOT_SIZES.get(ticker, 1)), 1.0
             )))
+            requested_lots = share_qty // lot_size
             filled_lots = int(depth_fill.get("filled_lots", 0)) if isinstance(depth_fill, Mapping) else 0
             if depth_fill is None or filled_lots <= 0:
                 logger.warning(
