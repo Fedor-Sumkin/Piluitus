@@ -767,11 +767,21 @@ class DBManager:
                     continue
                 try:
                     trade = json.loads(raw)
-                    if isinstance(trade, dict) and trade.get("status") == "OPEN":
-                        order_id = key_str.split(":")[-1]
-                        result[order_id] = trade
-                except json.JSONDecodeError:
-                    log.error("❌ Corrupt trade JSON for key %s", key_str)
+                except (json.JSONDecodeError, TypeError, UnicodeDecodeError) as exc:
+                    log.critical(
+                        "❌ Corrupt trade JSON for key %s; active-position read aborted",
+                        key_str,
+                    )
+                    raise RuntimeError(
+                        f"Некорректная запись активной позиции: {key_str}"
+                    ) from exc
+                if not isinstance(trade, dict):
+                    raise RuntimeError(
+                        f"Некорректный формат активной позиции: {key_str}"
+                    )
+                if str(trade.get("status", "")).strip().upper() == "OPEN":
+                    order_id = key_str.split(":")[-1]
+                    result[order_id] = trade
 
             if cursor == 0:
                 break
