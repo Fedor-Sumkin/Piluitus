@@ -100,6 +100,39 @@ class PaperPerformanceTests(unittest.TestCase):
         self.assertLessEqual(interval[0], interval[1])
         self.assertLessEqual(interval[1], 100.0)
 
+    def test_session_stability_counts_sessions_not_individual_trades(self):
+        tracker = PaperPerformanceTracker()
+        tracker.restore([
+            trade("s1-a", 10, session="session-a",
+                  exit_time="2026-11-18T10:00:00+03:00"),
+            trade("s1-b", -2, session="session-a",
+                  exit_time="2026-11-18T10:01:00+03:00"),
+            trade("s2-a", -5, session="session-b",
+                  exit_time="2026-11-19T10:00:00+03:00"),
+            trade("s2-b", -3, session="session-b",
+                  exit_time="2026-11-19T10:01:00+03:00"),
+            trade("legacy", 100, session="UNKNOWN",
+                  exit_time="2026-11-19T10:02:00"),
+        ])
+
+        scorecard = tracker.scorecard()
+        stability = scorecard["session_stability"]
+        self.assertEqual(stability["sessions"], 2)
+        self.assertEqual(stability["trades_in_identified_sessions"], 4)
+        self.assertEqual(stability["trades_missing_session_identity"], 1)
+        self.assertEqual(stability["profitable_sessions"], 1)
+        self.assertEqual(stability["losing_sessions"], 1)
+        self.assertEqual(stability["profitable_session_rate_pct"], 50.0)
+        self.assertEqual(stability["total_session_net_pnl_rub"], 0.0)
+        self.assertEqual(stability["mean_session_net_pnl_rub"], 0.0)
+        self.assertEqual(stability["median_session_net_pnl_rub"], 0.0)
+        self.assertEqual(stability["session_results"]["session-a"]["net_pnl_rub"], 8.0)
+        self.assertEqual(stability["session_results"]["session-b"]["outcome"], "LOSING")
+        self.assertEqual(scorecard["by_moscow_exit_date"]["2026-11-18"]["trades"], 2)
+        self.assertEqual(scorecard["by_moscow_exit_date"]["2026-11-19"]["trades"], 2)
+        self.assertEqual(scorecard["by_moscow_exit_date"]["UNKNOWN"]["trades"], 1)
+        self.assertEqual(len(stability["profitable_session_rate_wilson_95_pct"]), 2)
+
     def test_legacy_cohorts_report_unknown_regimes_without_inference(self):
         tracker = PaperPerformanceTracker()
         tracker.restore([trade("legacy-regime", 2)])
