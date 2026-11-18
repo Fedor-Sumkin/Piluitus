@@ -99,6 +99,22 @@ The scorecard also creates horizon-conditioned interaction groups (for example, 
 
 The attribution remains research-only. An LLM `APPROVE` is not itself an executed trade, and a positive hypothetical forward label is not a realized PAPER profit. Use the separate execution status and actual closed-trade ledger when evaluating realized performance.
 
+The realized PAPER scorecard's `shadow_comparison.horizon_segments` now
+stratifies the exact-`shadow_candidate_id` matched closed-trade cohort by
+horizon and (separately) side, model decision, final decision, confidence band,
+model-decision × confidence band, and asynchronous execution status. Each
+segment reports its unique candidate/horizon count, mean net hypothetical
+return, positive-return rate, profit factor, average win/loss and net MFE/MAE.
+This is a diagnostic cross-section, not a calibrated probability model:
+confidence bands are descriptive until enough independent observations and
+chronological out-of-sample validation exist. Duplicate persisted rows for the
+same candidate and horizon do not increase segment sample counts.
+
+The endpoint `GET /api/v1/paper/performance` exposes these segments together
+with realized PAPER PnL metrics. Keep the two result types separate: segment
+returns are hypothetical forward labels; realized PnL, drawdown and holding
+time come only from closed PAPER trades.
+
 Each newly opened position now persists the originating `shadow_candidate_id`, `llm_verdict_id`, model/final decisions, confidence percentage, signal status and reason code in the trade record. Partial fills retain these fields, and the final closed-trade journal entry carries them forward unchanged. This establishes a stable join key for a subsequent realized-vs-hypothetical execution scorecard; it does not infer a match from ticker and timestamp.
 
 Report results separately by ticker, direction, tick-size/price group, spread-to-ATR bucket, time of day and market regime. Required metrics include:
