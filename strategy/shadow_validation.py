@@ -53,6 +53,9 @@ def _summarize(rows: list[dict[str, Any]], candidate_ids: set[str]) -> dict[str,
         if (value := _finite(row.get("net_executable_return_pct"))) is not None
         and str(row.get("result") or "").upper() == "OK"
     ]
+    status_counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        status_counts[str(row.get("result") or "UNKNOWN").upper()] += 1
     wins = [value for value in values if value > 0.0]
     losses = [abs(value) for value in values if value < 0.0]
     positive_sum = sum(wins)
@@ -60,6 +63,9 @@ def _summarize(rows: list[dict[str, Any]], candidate_ids: set[str]) -> dict[str,
     count = len(values)
     return {
         "candidate_count": len(candidate_ids),
+        "observed_label_rows": len(rows),
+        "label_status_counts": dict(sorted(status_counts.items())),
+        "rows_without_valid_net_return": len(rows) - count,
         "valid_labels": count,
         "positive_labels": len(wins),
         "negative_labels": len(losses),
@@ -90,6 +96,36 @@ def _metrics_by_horizon_side(
         if not identifier or horizon is None or horizon <= 0.0 or side not in {"BUY", "SELL"}:
             continue
         key = f"{int(horizon)}s|{side}"
+        groups[key].append(row)
+        group_candidates[key].add(identifier)
+    return {
+        key: _summarize(rows, group_candidates[key])
+        for key, rows in sorted(groups.items())
+    }
+
+
+def _metrics_by_regime(
+    selected: list[dict[str, Any]],
+    candidate_ids: set[str],
+    dimension: str,
+    *,
+    include_horizon_side: bool = False,
+) -> dict[str, dict[str, Any]]:
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    group_candidates: dict[str, set[str]] = defaultdict(set)
+    for row in selected:
+        identifier = str(row.get("candidate_id") or "")
+        if not identifier:
+            continue
+        value = str(row.get(dimension) or "UNKNOWN").upper()
+        if include_horizon_side:
+            horizon = _finite(row.get("horizon_sec"))
+            side = str(row.get("side") or "").upper()
+            if horizon is None or horizon <= 0.0 or side not in {"BUY", "SELL"}:
+                continue
+            key = f"{int(horizon)}s|{side}|{dimension}={value}"
+        else:
+            key = f"{dimension}={value}"
         groups[key].append(row)
         group_candidates[key].add(identifier)
     return {
@@ -233,6 +269,15 @@ def build_shadow_walk_forward_validation(
             "test_candidates": len(test_ids),
             "train_by_horizon_side": _metrics_by_horizon_side(train_rows, train_candidates),
             "test_by_horizon_side": _metrics_by_horizon_side(test_rows, test_ids),
+            "train_by_horizon_side_market_regime": _metrics_by_regime(
+                train_rows, train_candidates, "market_regime", include_horizon_side=True
+            ),
+            "test_by_horizon_side_market_regime": _metrics_by_regime(
+                test_rows, test_ids, "market_regime", include_horizon_side=True
+            ),
+            "test_by_volatility_regime": _metrics_by_regime(test_rows, test_ids, "volatility_regime"),
+            "test_by_liquidity_regime": _metrics_by_regime(test_rows, test_ids, "liquidity_regime"),
+            "test_by_directional_regime": _metrics_by_regime(test_rows, test_ids, "directional_regime"),
         })
 
     return {
@@ -252,6 +297,18 @@ def build_shadow_walk_forward_validation(
         "return_basis": "net_executable_return_pct; only result=OK rows enter return metrics",
         "folds": fold_results,
         "out_of_sample_by_horizon_side": _metrics_by_horizon_side(all_test_rows, all_test_ids),
+        "out_of_sample_by_horizon_side_market_regime": _metrics_by_regime(
+            all_test_rows, all_test_ids, "market_regime", include_horizon_side=True
+        ),
+        "out_of_sample_by_volatility_regime": _metrics_by_regime(
+            all_test_rows, all_test_ids, "volatility_regime"
+        ),
+        "out_of_sample_by_liquidity_regime": _metrics_by_regime(
+            all_test_rows, all_test_ids, "liquidity_regime"
+        ),
+        "out_of_sample_by_directional_regime": _metrics_by_regime(
+            all_test_rows, all_test_ids, "directional_regime"
+        ),
         "warning": (
             "Descriptive temporal validation only; no model is fitted and no thresholds are selected. "
             "Forward labels overlap within a candidate, so candidate IDs—not horizon rows—are the "
