@@ -651,3 +651,31 @@ legacy trades without the new fields remain absent from those measurements.
 The BBO replay remains a top-of-book research proxy because the bounded market
 journal does not persist full depth. These fields are observational and do not
 change exit triggers, fill prices, participation limits or position management.
+
+
+### Portfolio mark-to-market equity in BBO replay
+
+When shared-capital replay is enabled, each scenario also reports a
+portfolio_capacity.mark_to_market section. The simulator marks open BUY
+positions to executable Bid and open SELL positions to executable Ask, using
+only observations that satisfy the same per-side BBO freshness TTL as exit
+replay. Estimated unrealized PnL deducts the entry commission, an estimated
+exit commission and configured adverse exit slippage. The cash-funded capacity
+approximation reserves full entry notional for both directions.
+
+Equity snapshots are accepted only while every open position has a fresh mark.
+If even one position has no mark or its last mark exceeds the TTL, that
+snapshot is excluded and ending mark-to-market equity is returned as null when
+the final replay state is incomplete. The report exposes complete/incomplete
+snapshot counts, mark coverage, stale/invalid mark events, peak simultaneous
+positions, marked equity drawdown in RUB and percent, and the last complete
+snapshot time. The prior realized-only drawdown remains separately available
+as portfolio_max_drawdown_rub.
+
+This is an executable-BBO liquidation proxy, not broker account equity:
+the journal contains top-of-book rather than full depth, and the model does
+not include margin, short collateral, settlement, queue position, market
+impact beyond configured slippage or losses during data gaps. Drawdown is
+measured only over complete observed snapshots; it must not be interpreted as
+a continuous intratick risk bound. A missing/stale quote is unknown, never a
+zero-PnL mark.
