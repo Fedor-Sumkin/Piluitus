@@ -2702,6 +2702,8 @@ class BaseExecutionEngine:
         if not self.paper_mode:
             # This monitor never places a LIVE exit order.
             return
+        if self._maintenance_active:
+            return
 
         trade_obj: object = self.paper_positions.get(ticker)
         trade_map = _as_string_mapping(trade_obj)
@@ -3088,7 +3090,10 @@ class BaseExecutionEngine:
                 trade.get("pending_exit_trigger_price"),
                 stop_loss if exit_reason == "STOP_LOSS" else take_profit,
             )
-            self._lock_closing.add(order_id)
+            async with self._portfolio_lock:
+                if self._maintenance_active or order_id in self._lock_closing:
+                    return
+                self._lock_closing.add(order_id)
             try:
                 await self._finalize_paper_close(
                     ticker, trade, db, bbo,
