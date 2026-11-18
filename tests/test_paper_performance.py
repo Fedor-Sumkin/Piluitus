@@ -583,5 +583,45 @@ class PaperEntryPerformanceCohortTests(unittest.TestCase):
         self.assertEqual(diagnostics["pairs"][0]["gap_sec"], 30.0)
 
 
+    def test_scorecard_reports_exit_shortfall_and_unknown_depth_coverage(self):
+        tracker = PaperPerformanceTracker()
+        deep_fill = trade("exit-depth", 12)
+        deep_fill.update({
+            "exit_execution_shortfall_rub": 3.0,
+            "exit_execution_shortfall_bps": 4.0,
+            "exit_depth_impact_rub": 2.0,
+            "exit_depth_observation_count": 1,
+            "trigger_to_executable_bbo_delay_sec": 0.25,
+        })
+        bbo_only = trade("exit-bbo-only", -4)
+        bbo_only.update({
+            "exit_execution_shortfall_rub": -0.5,
+            "exit_execution_shortfall_bps": -1.0,
+            "exit_depth_impact_rub": None,
+            "exit_depth_observation_count": 0,
+            "trigger_to_executable_bbo_delay_sec": 1.5,
+        })
+        tracker.restore([deep_fill, bbo_only])
+
+        scorecard = tracker.scorecard()
+        self.assertEqual(
+            scorecard["by_exit_execution_shortfall"]["EXIT_SHORTFALL_BETTER_THAN_BBO"]["trades"],
+            1,
+        )
+        self.assertEqual(
+            scorecard["by_exit_execution_shortfall"]["EXIT_SHORTFALL_BPS_3_5"]["trades"],
+            1,
+        )
+        self.assertEqual(
+            scorecard["by_exit_depth_impact"]["EXIT_DEPTH_IMPACT_RUB_1_3"]["trades"],
+            1,
+        )
+        diagnostics = scorecard["exit_diagnostics"]
+        self.assertEqual(diagnostics["coverage"]["execution_shortfall_bps"], 2)
+        self.assertEqual(diagnostics["coverage"]["depth_impact_rub"], 1)
+        self.assertAlmostEqual(diagnostics["average"]["execution_shortfall_bps"], 1.5)
+        self.assertIn("UNKNOWN", diagnostics["interpretation"])
+
+
 if __name__ == "__main__":
     unittest.main()
