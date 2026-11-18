@@ -924,7 +924,10 @@ def _record_paper_bbo_replay(
         ask_number = finite_float(quote.get("ask"))
         bid_value = bid_number if bid_number is not None else 0.0
         ask_value = ask_number if ask_number is not None else 0.0
-        valid = bid_value > 0.0 and ask_value > 0.0 and ask_value >= bid_value
+        valid = (
+            (bid_value > 0.0 or ask_value > 0.0)
+            and not (bid_value > 0.0 and ask_value > 0.0 and ask_value < bid_value)
+        )
         reason = str(quote.get("order_book_last_reason") or "")
     snapshot = {
         "updated": True,
