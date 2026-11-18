@@ -59,7 +59,7 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertGreater(label["mfe_executable_pct"], 0.0)
         self.assertLess(label["mae_executable_pct"], 0.0)
         self.assertGreater(label["mfe_gross_executable_pct"], label["mfe_executable_pct"])
-        self.assertGreater(label["mae_executable_pct"], label["mae_gross_executable_pct"])
+        self.assertLess(label["mae_executable_pct"], label["mae_gross_executable_pct"])
         self.assertEqual(label["time_to_mfe_sec"], 20.0)
         self.assertEqual(label["time_to_mae_sec"], 40.0)
         self.assertEqual(label["valid_bbo_observations"], 3)
