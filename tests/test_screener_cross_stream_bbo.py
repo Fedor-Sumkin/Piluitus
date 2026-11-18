@@ -20,7 +20,7 @@ class ScreenerCrossStreamBboTests(unittest.TestCase):
             "screener_funnel._event_timestamp_to_monotonic",
             side_effect=lambda value, received: float(value) if value is not None else received,
         ):
-            asyncio.run(screener.push_tick(
+            quote_result = asyncio.run(screener.push_tick(
                 "TESTBBO", 100.0, 100.0, bid=100.0, ask=100.1,
                 bid_size=10.0, ask_size=12.0,
                 event_timestamp=9.95, received_monotonic=9.95,
@@ -33,6 +33,17 @@ class ScreenerCrossStreamBboTests(unittest.TestCase):
                 order_book_timestamp=9.80, received_monotonic=10.0,
             ))
 
+        self.assertEqual(
+            quote_result.get("quote_side_updates"), {"bid": True, "ask": True}
+        )
+        stale_quote_result = asyncio.run(screener.push_tick(
+            "TESTBBO", 100.0, 100.0, bid=99.9, ask=100.2,
+            bid_size=10.0, ask_size=12.0,
+            event_timestamp=9.90, received_monotonic=10.1,
+        ))
+        self.assertEqual(
+            stale_quote_result.get("quote_side_updates"), {"bid": False, "ask": False}
+        )
         self.assertTrue(result.get("updated"))
         self.assertTrue(result.get("valid"))
         self.assertEqual(result.get("confirmed_sides"), 2)
