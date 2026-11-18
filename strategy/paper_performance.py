@@ -69,6 +69,10 @@ def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         value for row in rows
         if (value := _number(row.get("total_commission_rub"))) is not None and value >= 0.0
     ]
+    gross_values = [
+        value for row in rows
+        if (value := _number(row.get("gross_pnl"))) is not None
+    ]
     return {
         "trades": len(valid),
         "wins": len(wins),
@@ -76,6 +80,7 @@ def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         "breakeven": len(valid) - len(wins) - len(losses),
         "win_rate_pct": round(len(wins) / len(valid) * 100.0, 3) if valid else None,
         "net_pnl_rub": round(sum(valid), 2),
+        "gross_pnl_rub": round(sum(gross_values), 2),
         "gross_profit_rub": round(gross_profit, 2),
         "gross_loss_rub": round(gross_loss, 2),
         "expectancy_rub": round(sum(valid) / len(valid), 2) if valid else None,
@@ -202,6 +207,8 @@ class PaperPerformanceTracker:
         matched: list[dict[str, Any]] = []
         unmatched = 0
         horizon_returns: dict[int, list[float]] = defaultdict(list)
+        matched_realized_net = 0.0
+        matched_details: list[dict[str, Any]] = []
         for trade in trades:
             candidate_id = _text(trade.get("shadow_candidate_id"), "")
             candidate_labels = by_candidate.get(candidate_id) if candidate_id else None
@@ -209,10 +216,22 @@ class PaperPerformanceTracker:
                 unmatched += 1
                 continue
             matched.append(trade)
+            realized_net = _number(trade.get("pnl")) or 0.0
+            matched_realized_net += realized_net
+            matched_horizons: dict[str, float] = {}
             for horizon, label in candidate_labels.items():
                 value = _number(label.get("net_executable_return_pct"))
                 if value is not None:
                     horizon_returns[horizon].append(value)
+                    matched_horizons[str(horizon)] = round(value, 6)
+            matched_details.append({
+                "trade_id": _text(trade.get("id"), ""),
+                "candidate_id": candidate_id,
+                "ticker": _text(trade.get("ticker")),
+                "side": _text(trade.get("side")),
+                "realized_net_pnl_rub": round(realized_net, 2),
+                "shadow_net_return_pct_by_horizon": matched_horizons,
+            })
 
         horizons = {}
         for horizon, values in sorted(horizon_returns.items()):
@@ -230,7 +249,9 @@ class PaperPerformanceTracker:
         return {
             "matched_trades": len(matched),
             "unmatched_trades": unmatched,
+            "matched_realized_net_pnl_rub": round(matched_realized_net, 2),
             "join_key": "shadow_candidate_id",
+            "matched_trade_details": matched_details[-200:],
             "horizons": horizons,
         }
 
