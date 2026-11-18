@@ -170,7 +170,12 @@ class PaperExitDepthTests(unittest.TestCase):
             "side": "BUY", "volume": 20, "lots": 2, "lot_size": 10,
         }
         fill = self.engine._paper_exit_depth_fill(
-            "SBER", trade, {"bid_levels": [[99.9, 1], [99.8, 1]]}
+            "SBER", trade, {
+                "bid_levels": [[99.9, 1], [99.8, 1]],
+                "order_book_valid": True,
+                "order_book_age_sec": 0.1,
+                "max_age_sec": 2.0,
+            }
         )
         self.assertEqual(fill["filled_lots"], 2)
         self.assertEqual(fill["filled_shares"], 20)
@@ -181,7 +186,12 @@ class PaperExitDepthTests(unittest.TestCase):
             "side": "BUY", "volume": 20, "lots": 2, "lot_size": 10,
         }
         fill = self.engine._paper_exit_depth_fill(
-            "SBER", trade, {"bid_levels": [[99.9, 10]]}
+            "SBER", trade, {
+                "bid_levels": [[99.9, 10]],
+                "order_book_valid": True,
+                "order_book_age_sec": 0.1,
+                "max_age_sec": 2.0,
+            }
         )
         self.assertEqual(fill["filled_lots"], 1)
         self.assertEqual(fill["fill_ratio"], 0.5)
