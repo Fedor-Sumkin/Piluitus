@@ -242,5 +242,40 @@ class ExecutionStopRiskTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("суммарный риск открытых стопов", reason)
 
 
+    async def test_paper_open_position_stop_risk_includes_entry_exit_fees_and_exit_slippage(self) -> None:
+        self.engine.paper_commission_pct = 0.1
+        self.engine.paper_slippage_bps = 10.0
+        position = {
+            "status": "OPEN",
+            "ticker": "EXIST",
+            "side": "BUY",
+            "volume": 10,
+            "entry_price": 100.0,
+            "stop_loss": 99.0,
+            "entry_commission_rub": 1.0,
+        }
+
+        risk = self.engine._open_stop_risk({"EXIST": position})
+
+        # Long stop exit is slipped down to 98.901; add the saved entry fee
+        # and the estimated exit commission on that adverse fill.
+        self.assertAlmostEqual(risk, round((100.0 - 98.901) * 10 + 1.0 + 98.901 * 10 * 0.001, 2))
+
+    async def test_new_paper_lot_reservation_includes_both_side_fees_and_exit_slippage(self) -> None:
+        self.engine.paper_commission_pct = 0.1
+        self.engine.paper_slippage_bps = 10.0
+        self.engine.max_gross_exposure_pct = 1.0
+        self.engine.max_single_position_pct = 1.0
+        self.engine.max_open_stop_risk_pct = 0.01
+
+        approved, _reason = await self.engine._reserve_order_size(
+            "SBER", 30, 10.0, object(), side="BUY", stop_loss=9.0
+        )
+
+        # One 10-share lot risks about 10.28 ₽ after adverse exit slippage
+        # and two commissions. The 200 ₽ portfolio stop-risk budget admits 19.
+        self.assertEqual(approved, 19)
+
+
 if __name__ == "__main__":
     unittest.main()
