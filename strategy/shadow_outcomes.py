@@ -221,6 +221,10 @@ class ShadowForwardTracker:
             "queue_imbalance_5s_coverage_sec": _number(metrics, "queue_imbalance_5s_coverage_sec"),
             "queue_imbalance_5s_samples": int(max(0.0, _number(metrics, "queue_imbalance_5s_samples"))),
             "queue_imbalance_5s_positive_time_pct": _number(metrics, "queue_imbalance_5s_positive_time_pct", math.nan),
+            "ofi_5s": _number(metrics, "ofi_5s") if _number(metrics, "ofi_5s_available") >= 0.5 else math.nan,
+            "ofi_5s_available": bool(_number(metrics, "ofi_5s_available") >= 0.5),
+            "ofi_5s_samples": int(max(0.0, _number(metrics, "ofi_5s_samples"))),
+            "ofi_5s_coverage_sec": _number(metrics, "ofi_5s_coverage_sec"),
             "spread_pct": _number(metrics, "spread_pct"),
             "atr_pct": _number(metrics, "bar_atr_pct"),
             "spread_atr_ratio": _number(shadow_result, "spread_atr_ratio", math.nan),
@@ -485,6 +489,10 @@ class ShadowForwardTracker:
                         "queue_imbalance_5s_coverage_sec": row["queue_imbalance_5s_coverage_sec"],
                         "queue_imbalance_5s_samples": row["queue_imbalance_5s_samples"],
                         "queue_imbalance_5s_positive_time_pct": row["queue_imbalance_5s_positive_time_pct"],
+                        "ofi_5s": row["ofi_5s"],
+                        "ofi_5s_available": row["ofi_5s_available"],
+                        "ofi_5s_samples": row["ofi_5s_samples"],
+                        "ofi_5s_coverage_sec": row["ofi_5s_coverage_sec"],
                         "spread_atr_ratio": row["spread_atr_ratio"],
                         "trade_count_60s": row["trade_count_60s"],
                         "trade_flow_imbalance_30s": row["trade_flow_imbalance_30s"],
@@ -539,6 +547,10 @@ class ShadowForwardTracker:
                         "queue_imbalance_5s_coverage_sec": row["queue_imbalance_5s_coverage_sec"],
                         "queue_imbalance_5s_samples": row["queue_imbalance_5s_samples"],
                         "queue_imbalance_5s_positive_time_pct": row["queue_imbalance_5s_positive_time_pct"],
+                        "ofi_5s": row["ofi_5s"],
+                        "ofi_5s_available": row["ofi_5s_available"],
+                        "ofi_5s_samples": row["ofi_5s_samples"],
+                        "ofi_5s_coverage_sec": row["ofi_5s_coverage_sec"],
                         "spread_atr_ratio": row["spread_atr_ratio"],
                         "trade_count_60s": row["trade_count_60s"],
                         "trade_flow_imbalance_30s": row["trade_flow_imbalance_30s"],
@@ -672,6 +684,18 @@ class ShadowForwardTracker:
             else:
                 queue_alignment = "opposed"
 
+        ofi_value = _number(label, "ofi_5s", math.nan)
+        if not bool(label.get("ofi_5s_available", False)) or not math.isfinite(ofi_value):
+            ofi_alignment = "unavailable"
+        else:
+            signed_ofi = ofi_value if side == "BUY" else -ofi_value
+            if signed_ofi >= 0.05:
+                ofi_alignment = "aligned"
+            elif signed_ofi <= -0.05:
+                ofi_alignment = "opposed"
+            else:
+                ofi_alignment = "neutral"
+
         flow = _number(label, "trade_flow_imbalance_30s", math.nan)
         if not math.isfinite(flow):
             flow_alignment = "unavailable"
@@ -699,6 +723,8 @@ class ShadowForwardTracker:
             f"side_flow_alignment={side}|{flow_alignment}",
             f"queue_alignment_5s={queue_alignment}",
             f"side_queue_alignment_5s={side}|{queue_alignment}",
+            f"ofi_alignment_5s={ofi_alignment}",
+            f"side_ofi_alignment_5s={side}|{ofi_alignment}",
             f"side_regime={side}|{regime}",
             f"side_score_band={side}|{score_band}",
             f"side_spread_atr_bucket={side}|{spread_atr_bucket}",
