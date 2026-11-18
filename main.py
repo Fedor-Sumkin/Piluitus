@@ -921,6 +921,22 @@ async def _restore_paper_performance() -> None:
             stored = await db_manager.get_list("piluitus:trade_history", start=0, stop=99)
             source = "legacy_trade_history"
         restored = paper_performance_tracker.restore(stored)
+        if source == "legacy_trade_history" and paper_performance_tracker.records:
+            try:
+                await db_manager.push_many_to_list(
+                    PAPER_CLOSED_TRADES_STORAGE_KEY,
+                    paper_performance_tracker.records,
+                    max_len=PAPER_CLOSED_TRADES_STORAGE_LIMIT,
+                )
+                logger.info(
+                    "[PAPER PERFORMANCE MIGRATION] legacy_rows=%d copied_to_dedicated_journal=true",
+                    len(paper_performance_tracker.records),
+                )
+            except Exception as migration_exc:
+                logger.error(
+                    "[PAPER PERFORMANCE MIGRATION ERROR] legacy_rows=%d error=%s",
+                    len(paper_performance_tracker.records), migration_exc, exc_info=True,
+                )
         summary = paper_performance_tracker.scorecard(paper_shadow_labels)
         overall = summary["overall"]
         logger.info(
