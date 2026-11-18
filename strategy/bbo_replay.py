@@ -178,6 +178,10 @@ class BBOReplayRecorder:
         )
         received_epoch = datetime.now(timezone.utc).timestamp()
         event_epoch = _timestamp_epoch(raw_timestamp)
+        # Match the screener's timestamp trust policy: provider times more than
+        # two seconds ahead of local UTC are treated as receive-time fallbacks.
+        if event_epoch is not None and event_epoch > received_epoch + 2.0:
+            event_epoch = None
         timestamp_epoch = event_epoch if event_epoch is not None else received_epoch
         received_monotonic = _finite(
             source_event.get("received_monotonic"), now_mono
