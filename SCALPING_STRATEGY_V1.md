@@ -307,7 +307,8 @@ simulated close does not wait for an artificial sampling delay.
 `strategy/bbo_replay_simulator.py` is an offline, pure-Python research engine.
 It accepts the persisted PAPER trade fields and the journal events for the
 matching `bbo_replay_session_id`. It orders the journal by increasing session
-sequence, deduplicates repeated sequence IDs, reports global sequence gaps and
+sequence, deduplicates repeated sequence IDs, reports global sequence gaps
+(including a missing prefix when retention has trimmed the beginning) and
 per-ticker timestamp regressions, excludes all observations received before
 the trade's entry timestamp, and associates production trigger events only by
 the exact persisted trade ID. Local receive time is preferred for entry-window
