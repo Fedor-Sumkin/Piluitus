@@ -266,6 +266,22 @@ class PaperPartialExitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["status"], "OPEN")
         self.assertEqual(saved["volume"], 10)
 
+    async def test_missing_exit_depth_does_not_fabricate_a_full_fill(self):
+        engine = self._engine()
+        trade = self._trade()
+        db = AsyncMock()
+
+        result = await engine._finalize_paper_close(
+            "SBER", trade, db, self._bbo([]),
+            exit_reason="TAKE_PROFIT", trigger_price=102.0,
+        )
+
+        self.assertIs(result, trade)
+        self.assertEqual(trade["status"], "OPEN")
+        self.assertEqual(trade["volume"], 20)
+        self.assertEqual(trade["exit_depth_last_fill_ratio"], 0.0)
+        db.set_json.assert_not_awaited()
+
     async def test_final_depth_fill_closes_residual_and_aggregates_prior_partial(self):
         engine = self._engine()
         trade = self._trade()
@@ -287,6 +303,7 @@ class PaperPartialExitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["lots"], 2)
         self.assertEqual(result["exit_partial_fill_count"], 1)
         self.assertEqual(result["exit_fill_model"], "DEPTH_PARTIALS_PLUS_FINAL_DEPTH_FILL")
+        self.assertAlmostEqual(result["exit_price"], 100.75)
         self.assertAlmostEqual(result["entry_commission_rub"], 2.0)
         self.assertAlmostEqual(result["pnl"], partial_net + (
             (100.5 - 100.0) * 10
