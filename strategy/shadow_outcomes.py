@@ -212,6 +212,10 @@ class ShadowForwardTracker:
                 if str(item).strip()
             ][:12] if isinstance(shadow_result.get("reasons", []), (list, tuple, set)) else [],
             "queue_imbalance": _number(metrics, "queue_imbalance") if _number(metrics, "queue_imbalance_available") >= 0.5 else None,
+            "queue_imbalance_5s": _number(metrics, "queue_imbalance_5s") if _number(metrics, "queue_imbalance_5s_available") >= 0.5 else None,
+            "queue_imbalance_5s_coverage_sec": _number(metrics, "queue_imbalance_5s_coverage_sec"),
+            "queue_imbalance_5s_samples": int(max(0.0, _number(metrics, "queue_imbalance_5s_samples"))),
+            "queue_imbalance_5s_positive_time_pct": _number(metrics, "queue_imbalance_5s_positive_time_pct", math.nan),
             "spread_pct": _number(metrics, "spread_pct"),
             "atr_pct": _number(metrics, "bar_atr_pct"),
             "spread_atr_ratio": _number(shadow_result, "spread_atr_ratio", math.nan),
@@ -350,6 +354,10 @@ class ShadowForwardTracker:
                         "m1_signal_gap_atr": row["m1_signal_gap_atr"],
                         "m1_breakout_extension_atr": row["m1_breakout_extension_atr"],
                         "queue_imbalance": row["queue_imbalance"],
+                        "queue_imbalance_5s": row["queue_imbalance_5s"],
+                        "queue_imbalance_5s_coverage_sec": row["queue_imbalance_5s_coverage_sec"],
+                        "queue_imbalance_5s_samples": row["queue_imbalance_5s_samples"],
+                        "queue_imbalance_5s_positive_time_pct": row["queue_imbalance_5s_positive_time_pct"],
                         "spread_atr_ratio": row["spread_atr_ratio"],
                         "trade_count_60s": row["trade_count_60s"],
                         "trade_flow_imbalance_30s": row["trade_flow_imbalance_30s"],
@@ -399,6 +407,10 @@ class ShadowForwardTracker:
                         "m1_signal_gap_atr": row["m1_signal_gap_atr"],
                         "m1_breakout_extension_atr": row["m1_breakout_extension_atr"],
                         "queue_imbalance": row["queue_imbalance"],
+                        "queue_imbalance_5s": row["queue_imbalance_5s"],
+                        "queue_imbalance_5s_coverage_sec": row["queue_imbalance_5s_coverage_sec"],
+                        "queue_imbalance_5s_samples": row["queue_imbalance_5s_samples"],
+                        "queue_imbalance_5s_positive_time_pct": row["queue_imbalance_5s_positive_time_pct"],
                         "spread_atr_ratio": row["spread_atr_ratio"],
                         "trade_count_60s": row["trade_count_60s"],
                         "trade_flow_imbalance_30s": row["trade_flow_imbalance_30s"],
@@ -518,6 +530,20 @@ class ShadowForwardTracker:
         else:
             trade_count_bucket = "ge_50"
         
+        queue_value = _number(label, "queue_imbalance_5s", math.nan)
+        if not math.isfinite(queue_value):
+            queue_alignment = "unavailable"
+        else:
+            signed_queue = queue_value if side == "BUY" else -queue_value
+            if signed_queue >= 0.25:
+                queue_alignment = "strong_aligned"
+            elif signed_queue >= 0.10:
+                queue_alignment = "aligned"
+            elif signed_queue > -0.10:
+                queue_alignment = "neutral"
+            else:
+                queue_alignment = "opposed"
+
         flow = _number(label, "trade_flow_imbalance_30s", math.nan)
         if not math.isfinite(flow):
             flow_alignment = "unavailable"
@@ -543,6 +569,8 @@ class ShadowForwardTracker:
             f"trade_count_bucket={trade_count_bucket}",
             f"flow_alignment={flow_alignment}",
             f"side_flow_alignment={side}|{flow_alignment}",
+            f"queue_alignment_5s={queue_alignment}",
+            f"side_queue_alignment_5s={side}|{queue_alignment}",
             f"side_regime={side}|{regime}",
             f"side_score_band={side}|{score_band}",
             f"side_spread_atr_bucket={side}|{spread_atr_bucket}",
