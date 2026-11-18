@@ -137,6 +137,45 @@ class BBOReplayRecorderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(_timestamp_epoch("not-a-timestamp"))
 
+    def test_records_actual_latched_exit_trigger_with_bbo_context(self):
+        recorder = BBOReplayRecorder(queue_limit=100)
+        trade = {
+            "id": "PAPER-1",
+            "side": "BUY",
+            "pending_exit_reason": "STOP_LOSS",
+            "pending_exit_trigger_price": 99.0,
+            "exit_trigger_source": "LAST_TRADE",
+            "exit_trigger_observed_price": 98.8,
+            "exit_trigger_market_timestamp": "2026-11-18T10:00:00+03:00",
+        }
+        with patch("strategy.bbo_replay.time.monotonic", return_value=10.0):
+            self.assertTrue(recorder.record_exit_trigger(
+                "SBER", trade,
+                {"executable_price": 98.7, "age_sec": 0.2, "max_age_sec": 2.0},
+            ))
+        row = recorder._queue.get_nowait()
+        self.assertEqual(row["event_kind"], "EXIT_TRIGGER")
+        self.assertEqual(row["trigger_reason"], "STOP_LOSS")
+        self.assertEqual(row["trigger_source"], "LAST_TRADE")
+        self.assertTrue(row["trigger_bbo_valid"])
+        self.assertEqual(row["trigger_bbo_price"], 98.7)
+        self.assertEqual(row["trade_id"], "PAPER-1")
+
+    def test_exit_trigger_without_fresh_bbo_is_retained_as_pending_context(self):
+        recorder = BBOReplayRecorder(queue_limit=100)
+        trade = {
+            "id": "PAPER-2", "side": "SELL",
+            "pending_exit_reason": "TAKE_PROFIT",
+            "pending_exit_trigger_price": 98.0,
+            "exit_trigger_source": "INSTRUMENT_TRADES",
+            "exit_trigger_observed_price": 97.9,
+        }
+        self.assertTrue(recorder.record_exit_trigger("SBER", trade, None))
+        row = recorder._queue.get_nowait()
+        self.assertEqual(row["event_kind"], "EXIT_TRIGGER")
+        self.assertFalse(row["trigger_bbo_valid"])
+        self.assertIsNone(row["trigger_bbo_price"])
+
     async def test_writer_retries_transient_storage_errors(self):
         class FlakyDB:
             def __init__(self):
