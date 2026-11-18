@@ -145,6 +145,7 @@ def _decision_attribution_fields(ai_analysis: object) -> dict[str, object]:
             "llm_reason_code": "UNKNOWN",
             "llm_local_guard": None,
             "candidate_direction": "UNKNOWN",
+            "llm_shadow_linked": False,
         }
 
     def bounded_text(key: str, default: str | None = None, limit: int = 160) -> str | None:
@@ -171,6 +172,7 @@ def _decision_attribution_fields(ai_analysis: object) -> dict[str, object]:
         "llm_reason_code": bounded_text("llm_reason_code", "UNKNOWN", 96),
         "llm_local_guard": bounded_text("llm_local_guard", limit=240),
         "candidate_direction": bounded_text("candidate_direction", "UNKNOWN", 16),
+        "llm_shadow_linked": bool(ai_analysis.get("llm_shadow_linked", False)),
     }
 
 
