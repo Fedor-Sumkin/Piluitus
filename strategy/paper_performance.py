@@ -588,6 +588,8 @@ class PaperPerformanceTracker:
             "by_confidence": defaultdict(list),
             "by_model_decision_confidence": defaultdict(list),
             "by_execution_status": defaultdict(list),
+            "by_horizon_side_confidence": defaultdict(list),
+            "by_horizon_decision_confidence": defaultdict(list),
         }
         for trade in trades:
             candidate_id = _text(trade.get("shadow_candidate_id"), "")
