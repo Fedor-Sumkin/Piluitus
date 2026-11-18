@@ -57,6 +57,7 @@ from strategy.bbo_replay import (
 )
 from strategy.bbo_replay_simulator import replay_exit_batch, replay_exit_scenarios
 from strategy.paper_reconciliation import build_shadow_reconciliation
+from strategy.shadow_validation import build_shadow_walk_forward_validation
 from strategy.paper_performance import (
     PAPER_CLOSED_TRADES_STORAGE_KEY,
     PAPER_CLOSED_TRADES_STORAGE_LIMIT,
@@ -3911,6 +3912,35 @@ async def get_paper_shadow_reconciliation(limit: int = 100):
     return {"paper_mode": True, **result}
 
 
+@app.get("/api/v1/paper/shadow/walk-forward")
+async def get_paper_shadow_walk_forward(
+    folds: int = 5,
+    embargo_seconds: float = 30.0,
+    limit: int = 20000,
+):
+    """Read-only chronological, candidate-grouped Shadow validation."""
+    _require_paper_mode()
+    if folds < 3 or folds > 10:
+        raise HTTPException(status_code=422, detail="folds должен быть от 3 до 10.")
+    if not math.isfinite(embargo_seconds) or embargo_seconds < 0.0 or embargo_seconds > 3600.0:
+        raise HTTPException(status_code=422, detail="embargo_seconds должен быть от 0 до 3600.")
+    if limit < 1 or limit > SHADOW_OUTCOMES_STORAGE_LIMIT:
+        raise HTTPException(
+            status_code=422,
+            detail=f"limit должен быть от 1 до {SHADOW_OUTCOMES_STORAGE_LIMIT}.",
+        )
+    return {
+        "paper_mode": True,
+        **build_shadow_walk_forward_validation(
+            paper_shadow_labels,
+            folds=folds,
+            embargo_seconds=embargo_seconds,
+            max_horizon_seconds=600,
+            limit=limit,
+        ),
+    }
+
+
 @app.get("/api/v1/paper/research/report")
 async def get_paper_research_report(limit: int = 30):
     """Return a read-only consolidated PAPER research snapshot."""
@@ -3941,6 +3971,13 @@ async def get_paper_research_report(limit: int = 30):
         "limit": limit,
         "realized_scorecard": scorecard,
         "shadow_reconciliation": reconciliation,
+        "shadow_walk_forward": build_shadow_walk_forward_validation(
+            paper_shadow_labels,
+            folds=5,
+            embargo_seconds=30.0,
+            max_horizon_seconds=600,
+            limit=SHADOW_OUTCOMES_STORAGE_LIMIT,
+        ),
         "exit_replay": exit_replay,
         "interpretation": (
             "Read-only research snapshot. Realized PAPER PnL, hypothetical Shadow "
