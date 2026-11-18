@@ -601,6 +601,7 @@ def replay_exit_batch(
 
     scenario_specs = list(scenarios) if scenarios is not None else None
     trade_results: list[dict[str, Any]] = []
+    rejected_positions: list[dict[str, str]] = []
     grouped: dict[str, list[dict[str, Any]]] = {}
 
     # Index once instead of rescanning the complete bounded journal for every trade.
@@ -619,12 +620,19 @@ def replay_exit_batch(
             position.get("bbo_replay_session_id") or position.get("session_id") or ""
         ).strip()
         relevant_events = events_by_session.get(position_session, [])
-        result = replay_exit_scenarios(
-            relevant_events,
-            position,
-            max_bbo_age_sec=max_bbo_age_sec,
-            scenarios=scenario_specs,
-        )
+        try:
+            result = replay_exit_scenarios(
+                relevant_events,
+                position,
+                max_bbo_age_sec=max_bbo_age_sec,
+                scenarios=scenario_specs,
+            )
+        except ValueError as exc:
+            rejected_positions.append({
+                "position_id": str(position.get("id") or position.get("position_id") or index),
+                "reason": str(exc),
+            })
+            continue
         risk_rub = result["risk_per_unit"] * result["quantity"]
         result["risk_rub"] = round(risk_rub, 4)
         result["trade_index"] = index
@@ -665,6 +673,7 @@ def replay_exit_batch(
         "schema_version": 1,
         "engine": "PAPER_EXIT_REPLAY_V1",
         "positions": len(trade_results),
+        "rejected_positions": rejected_positions,
         "trades": trade_results,
         "summary_by_scenario": summaries,
         "limitations": [
