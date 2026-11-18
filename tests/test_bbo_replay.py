@@ -194,6 +194,11 @@ class BBOReplayRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(call[2] == 50 for call in db.calls))
         self.assertEqual(recorder.persisted, 3)
         self.assertEqual(recorder.status()["queued"], 0)
+        self.assertFalse(recorder.record(
+            "LATE",
+            {"updated": True, "valid": True, "bid": 10, "ask": 10.1,
+             "bid_size": 1, "ask_size": 1},
+        ))
 
 
 if __name__ == "__main__":
