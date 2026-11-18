@@ -11,7 +11,6 @@ import logging
 import math
 import os
 import time
-from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Mapping
 from uuid import uuid4
