@@ -2187,6 +2187,7 @@ class BaseExecutionEngine:
             raise ValueError("Некорректная цена входа или количество акций PAPER-позиции.")
 
         raw_exit_price = _finite_or_default(bbo.get("executable_price"), 0.0)
+        raw_bbo_exit_price = raw_exit_price
         if raw_exit_price <= 0.0:
             raise ValueError("В BBO отсутствует положительная исполнимая цена выхода.")
         depth_fill = self._paper_exit_depth_fill(ticker, trade, bbo)
@@ -2286,7 +2287,8 @@ class BaseExecutionEngine:
             "exit_timestamp": now.isoformat(timespec="milliseconds"),
             "exit_last_fill_price": exit_price,
             "current_price": round(weighted_exit_price, 6),
-            "exit_raw_bbo_price": raw_exit_price,
+            "exit_raw_bbo_price": raw_bbo_exit_price,
+            "exit_raw_fill_average_price": raw_exit_price,
             "trigger_price": trigger_price if trigger_price > 0.0 else None,
             "exit_trigger_source": trigger_source,
             "exit_trigger_timestamp": trade.get("exit_trigger_timestamp"),
@@ -2299,7 +2301,10 @@ class BaseExecutionEngine:
             ),
             "executable_bbo_confirmed_at": now.astimezone().isoformat(timespec="milliseconds"),
             "market_move_after_trigger_rub": (
-                round(market_move_after_trigger_rub, 4)
+                round(
+                    _finite_or_default(trade.get("realized_market_move_after_trigger_rub"), 0.0)
+                    + market_move_after_trigger_rub, 4
+                )
                 if market_move_after_trigger_rub is not None else None
             ),
             "configured_exit_slippage_rub": round(
@@ -2315,7 +2320,10 @@ class BaseExecutionEngine:
             ),
             "observed_exit_price": observed_last_price,
             "exit_reason": exit_reason,
-            "exit_price_source": "BBO_BID" if side == "BUY" else "BBO_ASK",
+            "exit_price_source": (
+                ("ORDER_BOOK_BID_DEPTH" if side == "BUY" else "ORDER_BOOK_ASK_DEPTH")
+                if depth_confirmed else ("BBO_BID" if side == "BUY" else "BBO_ASK")
+            ),
             "exit_fill_model": (
                 "DEPTH_PARTIALS_PLUS_FINAL_DEPTH_FILL"
                 if bool(trade.get("exit_partial_fills")) and depth_confirmed
