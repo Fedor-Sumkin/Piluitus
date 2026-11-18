@@ -62,6 +62,20 @@ class MarketContextTests(unittest.TestCase):
         })
         self.assertEqual(result["directional_regime"], "RANGE_OR_MIXED")
 
+    def test_unwarmed_or_stale_trade_metrics_do_not_create_trend_votes(self) -> None:
+        result = classify_market_regime({
+            "price_change_pct": 0.30,
+            "price_vs_vwap_pct": 0.20,
+            "trade_flow_imbalance_30s": 0.40,
+            "trade_data_ready": 0.0,
+            "trade_metrics_age_sec": 0.2,
+            "trade_history_coverage_sec": 60.0,
+            "bar_trend_up": 0.0,
+            "bar_trend_down": 0.0,
+        })
+        self.assertEqual(result["directional_regime"], "DIRECTION_UNAVAILABLE")
+        self.assertEqual(result["market_regime"], "INSUFFICIENT_DATA")
+
     def test_buy_break_even_move_includes_spread_commission_and_slippage(self) -> None:
         result = estimate_entry_economics(
             side="BUY", bid=100.0, ask=100.2,
