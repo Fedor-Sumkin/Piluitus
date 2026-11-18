@@ -1218,16 +1218,21 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
     logger.info(
         "[STRATEGY SHADOW SCORECARD] costs=commission %.4f%%/side slippage %.2fbps; "
         "eligible labels=%d ok=%d positive=%.1f%% avg_gross=%+.5f%% avg_net=%+.5f%% "
-        "MFE=%+.5f%% MAE=%+.5f%%; ineligible labels=%d ok=%d positive=%.1f%% avg_gross=%+.5f%% avg_net=%+.5f%% "
-        "MFE=%+.5f%% MAE=%+.5f%%; pending=%d",
+        "MFE=%+.5f%%@%.1fs MAE=%+.5f%%@%.1fs BBO_obs=%.1f span=%.1fs; "
+        "ineligible labels=%d ok=%d positive=%.1f%% avg_gross=%+.5f%% avg_net=%+.5f%% "
+        "MFE=%+.5f%%@%.1fs MAE=%+.5f%%@%.1fs BBO_obs=%.1f span=%.1fs; pending=%d",
         float(cost_model.get("commission_pct_per_side", 0.0)),
         float(cost_model.get("slippage_bps", 0.0)),
         eligible["labels"], eligible["ok"], eligible["positive_rate_pct"],
         eligible["average_gross_return_pct"], eligible["average_net_return_pct"],
-        eligible["average_mfe_pct"], eligible["average_mae_pct"],
+        eligible["average_mfe_pct"], eligible["average_time_to_mfe_sec"],
+        eligible["average_mae_pct"], eligible["average_time_to_mae_sec"],
+        eligible["average_valid_bbo_observations"], eligible["average_bbo_observation_span_sec"],
         ineligible["labels"], ineligible["ok"], ineligible["positive_rate_pct"],
         ineligible["average_gross_return_pct"], ineligible["average_net_return_pct"],
-        ineligible["average_mfe_pct"], ineligible["average_mae_pct"],
+        ineligible["average_mfe_pct"], ineligible["average_time_to_mfe_sec"],
+        ineligible["average_mae_pct"], ineligible["average_time_to_mae_sec"],
+        ineligible["average_valid_bbo_observations"], ineligible["average_bbo_observation_span_sec"],
         scalping_shadow_tracker.pending_count(),
     )
     segments = shadow.get("segments", {})
