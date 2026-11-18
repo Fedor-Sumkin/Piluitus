@@ -376,8 +376,10 @@ Two additional PAPER-only read endpoints support cohort-level research:
   and `session_id` filters narrow the cohort. The response reports candidate
   and selected counts, journal coverage, skipped records and individually
   rejected position contracts; one malformed trade does not abort the valid
-  batch. The batch engine indexes events by replay session before processing
-  positions, while retaining the full-session sequence-coverage calculation.
+  batch. The batch engine indexes unique events by replay session and ticker, and
+  precomputes session-wide sequence/timestamp diagnostics once. This avoids
+  repeatedly scanning unrelated tickers while retaining the full-session
+  coverage calculation.
 - `GET /api/v1/paper/reconciliation/shadow?limit=100` joins realized closed
   PAPER trades to Shadow forward labels only by exact
   `shadow_candidate_id == candidate_id`. It reports matched trades, trades
