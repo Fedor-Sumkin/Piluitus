@@ -189,9 +189,10 @@ def replay_exit_scenarios(
 ) -> dict[str, Any]:
     """Replay BBO-only exit hypotheses; input order is normalized by session sequence.
 
-    Required position fields:
-      session_id, ticker, side, entry_price, entry_time_epoch, quantity,
-      stop_loss, take_profit, commission_pct_per_side, slippage_bps.
+    Accepts the persisted PAPER trade shape: bbo_replay_session_id (preferred),
+    ticker, side, entry_price, entry_timestamp, volume, stop_loss, take_profit,
+    commission_pct_per_side and paper_slippage_bps. The normalized aliases
+    session_id, entry_time_epoch, quantity and slippage_bps are also accepted.
     entry_commission_rub is optional and is derived from entry notional when absent.
     """
     session_id = str(
