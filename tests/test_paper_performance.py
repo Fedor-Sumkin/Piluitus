@@ -60,6 +60,39 @@ class PaperPerformanceTests(unittest.TestCase):
         ]), 0)
         self.assertEqual({row["id"] for row in tracker.records}, {"middle", "newest"})
 
+    def test_scorecard_adds_ticker_side_time_and_point_in_time_regime_cohorts(self):
+        tracker = PaperPerformanceTracker()
+        first = trade("cohort-1", 12, ticker="SBER", side="BUY")
+        first.update({
+            "entry_timestamp": "2026-11-18T10:30:00+03:00",
+            "market_regime": "TREND",
+            "volatility_regime": "LOW",
+            "liquidity_regime": "GOOD",
+            "directional_regime": "TREND_UP",
+        })
+        second = trade("cohort-2", -4, ticker="SBER", side="SELL")
+        second.update({
+            "entry_timestamp": "2026-11-18T19:15:00+03:00",
+            "market_regime": "RANGE_OR_MIXED",
+            "volatility_regime": "HIGH",
+            "liquidity_regime": "WIDE_SPREAD",
+            "directional_regime": "TREND_DOWN",
+        })
+        legacy = trade("cohort-3", 1, ticker="GAZP", side="BUY")
+        legacy["entry_timestamp"] = "2026-11-18T10:30:00"
+        tracker.restore([first, second, legacy])
+
+        scorecard = tracker.scorecard()
+        self.assertEqual(scorecard["by_ticker_side"]["SBER|BUY"]["trades"], 1)
+        self.assertEqual(scorecard["by_ticker_side"]["SBER|SELL"]["net_pnl_rub"], -4.0)
+        self.assertEqual(scorecard["by_moscow_entry_time"]["OPEN_10_11"]["trades"], 1)
+        self.assertEqual(scorecard["by_moscow_entry_time"]["EVENING_18_23"]["trades"], 1)
+        self.assertEqual(scorecard["by_moscow_entry_time"]["UNKNOWN"]["trades"], 1)
+        self.assertEqual(scorecard["by_market_regime"]["TREND"]["trades"], 1)
+        self.assertEqual(scorecard["by_volatility_regime"]["HIGH"]["trades"], 1)
+        self.assertEqual(scorecard["by_liquidity_regime"]["GOOD"]["trades"], 1)
+        self.assertEqual(scorecard["by_directional_regime"]["TREND_DOWN"]["trades"], 1)
+
     def test_scorecard_calculates_net_metrics_groups_and_drawdown(self):
         tracker = PaperPerformanceTracker()
         tracker.restore([
