@@ -76,10 +76,13 @@ def classify_market_regime(
 
     up_votes = down_votes = 0
     evidence_count = 0
-    trade_ready = (
-        (_finite(metrics, "trade_data_ready") or 0.0) >= 0.5
-        and 0.0 <= (_finite(metrics, "trade_metrics_age_sec") or -1.0) <= 5.0
-        and (_finite(metrics, "trade_history_coverage_sec") or 0.0) >= 60.0
+    trade_ready_flag = _finite(metrics, "trade_data_ready")
+    trade_age = _finite(metrics, "trade_metrics_age_sec")
+    trade_coverage = _finite(metrics, "trade_history_coverage_sec")
+    trade_ready = bool(
+        trade_ready_flag is not None and trade_ready_flag >= 0.5
+        and trade_age is not None and 0.0 <= trade_age <= 5.0
+        and trade_coverage is not None and trade_coverage >= 60.0
     )
     if trade_ready:
         for key in ("price_change_pct", "price_vs_vwap_pct"):
