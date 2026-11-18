@@ -1692,7 +1692,9 @@ class BaseExecutionEngine:
             if not order_id:
                 return {"status": "FAILED", "message": "В ответе Finam отсутствует ID заявки."}
 
-            now = datetime.now()
+            # Store an offset-aware entry instant so time-of-day cohorts and
+            # chronological diagnostics never have to guess the machine timezone.
+            now = datetime.now().astimezone()
             atr_at_entry = _finite_or_default(ai_analysis.get("atr_at_entry"), 0.0)
             try:
                 atr_periods_at_entry = max(0, int(ai_analysis.get("atr_periods_at_entry", 0) or 0))
