@@ -60,7 +60,7 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
         result = evaluate_scalping_candidate("BUY", metrics)
         self.assertFalse(result["eligible"])
         self.assertEqual(result["side"], "BUY")
-        self.assertIn("best_queue_imbalance_opposes_side", result["reasons"])
+        self.assertIn("time_weighted_queue_imbalance_opposes_side", result["reasons"])
 
     def test_stale_or_invalid_book_is_a_shadow_hard_block(self) -> None:
         metrics = strong_buy_metrics()
