@@ -2191,12 +2191,19 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
         )
 
         _trade_flow_inc("quotes_received")
+        accepted_quote_sides = analysis.get("quote_side_updates", {})
         _record_paper_bbo_replay(
             ticker,
             source="FINAM_QUOTES",
             event_timestamp=event_timestamp,
             received_monotonic=received_monotonic,
-            sides_present=bool(bid_present or ask_present),
+            sides_present=bool(
+                isinstance(accepted_quote_sides, Mapping)
+                and (
+                    (bid_present and accepted_quote_sides.get("bid"))
+                    or (ask_present and accepted_quote_sides.get("ask"))
+                )
+            ),
         )
         # ORDER_BOOK and QUOTES use independent provider streams. A valid recent
         # book can be confirmed by the newest two-sided QUOTES packet between
