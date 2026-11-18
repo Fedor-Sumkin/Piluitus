@@ -181,6 +181,8 @@ class BBOReplaySimulatorTests(unittest.TestCase):
                 "session_id": "session-a", "sequence": 1, "ticker": "SBER",
                 "event_kind": "EXIT_TRIGGER", "event_time_epoch": 1_800_000_001.0,
                 "trigger_reason": "TAKE_PROFIT", "trigger_price": 102.0,
+                "trigger_source": "LAST_TRADE",
+                "trigger_market_time_epoch": 1_800_000_000.9,
                 "trigger_bbo_valid": False,
             },
             event(2, bid=101.8, ask=101.9, epoch=1_800_000_003.0),
@@ -193,6 +195,9 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         self.assertEqual(scenario["trigger_mode"], "ACTUAL_LATCHED_TRIGGER")
         self.assertEqual(scenario["exit"]["reason"], "TAKE_PROFIT")
         self.assertEqual(scenario["exit"]["event_sequence"], 2)
+        self.assertEqual(scenario["exit"]["trigger_event_sequence"], 1)
+        self.assertEqual(scenario["exit"]["trigger_source"], "LAST_TRADE")
+        self.assertEqual(scenario["exit"]["trigger_market_time_epoch"], 1_800_000_000.9)
         self.assertEqual(scenario["exit"]["raw_executable_price"], 101.8)
 
     def test_stale_trigger_time_bbo_waits_for_next_fresh_side(self):
