@@ -321,3 +321,18 @@ if __name__ == "__main__":
         self.assertEqual(flags["INSUFFICIENT_ATTRIBUTION_DATA"], 1)
         self.assertEqual(diagnostics["data_coverage"]["gross_pnl_records"], 2)
         self.assertIn("not mutually exclusive", diagnostics["interpretation"])
+
+
+    def test_scorecard_segments_realized_results_by_holding_time(self):
+        tracker = PaperPerformanceTracker()
+        tracker.restore([
+            {**trade("under-minute", 3), "time_in_trade_sec": 42.0},
+            {**trade("three-minutes", -2), "time_in_trade_sec": 180.0},
+            {**trade("ten-minutes", 5), "time_in_trade_sec": 600.0},
+            {**trade("unknown-duration", -1), "time_in_trade_sec": None},
+        ])
+        groups = tracker.scorecard()["by_holding_time"]
+        self.assertEqual(groups["LT_60S"]["trades"], 1)
+        self.assertEqual(groups["180_299S"]["trades"], 1)
+        self.assertEqual(groups["600S_PLUS"]["trades"], 1)
+        self.assertEqual(groups["UNKNOWN"]["trades"], 1)
