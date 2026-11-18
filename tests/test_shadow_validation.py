@@ -23,6 +23,10 @@ class ShadowWalkForwardValidationTests(unittest.TestCase):
                         timezone(timedelta(hours=3))
                     ).isoformat(),
                     "horizon_sec": horizon,
+                    "market_regime": "TREND" if index % 2 else "RANGE_OR_MIXED",
+                    "volatility_regime": "HIGH_VOLATILITY" if index % 3 == 0 else "NORMAL_VOLATILITY",
+                    "liquidity_regime": "LOW_LIQUIDITY" if index % 4 == 0 else "NORMAL_OR_UNKNOWN",
+                    "directional_regime": "TREND_UP" if index % 2 else "RANGE_OR_MIXED",
                     "result": "OK",
                     "label_quality": "ON_TIME",
                     "net_executable_return_pct": result,
@@ -48,6 +52,11 @@ class ShadowWalkForwardValidationTests(unittest.TestCase):
             first["test_by_horizon_side"]["600s|SELL"]["valid_labels"], 2
         )
         self.assertIn("60s|BUY", report["out_of_sample_by_horizon_side"])
+        self.assertIn(
+            "60s|BUY|market_regime=TREND",
+            report["folds"][0]["test_by_horizon_side_market_regime"],
+        )
+        self.assertIn("liquidity_regime=LOW_LIQUIDITY", report["folds"][0]["test_by_liquidity_regime"])
 
     def test_same_candidate_horizons_never_cross_time_partitions(self):
         report = build_shadow_walk_forward_validation(
@@ -93,6 +102,25 @@ class ShadowWalkForwardValidationTests(unittest.TestCase):
         short = build_shadow_walk_forward_validation(self.labels(2))
         self.assertFalse(short["available"])
         self.assertEqual(short["reason"], "INSUFFICIENT_DISTINCT_TIME_POINTS")
+
+
+    def test_unusable_labels_are_reported_as_coverage_not_returns(self):
+        rows = self.labels(12)
+        start = datetime(2026, 11, 1, 9, 0, tzinfo=timezone.utc)
+        rows.append({
+            "candidate_id": "candidate-no-bbo",
+            "side": "BUY",
+            "ticker": "SBER",
+            "entry_time_utc": (start + timedelta(seconds=12 * 300)).isoformat(),
+            "horizon_sec": 60,
+            "result": "NO_FRESH_BBO",
+            "label_quality": "NO_FRESH_BBO",
+        })
+        report = build_shadow_walk_forward_validation(rows, folds=3)
+        coverage = report["out_of_sample_by_horizon_side"]["60s|BUY"]
+        self.assertEqual(coverage["label_status_counts"]["NO_FRESH_BBO"], 1)
+        self.assertEqual(coverage["rows_without_valid_net_return"], 1)
+        self.assertEqual(coverage["valid_labels"], 4)
 
     def test_invalid_parameters_are_rejected(self):
         self.assertEqual(
