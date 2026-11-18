@@ -196,6 +196,7 @@ class PaperPerformanceTracker:
             "overall": _metrics(rows),
             "by_side": self._group(rows, "side"),
             "by_ticker": self._group(rows, "ticker"),
+            "by_session": self._group(rows, "session_id"),
             "by_llm_model_decision": self._group(rows, "llm_model_decision"),
             "by_llm_final_decision": self._group(rows, "llm_final_decision"),
             "by_confidence": self._group(rows, "llm_confidence_pct", _confidence_bucket),
