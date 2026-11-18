@@ -486,7 +486,7 @@ class BaseExecutionEngine:
         if not math.isfinite(gross_loss) or gross_loss < 0.0:
             return math.inf
         if not self.paper_mode:
-            return round(gross_loss, 2)
+            return gross_loss
 
         if entry_commission_rub is None:
             entry_fee = entry * qty * fee_pct / 100.0
@@ -494,7 +494,7 @@ class BaseExecutionEngine:
             entry_fee = max(0.0, _finite_or_default(entry_commission_rub, 0.0))
         exit_fee = exit_price * qty * fee_pct / 100.0
         total = gross_loss + entry_fee + exit_fee
-        return round(total, 2) if math.isfinite(total) else math.inf
+        return total if math.isfinite(total) else math.inf
 
     def _open_stop_risk(self, positions: object) -> float:
         """Sum downside from entry to stop for every OPEN position; fail closed on unknown data."""
@@ -1675,7 +1675,9 @@ class BaseExecutionEngine:
                 "volume": lots * lot_multiplier,  # число акций, не число лотов
                 "lot_size": lot_multiplier,
                 "notional_entry_rub": round(entry_notional, 2),
-                "planned_risk_rub": round(abs(price - stop_loss) * lots * lot_multiplier, 2),
+                "planned_risk_rub": round(
+                    self._stop_risk_with_costs(price, stop_loss, lots * lot_multiplier, side), 2
+                ),
                 "entry_commission_rub": round(entry_commission, 4),
                 "commission_pct_per_side": self.paper_commission_pct if self.paper_mode else 0.0,
                 "paper_slippage_bps": self.paper_slippage_bps if self.paper_mode else 0.0,
