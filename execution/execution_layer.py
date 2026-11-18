@@ -1979,6 +1979,35 @@ class BaseExecutionEngine:
             )
         return quarantined
 
+    def _paper_exit_depth_fill(
+        self,
+        ticker: str,
+        trade: TradeRecord,
+        bbo: BBOExitQuote,
+    ) -> dict[str, Any] | None:
+        """Return a depth fill plan only when the configured Finam size unit is explicit."""
+        if self.paper_book_size_unit not in {"shares", "lots"}:
+            return None
+        side = str(trade.get("side", "BUY")).upper()
+        if side not in {"BUY", "SELL"}:
+            return None
+        lot_size = max(1, int(_finite_or_default(
+            trade.get("lot_size", LOT_SIZES.get(ticker, 1)), 1.0
+        )))
+        share_qty = self._share_quantity(ticker, trade)
+        if share_qty <= 0 or share_qty % lot_size:
+            return None
+        requested_lots = share_qty // lot_size
+        # A long is liquidated against bids; a short is covered against asks.
+        levels_key = "bid_levels" if side == "BUY" else "ask_levels"
+        return self._simulate_paper_depth_fill(
+            bbo.get(levels_key, []),
+            requested_lots,
+            lot_size,
+            self.paper_book_size_unit,
+            self.paper_max_book_participation_pct,
+        )
+
     async def _finalize_paper_close(
         self,
         ticker: str,
@@ -2003,6 +2032,37 @@ class BaseExecutionEngine:
         raw_exit_price = _finite_or_default(bbo.get("executable_price"), 0.0)
         if raw_exit_price <= 0.0:
             raise ValueError("В BBO отсутствует положительная исполнимая цена выхода.")
+        depth_fill = self._paper_exit_depth_fill(ticker, trade, bbo)
+        depth_confirmed = self.paper_book_size_unit in {"shares", "lots"}
+        if depth_confirmed:
+            requested_lots = max(1, int(_finite_or_default(
+                trade.get("lots"),
+                math.ceil(share_qty / max(1, int(_finite_or_default(
+                    trade.get("lot_size", LOT_SIZES.get(ticker, 1)), 1.0
+                )))),
+            )))
+            filled_lots = int(depth_fill.get("filled_lots", 0)) if isinstance(depth_fill, Mapping) else 0
+            if depth_fill is None or filled_lots < requested_lots:
+                fill_ratio = (
+                    _finite_or_default(depth_fill.get("fill_ratio"), 0.0)
+                    if isinstance(depth_fill, Mapping) else 0.0
+                )
+                levels_used = int(depth_fill.get("levels_used", 0)) if isinstance(depth_fill, Mapping) else 0
+                logger.warning(
+                    "[PAPER EXIT DEPTH WAIT] %s %s reason=%s requested=%d lots filled=%d lots "
+                    "fill=%.1f%% levels=%d unit=%s; позиция остаётся OPEN, SL/TP trigger сохранён.",
+                    ticker, side,
+                    "DEPTH_UNAVAILABLE" if depth_fill is None or filled_lots <= 0 else "INSUFFICIENT_DEPTH",
+                    requested_lots, filled_lots, fill_ratio * 100.0, levels_used,
+                    self.paper_book_size_unit,
+                )
+                trade["exit_depth_last_attempt_at"] = datetime.now().astimezone().isoformat(timespec="milliseconds")
+                trade["exit_depth_last_fill_ratio"] = round(fill_ratio, 6)
+                trade["exit_depth_last_levels_used"] = levels_used
+                return trade
+            raw_exit_price = _finite_or_default(depth_fill.get("average_price"), raw_exit_price)
+            if raw_exit_price <= 0.0:
+                raise ValueError("PAPER depth fill returned an invalid average exit price.")
         exit_transaction_side = "SELL" if side == "BUY" else "BUY"
         exit_price = self._apply_paper_slippage(raw_exit_price, exit_transaction_side)
         entry_commission = _finite_or_default(trade.get("entry_commission_rub"), 0.0)
@@ -2073,8 +2133,19 @@ class BaseExecutionEngine:
             "observed_exit_price": observed_last_price,
             "exit_reason": exit_reason,
             "exit_price_source": "BBO_BID" if side == "BUY" else "BBO_ASK",
-            "exit_fill_model": "FULL_FILL_AT_EXECUTABLE_BBO",
+            "exit_fill_model": (
+                "FULL_FILL_AT_CONFIRMED_DEPTH" if depth_confirmed
+                else "FULL_FILL_AT_EXECUTABLE_BBO_DEPTH_UNVERIFIED"
+            ),
             "exit_partial_fill_enabled": False,
+            "exit_depth_unit": self.paper_book_size_unit,
+            "exit_depth_levels_used": (
+                int(depth_fill.get("levels_used", 0)) if isinstance(depth_fill, Mapping) else None
+            ),
+            "exit_depth_fill_ratio": (
+                round(_finite_or_default(depth_fill.get("fill_ratio"), 0.0), 6)
+                if isinstance(depth_fill, Mapping) else None
+            ),
             "exit_bbo_gap_count": int(trade.get("exit_bbo_gap_count", 0) or 0),
             "last_exit_bbo_gap_sec": _finite_or_default(trade.get("last_exit_bbo_gap_sec"), 0.0),
             "max_exit_bbo_gap_sec": _finite_or_default(trade.get("max_exit_bbo_gap_sec"), 0.0),
@@ -2085,7 +2156,7 @@ class BaseExecutionEngine:
             "exit_bid_size": _finite_or_default(bbo.get("bid_size"), 0.0),
             "exit_ask_size": _finite_or_default(bbo.get("ask_size"), 0.0),
             "exit_top_size_raw": exit_size,
-            "exit_top_size_unit": "FINAM_UNCONFIRMED",
+            "exit_top_size_unit": self.paper_book_size_unit if depth_confirmed else "FINAM_UNCONFIRMED",
             "exit_bbo_age_sec": round(_finite_or_default(bbo.get("age_sec"), 0.0), 3),
             "exit_spread_pct": round(_finite_or_default(bbo.get("spread_pct"), 0.0), 6),
             "exit_slippage_bps": self.paper_slippage_bps,
@@ -2632,12 +2703,15 @@ class BaseExecutionEngine:
             self._lock_closing.add(order_id)
             try:
                 last_price = self._latest_price(ticker, pos)
-                await self._finalize_paper_close(
+                close_result = await self._finalize_paper_close(
                     ticker, pos, db, bbo,
                     exit_reason="MANUAL_CLOSE",
                     observed_last_price=last_price,
                 )
-                closed_count += 1
+                if str(close_result.get("status", "")).upper() == "CLOSED":
+                    closed_count += 1
+                else:
+                    blocked_count += 1
             except Exception as exc:
                 blocked_count += 1
                 logger.error("CMD_CLOSE_ALL: не удалось закрыть %s: %s", ticker, exc, exc_info=True)
