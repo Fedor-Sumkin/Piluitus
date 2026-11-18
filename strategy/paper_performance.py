@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 
 from strategy.shadow_label_quality import (
     deduplicate_shadow_labels,
-    finite_number as _finite_number,
 )
 
 PAPER_CLOSED_TRADES_STORAGE_KEY = "piluitus:paper:closed_trades"
