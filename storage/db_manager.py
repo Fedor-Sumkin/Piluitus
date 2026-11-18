@@ -337,9 +337,17 @@ class RedisClient:
         log.debug("🔑 set_json %s (ttl=%s)", key, ttl)
 
     @classmethod
-    async def write_trade(cls, order_id: str, trade_dict: dict, max_len: int = 500) -> None:
+    async def write_trade(
+        cls,
+        order_id: str,
+        trade_dict: dict,
+        max_len: int = 500,
+        *,
+        client: Union[redis.Redis, _InMemory, None] = None,
+    ) -> None:
         """Persist the authoritative trade key and its bounded index atomically."""
-        client = await cls.get_client()
+        if client is None:
+            client = await cls.get_client()
         trade_key = f"piluitus:trade:{order_id}"
         trade_payload = json.dumps(trade_dict, ensure_ascii=False, allow_nan=False)
         index_payload = json.dumps(
@@ -746,7 +754,8 @@ class DBManager:
     # ----------------------- журнал сделок (trade journal) -----------------------
     async def log_trade(self, order_id: str, trade_dict: dict) -> None:
         """Сохраняет/обновляет запись о сделке в Redis."""
-        await RedisClient.write_trade(order_id, trade_dict)
+        client = await self._get_client()
+        await RedisClient.write_trade(order_id, trade_dict, client=client)
         log.debug("📝 atomically logged trade %s", order_id)
 
     async def get_active_positions(self) -> dict:
