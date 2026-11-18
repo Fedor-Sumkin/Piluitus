@@ -92,6 +92,7 @@ class ShadowForwardTracker:
         return {
             "labels": 0, "ok": 0, "late": 0, "no_fresh_bbo": 0,
             "positive": 0, "net_sum_pct": 0.0, "gross_sum_pct": 0.0,
+            "net_positive_sum_pct": 0.0, "net_negative_sum_pct": 0.0,
             "mfe_sum_pct": 0.0, "mae_sum_pct": 0.0,
         }
 
@@ -107,6 +108,9 @@ class ShadowForwardTracker:
                 bucket["net_sum_pct"] = float(bucket["net_sum_pct"]) + net
                 if net > 0.0:
                     bucket["positive"] = int(bucket["positive"]) + 1
+                    bucket["net_positive_sum_pct"] = float(bucket["net_positive_sum_pct"]) + net
+                elif net < 0.0:
+                    bucket["net_negative_sum_pct"] = float(bucket["net_negative_sum_pct"]) + abs(net)
             if math.isfinite(gross):
                 bucket["gross_sum_pct"] = float(bucket["gross_sum_pct"]) + gross
             bucket["mfe_sum_pct"] = float(bucket["mfe_sum_pct"]) + _number(label, "mfe_executable_pct")
@@ -237,6 +241,15 @@ class ShadowForwardTracker:
             "mae_executable_pct": 0.0,
             "no_fresh_bbo_observations": 0,
             "last_bbo_unavailable_reason": None,
+            "llm_linked": False,
+            "llm_verdict_id": None,
+            "llm_model_decision": "NOT_LINKED",
+            "llm_final_decision": "NOT_LINKED",
+            "llm_signal_status": "NOT_LINKED",
+            "llm_confidence": None,
+            "llm_reason_code": "NOT_LINKED",
+            "llm_local_guard": None,
+            "llm_execution_status": "NOT_LINKED",
         }
         pending = self._pending.setdefault(symbol, [])
         pending.append(row)
@@ -258,6 +271,84 @@ class ShadowForwardTracker:
             f'{row["spread_atr_ratio"]:.3f}' if math.isfinite(row["spread_atr_ratio"]) else "NA",
         )
         return candidate_id
+
+    def attach_llm_verdict(
+        self,
+        candidate_id: str,
+        *,
+        verdict_id: str,
+        model_decision: str,
+        final_decision: str,
+        signal_status: str,
+        confidence: float | None,
+        reason_code: str,
+        local_guard: str,
+        execution_status: str,
+    ) -> bool:
+        """Attach the final LLM/system verdict to its still-pending shadow candidate."""
+        identifier = str(candidate_id or "").strip()
+        if not identifier:
+            return False
+        model = str(model_decision or "UNKNOWN").strip().upper()
+        final = str(final_decision or "HOLD").strip().upper()
+        status = str(signal_status or "UNKNOWN").strip().upper()
+        try:
+            confidence_value = float(confidence) if confidence is not None else math.nan
+        except (TypeError, ValueError, OverflowError):
+            confidence_value = math.nan
+        if not math.isfinite(confidence_value):
+            confidence_value = None
+        else:
+            confidence_value = min(100.0, max(0.0, confidence_value))
+        for rows in self._pending.values():
+            for row in rows:
+                if row.get("candidate_id") != identifier:
+                    continue
+                row.update({
+                    "llm_linked": True,
+                    "llm_verdict_id": str(verdict_id or "") or None,
+                    "llm_model_decision": model,
+                    "llm_final_decision": final,
+                    "llm_signal_status": status,
+                    "llm_confidence": confidence_value,
+                    "llm_reason_code": str(reason_code or "NOT_PROVIDED")[:80],
+                    "llm_local_guard": str(local_guard or "")[:160],
+                    "llm_execution_status": str(execution_status or "UNKNOWN").upper(),
+                })
+                return True
+        return False
+
+    def update_execution_result(
+        self,
+        candidate_id: str,
+        *,
+        execution_status: str,
+    ) -> bool:
+        """Update the linked candidate with the final asynchronous execution result."""
+        identifier = str(candidate_id or "").strip()
+        if not identifier:
+            return False
+        status = str(execution_status or "UNKNOWN").strip().upper()
+        for rows in self._pending.values():
+            for row in rows:
+                if row.get("candidate_id") == identifier and row.get("llm_linked"):
+                    row["llm_execution_status"] = status
+                    return True
+        return False
+
+    @staticmethod
+    def _llm_label_fields(row: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "llm_linked": bool(row.get("llm_linked", False)),
+            "llm_verdict_id": row.get("llm_verdict_id"),
+            "llm_model_decision": str(row.get("llm_model_decision") or "NOT_LINKED"),
+            "llm_final_decision": str(row.get("llm_final_decision") or "NOT_LINKED"),
+            "llm_signal_status": str(row.get("llm_signal_status") or "NOT_LINKED"),
+            "llm_confidence": row.get("llm_confidence"),
+            "llm_reason_code": str(row.get("llm_reason_code") or "NOT_LINKED"),
+            "llm_local_guard": row.get("llm_local_guard"),
+            "llm_execution_status": str(row.get("llm_execution_status") or "NOT_LINKED"),
+        }
 
     @staticmethod
     def _executable_return_pct(row: Mapping[str, Any], exit_raw: float) -> tuple[float, float, float]:
@@ -320,6 +411,7 @@ class ShadowForwardTracker:
                     )
                     label = {
                         "candidate_id": row["candidate_id"],
+                        **self._llm_label_fields(row),
                         "ticker": symbol,
                         "side": side,
                         "entry_time_msk": row["created_at_msk"],
@@ -386,6 +478,7 @@ class ShadowForwardTracker:
                 elif elapsed > horizon + self.max_label_lag_sec:
                     label = {
                         "candidate_id": row["candidate_id"],
+                        **self._llm_label_fields(row),
                         "ticker": symbol,
                         "side": side,
                         "entry_time_msk": row["created_at_msk"],
@@ -581,6 +674,13 @@ class ShadowForwardTracker:
             f"side_m1_gap_bucket={side}|{m1_gap_bucket}",
             f"side_eligibility={side}|{eligibility}",
             f"ticker_eligibility={ticker}|{eligibility}",
+            f"llm_linked={bool(label.get('llm_linked', False))}",
+            f"llm_model_decision={str(label.get('llm_model_decision') or 'NOT_LINKED')}",
+            f"llm_final_decision={str(label.get('llm_final_decision') or 'NOT_LINKED')}",
+            f"llm_signal_status={str(label.get('llm_signal_status') or 'NOT_LINKED')}",
+            f"llm_reason_code={str(label.get('llm_reason_code') or 'NOT_LINKED')}",
+            f"llm_execution_status={str(label.get('llm_execution_status') or 'NOT_LINKED')}",
+            f"llm_confidence_bucket={self._score_band(_number(label, 'llm_confidence', 0.0)) if label.get('llm_confidence') is not None else 'unavailable'}",
             *(f"hard_block={reason}" for reason in label.get("hard_blocks", [])),
         )
         for key in segment_keys:
@@ -598,6 +698,9 @@ class ShadowForwardTracker:
             row["positive_rate_pct"] = (
                 round(int(row["positive"]) / count * 100.0, 2) if count else 0.0
             )
+            loss_sum = float(row.get("net_negative_sum_pct", 0.0))
+            profit_sum = float(row.get("net_positive_sum_pct", 0.0))
+            row["profit_factor"] = round(profit_sum / loss_sum, 4) if loss_sum > 0.0 else None
             for metric, total in (
                 ("average_net_return_pct", "net_sum_pct"),
                 ("average_gross_return_pct", "gross_sum_pct"),
