@@ -584,3 +584,24 @@ orders, queue position, full-depth market impact or passive fills. A favorable
 paired result is not evidence of a deployable improvement by itself: review
 sample size, replay coverage, scenario-only closures, session/ticker/side
 concentration and realistic cost assumptions before drawing conclusions.
+
+
+### Shared-capital PAPER replay
+
+The batch replay can optionally apply a shared capital constraint to each exit
+scenario independently. Supply `portfolio_capital_rub` and
+`max_allocation_pct` to `GET /api/v1/paper/replay/batch`; for example,
+`?limit=100&portfolio_capital_rub=400000&max_allocation_pct=15`.
+The simulation orders entries and exits by replay timestamps, releases reserved
+capital on exits, and rejects entries that would exceed the configured
+allocation or remaining cash. It reports accepted/rejected positions, peak and
+ending reserved capital, realized net PnL, sequential portfolio drawdown and
+ending equity at cost. Open positions remain reserved and are not assigned
+zero PnL.
+
+This is a deliberately conservative capacity approximation: the full entry
+notional is reserved for BUY and SELL alike. It does not model broker margin,
+short-sale collateral, leverage, settlement, partial fills, intratrade
+mark-to-market equity or opportunity costs. The capital and allocation values
+must be supplied explicitly; no account balance is inferred. Results are
+scenario-specific and do not modify actual PAPER trades or order sizing.
