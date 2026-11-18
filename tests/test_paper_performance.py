@@ -5,11 +5,12 @@ from strategy.paper_performance import PaperPerformanceTracker
 
 
 def trade(trade_id, pnl, *, side="BUY", ticker="SBER", candidate=None,
-          confidence=80.0, exit_time="2026-11-18T10:00:00"):
+          confidence=80.0, exit_time="2026-11-18T10:00:00", session="session-1"):
     return {
         "id": trade_id,
         "status": "CLOSED",
         "mode": "PAPER",
+        "session_id": session,
         "side": side,
         "ticker": ticker,
         "pnl": pnl,
@@ -54,7 +55,7 @@ class PaperPerformanceTests(unittest.TestCase):
             trade("t3", 25, side="BUY", candidate=None, confidence=95,
                   exit_time="2026-11-18T12:00:00"),
             trade("t2", -50, side="SELL", candidate="c2", confidence=65,
-                  exit_time="2026-11-18T11:00:00"),
+                  exit_time="2026-11-18T11:00:00", session="session-2"),
             trade("t1", 100, side="BUY", candidate="c1", confidence=87.5,
                   exit_time="2026-11-18T10:00:00"),
         ])
@@ -74,6 +75,7 @@ class PaperPerformanceTests(unittest.TestCase):
         self.assertEqual(overall["current_loss_streak"], 0)
         scorecard = tracker.scorecard()
         self.assertEqual(scorecard["by_side"]["BUY"]["trades"], 2)
+        self.assertEqual(scorecard["by_session"]["session-2"]["trades"], 1)
         self.assertEqual(scorecard["by_exit_reason"]["STOP_LOSS"]["trades"], 1)
         self.assertEqual(scorecard["by_confidence"]["80-89"]["trades"], 1)
 
