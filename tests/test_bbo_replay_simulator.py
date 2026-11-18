@@ -308,6 +308,18 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         self.assertEqual(result["coverage"]["ticker_events"], 1)
         self.assertEqual(result["scenarios"][0]["status"], "OPEN_AT_END")
 
+    def test_entry_filter_and_holding_time_prefer_local_receive_clock(self):
+        row = event(1, bid=98.8, ask=98.9, epoch=1_799_999_990.0)
+        row["received_at_utc"] = "2027-01-15T08:00:01+00:00"
+        result = replay_exit_scenarios(
+            [row], position(),
+            scenarios=[{"name": "baseline", "kind": "baseline"}],
+        )
+        exit_row = result["scenarios"][0]["exit"]
+        self.assertEqual(exit_row["reason"], "STOP_LOSS")
+        self.assertEqual(exit_row["elapsed_sec"], 1.0)
+        self.assertEqual(result["coverage"]["pre_entry_events"], 0)
+
     def test_exit_trigger_from_another_trade_on_same_ticker_is_ignored(self):
         rows = [{
             "session_id": "session-a", "sequence": 1, "ticker": "SBER",
