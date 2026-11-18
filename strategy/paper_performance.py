@@ -81,6 +81,36 @@ def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         value for row in rows
         if (value := _number(row.get("gross_pnl"))) is not None
     ]
+
+    # Exit-BBO gaps are collected by the execution monitor while a position is
+    # open. Closed trades carry the completed episode count and durations.
+    # Include a non-zero current duration defensively for older/interrupted rows.
+    gap_episode_count = 0
+    trades_with_gap = 0
+    total_gap_sec = 0.0
+    max_gap_sec = 0.0
+    for row in rows:
+        raw_count = _number(row.get("exit_bbo_gap_count"))
+        episodes = max(0, int(raw_count or 0))
+        total = max(0.0, _number(row.get("total_exit_bbo_gap_sec")) or 0.0)
+        current = max(0.0, _number(row.get("current_exit_bbo_gap_sec")) or 0.0)
+        last = max(0.0, _number(row.get("last_exit_bbo_gap_sec")) or 0.0)
+        maximum = max(
+            0.0,
+            _number(row.get("max_exit_bbo_gap_sec")) or 0.0,
+            current,
+            last,
+        )
+        # An interrupted or legacy row may have a current gap but no completed
+        # episode count. Count that observation once rather than losing its time.
+        if current > 0.0 and episodes == 0:
+            episodes = 1
+        gap_episode_count += episodes
+        total_gap_sec += total + current
+        max_gap_sec = max(max_gap_sec, maximum)
+        if episodes > 0 or total > 0.0 or current > 0.0 or last > 0.0 or maximum > 0.0:
+            trades_with_gap += 1
+
     return {
         "trades": len(valid),
         "wins": len(wins),
@@ -103,6 +133,16 @@ def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         "current_loss_streak": current_loss_streak,
         "average_holding_sec": round(sum(holding) / len(holding), 2) if holding else None,
         "total_commission_rub": round(sum(commissions), 2),
+        "trades_with_exit_bbo_gap": trades_with_gap,
+        "exit_bbo_gap_trade_rate_pct": (
+            round(trades_with_gap / len(valid) * 100.0, 3) if valid else None
+        ),
+        "exit_bbo_gap_episodes": gap_episode_count,
+        "total_exit_bbo_gap_sec": round(total_gap_sec, 3),
+        "average_exit_bbo_gap_sec": (
+            round(total_gap_sec / gap_episode_count, 3) if gap_episode_count else None
+        ),
+        "max_exit_bbo_gap_sec": round(max_gap_sec, 3),
     }
 
 
