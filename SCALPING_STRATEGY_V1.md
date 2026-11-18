@@ -306,8 +306,12 @@ fresh executable side observation.
 It accepts the persisted PAPER trade fields and the journal events for the
 matching `bbo_replay_session_id`. It orders the journal by increasing session
 sequence, deduplicates repeated sequence IDs, reports global sequence gaps and
-per-ticker timestamp regressions, and enforces the same per-side executable
-BBO freshness threshold. BUY exits use Bid; SELL exits use Ask. Invalid,
+per-ticker timestamp regressions, excludes all observations received before
+the trade's entry timestamp, and associates production trigger events only by
+the exact persisted trade ID. Local receive time is preferred for entry-window
+and holding-time calculations; exchange event time is retained separately for
+market-data audit. It enforces the same per-side executable BBO freshness
+threshold. BUY exits use Bid; SELL exits use Ask. Invalid,
 crossed, missing-side and stale observations are not used as fills.
 
 The default comparison set is:
