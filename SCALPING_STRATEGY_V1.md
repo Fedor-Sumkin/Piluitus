@@ -266,7 +266,9 @@ batch size, flush interval, heartbeat interval and storage cap are bounded;
 queue overflow and persistence failures are counted and reported. On orderly
 shutdown the writer drains its queue before the database connection is closed.
 The journal is process-session scoped: monotonic timestamps must never be
-compared across different session IDs.
+compared across different session IDs. Memurai's list is newest-first; replay
+consumers must group by session ID and order each session by its increasing
+sequence number, not by list position.
 
 This first recorder stores top-of-book prices and sizes, not full depth or
 exchange order IDs. It supports replay of executable BBO-triggered exit
