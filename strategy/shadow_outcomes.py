@@ -307,6 +307,8 @@ class ShadowForwardTracker:
             for row in rows:
                 if row.get("candidate_id") != identifier:
                     continue
+                if row.get("llm_attribution_state") == "NOT_CALLED":
+                    return False
                 row.update({
                     "llm_linked": True,
                     "llm_attribution_state": "LINKED",
