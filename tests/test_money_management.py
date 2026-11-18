@@ -267,6 +267,7 @@ class ExecutionStopRiskTests(unittest.IsolatedAsyncioTestCase):
         self.engine.max_gross_exposure_pct = 1.0
         self.engine.max_single_position_pct = 1.0
         self.engine.max_open_stop_risk_pct = 0.01
+        self.engine.paper_positions = {}
 
         approved, _reason = await self.engine._reserve_order_size(
             "SBER", 30, 10.0, object(), side="BUY", stop_loss=9.0
