@@ -6,6 +6,7 @@ A match requires both the exact trade ID and exact BBO replay session ID.
 from __future__ import annotations
 
 import math
+from datetime import datetime
 from collections import Counter
 from statistics import median
 from typing import Any, Iterable, Mapping
@@ -19,6 +20,20 @@ def _finite(value: object) -> float | None:
     except (TypeError, ValueError, OverflowError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _aware_timestamp_epoch(value: object) -> float | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    # Never guess a timezone for legacy naive timestamps.
+    if parsed.tzinfo is None:
+        return None
+    epoch = parsed.timestamp()
+    return epoch if math.isfinite(epoch) else None
 
 
 def _identity(row: Mapping[str, Any], *, replay: bool) -> tuple[str, str] | None:
@@ -194,6 +209,12 @@ def build_actual_vs_replay_reconciliation(
             round(actual_commission - replay_commission, 6)
             if actual_commission is not None and replay_commission is not None else None
         )
+        actual_exit_epoch = _aware_timestamp_epoch(actual.get("exit_timestamp"))
+        replay_exit_epoch = _finite(replay_exit.get("event_time_epoch"))
+        exit_time_delta = (
+            round(actual_exit_epoch - replay_exit_epoch, 6)
+            if actual_exit_epoch is not None and replay_exit_epoch is not None else None
+        )
         status = "MATCHED_EXACT_ID_AND_SESSION"
         counts[status] += 1
         if actual_pnl is None:
@@ -208,6 +229,9 @@ def build_actual_vs_replay_reconciliation(
             "status": status,
             "actual_exit_reason": actual.get("exit_reason"),
             "replay_exit_reason": replay_exit.get("reason"),
+            "actual_exit_timestamp": actual.get("exit_timestamp"),
+            "replay_exit_event_time_epoch": replay_exit_epoch,
+            "exit_time_delta_actual_minus_replay_sec": exit_time_delta,
             "actual_net_pnl_rub": actual_pnl,
             "replay_net_pnl_rub": replay_pnl,
             "net_pnl_delta_actual_minus_replay_rub": pnl_delta,
