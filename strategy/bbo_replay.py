@@ -230,15 +230,23 @@ class BBOReplayRecorder:
     async def _persist_batch(self, db_manager: Any, batch: list[dict[str, Any]]) -> None:
         if not batch:
             return
-        try:
-            await db_manager.push_many_to_list(
-                BBO_REPLAY_STORAGE_KEY, batch, max_len=self.storage_limit
-            )
-        except Exception:
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                await db_manager.push_many_to_list(
+                    BBO_REPLAY_STORAGE_KEY, batch, max_len=self.storage_limit
+                )
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.1 * (attempt + 1))
+        if last_error is not None:
             self.persistence_errors += len(batch)
             logger.error(
-                "[PAPER BBO REPLAY] persist failed batch=%d errors=%d",
-                len(batch), self.persistence_errors, exc_info=True,
+                "[PAPER BBO REPLAY] persist failed after retries batch=%d errors=%d: %s",
+                len(batch), self.persistence_errors, last_error, exc_info=True,
             )
             return
         self.persisted += len(batch)
