@@ -439,14 +439,14 @@ def replay_exit_scenarios(
                     reason, trigger = ("TRAILING_STOP" if state["armed"] and kind == "trailing" else
                                        "BREAK_EVEN" if state["armed"] and kind == "break_even" and active_stop > stop else
                                        "STOP_LOSS"), active_stop
-                elif price >= target:
+                elif kind != "trailing" and price >= target:
                     reason, trigger = "TAKE_PROFIT", target
             else:
                 if price >= active_stop:
                     reason, trigger = ("TRAILING_STOP" if state["armed"] and kind == "trailing" else
                                        "BREAK_EVEN" if state["armed"] and kind == "break_even" and active_stop < stop else
                                        "STOP_LOSS"), active_stop
-                elif price <= target:
+                elif kind != "trailing" and price <= target:
                     reason, trigger = "TAKE_PROFIT", target
 
             if not reason and kind == "time_stop":
