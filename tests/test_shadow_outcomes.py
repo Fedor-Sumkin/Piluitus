@@ -66,6 +66,7 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(label["first_valid_bbo_elapsed_sec"], 20.0)
         self.assertEqual(label["last_valid_bbo_elapsed_sec"], 60.0)
         self.assertEqual(label["bbo_observation_span_sec"], 40.0)
+        self.assertEqual(label["excursion_observation_end_elapsed_sec"], 60.0)
         self.assertTrue(label["mfe_at_utc"])
         self.assertTrue(label["mae_at_utc"])
 
