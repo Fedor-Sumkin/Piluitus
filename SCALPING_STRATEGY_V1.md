@@ -324,14 +324,22 @@ The default comparison set is:
 
 All exit fills apply the configured per-side commission and adverse slippage.
 Batch summaries report closed/open counts, net PnL, expectancy in RUB and R,
-win rate, average win/loss, profit factor, maximum drawdown and holding time,
+win rate, average win/loss, profit factor, sequential closed-trade drawdown
+(not portfolio drawdown) and holding time,
 overall and by ticker, side and replay session. Fewer than 30 closed outcomes
 are labelled insufficient; 30–99 preliminary; 100–299 developing; 300+ larger
 sample. A profit factor with no losses is reported as N/A, not infinity.
 Open-at-end positions are not counted as realized PnL.
 
+The read-only endpoint `GET /api/v1/paper/replay/{order_id}` loads the
+persisted PAPER trade and its matching bounded BBO replay session, then returns
+the scenario comparison. It requires a trade created after replay-session
+linkage was introduced; older records without `bbo_replay_session_id` cannot
+be joined safely. The endpoint does not mutate the trade or journal.
+
 This engine is intentionally not wired into active position management and
-does not read/write Memurai or alter PAPER positions. It is a research
+does not alter PAPER positions. Its pure simulator does not read/write Memurai;
+only the read-only API adapter loads the persisted records. It is a research
 calculation over a caller-supplied set of journal events and trade records.
 It does not model portfolio overlap/capital contention, queue position,
 passive fills, full-depth impact or exchange latency. The time-stop is
