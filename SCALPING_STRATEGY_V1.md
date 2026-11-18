@@ -21,7 +21,7 @@ The new evaluator runs beside the baseline and writes `[STRATEGY SHADOW]` record
 | Spread / M1 ATR | 15 | Penalizes a spread that consumes too much of the observed M1 range |
 | BBO freshness | 10 | Rewards fresher executable quote confirmations |
 
-The provisional shadow qualification threshold is **85/100**. All weights and thresholds are initial hypotheses; they are not calibrated parameters and are not applied to the active baseline.
+The provisional shadow qualification threshold is **85/100**. A candidate is shadow-ineligible when the time-weighted queue history is not warmed/fresh, the 30-second aggressor trade flow is unavailable/stale, or the two microstructure signals materially oppose each other. All weights and thresholds are initial hypotheses; they are not calibrated parameters and are not applied to the active baseline.
 
 ### Queue imbalance
 
