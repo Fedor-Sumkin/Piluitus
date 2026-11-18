@@ -55,6 +55,8 @@ class BBOExitQuote(TypedDict):
     executable_side: str
     spread_pct: float
     max_age_sec: float
+    order_book_valid: bool
+    order_book_age_sec: float
 
 
 TradeRecord = dict[str, Any]
@@ -834,6 +836,9 @@ class BaseExecutionEngine:
                 and bid_age >= 0.0 and ask_age >= 0.0
                 and bid_age <= max_age and ask_age <= max_age
             )
+            book_seen = _finite_or_default(quote.get("last_order_book_seen", 0.0), 0.0)
+            book_age = now - book_seen if book_seen > 0.0 else math.inf
+            book_valid = bool(quote.get("order_book_valid", False))
             mid = (bid + ask) / 2.0 if two_sided_valid else 0.0
             spread_pct = ((ask - bid) / mid * 100.0) if mid > 0.0 else 0.0
             bid_levels_obj = quote.get("bid_levels", [])
@@ -854,6 +859,8 @@ class BaseExecutionEngine:
                 "executable_side": "BID" if side == "BUY" else "ASK",
                 "spread_pct": spread_pct,
                 "max_age_sec": max_age,
+                "order_book_valid": book_valid,
+                "order_book_age_sec": book_age,
             }
         except (TypeError, ValueError, AttributeError, OverflowError):
             return None
@@ -2001,6 +2008,13 @@ class BaseExecutionEngine:
     ) -> dict[str, Any] | None:
         """Return a depth fill plan only when the configured Finam size unit is explicit."""
         if self.paper_book_size_unit not in {"shares", "lots"}:
+            return None
+        book_age = _finite_or_default(bbo.get("order_book_age_sec"), math.inf)
+        book_max_age = _finite_or_default(bbo.get("max_age_sec"), 2.0)
+        if (
+            not bool(bbo.get("order_book_valid", False))
+            or not math.isfinite(book_age) or book_age < 0.0 or book_age > book_max_age
+        ):
             return None
         side = str(trade.get("side", "BUY")).upper()
         if side not in {"BUY", "SELL"}:
