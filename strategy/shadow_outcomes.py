@@ -462,99 +462,99 @@ class ShadowForwardTracker:
         return restored
 
     def _accumulate_completed_label(self, label: Mapping[str, Any]) -> None:
-                eligible = bool(label.get("shadow_eligible"))
-                self._accumulate_stats(
-                    self._label_stats["eligible" if eligible else "ineligible"], label
-                )
-                side = str(label.get("side") or "UNKNOWN").upper()
-                ticker = str(label.get("ticker") or "UNKNOWN").upper()
-                regime = str(label.get("regime") or "UNKNOWN")
-                score_band = self._score_band(_number(label, "score"))
-                horizon = int(_number(label, "horizon_sec"))
-                hour_msk = str(label.get("entry_hour_msk") or "UNKNOWN")
-                eligibility = "eligible" if eligible else "ineligible"
+        eligible = bool(label.get("shadow_eligible"))
+        self._accumulate_stats(
+            self._label_stats["eligible" if eligible else "ineligible"], label
+        )
+        side = str(label.get("side") or "UNKNOWN").upper()
+        ticker = str(label.get("ticker") or "UNKNOWN").upper()
+        regime = str(label.get("regime") or "UNKNOWN")
+        score_band = self._score_band(_number(label, "score"))
+        horizon = int(_number(label, "horizon_sec"))
+        hour_msk = str(label.get("entry_hour_msk") or "UNKNOWN")
+        eligibility = "eligible" if eligible else "ineligible"
         
-                spread_atr = _number(label, "spread_atr_ratio", math.nan)
-                if not math.isfinite(spread_atr) or spread_atr < 0.0:
-                    spread_atr_bucket = "unavailable"
-                elif spread_atr <= 0.10:
-                    spread_atr_bucket = "le_0.10"
-                elif spread_atr <= 0.20:
-                    spread_atr_bucket = "0.10-0.20"
-                elif spread_atr <= 0.35:
-                    spread_atr_bucket = "0.20-0.35"
-                elif spread_atr <= 0.50:
-                    spread_atr_bucket = "0.35-0.50"
-                else:
-                    spread_atr_bucket = "gt_0.50"
+        spread_atr = _number(label, "spread_atr_ratio", math.nan)
+        if not math.isfinite(spread_atr) or spread_atr < 0.0:
+            spread_atr_bucket = "unavailable"
+        elif spread_atr <= 0.10:
+            spread_atr_bucket = "le_0.10"
+        elif spread_atr <= 0.20:
+            spread_atr_bucket = "0.10-0.20"
+        elif spread_atr <= 0.35:
+            spread_atr_bucket = "0.20-0.35"
+        elif spread_atr <= 0.50:
+            spread_atr_bucket = "0.35-0.50"
+        else:
+            spread_atr_bucket = "gt_0.50"
         
-                m1_gap = _number(label, "m1_signal_gap_atr", math.nan)
-                if not math.isfinite(m1_gap) or m1_gap < 0.0:
-                    m1_gap_bucket = "unavailable"
-                elif m1_gap <= 0.05:
-                    m1_gap_bucket = "le_0.05"
-                elif m1_gap <= 0.10:
-                    m1_gap_bucket = "0.05-0.10"
-                elif m1_gap <= 0.25:
-                    m1_gap_bucket = "0.10-0.25"
-                elif m1_gap <= 0.35:
-                    m1_gap_bucket = "0.25-0.35"
-                else:
-                    m1_gap_bucket = "gt_0.35"
+        m1_gap = _number(label, "m1_signal_gap_atr", math.nan)
+        if not math.isfinite(m1_gap) or m1_gap < 0.0:
+            m1_gap_bucket = "unavailable"
+        elif m1_gap <= 0.05:
+            m1_gap_bucket = "le_0.05"
+        elif m1_gap <= 0.10:
+            m1_gap_bucket = "0.05-0.10"
+        elif m1_gap <= 0.25:
+            m1_gap_bucket = "0.10-0.25"
+        elif m1_gap <= 0.35:
+            m1_gap_bucket = "0.25-0.35"
+        else:
+            m1_gap_bucket = "gt_0.35"
         
-                trade_count = int(max(0.0, _number(label, "trade_count_60s")))
-                if trade_count < 10:
-                    trade_count_bucket = "lt_10"
-                elif trade_count < 20:
-                    trade_count_bucket = "10-19"
-                elif trade_count < 50:
-                    trade_count_bucket = "20-49"
-                else:
-                    trade_count_bucket = "ge_50"
+        trade_count = int(max(0.0, _number(label, "trade_count_60s")))
+        if trade_count < 10:
+            trade_count_bucket = "lt_10"
+        elif trade_count < 20:
+            trade_count_bucket = "10-19"
+        elif trade_count < 50:
+            trade_count_bucket = "20-49"
+        else:
+            trade_count_bucket = "ge_50"
         
-                flow = _number(label, "trade_flow_imbalance_30s", math.nan)
-                if not math.isfinite(flow):
-                    flow_alignment = "unavailable"
-                else:
-                    signed_flow = flow if side == "BUY" else -flow
-                    if signed_flow >= 0.25:
-                        flow_alignment = "strong_aligned"
-                    elif signed_flow >= 0.10:
-                        flow_alignment = "aligned"
-                    elif signed_flow > -0.10:
-                        flow_alignment = "neutral"
-                    else:
-                        flow_alignment = "opposed"
+        flow = _number(label, "trade_flow_imbalance_30s", math.nan)
+        if not math.isfinite(flow):
+            flow_alignment = "unavailable"
+        else:
+            signed_flow = flow if side == "BUY" else -flow
+            if signed_flow >= 0.25:
+                flow_alignment = "strong_aligned"
+            elif signed_flow >= 0.10:
+                flow_alignment = "aligned"
+            elif signed_flow > -0.10:
+                flow_alignment = "neutral"
+            else:
+                flow_alignment = "opposed"
         
-                segment_keys = (
-                    f"side={side}",
-                    f"ticker={ticker}",
-                    f"regime={regime}",
-                    f"score_band={score_band}",
-                    f"horizon={horizon}s",
-                    f"hour_msk={hour_msk}",
-                    f"spread_atr_bucket={spread_atr_bucket}",
-                    f"trade_count_bucket={trade_count_bucket}",
-                    f"flow_alignment={flow_alignment}",
-                    f"side_flow_alignment={side}|{flow_alignment}",
-                    f"side_regime={side}|{regime}",
-                    f"side_score_band={side}|{score_band}",
-                    f"side_spread_atr_bucket={side}|{spread_atr_bucket}",
-                    f"side_trade_count_bucket={side}|{trade_count_bucket}",
-                    f"m1_pattern={str(label.get('m1_pattern') or 'NONE')}",
-                    f"side_m1_pattern={side}|{str(label.get('m1_pattern') or 'NONE')}",
-                    f"m1_gap_bucket={m1_gap_bucket}",
-                    f"side_m1_gap_bucket={side}|{m1_gap_bucket}",
-                    f"side_eligibility={side}|{eligibility}",
-                    f"ticker_eligibility={ticker}|{eligibility}",
-                    *(f"hard_block={reason}" for reason in label.get("hard_blocks", [])),
-                )
-                for key in segment_keys:
-                    if key not in self._segment_stats:
-                        if len(self._segment_stats) >= self.max_segment_groups:
-                            continue
-                        self._segment_stats[key] = self._new_stats_bucket()
-                    self._accumulate_stats(self._segment_stats[key], label)
+        segment_keys = (
+            f"side={side}",
+            f"ticker={ticker}",
+            f"regime={regime}",
+            f"score_band={score_band}",
+            f"horizon={horizon}s",
+            f"hour_msk={hour_msk}",
+            f"spread_atr_bucket={spread_atr_bucket}",
+            f"trade_count_bucket={trade_count_bucket}",
+            f"flow_alignment={flow_alignment}",
+            f"side_flow_alignment={side}|{flow_alignment}",
+            f"side_regime={side}|{regime}",
+            f"side_score_band={side}|{score_band}",
+            f"side_spread_atr_bucket={side}|{spread_atr_bucket}",
+            f"side_trade_count_bucket={side}|{trade_count_bucket}",
+            f"m1_pattern={str(label.get('m1_pattern') or 'NONE')}",
+            f"side_m1_pattern={side}|{str(label.get('m1_pattern') or 'NONE')}",
+            f"m1_gap_bucket={m1_gap_bucket}",
+            f"side_m1_gap_bucket={side}|{m1_gap_bucket}",
+            f"side_eligibility={side}|{eligibility}",
+            f"ticker_eligibility={ticker}|{eligibility}",
+            *(f"hard_block={reason}" for reason in label.get("hard_blocks", [])),
+        )
+        for key in segment_keys:
+            if key not in self._segment_stats:
+                if len(self._segment_stats) >= self.max_segment_groups:
+                    continue
+                self._segment_stats[key] = self._new_stats_bucket()
+            self._accumulate_stats(self._segment_stats[key], label)
 
     def statistics_snapshot(self) -> dict[str, Any]:
         """Cumulative outcomes by eligibility and bounded research cross-sections."""
