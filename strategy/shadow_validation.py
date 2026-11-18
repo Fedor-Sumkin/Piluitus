@@ -12,6 +12,8 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
 
+from strategy.shadow_label_quality import shadow_label_quality_rank
+
 
 def _finite(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
@@ -38,13 +40,8 @@ def _timestamp(row: Mapping[str, Any]) -> datetime | None:
     return None
 
 
-def _quality_rank(row: Mapping[str, Any]) -> tuple[int, float]:
-    result = str(row.get("result") or "").upper()
-    quality = str(row.get("label_quality") or "").upper()
-    result_rank = {"OK": 3, "LABEL_LATE": 2, "NO_FRESH_BBO": 1}.get(result, 0)
-    quality_rank = {"ON_TIME": 2, "DELAYED": 1}.get(quality, 0)
-    lag = _finite(row.get("label_lag_sec"))
-    return result_rank * 10 + quality_rank, -(lag if lag is not None else math.inf)
+def _quality_rank(row: Mapping[str, Any]) -> tuple[int, int, int, float]:
+    return shadow_label_quality_rank(row)
 
 
 def _summarize(rows: list[dict[str, Any]], candidate_ids: set[str]) -> dict[str, Any]:
