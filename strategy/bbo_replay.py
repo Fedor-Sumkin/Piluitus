@@ -1,8 +1,8 @@
-"""Bounded PAPER best-bid/offer event journal for deterministic exit research.
+"""Bounded PAPER market-event journal for deterministic exit research.
 
-The recorder stores accepted ORDER_BOOK and QUOTES states for selected symbols
-and open PAPER positions. It is deliberately observational: it never feeds prices back
-into the execution path.
+The recorder stores accepted ORDER_BOOK/QUOTES states, production exit-trigger
+events and the first fresh executable BBO after a pending trigger. It is
+observational and never feeds prices back into the execution path.
 """
 from __future__ import annotations
 
