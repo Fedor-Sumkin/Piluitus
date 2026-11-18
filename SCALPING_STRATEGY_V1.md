@@ -15,7 +15,8 @@ The new evaluator runs beside the baseline and writes `[STRATEGY SHADOW]` record
 |---|---:|---|
 | Signed price change + VWAP agreement | 25 | Both must point in the candidate direction |
 | M1 pattern / EMA trend | 20 | Matching closed M1 pattern gets full points; aligned EMA trend receives partial points |
-| Best-queue imbalance | 20 | Normalized difference between current best Bid and Ask sizes |
+| Persistent best-queue imbalance | 12 | Time-weighted five-second average of coherent best Bid/Ask size imbalance |
+| Aggressor trade-flow confirmation | 8 | 30-second signed trade-volume imbalance, freshness checked |
 | Last-trade-size impulse | 10 | Relative trade-size impulse, with stronger score at 2× or more |
 | Spread / M1 ATR | 15 | Penalizes a spread that consumes too much of the observed M1 range |
 | BBO freshness | 10 | Rewards fresher executable quote confirmations |
@@ -26,7 +27,7 @@ The provisional shadow qualification threshold is **85/100**. All weights and th
 
 `queue_imbalance = (best_bid_size - best_ask_size) / (best_bid_size + best_ask_size)`
 
-The value is dimensionless and bounded by -1 and +1. Positive values indicate a larger visible best Bid queue; negative values indicate a larger visible best Ask queue. It is calculated only when both best-side sizes are positive, the ORDER_BOOK state is valid, and the size observations are fresh.
+The value is dimensionless and bounded by -1 and +1. Positive values indicate a larger visible best Bid queue; negative values indicate a larger visible best Ask queue. PILUITUS now retains accepted coherent snapshots and calculates a time-weighted five-second average, requiring at least three observations and one second of coverage. Empty, crossed or invalid book states clear the history. The separate trade-flow component uses the 30-second aggressor-side imbalance only when trade metrics are ready and fresh.
 
 Finam's displayed size unit is not assumed. The ratio can be used as a relative feature only; it must not be interpreted as shares, lots, executable depth, or guaranteed fill capacity.
 
