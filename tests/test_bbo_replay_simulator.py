@@ -378,3 +378,17 @@ if __name__ == "__main__":
         self.assertEqual(by_id["SBER-1"]["scenarios"][0]["exit"]["event_sequence"], 1)
         self.assertEqual(by_id["GAZP-1"]["scenarios"][0]["exit"]["event_sequence"], 1)
         self.assertEqual(by_id["SBER-OTHER"]["scenarios"][0]["exit"]["event_sequence"], 1)
+
+
+    def test_batch_replay_reports_invalid_positions_without_aborting_valid_ones(self):
+        rows = [event(1, bid=98.8, ask=98.9, epoch=1_800_000_001.0)]
+        invalid = position(position_id="invalid", stop_loss=100.0)
+        valid = position(position_id="valid")
+        result = replay_exit_batch(
+            rows, [invalid, valid],
+            scenarios=[{"name": "base", "kind": "baseline"}],
+        )
+        self.assertEqual(result["positions"], 1)
+        self.assertEqual(len(result["rejected_positions"]), 1)
+        self.assertEqual(result["rejected_positions"][0]["position_id"], "invalid")
+        self.assertEqual(result["trades"][0]["position_id"], "valid")
