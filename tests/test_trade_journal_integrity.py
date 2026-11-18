@@ -108,6 +108,15 @@ class TradeJournalIntegrityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["deleted_paper_performance_keys"], 1)
         self.assertNotIn("piluitus:paper:closed_trades", client.lists)
 
+    async def test_panic_journal_clear_removes_realized_paper_journal(self) -> None:
+        client = FakeListRedis()
+        client.lists["piluitus:paper:closed_trades"] = [
+            json.dumps({"id": "PAPER_CLOSED_2", "status": "CLOSED", "mode": "PAPER"})
+        ]
+        with patch.object(RedisClient, "get_client", new=AsyncMock(return_value=client)):
+            await DBManager().clear_journal()
+        self.assertNotIn("piluitus:paper:closed_trades", client.lists)
+
     async def test_valid_trade_record_is_returned(self) -> None:
         client = FakeRedis(b'{"status":"OPEN","mode":"PAPER","ticker":"SBER"}')
         with patch.object(RedisClient, "get_client", new=AsyncMock(return_value=client)):
