@@ -1,11 +1,11 @@
 fastapi==0.111.0
 uvicorn==0.30.1
 websockets==12.0
-pydantic==2.8.2
+pydantic==2.13.5
 pandas==2.2.2
 finam-trade-api==4.4.0
 python-dotenv==1.0.1
-aiogram==3.13.1
+aiogram==3.31.0
 httpx==0.28.1
 numpy==1.26.4
 redis==5.0.7
@@ -13,5 +13,5 @@ openpyxl==3.1.5
 pypdf==4.3.1
 aiofiles==23.2.1
 jinja2==3.1.4
-ollama==0.3.3
+ollama==0.6.3
 h2>=4.1.0,<5
