@@ -2580,11 +2580,20 @@ class BaseExecutionEngine:
                 ) - estimated_exit_commission
                 entry_notional = _finite_or_default(trade.get("notional_entry_rub"), entry_price * share_qty)
                 trade["current_price"] = observed_last_price
-                trade["pnl"] = round(estimated_net_pnl, 2)
-                trade["gross_pnl"] = round(estimated_gross_pnl, 2)
+                trade["pnl"] = round(
+                    _finite_or_default(trade.get("realized_net_pnl_rub"), 0.0)
+                    + estimated_net_pnl, 2
+                )
+                trade["gross_pnl"] = round(
+                    _finite_or_default(trade.get("realized_gross_pnl_rub"), 0.0)
+                    + estimated_gross_pnl, 2
+                )
                 trade["estimated_exit_price"] = estimated_exit_price
-                trade["estimated_exit_commission_rub"] = round(estimated_exit_commission, 4)
-                trade["pnl_percent"] = round(estimated_net_pnl / entry_notional * 100.0, 4) if entry_notional > 0 else 0.0
+                trade["estimated_exit_commission_rub"] = round(
+                    _finite_or_default(trade.get("realized_exit_commission_rub"), 0.0)
+                    + estimated_exit_commission, 4
+                )
+                trade["pnl_percent"] = round(trade["pnl"] / entry_notional * 100.0, 4) if entry_notional > 0 else 0.0
                 trade["current_pnl_source"] = "LAST_TRADE_ESTIMATE"
                 if pending_exit in {"STOP_LOSS", "TAKE_PROFIT"}:
                     if not bool(trade.get("exit_trigger_wait_logged")):
@@ -2798,7 +2807,7 @@ class BaseExecutionEngine:
                 _finite_or_default(trade.get("realized_exit_commission_rub"), 0.0)
                 + estimated_exit_fee, 4
             )
-            trade["pnl_percent"] = round(mark_net / entry_notional * 100.0, 4) if entry_notional > 0 else 0.0
+            trade["pnl_percent"] = round(trade["pnl"] / entry_notional * 100.0, 4) if entry_notional > 0 else 0.0
             trade["current_pnl_source"] = "EXECUTABLE_BBO_ESTIMATE"
             trade["current_bbo_age_sec"] = round(float(bbo["age_sec"]), 3)
             trade["current_spread_pct"] = round(float(bbo["spread_pct"]), 6)
@@ -2877,6 +2886,7 @@ class BaseExecutionEngine:
                 )
                 continue
 
+            partial_count_before = int(_finite_or_default(pos.get("exit_partial_fill_count"), 0.0))
             self._lock_closing.add(order_id)
             try:
                 last_price = self._latest_price(ticker, pos)
@@ -2887,7 +2897,7 @@ class BaseExecutionEngine:
                 )
                 if str(close_result.get("status", "")).upper() == "CLOSED":
                     closed_count += 1
-                elif str(close_result.get("last_partial_exit_at") or ""):
+                elif int(_finite_or_default(close_result.get("exit_partial_fill_count"), 0.0)) > partial_count_before:
                     partial_count += 1
                 else:
                     blocked_count += 1
