@@ -605,3 +605,18 @@ short-sale collateral, leverage, settlement, partial fills, intratrade
 mark-to-market equity or opportunity costs. The capital and allocation values
 must be supplied explicitly; no account balance is inferred. Results are
 scenario-specific and do not modify actual PAPER trades or order sizing.
+
+
+## PAPER cohort expansion: ticker-side, Moscow entry time and market regime
+
+The realized PAPER scorecard now includes joint ticker × side cohorts, Moscow
+clock-time entry cohorts, and point-in-time market, volatility, liquidity and
+directional regime cohorts. Entry-time buckets are 10:00–11:00, 11:00–14:00,
+14:00–18:00 and 18:00–23:00 Moscow time; values outside these intervals are
+reported separately. A missing, malformed or timezone-naive entry timestamp is
+kept in UNKNOWN rather than silently assigned a timezone.
+
+New trades persist the four regime labels from the market-evidence snapshot at
+entry. Legacy trades or snapshots without those labels remain UNKNOWN. These
+groups are descriptive and must be interpreted with sample counts, costs and
+out-of-sample stability; they are not entry filters or evidence of causality.
