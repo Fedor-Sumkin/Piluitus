@@ -563,8 +563,8 @@ class BBOReplaySimulatorTests(unittest.TestCase):
             "scenarios": [{"name": "BASELINE", "exit": None}],
         }
         rows = [
-            event(1, bid=99.0, ask=99.1, epoch=2.0),
-            event(2, ticker="GAZP", bid=100.0, ask=100.1, epoch=5.0),
+            event(1, bid=99.0, ask=99.1, age=1.5, epoch=2.0),
+            event(2, ticker="GAZP", bid=100.0, ask=100.1, epoch=3.0),
         ]
         result = _portfolio_capacity_simulation(
             [trade], "BASELINE", 10000.0, 15.0, events=rows, max_bbo_age_sec=2.0,
