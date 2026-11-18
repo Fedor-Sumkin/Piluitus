@@ -352,7 +352,7 @@ async def process_panic_callback(callback_query: types.CallbackQuery):
             res_msg = "❌ Критическая ошибка: Шлюз global_broker_ref недоступен."
 
     await bot.send_message(chat_id=callback_query.message.chat.id, text=res_msg, parse_mode=ParseMode.HTML)
-    await callback_query.answer(text="Ликвидация запущена!", show_alert=True)
+    await callback_query.answer(text="Результат отправлен в чат.", show_alert=True)
 
 
 # --- ВЕЩАНИЕ КАРТОЧЕК СИГНАЛОВ ИИ С РАССУЖДЕНИЯМИ DEEPSEEK-R1 ---
