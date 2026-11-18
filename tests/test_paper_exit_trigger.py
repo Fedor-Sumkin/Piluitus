@@ -158,6 +158,18 @@ class PaperExitDepthTests(unittest.TestCase):
         self.assertEqual(fill["filled_lots"], 2)
         self.assertAlmostEqual(fill["average_price"], 100.15)
 
+    def test_lot_unit_converts_book_lots_to_share_quantity(self):
+        self.engine.paper_book_size_unit = "lots"
+        trade = {
+            "side": "BUY", "volume": 20, "lots": 2, "lot_size": 10,
+        }
+        fill = self.engine._paper_exit_depth_fill(
+            "SBER", trade, {"bid_levels": [[99.9, 1], [99.8, 1]]}
+        )
+        self.assertEqual(fill["filled_lots"], 2)
+        self.assertEqual(fill["filled_shares"], 20)
+        self.assertAlmostEqual(fill["average_price"], 99.85)
+
     def test_insufficient_depth_is_reported_as_partial_not_full_fill(self):
         trade = {
             "side": "BUY", "volume": 20, "lots": 2, "lot_size": 10,
