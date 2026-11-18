@@ -859,6 +859,8 @@ _trade_flow_last_log_at = time_module.monotonic()
 # Forward labels are research-only and bounded in memory; all observations are logged.
 scalping_shadow_tracker = ShadowForwardTracker()
 paper_bbo_replay_recorder = BBOReplayRecorder()
+execution_engine.bbo_replay_session_id = paper_bbo_replay_recorder.session_id
+execution_engine.paper_exit_event_recorder = paper_bbo_replay_recorder.record_exit_trigger
 SHADOW_OUTCOMES_STORAGE_KEY = "piluitus:strategy:shadow:outcomes"
 SHADOW_OUTCOMES_STORAGE_LIMIT = 20000
 paper_shadow_labels: list[dict[str, Any]] = []
