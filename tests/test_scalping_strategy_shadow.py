@@ -25,6 +25,14 @@ def strong_buy_metrics() -> dict[str, float | str]:
         "queue_imbalance_available": 1.0,
         "queue_imbalance": 0.32,
         "queue_imbalance_age_sec": 0.2,
+        "queue_imbalance_5s": 0.32,
+        "queue_imbalance_5s_available": 1.0,
+        "queue_imbalance_5s_coverage_sec": 3.0,
+        "queue_imbalance_5s_samples": 20,
+        "queue_imbalance_5s_age_sec": 0.2,
+        "trade_data_ready": 1.0,
+        "trade_metrics_age_sec": 0.2,
+        "trade_flow_imbalance_30s": 0.35,
         "bar_atr": 0.20,
         "bar_atr_pct": 0.20,
         "bar_atr_periods": 8.0,
@@ -48,6 +56,7 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
     def test_opposing_queue_imbalance_reduces_score_without_inverting_side(self) -> None:
         metrics = strong_buy_metrics()
         metrics["queue_imbalance"] = -0.45
+        metrics["queue_imbalance_5s"] = -0.45
         result = evaluate_scalping_candidate("BUY", metrics)
         self.assertFalse(result["eligible"])
         self.assertEqual(result["side"], "BUY")
@@ -109,9 +118,25 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
     def test_missing_queue_measurement_is_explicit_not_fabricated(self) -> None:
         metrics = strong_buy_metrics()
         metrics["queue_imbalance_available"] = 0.0
+        metrics["queue_imbalance_5s_available"] = 0.0
         result = evaluate_scalping_candidate("BUY", metrics)
         self.assertIsNone(result["queue_imbalance"])
         self.assertIn("best_queue_imbalance_unavailable_or_stale", result["reasons"])
+
+    def test_queue_and_aggressor_flow_conflict_blocks_shadow_qualification(self):
+        metrics = strong_buy_metrics()
+        metrics["trade_flow_imbalance_30s"] = -0.30
+        result = evaluate_scalping_candidate("BUY", metrics)
+        self.assertFalse(result["eligible"])
+        self.assertIn("queue_trade_flow_conflict", result["hard_blocks"])
+
+    def test_queue_warmup_does_not_fall_back_to_single_snapshot(self):
+        metrics = strong_buy_metrics()
+        metrics["queue_imbalance_5s_available"] = 0.0
+        metrics["queue_imbalance_5s_coverage_sec"] = 0.4
+        result = evaluate_scalping_candidate("BUY", metrics)
+        self.assertFalse(result["eligible"])
+        self.assertIn("time_weighted_queue_imbalance_warmup_or_stale", result["reasons"])
 
 
 if __name__ == "__main__":
