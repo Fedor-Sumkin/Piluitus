@@ -94,6 +94,20 @@ class BBOReplayRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["ask"], 100.1)
         self.assertEqual(row["event_kind"], "STATE_CHANGE")
 
+    def test_replay_timing_configuration_has_hard_bounds(self):
+        recorder = BBOReplayRecorder(
+            queue_limit=999_999,
+            batch_size=99_999,
+            flush_interval_sec=999.0,
+            heartbeat_interval_sec=999.0,
+            storage_limit=9_999_999,
+        )
+        self.assertEqual(recorder.queue_limit, 100_000)
+        self.assertEqual(recorder.batch_size, 5_000)
+        self.assertEqual(recorder.flush_interval_sec, 60.0)
+        self.assertEqual(recorder.heartbeat_interval_sec, 60.0)
+        self.assertEqual(recorder.storage_limit, 1_000_000)
+
     def test_rejects_invalid_executable_bbo(self):
         recorder = BBOReplayRecorder(queue_limit=100)
         result = recorder.record(
