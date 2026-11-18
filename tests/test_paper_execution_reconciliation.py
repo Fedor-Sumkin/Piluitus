@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timezone
 
 from strategy.paper_execution_reconciliation import build_actual_vs_replay_reconciliation
 
@@ -69,6 +70,27 @@ class PaperExecutionReconciliationTests(unittest.TestCase):
         self.assertEqual(row["actual_exit_partial_fill_count"], 2)
         self.assertEqual(row["actual_exit_depth_impact_rub"], 1.5)
         self.assertEqual(row["commission_delta_actual_minus_replay_rub"], 2.0)
+
+    def test_exit_time_delta_uses_aware_timestamps_only(self) -> None:
+        actual = actual_trade(
+            exit_timestamp=datetime.fromtimestamp(1001.0, timezone.utc).isoformat()
+        )
+        replay = replay_trade()
+        replay["scenarios"][0]["exit"]["event_time_epoch"] = 1000.0
+        result = build_actual_vs_replay_reconciliation(
+            [actual], {"trades": [replay]}
+        )
+        self.assertEqual(
+            result["trades"][0]["exit_time_delta_actual_minus_replay_sec"], 1.0
+        )
+
+        naive = actual_trade(exit_timestamp="1970-01-01T00:16:41")
+        result_naive = build_actual_vs_replay_reconciliation(
+            [naive], {"trades": [replay]}
+        )
+        self.assertIsNone(
+            result_naive["trades"][0]["exit_time_delta_actual_minus_replay_sec"]
+        )
 
     def test_same_ticker_does_not_match_different_trade_id_or_session(self) -> None:
         result = build_actual_vs_replay_reconciliation(
