@@ -3792,11 +3792,19 @@ async def replay_paper_exit_batch(
     limit: int = 30,
     ticker: str | None = None,
     session_id: str | None = None,
+    portfolio_capital_rub: float | None = None,
+    max_allocation_pct: float = 15.0,
 ):
     """Read-only batch replay of recent closed PAPER positions."""
     _require_paper_mode()
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=422, detail="limit должен быть от 1 до 100.")
+    if portfolio_capital_rub is not None and (
+        not math.isfinite(portfolio_capital_rub) or portfolio_capital_rub <= 0.0
+    ):
+        raise HTTPException(status_code=422, detail="portfolio_capital_rub должен быть положительным числом.")
+    if not math.isfinite(max_allocation_pct) or not 0.0 < max_allocation_pct <= 100.0:
+        raise HTTPException(status_code=422, detail="max_allocation_pct должен быть в диапазоне (0, 100].")
 
     all_trades = await db_manager.get_all_daily_trades()
     if not isinstance(all_trades, Mapping):
@@ -3887,6 +3895,8 @@ async def replay_paper_exit_batch(
             replay_events,
             selected,
             max_bbo_age_sec=max_age,
+            portfolio_capital_rub=portfolio_capital_rub,
+            max_allocation_pct=max_allocation_pct,
         )
     except ValueError as replay_error:
         raise HTTPException(status_code=422, detail=str(replay_error)) from replay_error
