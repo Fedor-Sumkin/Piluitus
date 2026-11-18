@@ -635,14 +635,9 @@ def replay_exit_batch(
         if not isinstance(event, Mapping):
             continue
         event_session = str(event.get("session_id") or "").strip()
-        event_ticker = str(event.get("ticker") or "").strip().upper().split("@")[0]
         if not event_session:
             continue
         session_rows.setdefault(event_session, []).append(event)
-        if event_ticker:
-            events_by_session_ticker.setdefault(
-                (event_session, event_ticker), []
-            ).append(event)
 
     session_metadata: dict[str, dict[str, int]] = {}
     for event_session, rows in session_rows.items():
@@ -657,6 +652,12 @@ def replay_exit_batch(
             if sequence_counts[sequence_int] == 1:
                 valid_rows.append(event)
         valid_rows.sort(key=lambda item: int(_number(item.get("sequence"), 0)))
+        for row in valid_rows:
+            event_ticker = str(row.get("ticker") or "").strip().upper().split("@")[0]
+            if event_ticker:
+                events_by_session_ticker.setdefault(
+                    (event_session, event_ticker), []
+                ).append(row)
         sequences = [int(_number(row.get("sequence"), 0)) for row in valid_rows]
         gaps = max(0, sequences[0] - 1) if sequences else 0
         if len(sequences) > 1:
