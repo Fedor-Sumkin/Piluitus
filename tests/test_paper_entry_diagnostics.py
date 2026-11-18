@@ -14,6 +14,7 @@ class PaperEntryDiagnosticsTests(unittest.TestCase):
         )
         self.assertEqual(result["entry_mid_price"], 100.0)
         self.assertEqual(result["entry_executable_bbo_price"], 101.0)
+        self.assertEqual(result["entry_signal_reference_price"], 100.0)
         self.assertEqual(result["entry_spread_to_atr_ratio"], 1.0)
         self.assertAlmostEqual(result["entry_depth_impact_rub"], 2.0)
         self.assertAlmostEqual(result["entry_configured_slippage_rub"], 1.01)
