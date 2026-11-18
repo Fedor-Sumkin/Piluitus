@@ -1039,10 +1039,10 @@ def _portfolio_capacity_simulation(
         "peak_open_positions": peak_open_positions,
         "peak_reserved_capital_rub": round(peak_reserved, 2),
         "peak_allocation_utilization_pct": round(
-            peak_reserved / allocation_limit * 100.0, 4
+            peak_reserved / allocation_limit * 100.0, 8
         ) if allocation_limit > 0.0 else None,
         "peak_total_capital_utilization_pct": round(
-            peak_reserved / capital * 100.0, 4
+            peak_reserved / capital * 100.0, 8
         ),
         "ending_reserved_capital_rub": round(reserved, 2),
         "ending_free_cash_rub": round(cash, 4),
@@ -1052,9 +1052,9 @@ def _portfolio_capacity_simulation(
         "ending_equity_at_cost_rub": round(equity_at_cost, 4),
         "mark_to_market": {
             "available": complete_snapshots > 0,
-            "ending_equity_rub": round(current_equity, 4) if current_equity is not None else None,
+            "ending_equity_rub": round(current_equity, 8) if current_equity is not None else None,
             "ending_unrealized_net_pnl_rub": (
-                round(latest_complete_unrealized, 4)
+                round(latest_complete_unrealized, 8)
                 if current_equity is not None and latest_complete_unrealized is not None else None
             ),
             "ending_reserved_capital_rub": (
