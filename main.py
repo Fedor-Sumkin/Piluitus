@@ -50,7 +50,12 @@ from rag_prompt_utils import select_prompt_rules
 from candidate_recovery import coalesce_pending_bbo_entry, refresh_candidate_bbo_metrics
 from scalping_strategy import evaluate_scalping_candidate
 from shadow_outcomes import ShadowForwardTracker
-from strategy.bbo_replay import BBOReplayRecorder
+from strategy.bbo_replay import (
+    BBOReplayRecorder,
+    BBO_REPLAY_STORAGE_KEY,
+    BBO_REPLAY_STORAGE_LIMIT,
+)
+from strategy.bbo_replay_simulator import replay_exit_scenarios
 from strategy.paper_performance import (
     PAPER_CLOSED_TRADES_STORAGE_KEY,
     PAPER_CLOSED_TRADES_STORAGE_LIMIT,
@@ -3776,6 +3781,69 @@ async def get_paper_performance():
         "paper_mode": True,
         "retained_trade_limit": PAPER_CLOSED_TRADES_STORAGE_LIMIT,
         "scorecard": paper_performance_tracker.scorecard(paper_shadow_labels),
+    }
+
+
+@app.get("/api/v1/paper/replay/{order_id}")
+async def replay_paper_exit_scenarios(order_id: str):
+    """Read-only BBO replay for one persisted PAPER position."""
+    _require_paper_mode()
+    all_trades = await db_manager.get_all_daily_trades()
+    trade = all_trades.get(order_id) if isinstance(all_trades, Mapping) else None
+    if not isinstance(trade, Mapping) or not DBManager.is_paper_trade(trade, order_id):
+        raise HTTPException(status_code=404, detail="PAPER-сделка не найдена в постоянном журнале.")
+    replay_session_id = str(trade.get("bbo_replay_session_id") or "").strip()
+    if not replay_session_id:
+        raise HTTPException(
+            status_code=409,
+            detail="У сделки нет bbo_replay_session_id. Старые сделки до включения replay связать нельзя.",
+        )
+
+    stored_events = await db_manager.get_list(
+        BBO_REPLAY_STORAGE_KEY,
+        start=0,
+        stop=BBO_REPLAY_STORAGE_LIMIT - 1,
+    )
+    session_events = [
+        row for row in stored_events
+        if isinstance(row, Mapping)
+        and str(row.get("session_id") or "") == replay_session_id
+    ]
+    if not session_events:
+        raise HTTPException(
+            status_code=409,
+            detail="В журнале BBO нет событий для replay-сессии этой сделки.",
+        )
+
+    configured_age = getattr(screener, "bbo_max_age_sec", None)
+    if configured_age is None:
+        configured_age = os.getenv(
+            "PILUITUS_BBO_MAX_AGE_SEC",
+            os.getenv("PILUITUS_BBO_EXIT_MAX_AGE_SEC", "2.0"),
+        )
+    try:
+        max_age = float(configured_age)
+    except (TypeError, ValueError, OverflowError):
+        max_age = 2.0
+    if not math.isfinite(max_age) or max_age <= 0.0:
+        max_age = 2.0
+    max_age = min(5.0, max(0.25, max_age))
+
+    try:
+        replay = replay_exit_scenarios(
+            session_events,
+            trade,
+            max_bbo_age_sec=max_age,
+        )
+    except ValueError as replay_error:
+        raise HTTPException(status_code=422, detail=str(replay_error)) from replay_error
+
+    return {
+        "paper_mode": True,
+        "trade_id": order_id,
+        "journal_events_for_session": len(session_events),
+        "retained_event_limit": BBO_REPLAY_STORAGE_LIMIT,
+        "replay": replay,
     }
 
 
