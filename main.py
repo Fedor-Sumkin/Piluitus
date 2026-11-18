@@ -1252,6 +1252,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         )
     for prefix in (
         "regime=", "score_band=", "horizon=", "hour_msk=", "hard_block=",
+        "ofi_alignment_5s=", "side_ofi_alignment_5s=",
         "spread_atr_bucket=", "trade_count_bucket=", "flow_alignment=", "side_flow_alignment=",
         "llm_model_decision=", "llm_final_decision=", "llm_signal_status=",
         "llm_execution_status=", "llm_confidence_bucket=",
@@ -1376,11 +1377,12 @@ def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -
         component_text = "-"
     logger.info(
         "🧪 [STRATEGY SHADOW] %s id=%s side=%s eligible=%s score=%.1f/%.0f regime=%s "
-        "queue_now=%s queue_5s=%s trade_flow_30s=%s spread_ATR=%s components=%s hard_blocks=%s reasons=%s",
+        "queue_now=%s queue_5s=%s trade_flow_30s=%s OFI_5s=%s/%s spread_ATR=%s components=%s hard_blocks=%s reasons=%s",
         ticker, observation_id or "-", direction, bool(result.get("eligible")), float(result.get("score", 0.0)),
         float(result.get("threshold", 70.0)), result.get("regime", "UNKNOWN"),
         result.get("queue_imbalance"), result.get("queue_imbalance_5s"),
-        result.get("trade_flow_imbalance_30s"), result.get("spread_atr_ratio"), component_text,
+        result.get("trade_flow_imbalance_30s"), result.get("ofi_5s"),
+        result.get("ofi_directional_alignment"), result.get("spread_atr_ratio"), component_text,
         ",".join(result.get("hard_blocks", [])) or "-",
         ",".join(result.get("reasons", [])) or "-",
     )
