@@ -1277,6 +1277,7 @@ def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -
         "spread_atr_unavailable": "shadow_block_spread_atr_unavailable",
         "spread_to_atr_above_limit": "shadow_block_spread_atr_too_wide",
         "bbo_prices_invalid": "shadow_block_bbo_prices_invalid",
+        "queue_trade_flow_conflict": "shadow_block_queue_trade_flow_conflict",
     }
     observed_blocks = set(result.get("hard_blocks", []))
     counted_blocks = set()
@@ -1298,10 +1299,11 @@ def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -
         component_text = "-"
     logger.info(
         "🧪 [STRATEGY SHADOW] %s id=%s side=%s eligible=%s score=%.1f/%.0f regime=%s "
-        "queue_imbalance=%s spread_ATR=%s components=%s hard_blocks=%s reasons=%s",
+        "queue_now=%s queue_5s=%s trade_flow_30s=%s spread_ATR=%s components=%s hard_blocks=%s reasons=%s",
         ticker, observation_id or "-", direction, bool(result.get("eligible")), float(result.get("score", 0.0)),
         float(result.get("threshold", 70.0)), result.get("regime", "UNKNOWN"),
-        result.get("queue_imbalance"), result.get("spread_atr_ratio"), component_text,
+        result.get("queue_imbalance"), result.get("queue_imbalance_5s"),
+        result.get("trade_flow_imbalance_30s"), result.get("spread_atr_ratio"), component_text,
         ",".join(result.get("hard_blocks", [])) or "-",
         ",".join(result.get("reasons", [])) or "-",
     )
