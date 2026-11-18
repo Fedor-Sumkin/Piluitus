@@ -1218,6 +1218,7 @@ def replay_exit_batch(
         except ValueError as exc:
             rejected_positions.append({
                 "position_id": str(position.get("id") or position.get("position_id") or index),
+                "session_id": position_session,
                 "reason": str(exc),
             })
             continue
