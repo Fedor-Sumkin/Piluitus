@@ -55,12 +55,18 @@ def build_actual_vs_replay_reconciliation(
 ) -> dict[str, Any]:
     """Compare actual PAPER results to replay only on exact (session, trade) identity."""
     scenario = str(scenario_name or "BASELINE_SL_TP").strip() or "BASELINE_SL_TP"
-    actual_rows = [
-        dict(row) for row in actual_trades
-        if isinstance(row, Mapping)
-        and str(row.get("status") or "").strip().upper() == "CLOSED"
-        and str(row.get("mode") or "").strip().upper() == "PAPER"
-    ]
+    actual_rows = []
+    for raw in actual_trades:
+        if not isinstance(raw, Mapping):
+            continue
+        row = dict(raw)
+        mode = str(row.get("mode") or "").strip().upper()
+        trade_id = str(row.get("id") or row.get("position_id") or "").strip()
+        is_paper = mode == "PAPER" or (
+            mode != "LIVE" and trade_id.startswith(("PAPER_", "TRADE_"))
+        )
+        if str(row.get("status") or "").strip().upper() == "CLOSED" and is_paper:
+            actual_rows.append(row)
     replay_rows_raw = replay_batch.get("trades", [])
     replay_rows = [
         dict(row) for row in replay_rows_raw
