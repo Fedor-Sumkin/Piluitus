@@ -362,6 +362,8 @@ class ShadowForwardTrackerTests(unittest.TestCase):
             "trade_flow_imbalance_30s": 0.30,
             "trade_count_60s": 40,
             "trade_history_coverage_sec": 60.0,
+            "trade_data_ready": 1.0,
+            "trade_metrics_age_sec": 0.2,
         })
         with patch.dict("os.environ", {
             "PILUITUS_PAPER_COMMISSION_PCT": "0.05",
