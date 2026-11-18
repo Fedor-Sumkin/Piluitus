@@ -50,6 +50,11 @@ from rag_prompt_utils import select_prompt_rules
 from candidate_recovery import coalesce_pending_bbo_entry, refresh_candidate_bbo_metrics
 from scalping_strategy import evaluate_scalping_candidate
 from shadow_outcomes import ShadowForwardTracker
+from strategy.paper_performance import (
+    PAPER_CLOSED_TRADES_STORAGE_KEY,
+    PAPER_CLOSED_TRADES_STORAGE_LIMIT,
+    paper_performance_tracker,
+)
 from dashboard_verdicts import (
     build_verdict_explanation,
     finite_float,
@@ -854,6 +859,7 @@ _trade_flow_last_log_at = time_module.monotonic()
 scalping_shadow_tracker = ShadowForwardTracker()
 SHADOW_OUTCOMES_STORAGE_KEY = "piluitus:strategy:shadow:outcomes"
 SHADOW_OUTCOMES_STORAGE_LIMIT = 20000
+paper_shadow_labels: list[dict[str, Any]] = []
 
 
 async def _persist_shadow_outcomes(labels: list[dict[str, Any]], *, source: str) -> None:
@@ -866,6 +872,11 @@ async def _persist_shadow_outcomes(labels: list[dict[str, Any]], *, source: str)
             labels,
             max_len=SHADOW_OUTCOMES_STORAGE_LIMIT,
         )
+        paper_shadow_labels.extend(
+            dict(label) for label in labels if isinstance(label, dict)
+        )
+        if len(paper_shadow_labels) > SHADOW_OUTCOMES_STORAGE_LIMIT:
+            del paper_shadow_labels[:-SHADOW_OUTCOMES_STORAGE_LIMIT]
         logger.info(
             "[STRATEGY SHADOW PERSIST] source=%s saved=%d retained_limit=%d",
             source, len(labels), SHADOW_OUTCOMES_STORAGE_LIMIT,
@@ -884,6 +895,10 @@ async def _restore_shadow_outcomes() -> None:
             SHADOW_OUTCOMES_STORAGE_KEY, start=0, stop=SHADOW_OUTCOMES_STORAGE_LIMIT - 1
         )
         restored = scalping_shadow_tracker.restore_completed_labels(stored)
+        paper_shadow_labels.clear()
+        paper_shadow_labels.extend(
+            dict(label) for label in stored if isinstance(label, dict)
+        )
         logger.info(
             "[STRATEGY SHADOW RESTORE] loaded=%d restored=%d pending=0 "
             "storage_limit=%d; pending forward labels from a prior process are not resumed",
@@ -891,6 +906,34 @@ async def _restore_shadow_outcomes() -> None:
         )
     except Exception as exc:
         logger.error("[STRATEGY SHADOW RESTORE ERROR] %s", exc, exc_info=True)
+
+
+async def _restore_paper_performance() -> None:
+    """Restore realized PAPER trades; migrate the old short history only if needed."""
+    try:
+        stored = await db_manager.get_list(
+            PAPER_CLOSED_TRADES_STORAGE_KEY,
+            start=0,
+            stop=PAPER_CLOSED_TRADES_STORAGE_LIMIT - 1,
+        )
+        source = "dedicated_journal"
+        if not stored:
+            stored = await db_manager.get_list("piluitus:trade_history", start=0, stop=99)
+            source = "legacy_trade_history"
+        restored = paper_performance_tracker.restore(stored)
+        summary = paper_performance_tracker.scorecard(paper_shadow_labels)
+        overall = summary["overall"]
+        logger.info(
+            "[PAPER PERFORMANCE RESTORE] source=%s loaded=%d restored=%d total=%d "
+            "net=%+.2f RUB win_rate=%s PF=%s max_DD=%.2f RUB",
+            source, len(stored), restored, overall["trades"],
+            overall["net_pnl_rub"],
+            f'{overall["win_rate_pct"]:.1f}%' if overall["win_rate_pct"] is not None else "N/A",
+            f'{overall["profit_factor"]:.3f}' if overall["profit_factor"] is not None else "N/A",
+            overall["max_drawdown_rub"],
+        )
+    except Exception as exc:
+        logger.error("[PAPER PERFORMANCE RESTORE ERROR] %s", exc, exc_info=True)
 
 
 # One outstanding AI event per ticker prevents repeated nearly identical
@@ -3447,6 +3490,7 @@ async def lifespan(app: FastAPI):
     try:
         await db_manager.connect()
         await _restore_shadow_outcomes()
+        await _restore_paper_performance()
         maintenance_state = await db_manager.get_json("piluitus:paper:maintenance")
         if isinstance(maintenance_state, dict) and bool(maintenance_state.get("active")):
             execution_engine._maintenance_active = True
@@ -3597,6 +3641,17 @@ async def read_maintenance_page():
     if not page_path.is_file():
         return HTMLResponse("<h1>maintenance.html не найден</h1>", status_code=404)
     return FileResponse(page_path)
+
+
+@app.get("/api/v1/paper/performance")
+async def get_paper_performance():
+    """Return realized PAPER trade statistics and exact-ID Shadow comparisons."""
+    _require_paper_mode()
+    return {
+        "paper_mode": True,
+        "retained_trade_limit": PAPER_CLOSED_TRADES_STORAGE_LIMIT,
+        "scorecard": paper_performance_tracker.scorecard(paper_shadow_labels),
+    }
 
 
 @app.get("/api/v1/paper/reconciliation")
