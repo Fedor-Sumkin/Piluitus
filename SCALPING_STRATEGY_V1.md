@@ -94,6 +94,43 @@ Report results separately by ticker, direction, tick-size/price group, spread-to
 
 Use chronological walk-forward tests with purging/embargo for overlapping forward labels. Keep a final untouched time period for out-of-sample evaluation. Record every parameter trial; after repeated tuning, report multiple-testing-aware diagnostics such as Probability of Backtest Overfitting (PBO) and Deflated Sharpe Ratio (DSR). Do not select one exceptional parameter peak from a large search and call it an edge.
 
+## Realized PAPER trade journal and scorecard
+
+Final CLOSED PAPER records are written to the dedicated bounded Memurai list
+`piluitus:paper:closed_trades` (20,000 records). The existing
+`piluitus:trade_history` remains a short dashboard history and is not used as
+the primary analytics source. Partial exits remain part of the original OPEN
+trade; only the final CLOSED aggregate is counted. A repeated trade ID is
+ignored by the in-memory scorecard, so replaying a restored journal does not
+double-count the same trade. On startup, the scorecard restores the dedicated
+journal; if it is empty, it can seed itself from the legacy 100-row trade
+history.
+
+The PAPER-only endpoint `GET /api/v1/paper/performance` returns:
+- net realized PnL, win rate, expectancy, average win/loss and profit factor;
+- maximum drawdown in RUB and as a percentage of the prior equity peak;
+- average holding time and recorded commissions;
+- segments by BUY/SELL, ticker, model/final LLM decision, confidence band,
+  LLM reason code and exit reason;
+- Shadow comparison matched strictly by `shadow_candidate_id`, with separate
+  forward-label statistics for each horizon.
+
+Only final CLOSED rows with a valid finite net `pnl` and BUY/SELL direction
+enter realized statistics. The net `pnl` field is the realized RUB result
+after the entry/exit commissions and configured slippage already applied by
+the PAPER executor; it is not recomputed from market prices. Profit factor is
+N/A when there is no realized losing trade. Shadow comparison accepts only
+fresh `OK` labels with a valid `net_executable_return_pct`; duplicate
+candidate/horizon labels are counted once. It never joins by ticker or time.
+Shadow horizon observations are still correlated within a candidate and must
+not be treated as independent realized trades.
+
+The journal is bounded to the newest 20,000 records. The legacy fallback is
+limited to 100 recent records and is only used when the dedicated journal is
+empty. A journal write failure is logged as critical while the already-closed
+PAPER trade remains closed; operators should treat that run's persisted
+performance coverage as incomplete and inspect the log.
+
 ## Proposed development sequence
 
 1. **Data quality:** align the effective BBO age shown in diagnostics with the exact TTL used by the exit guard; quantify stale-book intervals per ticker.
