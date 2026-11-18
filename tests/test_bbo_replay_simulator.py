@@ -141,7 +141,10 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         )
         self.assertEqual(result["coverage"]["session_events"], 3)
         self.assertEqual(result["coverage"]["duplicate_sequences"], 1)
-        self.assertEqual(result["coverage"]["sequence_gaps"], 1)
+        self.assertEqual(result["coverage"]["sequence_gaps"], 3)
+        self.assertEqual(result["coverage"]["missing_sequence_prefix"], 2)
+        self.assertEqual(result["coverage"]["first_sequence"], 3)
+        self.assertEqual(result["coverage"]["last_sequence"], 5)
         self.assertEqual(result["coverage"]["ticker_events"], 1)
         self.assertEqual(result["scenarios"][0]["exit"]["reason"], "TAKE_PROFIT")
 
