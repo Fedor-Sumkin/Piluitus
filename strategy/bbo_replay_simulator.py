@@ -954,9 +954,13 @@ def _portfolio_capacity_simulation(
                 ):
                     continue
                 side = str(trade.get("side") or "").upper()
-                price, _age, freshness = _fresh_side(event, side, max_age)
+                price, quote_age, freshness = _fresh_side(event, side, max_age)
                 if freshness == "OK":
-                    marks[position_id] = {"price": price, "timestamp": stamp}
+                    # Preserve the quote's already-consumed age at capture;
+                    # freshness must not restart at the local receive timestamp.
+                    marks[position_id] = {
+                        "price": price, "timestamp": stamp - quote_age
+                    }
                     mark_updates += 1
                 elif freshness == "STALE_EXECUTABLE_SIDE":
                     mark_stale_events += 1
