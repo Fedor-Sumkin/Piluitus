@@ -62,6 +62,19 @@ class MarketContextTests(unittest.TestCase):
         })
         self.assertEqual(result["directional_regime"], "RANGE_OR_MIXED")
 
+    def test_zero_age_trade_metrics_are_accepted_as_fresh(self) -> None:
+        result = classify_market_regime({
+            "price_change_pct": 0.20,
+            "price_vs_vwap_pct": 0.10,
+            "trade_flow_imbalance_30s": 0.20,
+            "trade_data_ready": 1.0,
+            "trade_metrics_age_sec": 0.0,
+            "trade_history_coverage_sec": 60.0,
+            "bar_trend_up": 1.0,
+            "bar_trend_down": 0.0,
+        })
+        self.assertEqual(result["directional_regime"], "TREND_UP")
+
     def test_unwarmed_or_stale_trade_metrics_do_not_create_trend_votes(self) -> None:
         result = classify_market_regime({
             "price_change_pct": 0.30,
