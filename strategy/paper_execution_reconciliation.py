@@ -104,6 +104,18 @@ def build_actual_vs_replay_reconciliation(
         if key is not None and replay_counts[key] == 1
     }
     matched_keys = set(actual_by_key) & set(replay_by_key)
+    rejected_by_key: dict[tuple[str, str], str] = {}
+    rejected_rows = replay_batch.get("rejected_positions", [])
+    if isinstance(rejected_rows, list):
+        for rejected in rejected_rows:
+            if not isinstance(rejected, Mapping):
+                continue
+            rejected_id = str(rejected.get("position_id") or "").strip()
+            rejected_session = str(rejected.get("session_id") or "").strip()
+            if rejected_id and rejected_session:
+                rejected_by_key[(rejected_session, rejected_id)] = str(
+                    rejected.get("reason") or "REPLAY_POSITION_REJECTED"
+                )
 
     counts = {
         "MATCHED_EXACT_ID_AND_SESSION": 0,
@@ -112,6 +124,7 @@ def build_actual_vs_replay_reconciliation(
         "DUPLICATE_ACTUAL_IDENTITY": 0,
         "DUPLICATE_REPLAY_IDENTITY": 0,
         "NO_REPLAY_POSITION": 0,
+        "REPLAY_POSITION_REJECTED": 0,
         "NO_REPLAY_EXIT": 0,
         "MISSING_ACTUAL_PNL": 0,
     }
@@ -152,14 +165,18 @@ def build_actual_vs_replay_reconciliation(
             continue
         replay_row = replay_by_key.get(key)
         if replay_row is None:
-            status = "NO_REPLAY_POSITION"
+            rejected_reason = rejected_by_key.get(key)
+            status = "REPLAY_POSITION_REJECTED" if rejected_reason else "NO_REPLAY_POSITION"
             counts[status] += 1
-            rows.append({
+            row = {
                 "trade_id": trade_id,
                 "bbo_replay_session_id": session_id,
                 "ticker": str(actual.get("ticker") or ""),
                 "status": status,
-            })
+            }
+            if rejected_reason:
+                row["replay_rejection_reason"] = rejected_reason
+            rows.append(row)
             continue
 
         replay_exit = _scenario_exit(replay_row, scenario)
