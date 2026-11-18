@@ -1273,6 +1273,10 @@ def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -
         "order_book_not_confirmed": "shadow_block_order_book_not_confirmed",
         "atr_not_ready": "shadow_block_atr_not_ready",
         "spread_above_0.50_pct": "shadow_block_spread",
+        "spread_unavailable_or_invalid": "shadow_block_spread_unavailable",
+        "spread_atr_unavailable": "shadow_block_spread_atr_unavailable",
+        "spread_to_atr_above_limit": "shadow_block_spread_atr_too_wide",
+        "bbo_prices_invalid": "shadow_block_bbo_prices_invalid",
     }
     observed_blocks = set(result.get("hard_blocks", []))
     counted_blocks = set()
