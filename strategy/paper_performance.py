@@ -8,6 +8,12 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from typing import Any, Mapping
+from datetime import datetime, timezone
+
+from strategy.shadow_label_quality import (
+    deduplicate_shadow_labels,
+    finite_number as _finite_number,
+)
 
 PAPER_CLOSED_TRADES_STORAGE_KEY = "piluitus:paper:closed_trades"
 PAPER_CLOSED_TRADES_STORAGE_LIMIT = 20000
@@ -54,6 +60,12 @@ def _shadow_segment_metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         if (value := _number(row.get("mae_executable_pct"))) is not None
     ]
     count = len(returns)
+    confidence_values = [
+        value for row in rows
+        if (value := _number(row.get("llm_confidence"))) is not None
+        and 0.0 <= value <= 100.0
+    ]
+    positive_rate = len(wins) / count * 100.0 if count else None
     return {
         "labels": count,
         "sample_quality": (
@@ -63,7 +75,8 @@ def _shadow_segment_metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
             else "LARGE_300_PLUS"
         ),
         "mean_net_return_pct": round(sum(returns) / count, 6) if count else None,
-        "positive_rate_pct": round(len(wins) / count * 100.0, 3) if count else None,
+        "positive_rate_pct": round(positive_rate, 3) if positive_rate is not None else None,
+        "positive_rate_wilson_95_pct": _wilson_interval_pct(len(wins), count),
         "profit_factor": (
             round(sum(wins) / abs(sum(losses)), 4) if losses else None
         ),
@@ -71,7 +84,44 @@ def _shadow_segment_metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         "average_loss_pct": round(sum(losses) / len(losses), 6) if losses else None,
         "average_mfe_net_pct": round(sum(mfe) / len(mfe), 6) if mfe else None,
         "average_mae_net_pct": round(sum(mae) / len(mae), 6) if mae else None,
+        "mean_model_confidence_pct": (
+            round(sum(confidence_values) / len(confidence_values), 3)
+            if confidence_values else None
+        ),
+        "confidence_observations": len(confidence_values),
     }
+
+
+def _exit_timestamp_sort_key(value: object) -> tuple[int, float | str]:
+    """Sort ISO timestamps by their actual UTC instant, including mixed offsets."""
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                return (0, parsed.astimezone(timezone.utc).timestamp())
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return (1, str(value or ""))
+
+
+def _wilson_interval_pct(wins: int, total: int) -> list[float] | None:
+    """95% Wilson interval for a descriptive positive-outcome rate."""
+    if total <= 0:
+        return None
+    z = 1.959963984540054
+    proportion = wins / total
+    denominator = 1.0 + (z * z / total)
+    center = (proportion + z * z / (2.0 * total)) / denominator
+    margin = (
+        z * math.sqrt(
+            proportion * (1.0 - proportion) / total
+            + z * z / (4.0 * total * total)
+        ) / denominator
+    )
+    return [
+        round(max(0.0, center - margin) * 100.0, 3),
+        round(min(1.0, center + margin) * 100.0, 3),
+    ]
 
 
 def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
@@ -91,7 +141,7 @@ def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     current_loss_streak = 0
     ordered = sorted(
         (row for row in rows if _number(row.get("pnl")) is not None),
-        key=lambda row: _text(row.get("exit_timestamp"), ""),
+        key=lambda row: _exit_timestamp_sort_key(row.get("exit_timestamp")),
     )
     for row in ordered:
         realized = float(_number(row.get("pnl")) or 0.0)
@@ -497,28 +547,39 @@ class PaperPerformanceTracker:
         label_rows = labels if isinstance(labels, (list, tuple)) else []
         labels_by_candidate: dict[str, list[dict[str, Any]]] = defaultdict(list)
         by_candidate: dict[str, dict[int, dict[str, Any]]] = defaultdict(dict)
-        for label in label_rows:
-            if not isinstance(label, Mapping):
-                continue
+        deduplicated_labels = deduplicate_shadow_labels(label_rows)
+        for label in deduplicated_labels:
             candidate_id = _text(label.get("candidate_id"), "")
             if not candidate_id:
                 continue
             labels_by_candidate[candidate_id].append(dict(label))
-            if str(label.get("result") or "") != "OK":
-                continue
             horizon = _number(label.get("horizon_sec"))
-            net_return = _number(label.get("net_executable_return_pct"))
-            if horizon is None or net_return is None or horizon <= 0:
-                continue
-            # A candidate has at most one observation per horizon; ignore duplicate
-            # persisted rows rather than inflating the matched sample.
-            by_candidate[candidate_id].setdefault(int(horizon), dict(label))
+            if horizon is not None and horizon > 0:
+                by_candidate[candidate_id][int(horizon)] = dict(label)
 
         matched: list[dict[str, Any]] = []
         unmatched_reasons: dict[str, int] = defaultdict(int)
         horizon_returns: dict[int, list[float]] = defaultdict(list)
         horizon_observations: dict[int, list[dict[str, Any]]] = defaultdict(list)
         counted_candidate_horizons: set[tuple[str, int]] = set()
+        label_coverage: dict[int, dict[str, Any]] = defaultdict(lambda: {
+            "observed_rows": 0, "valid_ok_labels": 0,
+            "status_counts": defaultdict(int), "rows_without_valid_net_return": 0,
+        })
+        for label in deduplicated_labels:
+            horizon_value = _number(label.get("horizon_sec"))
+            if horizon_value is None or horizon_value <= 0:
+                continue
+            horizon_key = int(horizon_value)
+            coverage = label_coverage[horizon_key]
+            coverage["observed_rows"] += 1
+            status = str(label.get("result") or "UNKNOWN").upper()
+            coverage["status_counts"][status] += 1
+            net_value = _number(label.get("net_executable_return_pct"))
+            if status == "OK" and net_value is not None:
+                coverage["valid_ok_labels"] += 1
+            else:
+                coverage["rows_without_valid_net_return"] += 1
         matched_realized_net = 0.0
         matched_details: list[dict[str, Any]] = []
         horizon_segments: dict[str, dict[str, list[Mapping[str, Any]]]] = {
@@ -539,7 +600,12 @@ class PaperPerformanceTracker:
             if not all_candidate_labels:
                 unmatched_reasons["CANDIDATE_NO_LABEL_RECORD"] += 1
                 continue
-            if not candidate_labels:
+            valid_candidate_labels = {
+                horizon: label for horizon, label in candidate_labels.items()
+                if str(label.get("result") or "").upper() == "OK"
+                and _number(label.get("net_executable_return_pct")) is not None
+            }
+            if not valid_candidate_labels:
                 results = {
                     str(label.get("result") or "UNKNOWN").upper()
                     for label in all_candidate_labels
@@ -557,7 +623,7 @@ class PaperPerformanceTracker:
             realized_net = _number(trade.get("pnl")) or 0.0
             matched_realized_net += realized_net
             matched_horizons: dict[str, float] = {}
-            for horizon, label in candidate_labels.items():
+            for horizon, label in valid_candidate_labels.items():
                 value = _number(label.get("net_executable_return_pct"))
                 if value is not None:
                     if (candidate_id, horizon) not in counted_candidate_horizons:
@@ -579,6 +645,12 @@ class PaperPerformanceTracker:
                         ].append(label)
                         horizon_segments["by_execution_status"][
                             segment_prefix + execution_status
+                        ].append(label)
+                        horizon_segments["by_horizon_side_confidence"][
+                            segment_prefix + side + "|" + confidence
+                        ].append(label)
+                        horizon_segments["by_horizon_decision_confidence"][
+                            segment_prefix + model_decision + "|" + confidence
                         ].append(label)
                     matched_horizons[str(horizon)] = round(value, 6)
             matched_details.append({
@@ -637,9 +709,20 @@ class PaperPerformanceTracker:
             "matched_trade_details": matched_details[-200:],
             "horizons": horizons,
             "horizon_segments": summarized_segments,
+            "label_coverage_by_horizon": {
+                str(horizon): {
+                    "observed_rows": item["observed_rows"],
+                    "valid_ok_labels": item["valid_ok_labels"],
+                    "rows_without_valid_net_return": item["rows_without_valid_net_return"],
+                    "status_counts": dict(sorted(item["status_counts"].items())),
+                }
+                for horizon, item in sorted(label_coverage.items())
+            },
             "horizon_segment_note": (
-                "Groups contain unique candidate_id+horizon labels joined to closed PAPER trades; "
-                "returns are hypothetical Shadow outcomes, not realized trade PnL."
+                "Groups contain deduplicated candidate_id+horizon labels joined to closed PAPER trades; "
+                "returns are hypothetical Shadow outcomes, not realized trade PnL. "
+                "Wilson intervals describe sampling uncertainty in positive rates; model confidence "
+                "is a score and is not assumed to be a calibrated probability."
             ),
         }
 
