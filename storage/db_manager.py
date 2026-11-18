@@ -698,6 +698,27 @@ class DBManager:
     async def push_to_list(self, key: str, item: Any, max_len: int = 500) -> None:
         await RedisClient.push_to_list(key, item, max_len)
 
+    async def push_many_to_list(
+        self, key: str, items: list[Any], max_len: int = 500
+    ) -> None:
+        """Append a batch to a bounded Redis list with one network round trip."""
+        if not items:
+            return
+        client = await self._get_client()
+        payloads = [json.dumps(item, ensure_ascii=False) for item in items]
+        pipeline_factory = getattr(client, "pipeline", None)
+        if callable(pipeline_factory):
+            pipeline = pipeline_factory(transaction=False)
+            pipeline.lpush(key, *payloads)
+            pipeline.ltrim(key, 0, max_len - 1)
+            await pipeline.execute()
+            return
+        # The local AOF fallback has no Redis pipeline; preserve the same
+        # newest-first list order while keeping the operation bounded.
+        for payload in payloads:
+            await client.lpush(key, payload)
+        await client.ltrim(key, 0, max_len - 1)
+
     async def get_list(self, key: str, start: int = 0, stop: int = -1) -> List[Any]:
         return await RedisClient.get_list(key, start, stop)
 
