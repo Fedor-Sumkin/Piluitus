@@ -350,6 +350,30 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(segments["llm_attribution_state=NOT_CALLED"]["ok"], 1)
         self.assertEqual(segments["llm_not_called_reason=ATR_NOT_READY"]["ok"], 1)
 
+    def test_ofi_snapshot_is_carried_into_forward_label_and_segment(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,))
+        metrics = quote_metrics(100.0, 100.1)
+        metrics.update({
+            "ofi_5s": -0.20,
+            "ofi_5s_available": 1.0,
+            "ofi_5s_samples": 5,
+            "ofi_5s_coverage_sec": 1.5,
+        })
+        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 160.0]):
+            tracker.record_candidate(
+                "SBER", "BUY", metrics,
+                {"score": 90.0, "eligible": True, "regime": "TREND_ALIGNED"},
+            )
+            labels = tracker.observe_market_tick("SBER", quote_metrics(100.2, 100.3))
+
+        self.assertEqual(len(labels), 1)
+        self.assertEqual(labels[0]["ofi_5s"], -0.20)
+        self.assertTrue(labels[0]["ofi_5s_available"])
+        self.assertEqual(labels[0]["ofi_5s_samples"], 5)
+        segments = tracker.statistics_snapshot()["segments"]
+        self.assertEqual(segments["ofi_alignment_5s=opposed"]["ok"], 1)
+        self.assertEqual(segments["side_ofi_alignment_5s=BUY|opposed"]["ok"], 1)
+
     def test_llm_approved_group_reports_profit_factor_from_net_returns(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
         with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 100.0]):
