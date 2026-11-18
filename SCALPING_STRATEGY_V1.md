@@ -253,15 +253,18 @@ UTC/monotonic clocks, Bid/Ask, displayed best-level sizes, validity and the
 provider/parser invalidation reason.
 
 Capture is observational and does not feed prices into the execution path.
-Price/size/validity changes are retained; unchanged heartbeats are sampled at
-a configurable interval so replay can distinguish an unchanged but confirmed
-book from a long data gap. Invalidations are retained as explicit events.
+Price/validity transitions are retained immediately. Size-only changes are
+coalesced into the next price transition or heartbeat, avoiding a journal write
+for every queue-size fluctuation. Unchanged heartbeats are sampled at a
+configurable interval (default one second) so replay can distinguish an
+unchanged but confirmed book from a long data gap. Invalidations are retained
+as explicit events.
 Stale/out-of-order events rejected by the screener are not represented as
 accepted market states.
 
 Events enter a bounded in-memory queue without waiting for Memurai. A separate
 writer batches them into the bounded list
-`piluitus:paper:bbo_replay` (default retention 100,000 events). The queue,
+`piluitus:paper:bbo_replay` (default retention 250,000 events). The queue,
 batch size, flush interval, heartbeat interval and storage cap are bounded;
 queue overflow and persistence failures are counted and reported. On orderly
 shutdown the writer drains its queue before the database connection is closed.
