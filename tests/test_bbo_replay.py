@@ -21,7 +21,7 @@ class BBOReplayRecorderTests(unittest.IsolatedAsyncioTestCase):
         with patch("strategy.bbo_replay.time.monotonic", side_effect=[10.0, 10.2, 11.1, 11.2]):
             self.assertTrue(recorder.record("TEST", base, {"order_book_timestamp": 1_800_000_000}))
             self.assertFalse(recorder.record("TEST", base, {"order_book_timestamp": 1_800_000_000.2}))
-            changed = dict(base, bid_size=11.0)
+            changed = dict(base, bid=100.05)
             self.assertTrue(recorder.record("TEST", changed, {"order_book_timestamp": 1_800_000_001}))
             invalid = dict(base, valid=False, reason="CROSSED_BBO", bid=100.2, ask=100.1)
             self.assertTrue(recorder.record("TEST", invalid, {"order_book_timestamp": 1_800_000_002}))
@@ -60,6 +60,26 @@ class BBOReplayRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second["source"], "FINAM_QUOTES")
         self.assertEqual(second["bid_age_sec_at_capture"], 0.0)
         self.assertAlmostEqual(second["ask_age_sec_at_capture"], 0.1)
+
+    def test_size_only_updates_are_coalesced_until_heartbeat(self):
+        recorder = BBOReplayRecorder(queue_limit=100, heartbeat_interval_sec=1.0)
+        base = {
+            "updated": True, "valid": True, "bid": 100.0, "ask": 100.1,
+            "bid_size": 10.0, "ask_size": 12.0,
+        }
+        with patch("strategy.bbo_replay.time.monotonic", side_effect=[20.0, 20.2, 21.1]):
+            self.assertTrue(recorder.record("SIZE", base, {"source": "FINAM_ORDER_BOOK"}))
+            self.assertFalse(recorder.record(
+                "SIZE", dict(base, bid_size=15.0), {"source": "FINAM_ORDER_BOOK"}
+            ))
+            self.assertTrue(recorder.record(
+                "SIZE", dict(base, bid_size=16.0), {"source": "FINAM_ORDER_BOOK"}
+            ))
+        first = recorder._queue.get_nowait()
+        heartbeat = recorder._queue.get_nowait()
+        self.assertEqual(first["event_kind"], "STATE_CHANGE")
+        self.assertEqual(heartbeat["event_kind"], "HEARTBEAT")
+        self.assertEqual(heartbeat["bid_size"], 16.0)
 
     def test_rejects_invalid_executable_bbo(self):
         recorder = BBOReplayRecorder(queue_limit=100)
