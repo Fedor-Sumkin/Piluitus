@@ -600,11 +600,13 @@ ending equity at cost. Open positions remain reserved and are not assigned
 zero PnL.
 
 This is a deliberately conservative capacity approximation: the full entry
-notional is reserved for BUY and SELL alike. It does not model broker margin,
-short-sale collateral, leverage, settlement, partial fills, intratrade
-mark-to-market equity or opportunity costs. The capital and allocation values
-must be supplied explicitly; no account balance is inferred. Results are
-scenario-specific and do not modify actual PAPER trades or order sizing.
+notional is reserved for BUY and SELL alike. Broker margin, short-sale
+collateral, leverage, settlement, partial fills and opportunity costs are not
+modeled. When fresh BBO events are available, the replay also calculates a
+separate approximate mark-to-market equity curve; see the section below.
+The capital and allocation values must be supplied explicitly; no account
+balance is inferred. Results are scenario-specific and do not modify actual
+PAPER trades or order sizing.
 
 
 ## PAPER cohort expansion: ticker-side, Moscow entry time and market regime
