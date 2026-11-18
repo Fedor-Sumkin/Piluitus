@@ -200,6 +200,86 @@ def _holding_time_bucket(value: object) -> str:
 
 
 
+def _numeric_bucket(value: object, *, prefix: str, thresholds: tuple[float, ...], suffixes: tuple[str, ...]) -> str:
+    number = _number(value)
+    if number is None:
+        return f"{prefix}_UNKNOWN"
+    for threshold, suffix in zip(thresholds, suffixes):
+        if number < threshold:
+            return f"{prefix}_{suffix}"
+    return f"{prefix}_{suffixes[-1]}_PLUS"
+
+
+def _entry_spread_bucket(value: object) -> str:
+    return _numeric_bucket(
+        value, prefix="SPREAD_PCT", thresholds=(0.02, 0.05, 0.10),
+        suffixes=("LT_0_02", "0_02_0_05", "0_05_0_10", "GE_0_10"),
+    )
+
+
+def _entry_bbo_age_bucket(value: object) -> str:
+    return _numeric_bucket(
+        value, prefix="BBO_AGE_SEC", thresholds=(0.25, 0.50, 1.0),
+        suffixes=("LT_0_25", "0_25_0_50", "0_50_1_00", "GE_1_00"),
+    )
+
+
+def _entry_shortfall_bucket(value: object) -> str:
+    return _numeric_bucket(
+        value, prefix="SHORTFALL_BPS", thresholds=(1.0, 3.0, 5.0),
+        suffixes=("LT_1", "1_3", "3_5", "GE_5"),
+    )
+
+
+def _entry_spread_atr_bucket(value: object) -> str:
+    return _numeric_bucket(
+        value, prefix="SPREAD_ATR", thresholds=(0.10, 0.25, 0.50),
+        suffixes=("LT_0_10", "0_10_0_25", "0_25_0_50", "GE_0_50"),
+    )
+
+
+def _entry_signal_drift_bucket(value: object) -> str:
+    number = _number(value)
+    if number is None:
+        return "SIGNAL_DRIFT_UNKNOWN"
+    if number < -0.10:
+        return "FAVORABLE_LT_MINUS_0_10"
+    if number < -0.05:
+        return "FAVORABLE_MINUS_0_10_TO_0_05"
+    if number <= 0.05:
+        return "NEAR_FLAT"
+    if number <= 0.10:
+        return "ADVERSE_0_05_TO_0_10"
+    return "ADVERSE_GT_0_10"
+
+
+def _entry_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    fields = {
+        "entry_spread_pct": "spread_pct",
+        "entry_bbo_age_sec": "bbo_age_sec",
+        "entry_execution_shortfall_rub": "execution_shortfall_rub",
+        "entry_execution_shortfall_bps": "execution_shortfall_bps",
+        "entry_signal_adverse_drift_pct": "signal_adverse_drift_pct",
+        "entry_spread_to_atr_ratio": "spread_to_atr_ratio",
+    }
+    coverage: dict[str, int] = {}
+    averages: dict[str, float | None] = {}
+    for field, label in fields.items():
+        values = [value for row in rows if (value := _number(row.get(field))) is not None]
+        coverage[label] = len(values)
+        averages[label] = round(sum(values) / len(values), 6) if values else None
+    return {
+        "trades": len(rows),
+        "coverage": coverage,
+        "average": averages,
+        "interpretation": (
+            "Positive execution shortfall and positive signal drift are adverse. "
+            "Entry spread-to-ATR is the full quoted spread divided by ATR. "
+            "Buckets are descriptive cohorts, not recommended trading thresholds."
+        ),
+    }
+
+
 def _loss_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Describe observable loss contributors without asserting unsupported causality."""
     losses = [row for row in rows if (_number(row.get("pnl")) or 0.0) < 0.0]
@@ -390,6 +470,18 @@ class PaperPerformanceTracker:
             "by_llm_reason": self._group(rows, "llm_reason_code"),
             "by_exit_reason": self._group(rows, "exit_reason"),
             "by_holding_time": self._group(rows, "time_in_trade_sec", _holding_time_bucket),
+            "by_entry_spread": self._group(rows, "entry_spread_pct", _entry_spread_bucket),
+            "by_entry_bbo_age": self._group(rows, "entry_bbo_age_sec", _entry_bbo_age_bucket),
+            "by_entry_execution_shortfall": self._group(
+                rows, "entry_execution_shortfall_bps", _entry_shortfall_bucket
+            ),
+            "by_entry_spread_to_atr": self._group(
+                rows, "entry_spread_to_atr_ratio", _entry_spread_atr_bucket
+            ),
+            "by_entry_signal_drift": self._group(
+                rows, "entry_signal_adverse_drift_pct", _entry_signal_drift_bucket
+            ),
+            "entry_diagnostics": _entry_diagnostics(rows),
             "loss_diagnostics": _loss_diagnostics(rows),
         }
         result["shadow_comparison"] = self._compare_shadow(rows, shadow_labels)
