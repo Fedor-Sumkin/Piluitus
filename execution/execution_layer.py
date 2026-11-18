@@ -2127,11 +2127,30 @@ class BaseExecutionEngine:
         )
         updated["last_partial_exit_at"] = fill_record["timestamp"]
         updated["last_partial_exit_reason"] = exit_reason
-        updated["pnl"] = round(_finite_or_default(updated.get("realized_net_pnl_rub"), 0.0), 2)
-        updated["gross_pnl"] = round(_finite_or_default(updated.get("realized_gross_pnl_rub"), 0.0), 2)
-        updated["estimated_exit_commission_rub"] = round(
-            _finite_or_default(updated.get("realized_exit_commission_rub"), 0.0), 4
+        remaining_shares = int(updated["volume"])
+        remaining_entry_fee = _finite_or_default(updated.get("entry_commission_rub"), 0.0)
+        mark_raw_price = _finite_or_default(bbo.get("executable_price"), raw_exit_price)
+        mark_exit_price = self._apply_paper_slippage(mark_raw_price, exit_transaction_side)
+        mark_gross, mark_exit_fee, _mark_total_fee, mark_net = self._calculate_paper_pnl(
+            entry_price, mark_exit_price, remaining_shares, side,
+            commission_pct, remaining_entry_fee,
         )
+        realized_net = _finite_or_default(updated.get("realized_net_pnl_rub"), 0.0)
+        realized_gross = _finite_or_default(updated.get("realized_gross_pnl_rub"), 0.0)
+        realized_exit_fee = _finite_or_default(updated.get("realized_exit_commission_rub"), 0.0)
+        entry_notional = _finite_or_default(
+            updated.get("notional_entry_rub"), entry_price * current_shares
+        )
+        updated["current_price"] = mark_raw_price
+        updated["estimated_exit_price"] = mark_exit_price
+        updated["pnl"] = round(realized_net + mark_net, 2)
+        updated["gross_pnl"] = round(realized_gross + mark_gross, 2)
+        updated["pnl_percent"] = (
+            round(updated["pnl"] / entry_notional * 100.0, 4)
+            if entry_notional > 0.0 else 0.0
+        )
+        updated["current_pnl_source"] = "PARTIAL_EXIT_PLUS_OPEN_BBO_ESTIMATE"
+        updated["estimated_exit_commission_rub"] = round(realized_exit_fee + mark_exit_fee, 4)
 
         # Persist the reduced OPEN quantity before mutating the in-memory position.
         # If storage fails, the original quantity remains authoritative and no fill is booked.
