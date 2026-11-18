@@ -10,9 +10,13 @@ import logging
 import math
 import os
 import time
+from collections import deque
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
+from statistics import median
 from typing import Any
+
+from strategy.market_context import classify_market_regime, estimate_entry_economics
 from uuid import uuid4
 
 logger = logging.getLogger("Piluitus.StrategyShadow")
@@ -86,6 +90,8 @@ class ShadowForwardTracker:
         # Bounded cross-sections let PAPER research compare direction, ticker,
         # market regime, score band, horizon and Moscow trading hour.
         self._segment_stats: dict[str, dict[str, float | int]] = {}
+        # Per-ticker ATR reference uses only earlier candidate snapshots.
+        self._atr_history: dict[str, deque[float]] = {}
 
     @staticmethod
     def _new_stats_bucket() -> dict[str, float | int]:
@@ -183,6 +189,22 @@ class ShadowForwardTracker:
         entry_fill = _apply_adverse_slippage(
             entry_price, "BUY" if side == "BUY" else "SELL", slippage_bps
         )
+        atr_pct = _number(metrics, "bar_atr_pct", math.nan)
+        atr_history = self._atr_history.setdefault(symbol, deque(maxlen=300))
+        prior_atr = list(atr_history)
+        atr_reference = median(prior_atr) if len(prior_atr) >= 20 else None
+        market_context = classify_market_regime(
+            metrics,
+            atr_reference_pct=atr_reference,
+            atr_reference_samples=len(prior_atr),
+        )
+        entry_economics = estimate_entry_economics(
+            side=side, bid=entry_bid, ask=entry_ask,
+            commission_pct_per_side=commission_pct,
+            slippage_bps_per_side=slippage_bps, atr_pct=atr_pct,
+        )
+        if math.isfinite(atr_pct) and atr_pct > 0.0:
+            atr_history.append(atr_pct)
         now_mono = time.monotonic()
         created_at_utc = datetime.now(timezone.utc)
         created_at_msk = created_at_utc.astimezone(_MOSCOW_TZ)
@@ -208,6 +230,16 @@ class ShadowForwardTracker:
             "score": _number(shadow_result, "score"),
             "shadow_eligible": bool(shadow_result.get("eligible", False)),
             "regime": str(shadow_result.get("regime") or "UNKNOWN"),
+            **market_context,
+            "entry_economics": entry_economics,
+            "minimum_favorable_move_pct": (
+                entry_economics.get("minimum_favorable_move_pct")
+                if entry_economics.get("available") else None
+            ),
+            "cost_to_atr_ratio": (
+                entry_economics.get("cost_to_atr_ratio")
+                if entry_economics.get("available") else None
+            ),
             "hard_blocks": [
                 str(item) for item in shadow_result.get("hard_blocks", [])
                 if str(item).strip()
@@ -226,7 +258,7 @@ class ShadowForwardTracker:
             "ofi_5s_samples": int(max(0.0, _number(metrics, "ofi_5s_samples"))),
             "ofi_5s_coverage_sec": _number(metrics, "ofi_5s_coverage_sec"),
             "spread_pct": _number(metrics, "spread_pct"),
-            "atr_pct": _number(metrics, "bar_atr_pct"),
+            "atr_pct": atr_pct,
             "spread_atr_ratio": _number(shadow_result, "spread_atr_ratio", math.nan),
             "volume_spike": _number(metrics, "volume_spike"),
             "trade_count_60s": int(max(0.0, _number(metrics, "trade_count_60s"))),
@@ -476,6 +508,16 @@ class ShadowForwardTracker:
                         "score": row["score"],
                         "shadow_eligible": row["shadow_eligible"],
                         "regime": row["regime"],
+                        "market_regime": row.get("market_regime", "UNKNOWN"),
+                        "volatility_regime": row.get("volatility_regime", "UNKNOWN"),
+                        "liquidity_regime": row.get("liquidity_regime", "UNKNOWN"),
+                        "directional_regime": row.get("directional_regime", "UNKNOWN"),
+                        "atr_reference_pct": row.get("atr_reference_pct"),
+                        "atr_reference_samples": row.get("atr_reference_samples", 0),
+                        "atr_vs_reference_ratio": row.get("atr_vs_reference_ratio"),
+                        "minimum_favorable_move_pct": row.get("minimum_favorable_move_pct"),
+                        "cost_to_atr_ratio": row.get("cost_to_atr_ratio"),
+                        "entry_economics": dict(row.get("entry_economics") or {}),
                         "hard_blocks": list(row.get("hard_blocks", [])),
                         "reasons": list(row.get("reasons", [])),
                         "price_change_pct": row["price_change_pct"],
@@ -534,6 +576,16 @@ class ShadowForwardTracker:
                         "score": row["score"],
                         "shadow_eligible": row["shadow_eligible"],
                         "regime": row["regime"],
+                        "market_regime": row.get("market_regime", "UNKNOWN"),
+                        "volatility_regime": row.get("volatility_regime", "UNKNOWN"),
+                        "liquidity_regime": row.get("liquidity_regime", "UNKNOWN"),
+                        "directional_regime": row.get("directional_regime", "UNKNOWN"),
+                        "atr_reference_pct": row.get("atr_reference_pct"),
+                        "atr_reference_samples": row.get("atr_reference_samples", 0),
+                        "atr_vs_reference_ratio": row.get("atr_vs_reference_ratio"),
+                        "minimum_favorable_move_pct": row.get("minimum_favorable_move_pct"),
+                        "cost_to_atr_ratio": row.get("cost_to_atr_ratio"),
+                        "entry_economics": dict(row.get("entry_economics") or {}),
                         "hard_blocks": list(row.get("hard_blocks", [])),
                         "reasons": list(row.get("reasons", [])),
                         "price_change_pct": row["price_change_pct"],
@@ -632,6 +684,22 @@ class ShadowForwardTracker:
         hour_msk = str(label.get("entry_hour_msk") or "UNKNOWN")
         eligibility = "eligible" if eligible else "ineligible"
         
+        market_regime = str(label.get("market_regime") or "UNKNOWN")
+        volatility_regime = str(label.get("volatility_regime") or "UNKNOWN")
+        liquidity_regime = str(label.get("liquidity_regime") or "UNKNOWN")
+        directional_regime = str(label.get("directional_regime") or "UNKNOWN")
+        cost_to_atr = _number(label, "cost_to_atr_ratio", math.nan)
+        if not math.isfinite(cost_to_atr) or cost_to_atr < 0.0:
+            cost_to_atr_bucket = "unavailable"
+        elif cost_to_atr <= 0.25:
+            cost_to_atr_bucket = "le_0.25"
+        elif cost_to_atr <= 0.50:
+            cost_to_atr_bucket = "0.25-0.50"
+        elif cost_to_atr <= 1.0:
+            cost_to_atr_bucket = "0.50-1.00"
+        else:
+            cost_to_atr_bucket = "gt_1.00"
+
         spread_atr = _number(label, "spread_atr_ratio", math.nan)
         if not math.isfinite(spread_atr) or spread_atr < 0.0:
             spread_atr_bucket = "unavailable"
@@ -714,6 +782,13 @@ class ShadowForwardTracker:
             f"side={side}",
             f"ticker={ticker}",
             f"regime={regime}",
+            f"market_regime={market_regime}",
+            f"volatility_regime={volatility_regime}",
+            f"liquidity_regime={liquidity_regime}",
+            f"directional_regime={directional_regime}",
+            f"cost_to_atr_bucket={cost_to_atr_bucket}",
+            f"side_market_regime={side}|{market_regime}",
+            f"side_cost_to_atr_bucket={side}|{cost_to_atr_bucket}",
             f"score_band={score_band}",
             f"horizon={horizon}s",
             f"hour_msk={hour_msk}",
