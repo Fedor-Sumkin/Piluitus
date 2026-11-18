@@ -93,6 +93,8 @@ class ShadowForwardTrackerTests(unittest.TestCase):
             outcomes = tracker.observe_market_tick("SBER", stale)
         self.assertEqual(outcomes[0]["result"], "NO_FRESH_BBO")
         self.assertNotIn("net_executable_return_pct", outcomes[0])
+        self.assertEqual(outcomes[0]["valid_bbo_observations"], 0)
+        self.assertEqual(outcomes[0]["no_fresh_bbo_observations"], 1)
 
     def test_fresh_quote_after_allowed_label_lag_is_classified_as_label_late(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,), max_label_lag_sec=30)
