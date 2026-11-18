@@ -156,31 +156,59 @@ def evaluate_scalping_candidate(
         reasons.append("m1_trend_not_confirmed")
 
     queue_available = (
-        _number(metrics, "queue_imbalance_available") >= 0.5
+        _number(metrics, "queue_imbalance_5s_available") >= 0.5
+        and _number(metrics, "queue_imbalance_available") >= 0.5
         and _number(metrics, "order_book_valid") >= 0.5
     )
-    queue_age = _number(metrics, "queue_imbalance_age_sec", math.inf)
-    queue_imbalance = _number(metrics, "queue_imbalance")
-    if not queue_available or queue_age < 0.0 or queue_age > max_age:
+    queue_age = _number(metrics, "queue_imbalance_5s_age_sec", math.inf)
+    queue_imbalance = _number(metrics, "queue_imbalance_5s", math.nan)
+    queue_coverage = _number(metrics, "queue_imbalance_5s_coverage_sec")
+    flow_age = _number(metrics, "trade_metrics_age_sec", math.inf)
+    flow_ready = _number(metrics, "trade_data_ready") >= 0.5 and 0.0 <= flow_age <= 5.0
+    flow_imbalance = _number(metrics, "trade_flow_imbalance_30s", math.nan)
+    if not queue_available or queue_age < 0.0 or queue_age > max_age or not math.isfinite(queue_imbalance) or queue_coverage < 1.0:
         components["queue_imbalance"] = 0.0
-        reasons.append("best_queue_imbalance_unavailable_or_stale")
+        components["trade_flow_confirmation"] = 0.0
+        reasons.append("time_weighted_queue_imbalance_warmup_or_stale")
     else:
         signed_imbalance = queue_imbalance if side == "BUY" else -queue_imbalance
         if signed_imbalance >= 0.25:
-            components["queue_imbalance"] = 20.0
-            reasons.append("strong_best_queue_imbalance_supports_side")
+            components["queue_imbalance"] = 12.0
+            reasons.append("persistent_best_queue_imbalance_strongly_supports_side")
         elif signed_imbalance >= 0.10:
-            components["queue_imbalance"] = 15.0
-            reasons.append("best_queue_imbalance_supports_side")
+            components["queue_imbalance"] = 9.0
+            reasons.append("persistent_best_queue_imbalance_supports_side")
         elif signed_imbalance > 0.0:
-            components["queue_imbalance"] = 10.0
-            reasons.append("weak_best_queue_imbalance_support")
+            components["queue_imbalance"] = 6.0
+            reasons.append("persistent_best_queue_imbalance_weak_support")
         elif signed_imbalance >= -0.10:
-            components["queue_imbalance"] = 5.0
-            reasons.append("best_queue_imbalance_neutral")
+            components["queue_imbalance"] = 3.0
+            reasons.append("time_weighted_queue_imbalance_neutral")
         else:
             components["queue_imbalance"] = 0.0
-            reasons.append("best_queue_imbalance_opposes_side")
+            reasons.append("time_weighted_queue_imbalance_opposes_side")
+        if flow_ready and math.isfinite(flow_imbalance):
+            signed_flow = flow_imbalance if side == "BUY" else -flow_imbalance
+            if signed_flow >= 0.25:
+                components["trade_flow_confirmation"] = 8.0
+                reasons.append("aggressor_trade_flow_strongly_confirms_side")
+            elif signed_flow >= 0.10:
+                components["trade_flow_confirmation"] = 6.0
+                reasons.append("aggressor_trade_flow_confirms_side")
+            elif signed_flow > 0.0:
+                components["trade_flow_confirmation"] = 4.0
+                reasons.append("aggressor_trade_flow_weakly_confirms_side")
+            elif signed_flow >= -0.10:
+                components["trade_flow_confirmation"] = 2.0
+                reasons.append("aggressor_trade_flow_neutral")
+            else:
+                components["trade_flow_confirmation"] = 0.0
+                reasons.append("aggressor_trade_flow_opposes_side")
+            if (signed_imbalance >= 0.10 and signed_flow <= -0.10) or (signed_imbalance <= -0.10 and signed_flow >= 0.10):
+                hard_blocks.append("queue_trade_flow_conflict")
+        else:
+            components["trade_flow_confirmation"] = 0.0
+            reasons.append("aggressor_trade_flow_unavailable_or_stale")
 
     volume_spike = _number(metrics, "volume_spike")
     components["volume"] = 10.0 if volume_spike >= 2.0 else 7.0 if volume_spike >= 1.5 else 0.0
@@ -254,7 +282,10 @@ def evaluate_scalping_candidate(
         "components": components,
         "reasons": reasons,
         "hard_blocks": hard_blocks,
-        "queue_imbalance": round(queue_imbalance, 4) if queue_available else None,
+        "queue_imbalance": round(_number(metrics, "queue_imbalance"), 4) if _number(metrics, "queue_imbalance_available") >= 0.5 else None,
+        "queue_imbalance_5s": round(queue_imbalance, 4) if queue_available else None,
+        "queue_imbalance_5s_coverage_sec": round(queue_coverage, 3),
+        "trade_flow_imbalance_30s": round(flow_imbalance, 4) if flow_ready and math.isfinite(flow_imbalance) else None,
         "spread_atr_ratio": round(spread_atr_ratio, 4) if math.isfinite(spread_atr_ratio) else None,
         "threshold": 85.0,
         "spread_atr_limit": max_spread_atr_ratio,
