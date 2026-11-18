@@ -11,7 +11,7 @@ import shutil
 import unicodedata
 from itertools import count
 from contextlib import asynccontextmanager
-from typing import Any, List, Union, cast
+from typing import Any, List, Mapping, Union, cast
 from aiogram import Bot 
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, HTTPException
@@ -920,8 +920,10 @@ def _record_paper_bbo_replay(
     else:
         if not sides_present:
             return
-        bid_value = finite_float(quote.get("bid"), 0.0)
-        ask_value = finite_float(quote.get("ask"), 0.0)
+        bid_number = finite_float(quote.get("bid"))
+        ask_number = finite_float(quote.get("ask"))
+        bid_value = bid_number if bid_number is not None else 0.0
+        ask_value = ask_number if ask_number is not None else 0.0
         valid = bid_value > 0.0 and ask_value > 0.0 and ask_value >= bid_value
         reason = str(quote.get("order_book_last_reason") or "")
     snapshot = {
