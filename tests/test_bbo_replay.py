@@ -18,12 +18,12 @@ class BBOReplayRecorderTests(unittest.IsolatedAsyncioTestCase):
             "ask_size": 12.0,
         }
         with patch("strategy.bbo_replay.time.monotonic", side_effect=[10.0, 10.2, 11.1, 11.2]):
-            self.assertTrue(recorder.record("TEST", base, {"order_book_timestamp": 1_800_000_000}))
-            self.assertFalse(recorder.record("TEST", base, {"order_book_timestamp": 1_800_000_000.2}))
+            self.assertTrue(recorder.record("TEST", base, {"order_book_timestamp": 1_790_000_000}))
+            self.assertFalse(recorder.record("TEST", base, {"order_book_timestamp": 1_790_000_000.2}))
             changed = dict(base, bid=100.05)
-            self.assertTrue(recorder.record("TEST", changed, {"order_book_timestamp": 1_800_000_001}))
+            self.assertTrue(recorder.record("TEST", changed, {"order_book_timestamp": 1_790_000_001}))
             invalid = dict(base, valid=False, reason="CROSSED_BBO", bid=100.2, ask=100.1)
-            self.assertTrue(recorder.record("TEST", invalid, {"order_book_timestamp": 1_800_000_002}))
+            self.assertTrue(recorder.record("TEST", invalid, {"order_book_timestamp": 1_790_000_002}))
 
         rows = [recorder._queue.get_nowait() for _ in range(3)]
         self.assertEqual([row["event_kind"] for row in rows], [
@@ -43,13 +43,13 @@ class BBOReplayRecorderTests(unittest.IsolatedAsyncioTestCase):
         with patch("strategy.bbo_replay.time.monotonic", side_effect=[10.0, 10.2]):
             self.assertTrue(recorder.record(
                 "TEST", snapshot,
-                {"source": "FINAM_ORDER_BOOK", "timestamp": 1_800_000_000,
+                {"source": "FINAM_ORDER_BOOK", "timestamp": 1_790_000_000,
                  "received_monotonic": 10.0,
                  "bid_confirmed_monotonic": 9.9, "ask_confirmed_monotonic": 9.8},
             ))
             self.assertTrue(recorder.record(
                 "TEST", snapshot,
-                {"source": "FINAM_QUOTES", "timestamp": 1_800_000_000.2,
+                {"source": "FINAM_QUOTES", "timestamp": 1_790_000_000.2,
                  "received_monotonic": 10.2,
                  "bid_confirmed_monotonic": 10.2, "ask_confirmed_monotonic": 10.1},
             ))
