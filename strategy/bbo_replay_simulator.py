@@ -1,9 +1,8 @@
-"""Deterministic, research-only exit replay over persisted executable BBO events.
+"""Deterministic, research-only exit replay over persisted PAPER market events.
 
-This is a BBO-trigger proxy, not a full reproduction of the production monitor:
-the production monitor can latch SL/TP from INSTRUMENT_TRADES before a fresh
-executable BBO becomes available. The BBO journal does not contain those
-trade-trigger events, so results are explicitly labelled as proxy simulations.
+The baseline consumes actual latched EXIT_TRIGGER events when the journal has
+them. Alternative stop-management scenarios use executable BBO thresholds and
+are explicitly marked as research hypotheses, not production behavior.
 """
 from __future__ import annotations
 
@@ -187,7 +186,7 @@ def replay_exit_scenarios(
     max_bbo_age_sec: float = 2.0,
     scenarios: Iterable[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Replay BBO-only exit hypotheses; input order is normalized by session sequence.
+    """Replay production baseline and BBO-based alternatives in session sequence.
 
     Accepts the persisted PAPER trade shape: bbo_replay_session_id (preferred),
     ticker, side, entry_price, entry_timestamp, volume, stop_loss, take_profit,
