@@ -632,6 +632,17 @@ insufficient; do not rank or tune strategy parameters from isolated small
 buckets. Net expectancy, profit factor, costs and chronological out-of-sample
 stability must be considered together.
 
+The scorecard also reports `session_stability`, which treats each identified
+PAPER session as one observation: profitable/losing/flat session counts, the
+profitable-session rate with a 95% Wilson interval, and mean/median/best/worst
+session net PnL. Per-session trade counts and outcomes are included for audit.
+Trades without a usable session ID are excluded from this session-level rate
+and counted separately; they remain in the overall realized scorecard. The
+`by_moscow_exit_date` cohort groups trades by the calendar date of a valid
+timezone-aware exit timestamp converted to Moscow time. Naive or malformed
+timestamps remain UNKNOWN. Session-level and day-level results help expose
+concentration in a few unusually good sessions, but they do not establish
+independence between sessions or account for changing market conditions.
 
 ## PAPER exit execution-cost diagnostics
 
