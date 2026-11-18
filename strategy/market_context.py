@@ -168,14 +168,21 @@ def estimate_entry_economics(
     if direction == "BUY":
         required_exit_fill = entry_fill * (1.0 + commission_rate) / (1.0 - commission_rate)
         required_exit_quote = required_exit_fill / (1.0 - slippage_rate)
-        required_move_pct = (required_exit_quote / entry_quote - 1.0) * 100.0
+        move_from_executable_pct = (required_exit_quote / entry_quote - 1.0) * 100.0
     else:
         required_exit_fill = entry_fill * (1.0 - commission_rate) / (1.0 + commission_rate)
         required_exit_quote = required_exit_fill / (1.0 + slippage_rate)
-        required_move_pct = (entry_quote / required_exit_quote - 1.0) * 100.0
+        move_from_executable_pct = (entry_quote / required_exit_quote - 1.0) * 100.0
 
     mid = (bid_value + ask_value) / 2.0
     spread_pct = (ask_value - bid_value) / mid * 100.0 if mid > 0.0 else math.nan
+    # Measure the required move from the current mid: this includes crossing
+    # the entry spread as well as both-side commission and slippage.
+    required_move_pct = (
+        (required_exit_quote / mid - 1.0) * 100.0
+        if direction == "BUY"
+        else (mid / required_exit_quote - 1.0) * 100.0
+    )
     atr_value = (
         float(atr_pct) if atr_pct is not None and math.isfinite(float(atr_pct))
         and float(atr_pct) > 0.0 else None
@@ -188,6 +195,7 @@ def estimate_entry_economics(
         "entry_fill_price": entry_fill,
         "breakeven_exit_executable_price": required_exit_quote,
         "minimum_favorable_move_pct": max(0.0, required_move_pct),
+        "move_beyond_entry_executable_pct": max(0.0, move_from_executable_pct),
         "entry_spread_pct": spread_pct,
         "commission_pct_per_side": commission_pct,
         "slippage_bps_per_side": slippage_bps,
