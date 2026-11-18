@@ -257,6 +257,14 @@ class BaseExecutionEngine:
             )),
         )
 
+        logger.info(
+            "[PAPER DEPTH MODEL] book_size_unit=%s max_participation=%.1f%% "
+            "partial_exit=%s; unit=unknown keeps the explicitly unverified BBO fallback",
+            self.paper_book_size_unit,
+            self.paper_max_book_participation_pct,
+            self.paper_book_size_unit in {"shares", "lots"},
+        )
+
         # ОЗУ-структуры PAPER-позиций.
         self.paper_positions: dict[str, TradeRecord] = {}
         self.closed_trades: list[TradeRecord] = []
