@@ -46,10 +46,12 @@ def evaluate_scalping_candidate(
       * persistent time-weighted best-queue imbalance (12);
       * trade-size impulse (10);
       * spread relative to M1 ATR (15);
-      * aggressor trade-flow confirmation (8);\n      * quote freshness (10).
+      * aggressor trade-flow confirmation (8);
+      * quote freshness (10).
 
-    Queue imbalance uses only the visible best Bid/Ask sizes. Finam's size unit
-    is not assumed; the normalized ratio is dimensionless. This is not OFI:
+    Queue imbalance uses a time-weighted five-second history of coherent visible
+    best Bid/Ask sizes, combined with 30-second aggressor trade-flow evidence.
+    Finam's size unit is not assumed; the normalized ratio is dimensionless. This is not OFI:
     true OFI requires signed changes in best bid/ask prices and quantities over
     time, which is a separate future data-engineering task.
     """
