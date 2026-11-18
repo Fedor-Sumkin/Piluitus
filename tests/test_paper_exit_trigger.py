@@ -394,7 +394,13 @@ class PaperPartialExitTests(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(result["pnl"], round(expected_net_pnl, 2), places=2)
         self.assertNotIn("SBER", engine.paper_positions)
         db.set_json.assert_awaited()
-        db.push_to_list.assert_awaited_once()
+        self.assertEqual(db.push_to_list.await_count, 2)
+        journal_call = db.push_to_list.await_args_list[0]
+        history_call = db.push_to_list.await_args_list[1]
+        self.assertEqual(journal_call.args[0], "piluitus:paper:closed_trades")
+        self.assertEqual(journal_call.kwargs["max_len"], 20000)
+        self.assertEqual(journal_call.args[1]["id"], "PAPER_PARTIAL_TEST")
+        self.assertEqual(history_call.args[0], "piluitus:trade_history")
 
 
 if __name__ == "__main__":
