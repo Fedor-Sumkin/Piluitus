@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import argparse, json, os, shutil, tempfile
+import argparse, json, os, shutil, sys, tempfile
 from pathlib import Path
 
 def restore(src, dst):
@@ -13,7 +13,17 @@ def restore(src, dst):
         except OSError: pass
         raise
 
+def _configure_console():
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
 def main():
+    _configure_console()
     ap=argparse.ArgumentParser(); ap.add_argument("--project",default="."); project=Path(ap.parse_args().project).resolve()
     backups=sorted((p for p in project.glob("_backup_local_patch_*") if (p/"manifest.json").is_file()),key=lambda p:p.name,reverse=True)
     if not backups: print("Резервная копия не найдена."); return 2
