@@ -3911,6 +3911,45 @@ async def get_paper_shadow_reconciliation(limit: int = 100):
     return {"paper_mode": True, **result}
 
 
+@app.get("/api/v1/paper/research/report")
+async def get_paper_research_report(limit: int = 30):
+    """Return a read-only consolidated PAPER research snapshot."""
+    _require_paper_mode()
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=422, detail="limit должен быть от 1 до 100.")
+
+    scorecard = paper_performance_tracker.scorecard(paper_shadow_labels)
+    reconciliation = build_shadow_reconciliation(
+        paper_performance_tracker.records,
+        paper_shadow_labels,
+        limit=limit,
+    )
+    try:
+        exit_replay = await replay_paper_exit_batch(limit=limit)
+    except HTTPException as replay_exc:
+        if replay_exc.status_code != 409:
+            raise
+        exit_replay = {
+            "available": False,
+            "status_code": replay_exc.status_code,
+            "detail": replay_exc.detail,
+        }
+
+    return {
+        "paper_mode": True,
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "limit": limit,
+        "realized_scorecard": scorecard,
+        "shadow_reconciliation": reconciliation,
+        "exit_replay": exit_replay,
+        "interpretation": (
+            "Read-only research snapshot. Realized PAPER PnL, hypothetical Shadow "
+            "labels and replay scenarios are separate evidence sets; replay is not "
+            "portfolio-level and none of these diagnostics changes active trading rules."
+        ),
+    }
+
+
 @app.get("/api/v1/paper/replay/{order_id}")
 async def replay_paper_exit_scenarios(order_id: str):
     """Read-only BBO replay for one persisted PAPER position."""
