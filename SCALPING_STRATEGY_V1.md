@@ -620,3 +620,12 @@ New trades persist the four regime labels from the market-evidence snapshot at
 entry. Legacy trades or snapshots without those labels remain UNKNOWN. These
 groups are descriptive and must be interpreted with sample counts, costs and
 out-of-sample stability; they are not entry filters or evidence of causality.
+
+
+Every realized-PAPER cohort now includes its own sample-quality tier and a
+95% Wilson interval for the positive-PnL rate. The interval is descriptive
+sampling uncertainty, not a correction for repeated trades, shared sessions,
+ticker dependence or parameter selection. Small cohorts remain explicitly
+insufficient; do not rank or tune strategy parameters from isolated small
+buckets. Net expectancy, profit factor, costs and chronological out-of-sample
+stability must be considered together.
