@@ -595,6 +595,7 @@ def replay_exit_batch(
             "schema_version": 1,
             "engine": "PAPER_EXIT_REPLAY_V1",
             "positions": 0,
+            "rejected_positions": [],
             "trades": [],
             "summary_by_scenario": {},
         }
