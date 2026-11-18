@@ -27,6 +27,8 @@ class ShadowWalkForwardValidationTests(unittest.TestCase):
                     "volatility_regime": "HIGH_VOLATILITY" if index % 3 == 0 else "NORMAL_VOLATILITY",
                     "liquidity_regime": "LOW_LIQUIDITY" if index % 4 == 0 else "NORMAL_OR_UNKNOWN",
                     "directional_regime": "TREND_UP" if index % 2 else "RANGE_OR_MIXED",
+                    "llm_confidence": 80.0 + (index % 20),
+                    "llm_model_decision": "APPROVE" if index % 2 else "HOLD",
                     "result": "OK",
                     "label_quality": "ON_TIME",
                     "net_executable_return_pct": result,
@@ -102,6 +104,23 @@ class ShadowWalkForwardValidationTests(unittest.TestCase):
         short = build_shadow_walk_forward_validation(self.labels(2))
         self.assertFalse(short["available"])
         self.assertEqual(short["reason"], "INSUFFICIENT_DISTINCT_TIME_POINTS")
+
+
+    def test_walk_forward_reports_out_of_sample_confidence_cohorts(self):
+        report = build_shadow_walk_forward_validation(self.labels(30), folds=5)
+        self.assertTrue(report["available"])
+        confidence_groups = report["out_of_sample_by_horizon_side_confidence"]
+        decision_groups = report["out_of_sample_by_horizon_side_decision_confidence"]
+        self.assertTrue(confidence_groups)
+        self.assertTrue(decision_groups)
+        sample = next(iter(confidence_groups.values()))
+        self.assertIn("positive_rate_wilson_95_pct", sample)
+        self.assertIn("mean_model_confidence_pct", sample)
+        self.assertLess(
+            sample["positive_rate_wilson_95_pct"][0],
+            sample["positive_rate_wilson_95_pct"][1],
+        )
+        self.assertTrue(any("|llm_model_decision=" in key for key in decision_groups))
 
 
     def test_unusable_labels_are_reported_as_coverage_not_returns(self):
