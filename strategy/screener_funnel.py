@@ -99,6 +99,56 @@ def _event_timestamp_to_monotonic(value: object, receive_monotonic: float) -> fl
         return receive_monotonic
 
 
+
+def _queue_imbalance_window(history, now, window_sec=5.0, min_samples=3, min_coverage_sec=1.0):
+    """Time-weighted average of accepted best-queue imbalance observations."""
+    rows = []
+    try:
+        source = list(history or ())
+    except (TypeError, ValueError):
+        source = []
+    for item in source:
+        if not isinstance(item, (tuple, list)) or len(item) < 2:
+            continue
+        try:
+            ts, value = float(item[0]), float(item[1])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(ts) and math.isfinite(value) and ts <= now and now - ts <= window_sec and -1.0 <= value <= 1.0:
+            rows.append((ts, value))
+    rows.sort(key=lambda item: item[0])
+    if not rows:
+        return {"value": 0.0, "available": 0.0, "coverage_sec": 0.0, "samples": 0, "age_sec": -1.0, "positive_time_pct": 0.0}
+    collapsed = []
+    for ts, value in rows:
+        if collapsed and ts <= collapsed[-1][0]:
+            collapsed[-1] = (ts, value)
+        else:
+            collapsed.append((ts, value))
+    start_window = max(now - max(0.1, window_sec), collapsed[0][0])
+    weighted = positive_duration = covered = 0.0
+    for index, (ts, value) in enumerate(collapsed):
+        start = max(start_window, ts)
+        end = min(now, collapsed[index + 1][0] if index + 1 < len(collapsed) else now)
+        duration = max(0.0, end - start)
+        weighted += value * duration
+        covered += duration
+        if value > 0.0:
+            positive_duration += duration
+    coverage = max(0.0, now - start_window)
+    age = max(0.0, now - collapsed[-1][0])
+    average = weighted / covered if covered > 0.0 else collapsed[-1][1]
+    available = len(collapsed) >= max(1, min_samples) and coverage >= max(0.0, min_coverage_sec)
+    return {
+        "value": max(-1.0, min(1.0, average)),
+        "available": float(available),
+        "coverage_sec": coverage,
+        "samples": len(collapsed),
+        "age_sec": age,
+        "positive_time_pct": positive_duration / covered * 100.0 if covered > 0.0 else 0.0,
+    }
+
+
 class HFTMemoryScreener:
     """Короткая тик-история + локальный cross-sectional рейтинг top-N."""
 
@@ -252,6 +302,7 @@ class HFTMemoryScreener:
             # учитывается только при фактическом наличии соответствующего поля.
             "bid_size_history": deque(maxlen=self.window_size),
             "ask_size_history": deque(maxlen=self.window_size),
+            "queue_imbalance_history": deque(maxlen=1024),
         }
         self.base_metrics[ticker] = {
             "volume_spike": 1.0,
@@ -750,6 +801,7 @@ class HFTMemoryScreener:
             # revoke executable confirmations immediately; prices are retained
             # only when the message authoritatively supplied that side.
             if not book_valid:
+                quote.setdefault("queue_imbalance_history", deque(maxlen=1024)).clear()
                 if bid_state_present and accept_bid_update:
                     quote["bid"] = candidate_bid
                     quote["last_bid_source_received_seen"] = received_at
@@ -793,6 +845,7 @@ class HFTMemoryScreener:
             crossed = current_bid > 0.0 and current_ask > 0.0 and current_ask < current_bid
             two_sided = current_bid > 0.0 and current_ask > 0.0 and current_ask >= current_bid
             if not two_sided or crossed:
+                quote.setdefault("queue_imbalance_history", deque(maxlen=1024)).clear()
                 quote["bid"] = current_bid
                 quote["ask"] = current_ask
                 if accept_bid_update:
@@ -892,6 +945,15 @@ class HFTMemoryScreener:
                 quote["last_ask_size_seen"] = confirmation_seen_at if ask_size > 0.0 else 0.0
                 if ask_levels_present and ask_levels is not None:
                     quote["ask_levels"] = ask_levels
+
+            bid_queue_size = float(self._current_top_size(quote, "bid", now))
+            ask_queue_size = float(self._current_top_size(quote, "ask", now))
+            if bid_queue_size > 0.0 and ask_queue_size > 0.0:
+                queue_total = bid_queue_size + ask_queue_size
+                queue_value = (bid_queue_size - ask_queue_size) / queue_total
+                queue_history = quote.setdefault("queue_imbalance_history", deque(maxlen=1024))
+                if not queue_history or book_seen_at > float(queue_history[-1][0]):
+                    queue_history.append((book_seen_at, queue_value))
             return {
                 "updated": True,
                 "valid": True,
@@ -1207,6 +1269,10 @@ class HFTMemoryScreener:
                 if queue_imbalance_available else 0.0
             )
             queue_imbalance_age = max(bid_size_age, ask_size_age)
+            queue_window = _queue_imbalance_window(
+                quote.get("queue_imbalance_history", ()), now,
+                window_sec=5.0, min_samples=3, min_coverage_sec=1.0,
+            )
             metrics: dict[str, Any] = {
                 "current_price": float(price),
                 "vwap": float(vwap),
@@ -1251,6 +1317,12 @@ class HFTMemoryScreener:
                 "queue_imbalance_available": float(queue_imbalance_available),
                 "queue_imbalance": float(queue_imbalance),
                 "queue_imbalance_age_sec": round(queue_imbalance_age, 3) if math.isfinite(queue_imbalance_age) else -1.0,
+                "queue_imbalance_5s": float(queue_window["value"]),
+                "queue_imbalance_5s_available": float(queue_window["available"]),
+                "queue_imbalance_5s_coverage_sec": round(float(queue_window["coverage_sec"]), 3),
+                "queue_imbalance_5s_samples": int(queue_window["samples"]),
+                "queue_imbalance_5s_age_sec": round(float(queue_window["age_sec"]), 3),
+                "queue_imbalance_5s_positive_time_pct": round(float(queue_window["positive_time_pct"]), 2),
                 "bid_ask_available": float(bbo_fresh),
                 "bid_quote_age_sec": round(bid_age, 3) if math.isfinite(bid_age) else -1.0,
                 "ask_quote_age_sec": round(ask_age, 3) if math.isfinite(ask_age) else -1.0,
