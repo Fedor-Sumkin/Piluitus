@@ -534,7 +534,7 @@ class HFTMemoryScreener:
                         fixed_interval_returns.append(
                             (right_price - left_price) / left_price * 100.0
                         )
-                    if len(fixed_interval_returns) >= 3:
+                    if len(fixed_interval_returns) >= 8:
                         volatility_pct = math.sqrt(
                             sum(value * value for value in fixed_interval_returns)
                         )
