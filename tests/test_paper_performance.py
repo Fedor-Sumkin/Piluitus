@@ -277,3 +277,47 @@ class PaperPerformanceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+    def test_loss_diagnostics_reports_overlapping_evidence_and_missing_data(self):
+        tracker = PaperPerformanceTracker()
+        tracker.restore([
+            {
+                **trade("gross-loss", -12),
+                "gross_pnl": -8.0,
+                "total_commission_rub": 4.0,
+                "max_favorable_excursion_pct": 0.0,
+                "exit_bbo_gap_count": 1,
+                "total_exit_bbo_gap_sec": 2.5,
+                "trigger_to_executable_bbo_delay_sec": 1.2,
+                "exit_spread_pct": 0.08,
+            },
+            {
+                **trade("cost-loss", -3),
+                "gross_pnl": 2.0,
+                "total_commission_rub": 5.0,
+                "max_favorable_excursion_pct": 0.15,
+                "exit_bbo_gap_count": 0,
+                "total_exit_bbo_gap_sec": 0.0,
+                "trigger_to_executable_bbo_delay_sec": 0.0,
+                "exit_spread_pct": 0.04,
+            },
+            {
+                **trade("unknown-loss", -1),
+                "gross_pnl": None,
+                "total_commission_rub": None,
+                "max_favorable_excursion_pct": None,
+            },
+        ])
+        diagnostics = tracker.scorecard()["loss_diagnostics"]
+        self.assertEqual(diagnostics["losing_trades"], 3)
+        flags = diagnostics["observable_flags"]
+        self.assertEqual(flags["GROSS_LOSS_BEFORE_COSTS"], 1)
+        self.assertEqual(flags["COSTS_TURNED_GROSS_WIN_INTO_NET_LOSS"], 1)
+        self.assertEqual(flags["EXIT_BBO_GAP_PRESENT"], 1)
+        self.assertEqual(flags["TRIGGER_TO_FILL_DELAY_PRESENT"], 1)
+        self.assertEqual(flags["FAVORABLE_EXCURSION_WITH_NET_LOSS"], 1)
+        self.assertEqual(flags["EXIT_SPREAD_RECORDED"], 2)
+        self.assertEqual(flags["INSUFFICIENT_ATTRIBUTION_DATA"], 1)
+        self.assertEqual(diagnostics["data_coverage"]["gross_pnl_records"], 2)
+        self.assertIn("not mutually exclusive", diagnostics["interpretation"])
