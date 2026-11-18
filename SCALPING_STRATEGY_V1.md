@@ -78,7 +78,9 @@ observation offsets, total observation span and invalid/stale observation
 count. These are observed extrema, not continuous-market guarantees: gaps
 between accepted quotes can hide a more extreme price. The coverage span is
 not a percentage uptime metric, and quote observations are not independent
-samples. Each horizon label snapshots excursions only up to that horizon.
+samples. Each label records `excursion_observation_end_elapsed_sec`: when a
+label is delayed, its excursion snapshot can include valid observations after
+the nominal horizon, so compare it alongside `label_lag_sec`.
 
 
 
