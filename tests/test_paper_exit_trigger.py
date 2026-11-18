@@ -313,6 +313,39 @@ class PaperPartialExitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["status"], "OPEN")
         self.assertEqual(saved["volume"], 10)
 
+    async def test_closed_trade_preserves_llm_and_shadow_candidate_attribution(self):
+        engine = self._engine()
+        trade = self._trade()
+        trade.update({
+            "shadow_candidate_id": "candidate-123",
+            "llm_verdict_id": "verdict-456",
+            "llm_model_decision": "APPROVE",
+            "llm_final_decision": "BUY",
+            "llm_confidence_pct": 87.5,
+            "llm_signal_status": "APPROVED",
+            "llm_reason_code": "TREND_CONFIRMED",
+            "candidate_direction": "BUY",
+        })
+        engine.paper_positions["SBER"] = trade
+        db = AsyncMock()
+
+        result = await engine._finalize_paper_close(
+            "SBER", trade, db, self._bbo([[101.0, 20]]),
+            exit_reason="TAKE_PROFIT", trigger_price=102.0,
+        )
+
+        self.assertEqual(result["status"], "CLOSED")
+        self.assertEqual(result["shadow_candidate_id"], "candidate-123")
+        self.assertEqual(result["llm_verdict_id"], "verdict-456")
+        self.assertEqual(result["llm_model_decision"], "APPROVE")
+        self.assertEqual(result["llm_final_decision"], "BUY")
+        self.assertEqual(result["llm_confidence_pct"], 87.5)
+        self.assertEqual(result["llm_signal_status"], "APPROVED")
+        self.assertEqual(result["llm_reason_code"], "TREND_CONFIRMED")
+        saved = db.set_json.await_args.args[1]
+        self.assertEqual(saved["shadow_candidate_id"], "candidate-123")
+        self.assertEqual(saved["llm_verdict_id"], "verdict-456")
+
     async def test_missing_exit_depth_does_not_fabricate_a_full_fill(self):
         engine = self._engine()
         trade = self._trade()
