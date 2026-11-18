@@ -439,6 +439,7 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         self.assertEqual(result["open_positions_at_end"], 0)
         self.assertAlmostEqual(result["realized_net_pnl_rub"], 40.0)
         self.assertAlmostEqual(result["peak_reserved_capital_rub"], 1000.0)
+        self.assertAlmostEqual(result["peak_allocation_utilization_pct"], 100.0 * 1000.0 / 1500.0)
 
     def test_portfolio_capacity_keeps_open_position_reserved_at_end(self):
         rows = [{
@@ -453,6 +454,7 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         self.assertEqual(result["closed_positions"], 0)
         self.assertEqual(result["open_positions_at_end"], 1)
         self.assertEqual(result["ending_reserved_capital_rub"], 1000.0)
+        self.assertEqual(result["ending_free_cash_rub"], 9000.0)
         self.assertIsNone(result["expectancy_per_closed_position_rub"])
 
     def test_portfolio_capacity_validates_capital_and_allocation(self):
