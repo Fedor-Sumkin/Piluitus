@@ -127,6 +127,7 @@ def _prepare_events(
     session_id: str,
     ticker: str,
     entry_epoch: float,
+    session_metadata: Mapping[str, Any] | None = None,
 ) -> tuple[list[Mapping[str, Any]], dict[str, int]]:
     rows: list[Mapping[str, Any]] = []
     seen: set[int] = set()
@@ -146,41 +147,61 @@ def _prepare_events(
         "event_time_regressions": 0,
         "pre_entry_events": 0,
     }
-    for event in events:
-        if not isinstance(event, Mapping) or str(event.get("session_id") or "") != session_id:
-            continue
-        stats["session_events"] += 1
-        seq_raw = _number(event.get("sequence"), math.nan)
-        if not math.isfinite(seq_raw) or seq_raw <= 0 or int(seq_raw) != seq_raw:
-            continue
-        seq = int(seq_raw)
-        if seq in seen:
-            stats["duplicate_sequences"] += 1
-            continue
-        seen.add(seq)
-        rows.append(event)
-    rows.sort(key=lambda item: int(_number(item.get("sequence"), 0)))
-    seqs = [int(_number(row.get("sequence"), 0)) for row in rows]
-    if seqs:
-        stats["first_sequence"] = seqs[0]
-        stats["last_sequence"] = seqs[-1]
-        stats["missing_sequence_prefix"] = max(0, seqs[0] - 1)
-        stats["sequence_gaps"] = stats["missing_sequence_prefix"]
-    if len(seqs) > 1:
-        stats["sequence_gaps"] += sum(
-            max(0, right - left - 1) for left, right in zip(seqs, seqs[1:])
-        )
-    previous_epoch_by_ticker: dict[str, float] = {}
-    for row in rows:
-        stamp = _epoch(row.get("event_time_epoch"))
-        if not math.isfinite(stamp):
-            stats["missing_event_timestamps"] += 1
-            continue
-        symbol = str(row.get("ticker") or "").strip().upper().split("@")[0]
-        previous_epoch = previous_epoch_by_ticker.get(symbol, math.nan)
-        if math.isfinite(previous_epoch) and stamp < previous_epoch:
-            stats["event_time_regressions"] += 1
-        previous_epoch_by_ticker[symbol] = stamp
+    if session_metadata is None:
+        for event in events:
+            if not isinstance(event, Mapping) or str(event.get("session_id") or "") != session_id:
+                continue
+            stats["session_events"] += 1
+            seq_raw = _number(event.get("sequence"), math.nan)
+            if not math.isfinite(seq_raw) or seq_raw <= 0 or int(seq_raw) != seq_raw:
+                continue
+            seq = int(seq_raw)
+            if seq in seen:
+                stats["duplicate_sequences"] += 1
+                continue
+            seen.add(seq)
+            rows.append(event)
+        rows.sort(key=lambda item: int(_number(item.get("sequence"), 0)))
+        seqs = [int(_number(row.get("sequence"), 0)) for row in rows]
+        if seqs:
+            stats["first_sequence"] = seqs[0]
+            stats["last_sequence"] = seqs[-1]
+            stats["missing_sequence_prefix"] = max(0, seqs[0] - 1)
+            stats["sequence_gaps"] = stats["missing_sequence_prefix"]
+        if len(seqs) > 1:
+            stats["sequence_gaps"] += sum(
+                max(0, right - left - 1) for left, right in zip(seqs, seqs[1:])
+            )
+        previous_epoch_by_ticker: dict[str, float] = {}
+        for row in rows:
+            stamp = _epoch(row.get("event_time_epoch"))
+            if not math.isfinite(stamp):
+                stats["missing_event_timestamps"] += 1
+                continue
+            symbol = str(row.get("ticker") or "").strip().upper().split("@")[0]
+            previous_epoch = previous_epoch_by_ticker.get(symbol, math.nan)
+            if math.isfinite(previous_epoch) and stamp < previous_epoch:
+                stats["event_time_regressions"] += 1
+            previous_epoch_by_ticker[symbol] = stamp
+    else:
+        for key in (
+            "session_events", "duplicate_sequences", "sequence_gaps",
+            "missing_sequence_prefix", "first_sequence", "last_sequence",
+            "missing_event_timestamps", "event_time_regressions",
+        ):
+            stats[key] = int(_number(session_metadata.get(key), 0.0))
+        for event in events:
+            if not isinstance(event, Mapping):
+                continue
+            seq_raw = _number(event.get("sequence"), math.nan)
+            if not math.isfinite(seq_raw) or seq_raw <= 0 or int(seq_raw) != seq_raw:
+                continue
+            seq = int(seq_raw)
+            if seq in seen:
+                continue
+            seen.add(seq)
+            rows.append(event)
+        rows.sort(key=lambda item: int(_number(item.get("sequence"), 0)))
     ticker_rows = [
         row for row in rows
         if str(row.get("ticker") or "").strip().upper().split("@")[0] == ticker
@@ -210,6 +231,7 @@ def replay_exit_scenarios(
     *,
     max_bbo_age_sec: float = 2.0,
     scenarios: Iterable[Mapping[str, Any]] | None = None,
+    _session_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Replay production baseline and BBO-based alternatives in session sequence.
 
@@ -255,7 +277,8 @@ def replay_exit_scenarios(
     risk_per_unit = abs(entry - stop)
     position_id = str(position.get("id") or position.get("position_id") or "").strip()
     rows, coverage = _prepare_events(
-        events, session_id=session_id, ticker=ticker, entry_epoch=entry_epoch
+        events, session_id=session_id, ticker=ticker, entry_epoch=entry_epoch,
+        session_metadata=_session_metadata,
     )
     all_trigger_rows = [
         row for row in rows
