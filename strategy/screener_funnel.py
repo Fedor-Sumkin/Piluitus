@@ -294,6 +294,10 @@ class HFTMemoryScreener:
             else _env_float("PILUITUS_BBO_MAX_AGE_SEC", 2.0, minimum=0.25)
         )
         self.bbo_max_age_sec = min(5.0, max(0.25, configured_bbo_age))
+        # Quote updates can remain fresh while the last traded price is stale.
+        self.price_event_max_age_sec = _env_float(
+            "PILUITUS_FUNNEL_PRICE_EVENT_MAX_AGE_SEC", 10.0, minimum=1.0
+        )
 
         # Keep the historical array layout compatible with ATR calculations.
         self.history: dict[str, dict[str, Any]] = {}
@@ -460,37 +464,80 @@ class HFTMemoryScreener:
         momentum_pct = abs(float(prices[-1]) - base_price) / base_price * 100.0 if base_price > 0 else 0.0
 
         if self.trade_data_mode:
-            # Rank all 88 symbols on identical quote-derived fixed windows. The
-            # trade stream is subscribed only for Top-15, so it must not bias ranking.
+            # The trade stream is subscribed only for Top-15 and therefore must
+            # never bias cross-sectional ranking. Sample every symbol on the same
+            # 5-second grid; event-to-event returns are not comparable when quote
+            # update frequencies differ.
             momentum_pct = 0.0
             volatility_pct = 0.0
-            price_events = quote.get("price_events", ())
-            recent_price_events = [
-                item for item in price_events
-                if isinstance(item, (tuple, list)) and len(item) >= 2
-                and 0.0 <= now - float(item[0]) <= 60.0
-            ]
-            if recent_price_events:
-                latest_event = recent_price_events[-1]
-                reference30 = next((
-                    item for item in reversed(recent_price_events)
-                    if float(item[0]) <= float(latest_event[0]) - 30.0
-                ), None)
-                if reference30 is not None and float(reference30[1]) > 0.0:
-                    momentum_pct = abs(
-                        (float(latest_event[1]) - float(reference30[1]))
-                        / float(reference30[1]) * 100.0
+            raw_events = quote.get("price_events", ())
+            price_points: list[tuple[float, float]] = []
+            for item in raw_events:
+                if not isinstance(item, (tuple, list)) or len(item) < 2:
+                    continue
+                try:
+                    stamp = float(item[0])
+                    value = float(item[1])
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if (
+                    math.isfinite(stamp) and math.isfinite(value) and value > 0.0
+                    and 0.0 <= now - stamp <= 75.0
+                ):
+                    price_points.append((stamp, value))
+            price_points.sort(key=lambda item: item[0])
+
+            if price_points:
+                latest_stamp, latest_price = price_points[-1]
+                latest_age = now - latest_stamp
+                if 0.0 <= latest_age <= self.price_event_max_age_sec:
+                    # 30-second momentum uses a price observation close to the
+                    # exact target time. A sparse/stale reference is unavailable,
+                    # not silently stretched into a different horizon.
+                    target_30 = latest_stamp - 30.0
+                    reference30 = next(
+                        (item for item in reversed(price_points) if item[0] <= target_30),
+                        None,
                     )
-                coverage = now - float(recent_price_events[0][0])
-                if coverage >= 60.0:
-                    time_returns = [
-                        (float(recent_price_events[i][1]) - float(recent_price_events[i - 1][1]))
-                        / float(recent_price_events[i - 1][1]) * 100.0
-                        for i in range(1, len(recent_price_events))
-                        if float(recent_price_events[i - 1][1]) > 0.0
-                    ]
-                    if len(time_returns) >= 2:
-                        volatility_pct = float(np.std(time_returns))
+                    if (
+                        reference30 is not None
+                        and target_30 - reference30[0] <= self.price_event_max_age_sec
+                        and reference30[1] > 0.0
+                    ):
+                        momentum_pct = abs(
+                            (latest_price - reference30[1]) / reference30[1] * 100.0
+                        )
+
+                    # Realized volatility over a fixed 60-second window. Each
+                    # sample is the last observed price at/before a 5-second
+                    # boundary and is accepted only within the configured age.
+                    sampled: list[tuple[int, float]] = []
+                    window_start = latest_stamp - 60.0
+                    for bucket in range(13):
+                        boundary = window_start + bucket * 5.0
+                        observation = next(
+                            (item for item in reversed(price_points) if item[0] <= boundary),
+                            None,
+                        )
+                        if (
+                            observation is not None
+                            and 0.0 <= boundary - observation[0] <= self.price_event_max_age_sec
+                        ):
+                            sampled.append((bucket, observation[1]))
+
+                    fixed_interval_returns: list[float] = []
+                    for (left_bucket, left_price), (right_bucket, right_price) in zip(
+                        sampled, sampled[1:]
+                    ):
+                        if right_bucket != left_bucket + 1 or left_price <= 0.0:
+                            continue
+                        fixed_interval_returns.append(
+                            (right_price - left_price) / left_price * 100.0
+                        )
+                    if len(fixed_interval_returns) >= 3:
+                        volatility_pct = math.sqrt(
+                            sum(value * value for value in fixed_interval_returns)
+                        )
 
         base = self.base_metrics.get(ticker, {})
         # The volume spike is an entry feature; it cannot rank only already-subscribed symbols.
