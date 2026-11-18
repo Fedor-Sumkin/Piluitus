@@ -155,15 +155,17 @@ def _prepare_events(
         stats["sequence_gaps"] = sum(
             max(0, right - left - 1) for left, right in zip(seqs, seqs[1:])
         )
-    previous_epoch = math.nan
+    previous_epoch_by_ticker: dict[str, float] = {}
     for row in rows:
         stamp = _epoch(row.get("event_time_epoch"))
         if not math.isfinite(stamp):
             stats["missing_event_timestamps"] += 1
             continue
+        symbol = str(row.get("ticker") or "").strip().upper().split("@")[0]
+        previous_epoch = previous_epoch_by_ticker.get(symbol, math.nan)
         if math.isfinite(previous_epoch) and stamp < previous_epoch:
             stats["event_time_regressions"] += 1
-        previous_epoch = stamp
+        previous_epoch_by_ticker[symbol] = stamp
     selected = [
         row for row in rows
         if str(row.get("ticker") or "").strip().upper().split("@")[0] == ticker
@@ -203,7 +205,10 @@ def replay_exit_scenarios(
     stop = _number(position.get("stop_loss"))
     target = _number(position.get("take_profit"))
     commission = _number(position.get("commission_pct_per_side"))
-    slippage = _number(position.get("slippage_bps", position.get("paper_slippage_bps")))
+    slippage_raw = position.get("slippage_bps")
+    if slippage_raw is None:
+        slippage_raw = position.get("paper_slippage_bps")
+    slippage = _number(slippage_raw)
     max_age = _number(max_bbo_age_sec)
 
     if not session_id or not ticker or side not in {"BUY", "SELL"}:
@@ -281,6 +286,7 @@ def replay_exit_scenarios(
             "dynamic_stop": stop,
             "exit": None,
             "pending_trigger": None,
+            "exit_trigger_mode": None,
             "last_fresh_price": None,
             "last_elapsed_sec": 0.0,
             "fresh_observations": 0,
@@ -312,6 +318,7 @@ def replay_exit_scenarios(
                             _number(pending.get("trigger_price"), stop),
                             immediate_price, pending, immediate_age, elapsed,
                         )
+                        state["exit_trigger_mode"] = "ACTUAL_LATCHED_TRIGGER"
                 continue
 
             price, age, freshness = _fresh_side(row, side, max_age)
@@ -337,6 +344,7 @@ def replay_exit_scenarios(
                     _number(pending.get("trigger_price"), stop),
                     price, row, age, elapsed,
                 )
+                state["exit_trigger_mode"] = "ACTUAL_LATCHED_TRIGGER"
                 break
 
             sign = 1.0 if side == "BUY" else -1.0
@@ -394,6 +402,7 @@ def replay_exit_scenarios(
                 state["exit"] = _make_exit(
                     reason, float(trigger), price, row, age, elapsed
                 )
+                state["exit_trigger_mode"] = "BBO_THRESHOLD_PROXY"
                 break
 
         exit_row = state["exit"]
@@ -402,9 +411,12 @@ def replay_exit_scenarios(
             "kind": kind,
             "status": "CLOSED" if exit_row else "OPEN_AT_END",
             "trigger_mode": (
-                "ACTUAL_LATCHED_TRIGGER" if kind == "baseline" and trigger_rows
-                else "BBO_THRESHOLD_PROXY" if kind == "baseline"
-                else "BBO_THRESHOLD_RESEARCH"
+                state["exit_trigger_mode"]
+                or (
+                    "ACTUAL_TRIGGER_PENDING" if kind == "baseline" and state["pending_trigger"] is not None
+                    else "BBO_THRESHOLD_PROXY" if kind == "baseline"
+                    else "BBO_THRESHOLD_RESEARCH"
+                )
             ),
             "pending_trigger": (
                 {
@@ -531,6 +543,7 @@ def replay_exit_batch(
             "summary_by_scenario": {},
         }
 
+    scenario_specs = list(scenarios) if scenarios is not None else None
     trade_results: list[dict[str, Any]] = []
     grouped: dict[str, list[dict[str, Any]]] = {}
     for index, position in enumerate(position_rows):
@@ -540,7 +553,7 @@ def replay_exit_batch(
             event_rows,
             position,
             max_bbo_age_sec=max_bbo_age_sec,
-            scenarios=scenarios,
+            scenarios=scenario_specs,
         )
         risk_rub = result["risk_per_unit"] * result["quantity"]
         result["risk_rub"] = round(risk_rub, 4)
@@ -585,7 +598,7 @@ def replay_exit_batch(
         "trades": trade_results,
         "summary_by_scenario": summaries,
         "limitations": [
-            "BBO_ONLY_PROXY: production SL/TP can first trigger on INSTRUMENT_TRADES; trade-trigger events are absent from this journal.",
+            "BASELINE uses actual latched EXIT_TRIGGER events when the journal contains them; legacy sessions without trigger events use a BBO-threshold proxy.",
             "Open positions at the end of the replay are excluded from realized scenario PnL.",
             "Portfolio-level overlap, capital contention and simultaneous execution are not modeled.",
         ],
