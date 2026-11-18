@@ -196,6 +196,21 @@ class PaperExitDepthTests(unittest.TestCase):
         self.assertEqual(fill["filled_lots"], 1)
         self.assertEqual(fill["fill_ratio"], 0.5)
 
+    def test_stale_or_invalid_order_book_cannot_confirm_exit_depth(self):
+        trade = {
+            "side": "BUY", "volume": 20, "lots": 2, "lot_size": 10,
+        }
+        stale = {
+            "bid_levels": [[99.9, 100]],
+            "order_book_valid": True,
+            "order_book_age_sec": 3.0,
+            "max_age_sec": 2.0,
+        }
+        self.assertIsNone(self.engine._paper_exit_depth_fill("SBER", trade, stale))
+        stale["order_book_age_sec"] = 0.1
+        stale["order_book_valid"] = False
+        self.assertIsNone(self.engine._paper_exit_depth_fill("SBER", trade, stale))
+
     def test_unknown_finam_book_unit_does_not_infer_size_semantics(self):
         self.engine.paper_book_size_unit = "unknown"
         fill = self.engine._paper_exit_depth_fill(
