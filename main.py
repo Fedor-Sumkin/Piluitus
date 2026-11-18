@@ -3841,6 +3841,12 @@ async def replay_paper_exit_batch(
                 "positions": 0,
                 "trades": [],
                 "summary_by_scenario": {},
+                "matched_cohort_comparison": {
+                    "available": False,
+                    "reason": "NO_REPLAYED_POSITIONS",
+                    "comparisons_vs_baseline": {},
+                    "all_scenarios_common_cohort": None,
+                },
             },
             "note": "Нет закрытых PAPER-сделок с bbo_replay_session_id, подходящих под фильтры.",
         }
