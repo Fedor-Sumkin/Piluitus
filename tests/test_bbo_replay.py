@@ -45,6 +45,30 @@ class BBOReplayRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recorder.accepted, 0)
         self.assertEqual(recorder.status()["queued"], 0)
 
+    def test_queue_overflow_does_not_advance_symbol_deduplication_state(self):
+        recorder = BBOReplayRecorder(queue_limit=100)
+        for index in range(100):
+            self.assertTrue(recorder.record(
+                f"FILL{index}",
+                {"updated": True, "valid": True, "bid": 10 + index,
+                 "ask": 10.1 + index, "bid_size": 1, "ask_size": 1},
+            ))
+        dropped = recorder.record(
+            "RETRY",
+            {"updated": True, "valid": True, "bid": 20, "ask": 20.1,
+             "bid_size": 1, "ask_size": 1},
+        )
+        self.assertFalse(dropped)
+        self.assertEqual(recorder.dropped_queue_full, 1)
+        recorder._queue.get_nowait()
+        retried = recorder.record(
+            "RETRY",
+            {"updated": True, "valid": True, "bid": 20, "ask": 20.1,
+             "bid_size": 1, "ask_size": 1},
+        )
+        self.assertTrue(retried)
+        self.assertEqual(recorder.accepted, 101)
+
     def test_timestamp_parser_supports_seconds_milliseconds_and_protobuf(self):
         self.assertEqual(_timestamp_epoch(1_800_000_000), 1_800_000_000)
         self.assertEqual(_timestamp_epoch(1_800_000_000_000), 1_800_000_000)
