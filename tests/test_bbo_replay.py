@@ -35,6 +35,32 @@ class BBOReplayRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0]["ticker"], "TEST")
         self.assertEqual(recorder.skipped_unchanged, 1)
 
+    def test_records_source_switch_and_per_side_freshness(self):
+        recorder = BBOReplayRecorder(queue_limit=100, heartbeat_interval_sec=5.0)
+        snapshot = {
+            "updated": True, "valid": True, "order_book_valid": True,
+            "bid": 100.0, "ask": 100.1, "bid_size": 10.0, "ask_size": 12.0,
+        }
+        with patch("strategy.bbo_replay.time.monotonic", side_effect=[10.0, 10.2]):
+            self.assertTrue(recorder.record(
+                "TEST", snapshot,
+                {"source": "FINAM_ORDER_BOOK", "timestamp": 1_800_000_000,
+                 "received_monotonic": 10.0,
+                 "bid_confirmed_monotonic": 9.9, "ask_confirmed_monotonic": 9.8},
+            ))
+            self.assertTrue(recorder.record(
+                "TEST", snapshot,
+                {"source": "FINAM_QUOTES", "timestamp": 1_800_000_000.2,
+                 "received_monotonic": 10.2,
+                 "bid_confirmed_monotonic": 10.2, "ask_confirmed_monotonic": 10.1},
+            ))
+        first = recorder._queue.get_nowait()
+        second = recorder._queue.get_nowait()
+        self.assertEqual(first["source"], "FINAM_ORDER_BOOK")
+        self.assertEqual(second["source"], "FINAM_QUOTES")
+        self.assertEqual(second["bid_age_sec_at_capture"], 0.0)
+        self.assertAlmostEqual(second["ask_age_sec_at_capture"], 0.1)
+
     def test_rejects_invalid_executable_bbo(self):
         recorder = BBOReplayRecorder(queue_limit=100)
         result = recorder.record(
