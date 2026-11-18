@@ -578,5 +578,21 @@ class BBOReplaySimulatorTests(unittest.TestCase):
 
 
 
+    def test_batch_exposes_mark_to_market_when_portfolio_capacity_is_enabled(self):
+        rows = [event(1, bid=100.5, ask=100.6, epoch=1_800_000_001.0)]
+        result = replay_exit_batch(
+            rows,
+            [position(position_id="P1")],
+            scenarios=[{"name": "BASELINE", "kind": "baseline"}],
+            portfolio_capital_rub=10000.0,
+            max_allocation_pct=15.0,
+        )
+        capacity = result["portfolio_capacity"]["BASELINE"]
+        self.assertIn("mark_to_market", capacity)
+        self.assertEqual(capacity["mark_to_market"]["complete_equity_snapshots"], 1)
+        self.assertTrue(capacity["mark_to_market"]["ending_snapshot_complete"])
+        self.assertAlmostEqual(capacity["mark_to_market"]["ending_equity_rub"], 10004.0 - 0.5 - 0.505)
+
+
 if __name__ == "__main__":
     unittest.main()
