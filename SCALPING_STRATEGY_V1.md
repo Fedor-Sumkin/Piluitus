@@ -110,6 +110,15 @@ confidence bands are descriptive until enough independent observations and
 chronological out-of-sample validation exist. Duplicate persisted rows for the
 same candidate and horizon do not increase segment sample counts.
 
+The same endpoint now exposes `loss_diagnostics` for closed net-losing PAPER
+trades. It counts observable, overlapping evidence: gross loss before fees,
+gross-positive/net-negative outcomes, exit-BBO gaps, trigger-to-executable-BBO
+delay, favorable excursion despite a net loss, and the presence of an exit
+spread measurement. Coverage counts show how many loss records actually carry
+gross PnL, commission and favorable-excursion fields. The diagnostics are
+deliberately non-causal: an excursion is not proof that an alternative exit
+would have improved the result, and absent fields are never reconstructed.
+
 The endpoint `GET /api/v1/paper/performance` exposes these segments together
 with realized PAPER PnL metrics. Keep the two result types separate: segment
 returns are hypothetical forward labels; realized PnL, drawdown and holding
