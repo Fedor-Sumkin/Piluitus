@@ -561,3 +561,26 @@ profit factor, sample quality, mean observed model-confidence score and a
 available separately. These remain descriptive comparisons: confidence is
 not treated as a probability, and overlapping horizons or same-session
 candidates are not independent observations.
+
+
+## Matched-cohort comparison of PAPER exit scenarios
+
+The batch exit replay now includes `matched_cohort_comparison`. For every
+alternative exit scenario, it pairs the alternative with the baseline only on
+the exact same position records that closed under both scenarios. It reports
+baseline and alternative metrics on that shared cohort, the net-PnL difference
+per position, mean and median paired difference, counts where the alternative
+was better/equal/worse, and the change in positive-trade count.
+
+Positions closed only by one scenario are reported separately as cohort
+attrition. An open-at-end position is never assigned zero PnL and is never
+silently included in a paired realized-return comparison. The report also
+provides a stricter cohort of positions closed under every configured scenario;
+this may be much smaller than the pairwise cohorts.
+
+The comparison is trade-level and remains a counterfactual replay, not a
+portfolio simulation. It does not model overlapping capital usage, simultaneous
+orders, queue position, full-depth market impact or passive fills. A favorable
+paired result is not evidence of a deployable improvement by itself: review
+sample size, replay coverage, scenario-only closures, session/ticker/side
+concentration and realistic cost assumptions before drawing conclusions.
