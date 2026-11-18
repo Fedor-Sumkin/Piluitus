@@ -83,8 +83,19 @@ def evaluate_scalping_candidate(
         hard_blocks.append("bbo_unavailable")
     if _number(metrics, "order_book_valid") < 0.5:
         hard_blocks.append("order_book_not_confirmed")
-    if _number(metrics, "spread_pct", math.inf) > 0.50:
+    spread_value = _number(metrics, "spread_pct", math.nan)
+    if not math.isfinite(spread_value) or spread_value < 0.0:
+        hard_blocks.append("spread_unavailable_or_invalid")
+    elif spread_value > 0.50:
         hard_blocks.append("spread_above_0.50_pct")
+
+    bid = _number(metrics, "bid", math.nan)
+    ask = _number(metrics, "ask", math.nan)
+    if (
+        not math.isfinite(bid) or not math.isfinite(ask)
+        or bid <= 0.0 or ask <= 0.0 or ask < bid
+    ):
+        hard_blocks.append("bbo_prices_invalid")
 
     atr = _number(metrics, "bar_atr")
     atr_periods = int(max(0.0, _number(metrics, "bar_atr_periods")))
@@ -178,9 +189,27 @@ def evaluate_scalping_candidate(
     else:
         reasons.append("trade_size_impulse_weak")
 
-    atr_pct = _number(metrics, "bar_atr_pct")
-    spread_pct = _number(metrics, "spread_pct")
-    spread_atr_ratio = spread_pct / atr_pct if atr_pct > 0.0 else math.inf
+    atr_pct = _number(metrics, "bar_atr_pct", math.nan)
+    spread_pct = _number(metrics, "spread_pct", math.nan)
+    if (
+        not math.isfinite(atr_pct) or atr_pct <= 0.0
+        or not math.isfinite(spread_pct) or spread_pct < 0.0
+    ):
+        spread_atr_ratio = math.inf
+        hard_blocks.append("spread_atr_unavailable")
+    else:
+        spread_atr_ratio = spread_pct / atr_pct
+
+    try:
+        max_spread_atr_ratio = float(os.getenv("PILUITUS_MAX_SPREAD_TO_ATR_RATIO", "0.50"))
+    except (TypeError, ValueError, OverflowError):
+        max_spread_atr_ratio = 0.50
+    if not math.isfinite(max_spread_atr_ratio) or max_spread_atr_ratio <= 0.0:
+        max_spread_atr_ratio = 0.50
+    max_spread_atr_ratio = min(2.0, max(0.05, max_spread_atr_ratio))
+    if math.isfinite(spread_atr_ratio) and spread_atr_ratio > max_spread_atr_ratio:
+        hard_blocks.append("spread_to_atr_above_limit")
+
     if spread_atr_ratio <= 0.10:
         components["spread_vs_atr"] = 15.0
     elif spread_atr_ratio <= 0.20:
@@ -228,5 +257,6 @@ def evaluate_scalping_candidate(
         "queue_imbalance": round(queue_imbalance, 4) if queue_available else None,
         "spread_atr_ratio": round(spread_atr_ratio, 4) if math.isfinite(spread_atr_ratio) else None,
         "threshold": 85.0,
+        "spread_atr_limit": max_spread_atr_ratio,
         "mode": "SHADOW_ONLY",
     }
