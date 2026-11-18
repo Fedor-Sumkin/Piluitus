@@ -107,8 +107,8 @@ journal; if it is empty, it can seed itself from the legacy 100-row trade
 history.
 
 The PAPER-only endpoint `GET /api/v1/paper/performance` returns:
-- net realized PnL, win rate, expectancy, average win/loss and profit factor;
-- maximum drawdown in RUB and as a percentage of the prior equity peak;
+- gross/net realized PnL, win rate, expectancy, average win/loss and profit factor;
+- maximum drawdown in RUB and as a percentage of the prior realized-PnL peak, plus maximum/current loss streak;
 - average holding time and recorded commissions;
 - segments by BUY/SELL, ticker, model/final LLM decision, confidence band,
   LLM reason code and exit reason;
