@@ -261,6 +261,43 @@ class ExecutionStopRiskTests(unittest.IsolatedAsyncioTestCase):
         # and the estimated exit commission on that adverse fill.
         self.assertAlmostEqual(risk, round((100.0 - 98.901) * 10 + 1.0 + 98.901 * 10 * 0.001, 2))
 
+    def test_paper_short_stop_risk_uses_adverse_buyback_slippage(self) -> None:
+        self.engine.paper_commission_pct = 0.1
+        self.engine.paper_slippage_bps = 10.0
+        position = {
+            "status": "OPEN",
+            "ticker": "EXIST",
+            "side": "SELL",
+            "volume": 10,
+            "entry_price": 100.0,
+            "stop_loss": 101.0,
+            "entry_commission_rub": 1.0,
+        }
+
+        risk = self.engine._open_stop_risk({"EXIST": position})
+
+        expected_exit = 101.0 * 1.001
+        expected = (expected_exit - 100.0) * 10 + 1.0 + expected_exit * 10 * 0.001
+        self.assertAlmostEqual(risk, round(expected, 2))
+
+    def test_live_stop_risk_does_not_reuse_paper_fee_or_slippage_settings(self) -> None:
+        self.engine.paper_mode = False
+        self.engine.paper_commission_pct = 0.1
+        self.engine.paper_slippage_bps = 10.0
+        position = {
+            "status": "OPEN",
+            "ticker": "EXIST",
+            "side": "BUY",
+            "volume": 10,
+            "entry_price": 100.0,
+            "stop_loss": 99.0,
+            "entry_commission_rub": 1.0,
+        }
+
+        risk = self.engine._open_stop_risk({"EXIST": position})
+
+        self.assertEqual(risk, 10.0)
+
     async def test_new_paper_lot_reservation_includes_both_side_fees_and_exit_slippage(self) -> None:
         self.engine.paper_commission_pct = 0.1
         self.engine.paper_slippage_bps = 10.0
