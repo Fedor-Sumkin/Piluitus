@@ -195,6 +195,37 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         self.assertEqual(scenario["exit"]["event_sequence"], 2)
         self.assertEqual(scenario["exit"]["raw_executable_price"], 101.8)
 
+    def test_stale_trigger_time_bbo_waits_for_next_fresh_side(self):
+        rows = [
+            {
+                "session_id": "session-a", "sequence": 1, "ticker": "SBER",
+                "event_kind": "EXIT_TRIGGER", "event_time_epoch": 1_800_000_001.0,
+                "trigger_reason": "STOP_LOSS", "trigger_price": 99.0,
+                "trigger_bbo_valid": True, "trigger_bbo_price": 98.0,
+                "trigger_bbo_age_sec": 3.0, "trigger_bbo_max_age_sec": 2.0,
+            },
+            event(2, bid=98.7, ask=98.8, epoch=1_800_000_003.0),
+        ]
+        result = replay_exit_scenarios(
+            rows, position(),
+            scenarios=[{"name": "baseline", "kind": "baseline"}],
+        )
+        exit_row = result["scenarios"][0]["exit"]
+        self.assertEqual(exit_row["event_sequence"], 2)
+        self.assertEqual(exit_row["raw_executable_price"], 98.7)
+        self.assertEqual(result["scenarios"][0]["trigger_mode"], "ACTUAL_LATCHED_TRIGGER")
+
+    def test_sell_replay_uses_fresh_ask_even_when_bid_is_stale(self):
+        row = event(1, bid=101.0, ask=101.1, epoch=1_800_000_001.0)
+        row["bid_age_sec_at_capture"] = 4.0
+        row["ask_age_sec_at_capture"] = 0.1
+        result = replay_exit_scenarios(
+            [row], position("SELL"),
+            scenarios=[{"name": "baseline", "kind": "baseline"}],
+        )
+        self.assertEqual(result["scenarios"][0]["exit"]["raw_executable_price"], 101.1)
+        self.assertEqual(result["coverage"]["fresh_executable_observations"], 1)
+
     def test_research_variants_ignore_production_trigger_events(self):
         rows = [{
             "session_id": "session-a", "sequence": 1, "ticker": "SBER",
