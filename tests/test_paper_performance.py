@@ -96,8 +96,9 @@ class PaperPerformanceTests(unittest.TestCase):
         interval = scorecard["by_ticker_side"]["SBER|BUY"]["win_rate_95_wilson_pct"]
         self.assertIsInstance(interval, list)
         self.assertEqual(len(interval), 2)
-        self.assertLessEqual(interval[0], 100.0)
-        self.assertGreaterEqual(interval[1], 0.0)
+        self.assertGreaterEqual(interval[0], 0.0)
+        self.assertLessEqual(interval[0], interval[1])
+        self.assertLessEqual(interval[1], 100.0)
 
     def test_legacy_cohorts_report_unknown_regimes_without_inference(self):
         tracker = PaperPerformanceTracker()
