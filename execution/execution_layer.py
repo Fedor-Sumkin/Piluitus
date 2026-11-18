@@ -1746,6 +1746,7 @@ class BaseExecutionEngine:
                 "ticker": ticker,
                 "entry_time": now.strftime("%H:%M:%S"),
                 "entry_timestamp": now.isoformat(timespec="milliseconds"),
+                "entry_time_epoch": now.timestamp(),
                 "entry_price": price,
                 "current_price": price,
                 "side": side,
