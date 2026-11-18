@@ -533,3 +533,13 @@ compares their UTC instants, so mixed UTC/Moscow offsets cannot reorder the
 closed-trade equity sequence lexicographically. Records with malformed or
 timezone-naive timestamps remain after timestamped records and are not
 silently interpreted in a guessed timezone.
+
+
+The chronological walk-forward report also exposes out-of-sample cohorts by
+horizon × side × confidence band and horizon × side × model decision ×
+confidence band. Each cohort reports net expectancy, positive-return rate,
+profit factor, sample quality, mean observed model-confidence score and a
+95% Wilson interval for the positive-return rate. Fold-level test cohorts are
+available separately. These remain descriptive comparisons: confidence is
+not treated as a probability, and overlapping horizons or same-session
+candidates are not independent observations.
