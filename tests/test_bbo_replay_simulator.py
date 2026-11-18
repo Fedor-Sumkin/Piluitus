@@ -41,6 +41,10 @@ def position(side="BUY", **overrides):
         "entry_commission_rub": 0.5,
     }
     base.update(overrides)
+    # Keep the persisted trade id aligned with the readable test position id
+    # unless a test explicitly supplies a separate canonical id.
+    if "position_id" in overrides and "id" not in overrides:
+        base["id"] = overrides["position_id"]
     return base
 
 
