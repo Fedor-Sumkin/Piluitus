@@ -1679,6 +1679,12 @@ class BaseExecutionEngine:
                     self._stop_risk_with_costs(price, stop_loss, lots * lot_multiplier, side), 2
                 ),
                 "entry_commission_rub": round(entry_commission, 4),
+            "original_volume": int(_finite_or_default(
+                trade.get("original_volume"), share_qty
+            )),
+            "original_lots": int(_finite_or_default(
+                trade.get("original_lots"), trade.get("lots", share_qty)
+            )),
                 "commission_pct_per_side": self.paper_commission_pct if self.paper_mode else 0.0,
                 "paper_slippage_bps": self.paper_slippage_bps if self.paper_mode else 0.0,
                 "entry_executable_side": entry_bbo.get("executable_side") if entry_bbo is not None else None,
@@ -2008,6 +2014,128 @@ class BaseExecutionEngine:
             self.paper_max_book_participation_pct,
         )
 
+    async def _finalize_paper_partial_close(
+        self,
+        ticker: str,
+        trade: TradeRecord,
+        db: DBManager,
+        bbo: BBOExitQuote,
+        depth_fill: Mapping[str, Any],
+        *,
+        exit_reason: str,
+        trigger_price: float,
+        observed_last_price: float,
+    ) -> TradeRecord:
+        """Persist a confirmed partial exit while keeping the residual position OPEN."""
+        order_id = str(trade.get("id", ""))
+        side = str(trade.get("side", "BUY")).upper()
+        entry_price = _finite_or_default(trade.get("entry_price"), 0.0)
+        current_shares = self._share_quantity(ticker, trade)
+        filled_shares = int(_finite_or_default(depth_fill.get("filled_shares"), 0.0))
+        lot_size = max(1, int(_finite_or_default(
+            trade.get("lot_size", LOT_SIZES.get(ticker, 1)), 1.0
+        )))
+        if (
+            not order_id or side not in {"BUY", "SELL"} or entry_price <= 0.0
+            or filled_shares <= 0 or filled_shares >= current_shares
+            or filled_shares % lot_size
+        ):
+            raise ValueError("Некорректные параметры частичного PAPER-закрытия.")
+
+        raw_exit_price = _finite_or_default(depth_fill.get("average_price"), 0.0)
+        if raw_exit_price <= 0.0:
+            raise ValueError("PAPER depth fill returned an invalid partial exit price.")
+        exit_transaction_side = "SELL" if side == "BUY" else "BUY"
+        exit_price = self._apply_paper_slippage(raw_exit_price, exit_transaction_side)
+        commission_pct = _finite_or_default(
+            trade.get("commission_pct_per_side"), self.paper_commission_pct
+        )
+        entry_fee_remaining = _finite_or_default(trade.get("entry_commission_rub"), 0.0)
+        entry_fee_allocated = entry_fee_remaining * filled_shares / current_shares
+        gross_pnl, exit_fee, _partial_total_fee, net_pnl = self._calculate_paper_pnl(
+            entry_price, exit_price, filled_shares, side, commission_pct, entry_fee_allocated
+        )
+        sign = 1 if side == "BUY" else -1
+        now = datetime.now()
+        fill_record = {
+            "timestamp": now.isoformat(timespec="milliseconds"),
+            "quantity_shares": filled_shares,
+            "quantity_lots": filled_shares // lot_size,
+            "raw_average_price": raw_exit_price,
+            "fill_price_after_slippage": exit_price,
+            "gross_pnl_rub": round(gross_pnl, 4),
+            "allocated_entry_commission_rub": round(entry_fee_allocated, 4),
+            "exit_commission_rub": round(exit_fee, 4),
+            "net_pnl_rub": round(net_pnl, 4),
+            "exit_reason": exit_reason,
+            "trigger_price": trigger_price if trigger_price > 0.0 else None,
+            "depth_levels_used": int(depth_fill.get("levels_used", 0)),
+            "depth_fill_ratio": round(_finite_or_default(depth_fill.get("fill_ratio"), 0.0), 6),
+            "depth_unit": self.paper_book_size_unit,
+        }
+        updated = dict(trade)
+        previous_fills = updated.get("exit_partial_fills", [])
+        fills = list(previous_fills) if isinstance(previous_fills, list) else []
+        fills.append(fill_record)
+        updated["original_volume"] = int(_finite_or_default(
+            updated.get("original_volume"), current_shares
+        ))
+        updated["original_lots"] = int(_finite_or_default(
+            updated.get("original_lots"), updated.get("lots", current_shares // lot_size)
+        ))
+        updated["volume"] = current_shares - filled_shares
+        updated["lots"] = updated["volume"] // lot_size
+        updated["entry_commission_rub"] = max(0.0, entry_fee_remaining - entry_fee_allocated)
+        updated["realized_gross_pnl_rub"] = (
+            _finite_or_default(updated.get("realized_gross_pnl_rub"), 0.0) + gross_pnl
+        )
+        updated["realized_entry_commission_rub"] = (
+            _finite_or_default(updated.get("realized_entry_commission_rub"), 0.0) + entry_fee_allocated
+        )
+        updated["realized_exit_commission_rub"] = (
+            _finite_or_default(updated.get("realized_exit_commission_rub"), 0.0) + exit_fee
+        )
+        updated["realized_net_pnl_rub"] = (
+            _finite_or_default(updated.get("realized_net_pnl_rub"), 0.0) + net_pnl
+        )
+        updated["realized_exit_slippage_rub"] = (
+            _finite_or_default(updated.get("realized_exit_slippage_rub"), 0.0)
+            + (exit_price - raw_exit_price) * filled_shares * sign
+        )
+        updated["realized_market_move_after_trigger_rub"] = (
+            _finite_or_default(updated.get("realized_market_move_after_trigger_rub"), 0.0)
+            + ((raw_exit_price - trigger_price) * filled_shares * sign if trigger_price > 0.0 else 0.0)
+        )
+        updated["exit_partial_fills"] = fills[-100:]
+        updated["exit_partial_fill_count"] = len(fills)
+        updated["exit_partial_fill_enabled"] = True
+        updated["exit_fill_model"] = "DEPTH_PARTIAL_FILL"
+        updated["exit_depth_unit"] = self.paper_book_size_unit
+        updated["exit_depth_levels_used_last"] = int(depth_fill.get("levels_used", 0))
+        updated["exit_depth_fill_ratio_last"] = round(
+            _finite_or_default(depth_fill.get("fill_ratio"), 0.0), 6
+        )
+        updated["last_partial_exit_at"] = fill_record["timestamp"]
+        updated["last_partial_exit_reason"] = exit_reason
+        updated["pnl"] = round(_finite_or_default(updated.get("realized_net_pnl_rub"), 0.0), 2)
+        updated["gross_pnl"] = round(_finite_or_default(updated.get("realized_gross_pnl_rub"), 0.0), 2)
+        updated["estimated_exit_commission_rub"] = round(
+            _finite_or_default(updated.get("realized_exit_commission_rub"), 0.0), 4
+        )
+
+        # Persist the reduced OPEN quantity before mutating the in-memory position.
+        # If storage fails, the original quantity remains authoritative and no fill is booked.
+        await db.set_json(f"piluitus:trade:{order_id}", updated)
+        trade.clear()
+        trade.update(updated)
+        logger.warning(
+            "[PAPER PARTIAL EXIT] %s %s reason=%s filled=%d shares (%d lots), remaining=%d shares; "
+            "gross=%+.2f₽ net=%+.2f₽ avg=%.6f unit=%s",
+            ticker, side, exit_reason, filled_shares, filled_shares // lot_size,
+            updated["volume"], gross_pnl, net_pnl, exit_price, self.paper_book_size_unit,
+        )
+        return trade
+
     async def _finalize_paper_close(
         self,
         ticker: str,
@@ -2042,24 +2170,23 @@ class BaseExecutionEngine:
                 )))),
             )))
             filled_lots = int(depth_fill.get("filled_lots", 0)) if isinstance(depth_fill, Mapping) else 0
-            if depth_fill is None or filled_lots < requested_lots:
-                fill_ratio = (
-                    _finite_or_default(depth_fill.get("fill_ratio"), 0.0)
-                    if isinstance(depth_fill, Mapping) else 0.0
-                )
-                levels_used = int(depth_fill.get("levels_used", 0)) if isinstance(depth_fill, Mapping) else 0
+            if depth_fill is None or filled_lots <= 0:
                 logger.warning(
-                    "[PAPER EXIT DEPTH WAIT] %s %s reason=%s requested=%d lots filled=%d lots "
-                    "fill=%.1f%% levels=%d unit=%s; позиция остаётся OPEN, SL/TP trigger сохранён.",
-                    ticker, side,
-                    "DEPTH_UNAVAILABLE" if depth_fill is None or filled_lots <= 0 else "INSUFFICIENT_DEPTH",
-                    requested_lots, filled_lots, fill_ratio * 100.0, levels_used,
-                    self.paper_book_size_unit,
+                    "[PAPER EXIT DEPTH WAIT] %s %s reason=DEPTH_UNAVAILABLE requested=%d lots unit=%s; "
+                    "позиция остаётся OPEN, SL/TP trigger сохранён.",
+                    ticker, side, requested_lots, self.paper_book_size_unit,
                 )
                 trade["exit_depth_last_attempt_at"] = datetime.now().astimezone().isoformat(timespec="milliseconds")
-                trade["exit_depth_last_fill_ratio"] = round(fill_ratio, 6)
-                trade["exit_depth_last_levels_used"] = levels_used
+                trade["exit_depth_last_fill_ratio"] = 0.0
+                trade["exit_depth_last_levels_used"] = 0
                 return trade
+            if filled_lots < requested_lots:
+                return await self._finalize_paper_partial_close(
+                    ticker, trade, db, bbo, depth_fill,
+                    exit_reason=exit_reason,
+                    trigger_price=trigger_price,
+                    observed_last_price=observed_last_price,
+                )
             raw_exit_price = _finite_or_default(depth_fill.get("average_price"), raw_exit_price)
             if raw_exit_price <= 0.0:
                 raise ValueError("PAPER depth fill returned an invalid average exit price.")
@@ -2072,6 +2199,15 @@ class BaseExecutionEngine:
         gross_pnl, exit_commission, total_commission, net_pnl = self._calculate_paper_pnl(
             entry_price, exit_price, share_qty, side, commission_pct, entry_commission
         )
+        prior_realized_gross = _finite_or_default(trade.get("realized_gross_pnl_rub"), 0.0)
+        prior_realized_entry_fee = _finite_or_default(trade.get("realized_entry_commission_rub"), 0.0)
+        prior_realized_exit_fee = _finite_or_default(trade.get("realized_exit_commission_rub"), 0.0)
+        prior_realized_net = _finite_or_default(trade.get("realized_net_pnl_rub"), 0.0)
+        gross_pnl += prior_realized_gross
+        exit_commission += prior_realized_exit_fee
+        total_commission += prior_realized_entry_fee + prior_realized_exit_fee
+        net_pnl += prior_realized_net
+        entry_commission += prior_realized_entry_fee
         entry_notional = _finite_or_default(
             trade.get("notional_entry_rub"), entry_price * share_qty
         )
@@ -2105,6 +2241,8 @@ class BaseExecutionEngine:
         closed_trade = dict(trade)
         closed_trade.update({
             "status": "CLOSED",
+            "volume": int(_finite_or_default(trade.get("original_volume"), share_qty)),
+            "lots": int(_finite_or_default(trade.get("original_lots"), trade.get("lots", 0))),
             "exit_time": now.strftime("%H:%M:%S"),
             "exit_timestamp": now.isoformat(timespec="milliseconds"),
             "exit_price": exit_price,
@@ -2125,19 +2263,29 @@ class BaseExecutionEngine:
                 round(market_move_after_trigger_rub, 4)
                 if market_move_after_trigger_rub is not None else None
             ),
-            "configured_exit_slippage_rub": round(configured_slippage_rub, 4),
+            "configured_exit_slippage_rub": round(
+                _finite_or_default(trade.get("realized_exit_slippage_rub"), 0.0)
+                + configured_slippage_rub, 4
+            ),
             "fill_vs_trigger_rub": (
-                round(market_move_after_trigger_rub + configured_slippage_rub, 4)
+                round(
+                    _finite_or_default(trade.get("realized_market_move_after_trigger_rub"), 0.0)
+                    + market_move_after_trigger_rub + configured_slippage_rub, 4
+                )
                 if market_move_after_trigger_rub is not None else None
             ),
             "observed_exit_price": observed_last_price,
             "exit_reason": exit_reason,
             "exit_price_source": "BBO_BID" if side == "BUY" else "BBO_ASK",
             "exit_fill_model": (
-                "FULL_FILL_AT_CONFIRMED_DEPTH" if depth_confirmed
+                "DEPTH_PARTIALS_PLUS_FINAL_DEPTH_FILL"
+                if bool(trade.get("exit_partial_fills")) and depth_confirmed
+                else "FULL_FILL_AT_CONFIRMED_DEPTH" if depth_confirmed
                 else "FULL_FILL_AT_EXECUTABLE_BBO_DEPTH_UNVERIFIED"
             ),
-            "exit_partial_fill_enabled": False,
+            "exit_partial_fill_enabled": depth_confirmed,
+            "exit_partial_fill_count": len(trade.get("exit_partial_fills", []))
+                if isinstance(trade.get("exit_partial_fills"), list) else 0,
             "exit_depth_unit": self.paper_book_size_unit,
             "exit_depth_levels_used": (
                 int(depth_fill.get("levels_used", 0)) if isinstance(depth_fill, Mapping) else None
@@ -2619,9 +2767,16 @@ class BaseExecutionEngine:
             entry_notional = _finite_or_default(trade.get("notional_entry_rub"), entry_price * share_qty)
             trade["current_price"] = executable_exit_price
             trade["estimated_exit_price"] = estimated_exit_price
-            trade["pnl"] = round(mark_net, 2)
-            trade["gross_pnl"] = round(mark_rub, 2)
-            trade["estimated_exit_commission_rub"] = round(estimated_exit_fee, 4)
+            trade["pnl"] = round(
+                _finite_or_default(trade.get("realized_net_pnl_rub"), 0.0) + mark_net, 2
+            )
+            trade["gross_pnl"] = round(
+                _finite_or_default(trade.get("realized_gross_pnl_rub"), 0.0) + mark_rub, 2
+            )
+            trade["estimated_exit_commission_rub"] = round(
+                _finite_or_default(trade.get("realized_exit_commission_rub"), 0.0)
+                + estimated_exit_fee, 4
+            )
             trade["pnl_percent"] = round(mark_net / entry_notional * 100.0, 4) if entry_notional > 0 else 0.0
             trade["current_pnl_source"] = "EXECUTABLE_BBO_ESTIMATE"
             trade["current_bbo_age_sec"] = round(float(bbo["age_sec"]), 3)
