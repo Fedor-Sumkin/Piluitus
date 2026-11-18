@@ -38,6 +38,8 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(len(outcomes), 1)
         row = outcomes[0]
         self.assertEqual(row["result"], "OK")
+        self.assertTrue(row["entry_time_utc"].endswith("+00:00"))
+        self.assertTrue(row["entry_time_msk"].endswith("+03:00"))
         self.assertEqual(row["entry_executable_price"], 100.1)
         self.assertEqual(row["exit_executable_price"], 101.0)
         self.assertGreater(row["net_executable_return_pct"], 0.0)
