@@ -82,7 +82,7 @@ class ShadowForwardTracker:
         self.max_pending_per_ticker = max(1, int(max_pending_per_ticker))
         self._pending: dict[str, list[dict[str, Any]]] = {}
         self._pending_backlog_warned: set[str] = set()
-        self.max_segment_groups = 1200
+        self.max_segment_groups = 1800
         self._label_stats: dict[str, dict[str, float | int]] = {
             "eligible": self._new_stats_bucket(),
             "ineligible": self._new_stats_bucket(),
