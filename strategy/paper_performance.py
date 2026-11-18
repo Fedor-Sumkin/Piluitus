@@ -207,7 +207,7 @@ def _numeric_bucket(value: object, *, prefix: str, thresholds: tuple[float, ...]
     for threshold, suffix in zip(thresholds, suffixes):
         if number < threshold:
             return f"{prefix}_{suffix}"
-    return f"{prefix}_{suffixes[-1]}_PLUS"
+    return f"{prefix}_{suffixes[-1]}"
 
 
 def _entry_spread_bucket(value: object) -> str:
@@ -225,6 +225,9 @@ def _entry_bbo_age_bucket(value: object) -> str:
 
 
 def _entry_shortfall_bucket(value: object) -> str:
+    number = _number(value)
+    if number is not None and number < 0.0:
+        return "SHORTFALL_BETTER_THAN_BBO"
     return _numeric_bucket(
         value, prefix="SHORTFALL_BPS", thresholds=(1.0, 3.0, 5.0),
         suffixes=("LT_1", "1_3", "3_5", "GE_5"),
