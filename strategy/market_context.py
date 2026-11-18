@@ -67,9 +67,12 @@ def classify_market_regime(
         and int(atr_reference_samples) >= 20
     ):
         atr_ratio = atr_pct / reference
-        if atr_ratio >= 1.50:
+        # Ratios such as 0.30 / 0.20 can be represented as
+        # 1.4999999999999998 in binary floating point. Treat values within
+        # a tiny numerical tolerance as being on the documented boundary.
+        if atr_ratio >= 1.50 - 1e-9:
             volatility = "HIGH_VOLATILITY"
-        elif atr_ratio <= 0.65:
+        elif atr_ratio <= 0.65 + 1e-9:
             volatility = "LOW_VOLATILITY"
         else:
             volatility = "NORMAL_VOLATILITY"
