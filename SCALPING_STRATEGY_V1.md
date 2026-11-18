@@ -645,6 +645,9 @@ Partial exits retain their own per-fill diagnostic snapshot. The final closed
 trade aggregates shortfall across all recorded exit tranches and computes
 weighted basis points against their combined executable reference notional.
 Depth impact remains UNKNOWN for BBO-only fills; it is never fabricated as
-zero when the depth reference is unavailable. These fields are observational
-and do not change exit triggers, fill prices, participation limits or position
-management.
+zero when the depth reference is unavailable. The realized scorecard exposes
+exit shortfall and depth-impact cohorts plus coverage/average diagnostics;
+legacy trades without the new fields remain absent from those measurements.
+The BBO replay remains a top-of-book research proxy because the bounded market
+journal does not persist full depth. These fields are observational and do not
+change exit triggers, fill prices, participation limits or position management.
