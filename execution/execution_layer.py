@@ -23,6 +23,7 @@ from strategy.paper_performance import (
     paper_performance_tracker,
 )
 from strategy.paper_entry_diagnostics import build_entry_execution_diagnostics
+from strategy.paper_exit_diagnostics import build_exit_execution_diagnostics
 
 logger = logging.getLogger("Piluitus.ExecutionLayer")
 
@@ -2171,6 +2172,20 @@ class BaseExecutionEngine:
         gross_pnl, exit_fee, _partial_total_fee, net_pnl = self._calculate_paper_pnl(
             entry_price, exit_price, filled_shares, side, commission_pct, entry_fee_allocated
         )
+        exit_diagnostics = build_exit_execution_diagnostics(
+            position_side=side,
+            quantity=filled_shares,
+            fill_price=exit_price,
+            executable_bbo_price=bbo.get("executable_price"),
+            bid=bbo.get("bid"),
+            ask=bbo.get("ask"),
+            bid_age_sec=bbo.get("bid_age_sec"),
+            ask_age_sec=bbo.get("ask_age_sec"),
+            order_book_age_sec=bbo.get("order_book_age_sec"),
+            depth_vwap=raw_exit_price,
+            depth_fill_ratio=depth_fill.get("fill_ratio"),
+            depth_levels_used=depth_fill.get("levels_used"),
+        )
         sign = 1 if side == "BUY" else -1
         now = datetime.now()
         fill_record = {
@@ -2188,6 +2203,7 @@ class BaseExecutionEngine:
             "depth_levels_used": int(depth_fill.get("levels_used", 0)),
             "depth_fill_ratio": round(_finite_or_default(depth_fill.get("fill_ratio"), 0.0), 6),
             "depth_unit": self.paper_book_size_unit,
+            "execution_diagnostics": exit_diagnostics,
         }
         updated = dict(trade)
         previous_fills = updated.get("exit_partial_fills", [])
@@ -2218,6 +2234,22 @@ class BaseExecutionEngine:
             _finite_or_default(updated.get("realized_exit_slippage_rub"), 0.0)
             + (exit_price - raw_exit_price) * filled_shares * sign
         )
+        updated["realized_exit_execution_shortfall_rub"] = (
+            _finite_or_default(updated.get("realized_exit_execution_shortfall_rub"), 0.0)
+            + _finite_or_default(exit_diagnostics.get("exit_execution_shortfall_rub"), 0.0)
+        )
+        updated["realized_exit_reference_notional_rub"] = (
+            _finite_or_default(updated.get("realized_exit_reference_notional_rub"), 0.0)
+            + _finite_or_default(bbo.get("executable_price"), 0.0) * filled_shares
+        )
+        if exit_diagnostics.get("exit_depth_impact_rub") is not None:
+            updated["realized_exit_depth_impact_rub"] = (
+                _finite_or_default(updated.get("realized_exit_depth_impact_rub"), 0.0)
+                + _finite_or_default(exit_diagnostics.get("exit_depth_impact_rub"), 0.0)
+            )
+            updated["realized_exit_depth_observation_count"] = (
+                int(_finite_or_default(updated.get("realized_exit_depth_observation_count"), 0.0)) + 1
+            )
         updated["realized_exit_notional_rub"] = (
             _finite_or_default(updated.get("realized_exit_notional_rub"), 0.0)
             + exit_price * filled_shares
@@ -2382,6 +2414,36 @@ class BaseExecutionEngine:
         configured_slippage_rub = (
             (exit_price - raw_exit_price) * share_qty * (1 if side == "BUY" else -1)
         )
+        exit_diagnostics = build_exit_execution_diagnostics(
+            position_side=side,
+            quantity=share_qty,
+            fill_price=exit_price,
+            executable_bbo_price=bbo.get("executable_price"),
+            bid=bbo.get("bid"),
+            ask=bbo.get("ask"),
+            bid_age_sec=bbo.get("bid_age_sec"),
+            ask_age_sec=bbo.get("ask_age_sec"),
+            order_book_age_sec=bbo.get("order_book_age_sec"),
+            depth_vwap=raw_exit_price if depth_confirmed else None,
+            depth_fill_ratio=depth_fill.get("fill_ratio") if isinstance(depth_fill, Mapping) else None,
+            depth_levels_used=depth_fill.get("levels_used") if isinstance(depth_fill, Mapping) else None,
+        )
+        prior_shortfall = _finite_or_default(
+            trade.get("realized_exit_execution_shortfall_rub"), 0.0
+        )
+        current_shortfall = _finite_or_default(
+            exit_diagnostics.get("exit_execution_shortfall_rub"), 0.0
+        )
+        prior_reference_notional = _finite_or_default(
+            trade.get("realized_exit_reference_notional_rub"), 0.0
+        )
+        current_reference_notional = (
+            _finite_or_default(bbo.get("executable_price"), 0.0) * share_qty
+        )
+        total_shortfall = prior_shortfall + current_shortfall
+        total_reference_notional = prior_reference_notional + current_reference_notional
+        prior_depth_impact = _finite_or_default(trade.get("realized_exit_depth_impact_rub"), 0.0)
+        current_depth_impact = _finite_or_default(exit_diagnostics.get("exit_depth_impact_rub"), 0.0)
         closed_trade = dict(trade)
         prior_exit_quantity = int(_finite_or_default(
             trade.get("realized_exit_quantity_shares"), 0.0
@@ -2424,6 +2486,23 @@ class BaseExecutionEngine:
             "configured_exit_slippage_rub": round(
                 _finite_or_default(trade.get("realized_exit_slippage_rub"), 0.0)
                 + configured_slippage_rub, 4
+            ),
+            "exit_execution_diagnostics": exit_diagnostics,
+            "exit_execution_shortfall_rub": round(total_shortfall, 6),
+            "exit_execution_shortfall_bps": (
+                round(total_shortfall / total_reference_notional * 10_000.0, 6)
+                if total_reference_notional > 0.0 else None
+            ),
+            "exit_depth_impact_rub": (
+                round(prior_depth_impact + current_depth_impact, 6)
+                if (
+                    int(_finite_or_default(trade.get("realized_exit_depth_observation_count"), 0.0))
+                    + int(exit_diagnostics.get("exit_depth_impact_rub") is not None)
+                ) > 0 else None
+            ),
+            "exit_depth_observation_count": (
+                int(_finite_or_default(trade.get("realized_exit_depth_observation_count"), 0.0))
+                + int(exit_diagnostics.get("exit_depth_impact_rub") is not None)
             ),
             "fill_vs_trigger_rub": (
                 round(
