@@ -107,16 +107,16 @@ class BBOReplayRecorder:
         self.batch_size = min(5_000, max(1, int(batch_size or _positive_env_int(
             "PILUITUS_BBO_REPLAY_BATCH_SIZE", 250
         ))))
-        self.flush_interval_sec = max(
+        self.flush_interval_sec = min(60.0, max(
             0.05,
             float(flush_interval_sec if flush_interval_sec is not None else
                   _finite(os.getenv("PILUITUS_BBO_REPLAY_FLUSH_SEC", "1.0"), 1.0)),
-        )
-        self.heartbeat_interval_sec = max(
+        ))
+        self.heartbeat_interval_sec = min(60.0, max(
             0.1,
             float(heartbeat_interval_sec if heartbeat_interval_sec is not None else
                   _finite(os.getenv("PILUITUS_BBO_REPLAY_HEARTBEAT_SEC", "1.0"), 1.0)),
-        )
+        ))
         self.storage_limit = min(1_000_000, max(1, int(
             storage_limit if storage_limit is not None else _positive_env_int(
                 "PILUITUS_BBO_REPLAY_STORAGE_LIMIT", BBO_REPLAY_STORAGE_LIMIT
