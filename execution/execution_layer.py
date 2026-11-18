@@ -1884,14 +1884,16 @@ class BaseExecutionEngine:
         now = datetime.now().isoformat(timespec="seconds")
         for order_id, raw_trade in all_positions.items():
             if not isinstance(raw_trade, dict):
-                if str(order_id).startswith(("PAPER_", "TRADE_")):
-                    reason = f"Запись PAPER-сделки {order_id} имеет некорректный формат."
-                    unresolved[str(order_id)] = {
-                        "status": "STALE_REVIEW",
-                        "reconciliation_status": "JOURNAL_RECORD_INVALID",
-                        "stale_reason": reason,
-                    }
-                    logger.critical("[PAPER RECONCILIATION LOCK] %s; новые входы заблокированы.", reason)
+                # The key is part of the trade journal, but its mode/status can
+                # no longer be established. Do not assume it was a harmless
+                # non-PAPER record and release the PAPER entry gate.
+                reason = f"Запись сделки {order_id} имеет некорректный формат; режим/статус неизвестен."
+                unresolved[str(order_id)] = {
+                    "status": "STALE_REVIEW",
+                    "reconciliation_status": "JOURNAL_RECORD_INVALID",
+                    "stale_reason": reason,
+                }
+                logger.critical("[PAPER RECONCILIATION LOCK] %s; новые входы заблокированы.", reason)
                 continue
             trade = dict(raw_trade)
             # TRADE_ — legacy ID used by old PAPER builds. In PAPER mode these
