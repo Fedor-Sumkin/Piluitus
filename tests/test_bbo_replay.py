@@ -123,6 +123,36 @@ class BBOReplayRecorderTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIsNone(_timestamp_epoch("not-a-timestamp"))
 
+    async def test_writer_retries_transient_storage_errors(self):
+        class FlakyDB:
+            def __init__(self):
+                self.attempts = 0
+                self.saved = []
+
+            async def push_many_to_list(self, key, items, max_len):
+                self.attempts += 1
+                if self.attempts < 3:
+                    raise RuntimeError("temporary Memurai outage")
+                self.saved.extend(items)
+
+        db = FlakyDB()
+        recorder = BBOReplayRecorder(
+            queue_limit=100, batch_size=10, flush_interval_sec=0.01,
+            storage_limit=50,
+        )
+        self.assertTrue(recorder.record(
+            "RETRY",
+            {"updated": True, "valid": True, "bid": 10, "ask": 10.1,
+             "bid_size": 5, "ask_size": 6},
+        ))
+        recorder.start(db)
+        await recorder.close()
+
+        self.assertEqual(db.attempts, 3)
+        self.assertEqual(len(db.saved), 1)
+        self.assertEqual(recorder.persisted, 1)
+        self.assertEqual(recorder.persistence_errors, 0)
+
     async def test_writer_batches_and_drains_on_close(self):
         class FakeDB:
             def __init__(self):
