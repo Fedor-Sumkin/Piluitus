@@ -83,7 +83,6 @@ class FunnelTimeSamplingTests(unittest.TestCase):
         events = [
             (940.0, 100.0),
             (955.0, 101.0),
-            (985.0, 103.0),
             (1000.0, 104.0),
         ]
         screener = make_screener(events)
