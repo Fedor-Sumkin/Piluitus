@@ -275,9 +275,6 @@ class PaperPerformanceTests(unittest.TestCase):
         self.assertNotIn("180s|SELL", segments["by_side"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
     def test_loss_diagnostics_reports_overlapping_evidence_and_missing_data(self):
         tracker = PaperPerformanceTracker()
@@ -411,3 +408,7 @@ class PaperEntryPerformanceCohortTests(unittest.TestCase):
         self.assertEqual(
             scorecard["by_entry_execution_shortfall"]["SHORTFALL_BPS_UNKNOWN"]["trades"], 1
         )
+
+
+if __name__ == "__main__":
+    unittest.main()
