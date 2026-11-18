@@ -49,17 +49,22 @@ def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
     peak = 0.0
     max_drawdown = 0.0
     max_drawdown_pct: float | None = None
+    max_loss_streak = 0
+    current_loss_streak = 0
     ordered = sorted(
         (row for row in rows if _number(row.get("pnl")) is not None),
         key=lambda row: _text(row.get("exit_timestamp"), ""),
     )
     for row in ordered:
-        equity += float(_number(row.get("pnl")) or 0.0)
+        realized = float(_number(row.get("pnl")) or 0.0)
+        equity += realized
         peak = max(peak, equity)
         drawdown = peak - equity
         if drawdown > max_drawdown:
             max_drawdown = drawdown
             max_drawdown_pct = (drawdown / peak * 100.0) if peak > 0.0 else None
+        current_loss_streak = current_loss_streak + 1 if realized < 0.0 else 0
+        max_loss_streak = max(max_loss_streak, current_loss_streak)
 
     holding = [
         value for row in rows
@@ -91,6 +96,8 @@ def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         "max_drawdown_pct_of_prior_peak": (
             round(max_drawdown_pct, 3) if max_drawdown_pct is not None else None
         ),
+        "max_consecutive_losses": max_loss_streak,
+        "current_loss_streak": current_loss_streak,
         "average_holding_sec": round(sum(holding) / len(holding), 2) if holding else None,
         "total_commission_rub": round(sum(commissions), 2),
     }
