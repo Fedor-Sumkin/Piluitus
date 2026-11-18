@@ -243,6 +243,8 @@ class ShadowForwardTracker:
             "no_fresh_bbo_observations": 0,
             "last_bbo_unavailable_reason": None,
             "llm_linked": False,
+            "llm_attribution_state": "PENDING",
+            "llm_not_called_reason": None,
             "llm_verdict_id": None,
             "llm_model_decision": "NOT_LINKED",
             "llm_final_decision": "NOT_LINKED",
@@ -307,6 +309,8 @@ class ShadowForwardTracker:
                     continue
                 row.update({
                     "llm_linked": True,
+                    "llm_attribution_state": "LINKED",
+                    "llm_not_called_reason": None,
                     "llm_verdict_id": str(verdict_id or "") or None,
                     "llm_model_decision": model,
                     "llm_final_decision": final,
@@ -315,6 +319,32 @@ class ShadowForwardTracker:
                     "llm_reason_code": str(reason_code or "NOT_PROVIDED")[:80],
                     "llm_local_guard": str(local_guard or "")[:160],
                     "llm_execution_status": str(execution_status or "UNKNOWN").upper(),
+                })
+                return True
+        return False
+
+    def mark_llm_not_called(self, candidate_id: str, *, reason_code: str) -> bool:
+        """Record a known pre-LLM rejection without confusing it with a lost link."""
+        identifier = str(candidate_id or "").strip()
+        reason = str(reason_code or "PREFILTER_BLOCKED").strip().upper()[:80]
+        if not identifier:
+            return False
+        for rows in self._pending.values():
+            for row in rows:
+                if row.get("candidate_id") != identifier:
+                    continue
+                if row.get("llm_attribution_state") == "LINKED":
+                    return False
+                row.update({
+                    "llm_linked": False,
+                    "llm_attribution_state": "NOT_CALLED",
+                    "llm_not_called_reason": reason,
+                    "llm_model_decision": "NOT_CALLED",
+                    "llm_final_decision": "NOT_CALLED",
+                    "llm_signal_status": "NOT_CALLED",
+                    "llm_reason_code": reason,
+                    "llm_local_guard": "PRE_LLM_FILTER",
+                    "llm_execution_status": "NOT_REQUESTED",
                 })
                 return True
         return False
@@ -341,6 +371,8 @@ class ShadowForwardTracker:
     def _llm_label_fields(row: Mapping[str, Any]) -> dict[str, Any]:
         return {
             "llm_linked": bool(row.get("llm_linked", False)),
+            "llm_attribution_state": str(row.get("llm_attribution_state") or "UNKNOWN_LEGACY"),
+            "llm_not_called_reason": row.get("llm_not_called_reason"),
             "llm_verdict_id": row.get("llm_verdict_id"),
             "llm_model_decision": str(row.get("llm_model_decision") or "NOT_LINKED"),
             "llm_final_decision": str(row.get("llm_final_decision") or "NOT_LINKED"),
@@ -676,6 +708,8 @@ class ShadowForwardTracker:
             f"side_eligibility={side}|{eligibility}",
             f"ticker_eligibility={ticker}|{eligibility}",
             f"llm_linked={bool(label.get('llm_linked', False))}",
+            f"llm_attribution_state={str(label.get('llm_attribution_state') or 'UNKNOWN_LEGACY')}",
+            f"llm_not_called_reason={str(label.get('llm_not_called_reason') or 'NONE')}",
             f"llm_model_decision={str(label.get('llm_model_decision') or 'NOT_LINKED')}",
             f"llm_final_decision={str(label.get('llm_final_decision') or 'NOT_LINKED')}",
             f"llm_signal_status={str(label.get('llm_signal_status') or 'NOT_LINKED')}",
