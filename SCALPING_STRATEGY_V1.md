@@ -31,7 +31,9 @@ The value is dimensionless and bounded by -1 and +1. Positive values indicate a 
 
 Finam's displayed size unit is not assumed. The ratio can be used as a relative feature only; it must not be interpreted as shares, lots, executable depth, or guaranteed fill capacity.
 
-This is **queue imbalance**, not order-flow imbalance (OFI). OFI requires the signed sequence of changes in best bid/ask prices and sizes, including queue additions, executions and cancellations. OFI is a planned next research step, after validating the integrity and timestamps of per-symbol book events.
+This is **queue imbalance**, not order-flow imbalance (OFI). PILUITUS now calculates a separate event-based best-quote OFI increment from two consecutive accepted ORDER_BOOK states using the Cont–Kukanov–Stoikov price/size-change convention. The five-second diagnostic sums signed increments and normalizes them by the accumulated average displayed best-queue depth. It ignores unchanged heartbeats, rejects invalid/crossed states, requires ordered timestamps and minimum event/coverage/freshness checks, and clears its history when the book becomes invalid. This is top-of-book OFI only: it does not yet include deeper levels, explicit order IDs, or a reliable decomposition of cancellations versus executions.
+
+OFI is exposed in Shadow diagnostics (`ofi_5s`, availability, sample count, coverage and directional alignment) but contributes **zero score points** and creates no eligibility block. It is an experimental measurement, not a validated predictive signal; its scale and usefulness must be assessed per instrument and regime before any scoring change.
 
 ## Shadow hard blocks
 
@@ -156,7 +158,7 @@ performance coverage as incomplete and inspect the log.
 
 1. **Data quality:** align the effective BBO age shown in diagnostics with the exact TTL used by the exit guard; quantify stale-book intervals per ticker.
 2. **Shadow observations:** collect baseline candidate and v1 score side by side without changing entries or exits. The tracker labels executable returns at 1/3/5 minutes and captures MFE/MAE; keep the cost assumptions recorded with each outcome.
-3. **OFI:** add event-level best-quote delta features with timestamp/order checks and per-symbol normalization.
+3. **OFI validation:** collect the new event-level best-quote OFI beside Queue Imbalance and trade-flow imbalance; validate event ordering, warmup, per-ticker scale and out-of-sample relationship with executable forward returns before considering score weights.
 4. **Regime and economics:** evaluate trend, range and low-quality regimes; estimate whether a plausible follow-through is large enough relative to spread and the user's configured costs.
 5. **Exit research:** compare current ATR stop/2R target with a time-to-follow-through exit, 1R break-even and trailing variants in a separate replay. Do not tighten the live PAPER stop based only on three losing trades.
 6. **Promotion gate:** only consider allowing the new strategy to influence PAPER entries after enough observations exist, out-of-sample expectancy is positive after realistic costs, drawdown is acceptable, and results are stable across tickers/regimes. Any eventual active change gets its own tests and commit.
