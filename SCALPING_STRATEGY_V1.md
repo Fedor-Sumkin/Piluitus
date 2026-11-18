@@ -451,6 +451,24 @@ depth VWAP, not a claim about actual exchange queue position or live market
 impact.
 
 
+## Re-entry diagnostics in the realized PAPER scorecard
+
+The realized scorecard now includes reentry_diagnostics. It pairs a closed
+trade with the next entry only when both records share a known ticker and
+PAPER session, both entry/exit timestamps are valid timezone-aware ISO values,
+and the prior position was closed no later than the next entry. The report
+groups current-trade outcomes by elapsed time since the previous close, prior
+exit reason, prior trade outcome and same-side/opposite-side direction. It
+also exposes a bounded list of exact trade-pair details.
+
+Naive or malformed timestamps, missing ticker/session identity and overlapping
+positions are not guessed into a sequence. The analysis does not treat
+consecutive trades as independent observations and does not claim that a
+previous STOP_LOSS or TAKE_PROFIT caused the next result. Existing execution
+cooldown behavior and its configured limits are unchanged; this addition is
+read-only analytics.
+
+
 ## Consolidated PAPER research report
 
 `GET /api/v1/paper/research/report?limit=30` provides one read-only snapshot
