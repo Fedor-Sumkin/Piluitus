@@ -76,19 +76,25 @@ def classify_market_regime(
 
     up_votes = down_votes = 0
     evidence_count = 0
-    for key in ("price_change_pct", "price_vs_vwap_pct"):
-        value = _finite(metrics, key)
-        if value is not None:
-            evidence_count += 1
-            up_votes += int(value > 0.0)
-            down_votes += int(value < 0.0)
+    trade_ready = (
+        (_finite(metrics, "trade_data_ready") or 0.0) >= 0.5
+        and 0.0 <= (_finite(metrics, "trade_metrics_age_sec") or -1.0) <= 5.0
+        and (_finite(metrics, "trade_history_coverage_sec") or 0.0) >= 60.0
+    )
+    if trade_ready:
+        for key in ("price_change_pct", "price_vs_vwap_pct"):
+            value = _finite(metrics, key)
+            if value is not None:
+                evidence_count += 1
+                up_votes += int(value > 0.0)
+                down_votes += int(value < 0.0)
     up = _finite(metrics, "bar_trend_up")
     down = _finite(metrics, "bar_trend_down")
     if up is not None and down is not None and (up >= 0.5 or down >= 0.5):
         evidence_count += 1
         up_votes += int(up >= 0.5 and down < 0.5)
         down_votes += int(down >= 0.5 and up < 0.5)
-    flow = _finite(metrics, "trade_flow_imbalance_30s")
+    flow = _finite(metrics, "trade_flow_imbalance_30s") if trade_ready else None
     if flow is not None and abs(flow) >= 0.10:
         evidence_count += 1
         up_votes += int(flow >= 0.10)
