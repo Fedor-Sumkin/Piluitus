@@ -33,6 +33,13 @@ class MarketContextTests(unittest.TestCase):
         self.assertEqual(high["market_regime"], "HIGH_VOLATILITY")
         self.assertAlmostEqual(high["atr_vs_reference_ratio"], 1.5)
 
+        low = classify_market_regime(
+            {**metrics, "bar_atr_pct": 0.13},
+            atr_reference_pct=0.20, atr_reference_samples=20,
+        )
+        self.assertEqual(low["volatility_regime"], "LOW_VOLATILITY")
+        self.assertAlmostEqual(low["atr_vs_reference_ratio"], 0.65)
+
     def test_low_liquidity_takes_precedence_over_directional_trend(self) -> None:
         result = classify_market_regime({
             "bar_atr_pct": 0.20,
