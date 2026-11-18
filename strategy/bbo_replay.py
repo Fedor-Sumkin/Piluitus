@@ -141,6 +141,8 @@ class BBOReplayRecorder:
         event: Mapping[str, Any] | None = None,
     ) -> bool:
         """Queue a normalized accepted book event; never awaits storage/network I/O."""
+        if self._stopping:
+            return False
         symbol = str(ticker or "").strip().upper().split("@")[0]
         if not symbol or not isinstance(book_result, Mapping):
             return False
