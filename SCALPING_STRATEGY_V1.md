@@ -269,7 +269,11 @@ Events enter a bounded in-memory queue without waiting for Memurai. A separate
 writer batches them into the bounded list
 `piluitus:paper:bbo_replay` (default retention 250,000 events). The queue,
 batch size, flush interval, heartbeat interval and storage cap are bounded;
-queue overflow and persistence failures are counted and reported. On orderly
+queue overflow and persistence failures are counted and reported. Defaults
+can be tuned with `PILUITUS_BBO_REPLAY_QUEUE_LIMIT`,
+`PILUITUS_BBO_REPLAY_BATCH_SIZE`, `PILUITUS_BBO_REPLAY_FLUSH_SEC`,
+`PILUITUS_BBO_REPLAY_HEARTBEAT_SEC` and
+`PILUITUS_BBO_REPLAY_STORAGE_LIMIT`; hard caps remain in place. On orderly
 shutdown the writer drains its queue before the database connection is closed.
 The journal is process-session scoped: monotonic timestamps must never be
 compared across different session IDs. Memurai's list is newest-first; replay
