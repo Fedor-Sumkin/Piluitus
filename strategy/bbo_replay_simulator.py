@@ -774,12 +774,137 @@ def _paired_scenario_comparison(
         ),
     }
 
+
+def _portfolio_capacity_simulation(
+    trade_results: list[Mapping[str, Any]],
+    scenario_name: str,
+    initial_capital_rub: float,
+    max_allocation_pct: float,
+) -> dict[str, Any]:
+    """Apply a shared, cash-funded exposure cap to one replay scenario.
+
+    Full entry notional is reserved for both BUY and SELL positions. Exits
+    release the reserved notional and realize replayed net PnL. This is a
+    conservative capital-capacity approximation, not broker margin accounting.
+    """
+    capital = _number(initial_capital_rub)
+    allocation_pct = _number(max_allocation_pct)
+    if not math.isfinite(capital) or capital <= 0.0:
+        raise ValueError("initial_capital_rub must be finite and positive")
+    if not math.isfinite(allocation_pct) or not 0.0 < allocation_pct <= 100.0:
+        raise ValueError("max_allocation_pct must be in (0, 100]")
+
+    allocation_limit = capital * allocation_pct / 100.0
+    timeline: list[tuple[float, int, str, Mapping[str, Any], float]] = []
+    rejected_invalid = 0
+    for trade in trade_results:
+        scenarios = trade.get("scenarios", [])
+        selected = next(
+            (row for row in scenarios
+             if isinstance(row, Mapping) and str(row.get("name") or "") == scenario_name),
+            None,
+        )
+        if not isinstance(selected, Mapping):
+            continue
+        entry_epoch = _number(trade.get("entry_time_epoch"))
+        notional = _number(trade.get("entry_price")) * _number(trade.get("quantity"))
+        if not math.isfinite(entry_epoch) or not math.isfinite(notional) or notional <= 0.0:
+            rejected_invalid += 1
+            continue
+        exit_row = selected.get("exit") if isinstance(selected.get("exit"), Mapping) else None
+        exit_epoch = _number(exit_row.get("event_time_epoch")) if exit_row else math.nan
+        if exit_row is not None and (not math.isfinite(exit_epoch) or exit_epoch < entry_epoch):
+            exit_row = None
+        # Exit events sort before entries at the same timestamp.
+        timeline.append((entry_epoch, 1, "ENTRY", trade, notional))
+        if exit_row is not None:
+            timeline.append((exit_epoch, 0, "EXIT", trade, notional))
+
+    timeline.sort(key=lambda item: (item[0], item[1], str(item[3].get("position_id") or "")))
+    cash = capital
+    reserved = 0.0
+    active: dict[str, float] = {}
+    accepted: set[str] = set()
+    rejected_capacity = 0
+    peak_reserved = 0.0
+    realized_pnls: list[float] = []
+    closed = 0
+    for stamp, _priority, event_kind, trade, notional in timeline:
+        position_id = str(trade.get("position_id") or trade.get("trade_index") or "")
+        if event_kind == "ENTRY":
+            if position_id in active or notional > allocation_limit + 1e-9:
+                rejected_capacity += 1
+                continue
+            if reserved + notional > allocation_limit + 1e-9 or cash + 1e-9 < notional:
+                rejected_capacity += 1
+                continue
+            active[position_id] = notional
+            accepted.add(position_id)
+            reserved += notional
+            cash -= notional
+            peak_reserved = max(peak_reserved, reserved)
+        else:
+            if position_id not in active:
+                continue
+            reserved_amount = active.pop(position_id)
+            exit_row = next(
+                (row.get("exit") for row in trade.get("scenarios", [])
+                 if isinstance(row, Mapping)
+                 and str(row.get("name") or "") == scenario_name
+                 and isinstance(row.get("exit"), Mapping)),
+                None,
+            )
+            pnl = _number(exit_row.get("net_pnl_rub")) if isinstance(exit_row, Mapping) else math.nan
+            if not math.isfinite(pnl):
+                pnl = 0.0
+            cash += reserved_amount + pnl
+            reserved -= reserved_amount
+            realized_pnls.append(pnl)
+            closed += 1
+
+    equity = cash + reserved
+    running_equity = capital
+    peak_equity = capital
+    max_drawdown = 0.0
+    for pnl in realized_pnls:
+        running_equity += pnl
+        peak_equity = max(peak_equity, running_equity)
+        max_drawdown = max(max_drawdown, peak_equity - running_equity)
+    return {
+        "scenario": scenario_name,
+        "initial_capital_rub": round(capital, 2),
+        "max_allocation_pct": round(allocation_pct, 3),
+        "max_allocated_capital_rub": round(allocation_limit, 2),
+        "accepted_positions": len(accepted),
+        "rejected_for_capacity": rejected_capacity,
+        "rejected_invalid_positions": rejected_invalid,
+        "closed_positions": closed,
+        "open_positions_at_end": len(active),
+        "peak_reserved_capital_rub": round(peak_reserved, 2),
+        "ending_reserved_capital_rub": round(reserved, 2),
+        "realized_net_pnl_rub": round(sum(realized_pnls), 4),
+        "expectancy_per_closed_position_rub": round(
+            sum(realized_pnls) / closed, 4
+        ) if closed else None,
+        "portfolio_max_drawdown_rub": round(max_drawdown, 4),
+        "ending_equity_at_cost_rub": round(equity, 4),
+        "capital_model": "FULL_ENTRY_NOTIONAL_RESERVED_FOR_BUY_AND_SELL",
+        "limitations": [
+            "Full entry notional is reserved for both BUY and SELL; broker margin, leverage and settlement rules are not modeled.",
+            "Open positions are valued at entry cost and have no unrealized PnL marked at replay end.",
+            "Only positions whose entry and replayed exit fit the available event timeline are realized; this is a research capacity model, not an execution guarantee.",
+        ],
+    }
+
+
 def replay_exit_batch(
     events: Iterable[Mapping[str, Any]],
     positions: Iterable[Mapping[str, Any]],
     *,
     max_bbo_age_sec: float = 2.0,
     scenarios: Iterable[Mapping[str, Any]] | None = None,
+    portfolio_capital_rub: float | None = None,
+    max_allocation_pct: float = 15.0,
 ) -> dict[str, Any]:
     """Replay many PAPER positions and summarize each exit hypothesis.
 
@@ -928,7 +1053,7 @@ def replay_exit_batch(
                 for key, bucket in sorted(buckets.items())
             }
 
-    return {
+    result = {
         "schema_version": 1,
         "engine": "PAPER_EXIT_REPLAY_V1",
         "positions": len(trade_results),
@@ -939,6 +1064,14 @@ def replay_exit_batch(
         "limitations": [
             "BASELINE uses actual latched EXIT_TRIGGER events when the journal contains them; legacy sessions without trigger events use a BBO-threshold proxy.",
             "Open positions at the end of the replay are excluded from realized scenario PnL.",
-            "Portfolio-level overlap, capital contention and simultaneous execution are not modeled.",
+            "Portfolio capacity is modeled only when portfolio_capital_rub is explicitly supplied.",
         ],
     }
+    if portfolio_capital_rub is not None:
+        result["portfolio_capacity"] = {
+            name: _portfolio_capacity_simulation(
+                trade_results, name, portfolio_capital_rub, max_allocation_pct
+            )
+            for name in summaries
+        }
+    return result
