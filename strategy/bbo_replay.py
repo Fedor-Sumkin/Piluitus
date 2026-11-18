@@ -283,10 +283,16 @@ class BBOReplayRecorder:
             "ticker": symbol,
             "source": "PAPER_MONITOR",
             "event_kind": "EXIT_TRIGGER",
-            "event_time_epoch": round(
-                market_epoch if market_epoch is not None else received_epoch, 6
+            # Sequence/event time is the local trigger-observation time.
+            # Preserve the original market timestamp separately for audit.
+            "event_time_epoch": round(received_epoch, 6),
+            "event_time_source": "RECEIVE_FALLBACK",
+            "trigger_market_time_epoch": (
+                round(market_epoch, 6) if market_epoch is not None else None
             ),
-            "event_time_source": "EXCHANGE" if market_epoch is not None else "RECEIVE_FALLBACK",
+            "trigger_market_time_source": (
+                "EXCHANGE" if market_epoch is not None else "UNAVAILABLE"
+            ),
             "received_at_utc": datetime.fromtimestamp(
                 received_epoch, tz=timezone.utc
             ).isoformat(timespec="milliseconds"),
