@@ -317,6 +317,39 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(segments["horizon_llm_confidence=180s|80-89"]["ok"], 1)
         self.assertEqual(segments["horizon_llm_model_decision=60s|APPROVE"]["sample_quality"], "INSUFFICIENT_LT_30")
 
+    def test_pre_llm_rejection_is_distinct_from_missing_verdict_link(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,))
+        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=(100.0, 160.0)):
+            candidate_id = tracker.record_candidate(
+                "SBER", "BUY", quote_metrics(100.0, 100.1),
+                {"score": 60.0, "eligible": False, "regime": "TRANSITION_OR_RANGE"},
+            )
+            self.assertTrue(tracker.mark_llm_not_called(
+                candidate_id, reason_code="ATR_NOT_READY",
+            ))
+            # A later callback must not overwrite an already classified pre-LLM reject.
+            self.assertFalse(tracker.attach_llm_verdict(
+                candidate_id,
+                verdict_id="late-verdict",
+                model_decision="APPROVE",
+                final_decision="BUY",
+                signal_status="APPROVED",
+                confidence=90.0,
+                reason_code="APPROVED",
+                local_guard="PRE_LLM_VALIDATED",
+                execution_status="PENDING",
+            ))
+            labels = tracker.observe_market_tick("SBER", quote_metrics(100.2, 100.3))
+
+        self.assertEqual(len(labels), 1)
+        label = labels[0]
+        self.assertFalse(label["llm_linked"])
+        self.assertEqual(label["llm_attribution_state"], "NOT_CALLED")
+        self.assertEqual(label["llm_not_called_reason"], "ATR_NOT_READY")
+        segments = tracker.statistics_snapshot()["segments"]
+        self.assertEqual(segments["llm_attribution_state=NOT_CALLED"]["ok"], 1)
+        self.assertEqual(segments["llm_not_called_reason=ATR_NOT_READY"]["ok"], 1)
+
     def test_llm_approved_group_reports_profit_factor_from_net_returns(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
         with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 100.0]):
