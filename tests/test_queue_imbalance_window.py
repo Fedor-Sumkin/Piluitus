@@ -1,7 +1,9 @@
 """Tests for the time-weighted best-queue imbalance window."""
+import asyncio
+import time
 import unittest
 
-from strategy.screener_funnel import _queue_imbalance_window
+from strategy.screener_funnel import HFTMemoryScreener, _queue_imbalance_window
 
 
 class QueueImbalanceWindowTests(unittest.TestCase):
@@ -39,6 +41,31 @@ class QueueImbalanceWindowTests(unittest.TestCase):
         self.assertEqual(result["samples"], 2)
         self.assertEqual(result["available"], 0.0)
         self.assertAlmostEqual(result["coverage_sec"], 4.0)
+
+    def test_order_book_updates_publish_rolling_metric_and_invalid_book_clears_it(self):
+        screener = HFTMemoryScreener()
+        base_epoch = time.time()
+        async def feed_book():
+            for offset in (2.0, 1.0, 0.0):
+                await screener.push_order_book(
+                    "SBER", 100.0, 100.1, 120.0, 80.0,
+                    order_book_timestamp=base_epoch - offset,
+                )
+
+        asyncio.run(feed_book())
+        result = asyncio.run(screener.push_tick("SBER", 100.05, 0.0))
+        metrics = result["metrics"]
+        self.assertEqual(metrics["queue_imbalance_5s_available"], 1.0)
+        self.assertAlmostEqual(metrics["queue_imbalance_5s"], 0.2, places=6)
+        self.assertGreaterEqual(metrics["queue_imbalance_5s_samples"], 3)
+
+        asyncio.run(screener.push_order_book(
+            "SBER", 100.0, 100.1, 120.0, 80.0,
+            book_valid=False, book_reason="TEST_INVALID",
+            order_book_timestamp=base_epoch + 0.1,
+        ))
+        invalidated = asyncio.run(screener.push_tick("SBER", 100.05, 0.0))
+        self.assertEqual(invalidated["metrics"]["queue_imbalance_5s_available"], 0.0)
 
 
 if __name__ == "__main__":
