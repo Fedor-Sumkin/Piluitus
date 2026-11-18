@@ -457,6 +457,12 @@ class ShadowForwardTracker:
                 continue
             if not label.get("candidate_id") or not label.get("ticker"):
                 continue
+            if str(label.get("side") or "").upper() not in {"BUY", "SELL"}:
+                continue
+            # Eligibility is part of the persisted outcome schema. Do not
+            # silently classify incomplete legacy/corrupt rows as ineligible.
+            if not isinstance(label.get("shadow_eligible"), bool):
+                continue
             self._accumulate_completed_label(label)
             restored += 1
         return restored
