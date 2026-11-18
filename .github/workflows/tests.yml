@@ -10,6 +10,7 @@ on:
       - refactor/project-structure
   pull_request:
     branches:
+      - master
       - refactor/project-structure
   workflow_dispatch:
 
