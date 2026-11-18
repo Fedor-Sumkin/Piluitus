@@ -369,6 +369,28 @@ are labelled insufficient; 30–99 preliminary; 100–299 developing; 300+ large
 sample. A profit factor with no losses is reported as N/A, not infinity.
 Open-at-end positions are not counted as realized PnL.
 
+Two additional PAPER-only read endpoints support cohort-level research:
+
+- `GET /api/v1/paper/replay/batch?limit=30` replays up to 100 most recently
+  closed PAPER trades with a retained replay-session ID. Optional `ticker`
+  and `session_id` filters narrow the cohort. The response reports candidate
+  and selected counts, journal coverage, skipped records and individually
+  rejected position contracts; one malformed trade does not abort the valid
+  batch. The batch engine indexes events by replay session before processing
+  positions, while retaining the full-session sequence-coverage calculation.
+- `GET /api/v1/paper/reconciliation/shadow?limit=100` joins realized closed
+  PAPER trades to Shadow forward labels only by exact
+  `shadow_candidate_id == candidate_id`. It reports matched trades, trades
+  without candidate IDs, candidate IDs without labels, and labelled Shadow
+  candidates with no realized trade. A ticker/time proximity is never treated
+  as a match.
+
+Both endpoints are read-only and PAPER-only. Batch replay is capped to control
+CPU and memory use. It is still not a portfolio-level counterfactual: capital
+contention, overlapping positions and simultaneous fills remain outside the
+simulator. Shadow reconciliation establishes identity linkage, not that a
+Shadow outcome caused or predicted the realized trade result.
+
 The read-only endpoint `GET /api/v1/paper/replay/{order_id}` loads the
 persisted PAPER trade and its matching bounded BBO replay session, then returns
 the scenario comparison. It requires a trade created after replay-session
