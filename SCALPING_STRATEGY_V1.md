@@ -486,9 +486,13 @@ returns, separated by horizon and BUY/SELL.
 
 The report includes training, purged and test candidate counts per fold,
 train/test metrics by horizon and side, and the combined out-of-sample
-cross-section. It explicitly reports insufficient timestamp coverage instead
-of fabricating folds. New Shadow labels persist both UTC and Moscow entry
-timestamps; older labels can use their timezone-aware Moscow timestamp.
+cross-section. It also separates out-of-sample results by market, volatility,
+liquidity and directional regime, including horizon/side × market-regime
+cohorts. Label-status coverage (`OK`, `LABEL_LATE`, `NO_FRESH_BBO`) and rows
+without a valid net return are visible separately from the return metrics.
+It explicitly reports insufficient timestamp coverage instead of fabricating
+folds. New Shadow labels persist both UTC and Moscow entry timestamps; older
+labels can use their timezone-aware Moscow timestamp.
 
 This is not model fitting, parameter selection, or proof of predictive edge.
 The current fold metrics are descriptive, and small samples remain
