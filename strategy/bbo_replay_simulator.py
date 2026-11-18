@@ -1038,7 +1038,14 @@ def _portfolio_capacity_simulation(
         "open_positions_at_end": len(active),
         "peak_open_positions": peak_open_positions,
         "peak_reserved_capital_rub": round(peak_reserved, 2),
+        "peak_allocation_utilization_pct": round(
+            peak_reserved / allocation_limit * 100.0, 4
+        ) if allocation_limit > 0.0 else None,
+        "peak_total_capital_utilization_pct": round(
+            peak_reserved / capital * 100.0, 4
+        ),
         "ending_reserved_capital_rub": round(reserved, 2),
+        "ending_free_cash_rub": round(cash, 4),
         "realized_net_pnl_rub": round(sum(realized_pnls), 4),
         "expectancy_per_closed_position_rub": round(sum(realized_pnls) / closed, 4) if closed else None,
         "portfolio_max_drawdown_rub": round(realized_max_drawdown, 4),
