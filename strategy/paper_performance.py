@@ -9,6 +9,7 @@ import math
 from collections import defaultdict
 from typing import Any, Mapping
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from strategy.shadow_label_quality import (
     deduplicate_shadow_labels,
@@ -650,6 +651,44 @@ class PaperPerformanceTracker:
             for key, bucket in sorted(buckets.items())
         }
 
+    @staticmethod
+    def _group_rows(
+        rows: list[dict[str, Any]], key_for_row
+    ) -> dict[str, Any]:
+        buckets: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            buckets[str(key_for_row(row) or "UNKNOWN")].append(row)
+        return {
+            key: _metrics(sorted(
+                bucket,
+                key=lambda item: _text(item.get("exit_timestamp"), ""),
+            ))
+            for key, bucket in sorted(buckets.items())
+        }
+
+    @staticmethod
+    def _moscow_entry_time_bucket(row: Mapping[str, Any]) -> str:
+        raw = row.get("entry_timestamp")
+        if not isinstance(raw, str) or not raw.strip():
+            return "UNKNOWN"
+        try:
+            stamp = datetime.fromisoformat(raw.strip())
+            if stamp.tzinfo is None or stamp.utcoffset() is None:
+                return "UNKNOWN"
+            local = stamp.astimezone(ZoneInfo("Europe/Moscow"))
+        except (TypeError, ValueError, OverflowError):
+            return "UNKNOWN"
+        minute = local.hour * 60 + local.minute
+        if 10 * 60 <= minute < 11 * 60:
+            return "OPEN_10_11"
+        if 11 * 60 <= minute < 14 * 60:
+            return "MORNING_11_14"
+        if 14 * 60 <= minute < 18 * 60:
+            return "AFTERNOON_14_18"
+        if 18 * 60 <= minute < 23 * 60:
+            return "EVENING_18_23"
+        return "OUTSIDE_10_23"
+
     def scorecard(self, shadow_labels: object = None) -> dict[str, Any]:
         rows = sorted(
             self.records,
@@ -665,6 +704,16 @@ class PaperPerformanceTracker:
             "overall": _metrics(rows),
             "by_side": self._group(rows, "side"),
             "by_ticker": self._group(rows, "ticker"),
+            "by_ticker_side": self._group_rows(
+                rows, lambda row: f"{_text(row.get('ticker'))}|{_text(row.get('side'))}"
+            ),
+            "by_moscow_entry_time": self._group_rows(
+                rows, self._moscow_entry_time_bucket
+            ),
+            "by_market_regime": self._group(rows, "market_regime"),
+            "by_volatility_regime": self._group(rows, "volatility_regime"),
+            "by_liquidity_regime": self._group(rows, "liquidity_regime"),
+            "by_directional_regime": self._group(rows, "directional_regime"),
             "by_session": self._group(rows, "session_id"),
             "by_llm_model_decision": self._group(rows, "llm_model_decision"),
             "by_llm_final_decision": self._group(rows, "llm_final_decision"),
