@@ -134,8 +134,8 @@ The PAPER-only endpoint `GET /api/v1/paper/performance` returns:
   decision, confidence band, LLM reason code and exit reason;
 - Shadow comparison matched strictly by `shadow_candidate_id`, with separate
   forward-label statistics for each horizon, matched-trade coverage percentage
-  and unmatched reasons: missing candidate ID, candidate whose forward labels
-  are not yet available, no fresh BBO at the label horizon, or late/unusable
+  and unmatched reasons: missing candidate ID, candidate with no persisted forward-label record, no fresh BBO at the label horizon,
+  or late/unusable
   forward labels. It never falls back to ticker/time matching.
 
 Only final CLOSED rows with a valid finite net `pnl` and BUY/SELL direction
