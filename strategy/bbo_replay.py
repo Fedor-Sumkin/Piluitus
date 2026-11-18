@@ -248,6 +248,73 @@ class BBOReplayRecorder:
         self.accepted += 1
         return True
 
+    def record_exit_trigger(
+        self,
+        ticker: str,
+        trade: Mapping[str, Any],
+        executable_quote: Mapping[str, Any] | None = None,
+    ) -> bool:
+        """Persist the production monitor's first latched SL/TP trigger."""
+        if self._stopping or not isinstance(trade, Mapping):
+            return False
+        symbol = str(ticker or trade.get("ticker") or "").strip().upper().split("@")[0]
+        reason = str(trade.get("pending_exit_reason") or "").strip().upper()
+        if not symbol or reason not in {"STOP_LOSS", "TAKE_PROFIT"}:
+            return False
+        now_mono = time.monotonic()
+        received_epoch = datetime.now(timezone.utc).timestamp()
+        market_epoch = _timestamp_epoch(trade.get("exit_trigger_market_timestamp"))
+        if market_epoch is not None and market_epoch > received_epoch + 2.0:
+            market_epoch = None
+        quote = executable_quote if isinstance(executable_quote, Mapping) else {}
+        quote_price = _finite(quote.get("executable_price"), math.nan)
+        quote_age = _finite(quote.get("age_sec"), math.inf)
+        quote_max_age = _finite(quote.get("max_age_sec"), 0.0)
+        quote_fresh = (
+            math.isfinite(quote_price) and quote_price > 0.0
+            and math.isfinite(quote_age) and 0.0 <= quote_age <= quote_max_age
+            and quote_max_age > 0.0
+        )
+        self._sequence += 1
+        row = {
+            "schema_version": 1,
+            "session_id": self.session_id,
+            "sequence": self._sequence,
+            "ticker": symbol,
+            "source": "PAPER_MONITOR",
+            "event_kind": "EXIT_TRIGGER",
+            "event_time_epoch": round(
+                market_epoch if market_epoch is not None else received_epoch, 6
+            ),
+            "event_time_source": "EXCHANGE" if market_epoch is not None else "RECEIVE_FALLBACK",
+            "received_at_utc": datetime.fromtimestamp(
+                received_epoch, tz=timezone.utc
+            ).isoformat(timespec="milliseconds"),
+            "received_monotonic": round(now_mono, 6),
+            "trade_id": str(trade.get("id") or "")[:96],
+            "position_side": str(trade.get("side") or "").upper(),
+            "trigger_reason": reason,
+            "trigger_source": str(trade.get("exit_trigger_source") or "UNKNOWN").upper(),
+            "trigger_price": _finite(trade.get("pending_exit_trigger_price")),
+            "observed_trigger_price": _finite(trade.get("exit_trigger_observed_price")),
+            "trigger_bbo_valid": bool(quote_fresh),
+            "trigger_bbo_price": round(quote_price, 8) if quote_fresh else None,
+            "trigger_bbo_age_sec": round(quote_age, 6) if math.isfinite(quote_age) else None,
+            "trigger_bbo_max_age_sec": quote_max_age if math.isfinite(quote_max_age) else None,
+        }
+        try:
+            self._queue.put_nowait(row)
+        except asyncio.QueueFull:
+            self.dropped_queue_full += 1
+            if self.dropped_queue_full == 1 or self.dropped_queue_full % 100 == 0:
+                logger.warning(
+                    "[PAPER BBO REPLAY] queue full; dropped=%d limit=%d",
+                    self.dropped_queue_full, self.queue_limit,
+                )
+            return False
+        self.accepted += 1
+        return True
+
     def start(self, db_manager: Any) -> None:
         if self._task is not None and not self._task.done():
             return
