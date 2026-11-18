@@ -126,6 +126,7 @@ class BBOReplayRecorder:
         self._sequence = 0
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self.queue_limit)
         self._last_state: dict[str, tuple[float, float, float, float, bool, str, float]] = {}
+        self._pending_exit_tickers: dict[str, str] = {}
         self._task: asyncio.Task | None = None
         self._stopping = False
         self.accepted = 0
