@@ -1848,11 +1848,26 @@ class BaseExecutionEngine:
                 "confidence_score": ai_analysis.get("confidence_score", 100),
             }
 
-            # Сначала сохраняем в Redis/Memurai. Не показываем позицию активной,
-            # если сохранение не удалось.
-            await db.log_trade(order_id, trade_log)
+            # PAPER entry commit and emergency-close latch share the portfolio
+            # lock. If a panic close starts while an entry is being prepared, the
+            # uncommitted entry is rejected; if persistence has begun, the close
+            # waits until the position is visible in paper_positions.
             if self.paper_mode:
-                self.paper_positions[ticker] = trade_log
+                async with self._portfolio_lock:
+                    if self._maintenance_active:
+                        return {
+                            "status": "SKIPPED",
+                            "message": (
+                                self._maintenance_reason
+                                or "PAPER-вход отменён: запущено экстренное закрытие."
+                            ),
+                        }
+                    await db.log_trade(order_id, trade_log)
+                    self.paper_positions[ticker] = trade_log
+            else:
+                # A LIVE broker fill must always be journaled, even if a PAPER-only
+                # maintenance flag changes while the broker response is in flight.
+                await db.log_trade(order_id, trade_log)
             if self.paper_mode and entry_bbo is not None:
                 logger.info(
                     "🧾 [PAPER FILL] %s %s: requested=%d lots, filled=%d lots; last_reference=%.4f, "
@@ -3091,86 +3106,135 @@ class BaseExecutionEngine:
                 self._lock_closing.discard(order_id)
 
     async def close_all_positions(self, db: DBManager) -> dict[str, Any]:
-        """Force-close every active PAPER position at its fresh executable BBO side.
+        """Close active PAPER positions while atomically blocking concurrent entries.
 
-        This intentionally bypasses execute_order(): that method is an entry path
-        and defaults HOLD when called without a new AI authorization.
+        The maintenance latch and PAPER entry commit use the same portfolio lock:
+        an entry either becomes fully journaled before this snapshot, or is rejected
+        before it can become an untracked open position.
         """
         if not self.paper_mode:
             logger.error("CMD_CLOSE_ALL в этом менеджере поддерживает только активные PAPER-позиции.")
-            return {"closed": 0, "blocked": 0, "message": "PAPER-позиции не активны."}
+            return {"closed": 0, "partial": 0, "blocked": 0, "message": "PAPER-позиции не активны."}
 
-        raw_positions_obj: object = self.paper_positions
-        if not isinstance(raw_positions_obj, dict) or not raw_positions_obj:
-            logger.info("📭 Нет активных позиций для экстренного закрытия.")
-            return {"closed": 0, "blocked": 0, "message": "Активных PAPER-позиций нет."}
+        emergency_reason = "Экстренное закрытие PAPER-позиций."
+        async with self._portfolio_lock:
+            if self._maintenance_active:
+                existing_count = (
+                    len(self.paper_positions)
+                    if isinstance(self.paper_positions, dict) else 0
+                )
+                reason = self._maintenance_reason or "Другое обслуживание уже выполняется."
+                return {
+                    "closed": 0,
+                    "partial": 0,
+                    "blocked": existing_count,
+                    "message": f"Экстренное закрытие не запущено: {reason}",
+                }
 
-        raw_positions = cast(dict[object, object], raw_positions_obj)
-        logger.warning("🚨 Запущено экстренное PAPER-закрытие %s позиций.", len(raw_positions))
+            raw_positions_obj: object = self.paper_positions
+            if not isinstance(raw_positions_obj, dict) or not raw_positions_obj:
+                logger.info("📭 Нет активных позиций для экстренного закрытия.")
+                return {
+                    "closed": 0, "partial": 0, "blocked": 0,
+                    "message": "Активных PAPER-позиций нет.",
+                }
+
+            raw_positions = dict(cast(dict[object, object], raw_positions_obj))
+            self._maintenance_active = True
+            self._maintenance_reason = emergency_reason
+
+        logger.warning(
+            "🚨 Запущено экстренное PAPER-закрытие %s позиций; новые входы заблокированы.",
+            len(raw_positions),
+        )
         closed_count = 0
         blocked_count = 0
         partial_count = 0
-        for raw_ticker in list(raw_positions.keys()):
-            ticker = str(raw_ticker).strip().upper().split("@")[0]
-            pos_obj = raw_positions.get(raw_ticker)
-            if not ticker or not isinstance(pos_obj, dict):
-                blocked_count += 1
-                logger.error("Пропуск некорректной позиции %s при CMD_CLOSE_ALL.", raw_ticker)
-                continue
-            pos = cast(TradeRecord, pos_obj)
-            if str(pos.get("status", "OPEN")).upper() != "OPEN":
-                continue
-            side = str(pos.get("side", "BUY")).upper()
-            order_id = str(pos.get("id", ""))
-            if side not in {"BUY", "SELL"} or not order_id:
-                blocked_count += 1
-                logger.error("Пропуск позиции %s: некорректная сторона или ID.", ticker)
-                continue
-            if order_id in self._lock_closing:
-                blocked_count += 1
-                logger.warning("CMD_CLOSE_ALL: позиция %s уже находится в процессе закрытия.", ticker)
-                continue
-
-            bbo = self._latest_fresh_exit_quote(ticker, side)
-            if bbo is None:
-                blocked_count += 1
-                logger.error(
-                    "CMD_CLOSE_ALL: %s не закрыта — нет свежего исполнимого %s (порог %.2fs).",
-                    ticker, "Bid" if side == "BUY" else "Ask",
-                    _finite_or_default(os.getenv("PILUITUS_BBO_EXIT_MAX_AGE_SEC", "2.0"), 2.0),
-                )
-                continue
-
-            partial_count_before = int(_finite_or_default(pos.get("exit_partial_fill_count"), 0.0))
-            self._lock_closing.add(order_id)
-            try:
-                last_price = self._latest_price(ticker, pos)
-                close_result = await self._finalize_paper_close(
-                    ticker, pos, db, bbo,
-                    exit_reason="MANUAL_CLOSE",
-                    observed_last_price=last_price,
-                )
-                if str(close_result.get("status", "")).upper() == "CLOSED":
-                    closed_count += 1
-                elif int(_finite_or_default(close_result.get("exit_partial_fill_count"), 0.0)) > partial_count_before:
-                    partial_count += 1
-                else:
+        try:
+            for raw_ticker, pos_obj in raw_positions.items():
+                ticker = str(raw_ticker).strip().upper().split("@")[0]
+                if not ticker or not isinstance(pos_obj, dict):
                     blocked_count += 1
-            except Exception as exc:
-                blocked_count += 1
-                logger.error("CMD_CLOSE_ALL: не удалось закрыть %s: %s", ticker, exc, exc_info=True)
-            finally:
-                self._lock_closing.discard(order_id)
+                    logger.error("Пропуск некорректной позиции %s при CMD_CLOSE_ALL.", raw_ticker)
+                    continue
 
-        result = {
-            "closed": closed_count,
-            "partial": partial_count,
-            "blocked": blocked_count,
-            "message": (
-                f"Экстренное PAPER-закрытие: полностью закрыто {closed_count}, "
-                f"частично закрыто {partial_count}, ожидает исполнения/заблокировано {blocked_count}."
-            ),
-        }
-        logger.warning("🚨 [PAPER CLOSE ALL] %s", result["message"])
-        return result
+                pos = cast(TradeRecord, pos_obj)
+                if str(pos.get("status", "OPEN")).strip().upper() != "OPEN":
+                    continue
+                side = str(pos.get("side", "BUY")).strip().upper()
+                order_id = str(pos.get("id", "")).strip()
+                if side not in {"BUY", "SELL"} or not order_id:
+                    blocked_count += 1
+                    logger.error("Пропуск позиции %s: некорректная сторона или ID.", ticker)
+                    continue
+                if order_id in self._lock_closing:
+                    blocked_count += 1
+                    logger.warning(
+                        "CMD_CLOSE_ALL: позиция %s уже находится в процессе закрытия.", ticker
+                    )
+                    continue
 
+                try:
+                    bbo = self._latest_fresh_exit_quote(ticker, side)
+                except Exception as exc:
+                    bbo = None
+                    logger.error(
+                        "CMD_CLOSE_ALL: ошибка получения исполнимого BBO для %s: %s",
+                        ticker, exc, exc_info=True,
+                    )
+                if bbo is None:
+                    blocked_count += 1
+                    logger.error(
+                        "CMD_CLOSE_ALL: %s не закрыта — нет свежего исполнимого %s (порог %.2fs).",
+                        ticker, "Bid" if side == "BUY" else "Ask",
+                        _finite_or_default(os.getenv("PILUITUS_BBO_EXIT_MAX_AGE_SEC", "2.0"), 2.0),
+                    )
+                    continue
+
+                partial_count_before = int(
+                    _finite_or_default(pos.get("exit_partial_fill_count"), 0.0)
+                )
+                self._lock_closing.add(order_id)
+                try:
+                    last_price = self._latest_price(ticker, pos)
+                    close_result = await self._finalize_paper_close(
+                        ticker, pos, db, bbo,
+                        exit_reason="MANUAL_CLOSE",
+                        observed_last_price=last_price,
+                    )
+                    if str(close_result.get("status", "")).strip().upper() == "CLOSED":
+                        closed_count += 1
+                    elif int(
+                        _finite_or_default(close_result.get("exit_partial_fill_count"), 0.0)
+                    ) > partial_count_before:
+                        partial_count += 1
+                    else:
+                        blocked_count += 1
+                except Exception as exc:
+                    blocked_count += 1
+                    logger.error(
+                        "CMD_CLOSE_ALL: не удалось закрыть %s: %s", ticker, exc, exc_info=True
+                    )
+                finally:
+                    self._lock_closing.discard(order_id)
+
+            result = {
+                "closed": closed_count,
+                "partial": partial_count,
+                "blocked": blocked_count,
+                "message": (
+                    f"Экстренное PAPER-закрытие: полностью закрыто {closed_count}, "
+                    f"частично закрыто {partial_count}, ожидает исполнения/заблокировано {blocked_count}."
+                ),
+            }
+            logger.warning("🚨 [PAPER CLOSE ALL] %s", result["message"])
+            return result
+        finally:
+            async with self._portfolio_lock:
+                if self._maintenance_reason == emergency_reason:
+                    self._maintenance_active = False
+                    self._maintenance_reason = ""
+                    logger.info(
+                        "[PAPER MAINTENANCE] Экстренное закрытие завершено; "
+                        "новые входы снова разрешены при выполнении всех риск-условий."
+                    )
