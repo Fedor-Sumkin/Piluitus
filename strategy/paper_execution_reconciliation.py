@@ -87,7 +87,7 @@ def build_actual_vs_replay_reconciliation(
     counts = {
         "MATCHED_EXACT_ID_AND_SESSION": 0,
         "MISSING_ACTUAL_REPLAY_IDENTITY": 0,
-        "MISSING_REPLAY_IDENTITY": 0,
+        "MISSING_REPLAY_IDENTITY": sum(1 for key in replay_keys if key is None),
         "DUPLICATE_ACTUAL_IDENTITY": 0,
         "DUPLICATE_REPLAY_IDENTITY": 0,
         "NO_REPLAY_POSITION": 0,
