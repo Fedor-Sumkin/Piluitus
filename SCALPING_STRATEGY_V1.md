@@ -82,6 +82,8 @@ The scorecard also creates horizon-conditioned interaction groups (for example, 
 
 The attribution remains research-only. An LLM `APPROVE` is not itself an executed trade, and a positive hypothetical forward label is not a realized PAPER profit. Use the separate execution status and actual closed-trade ledger when evaluating realized performance.
 
+Each newly opened position now persists the originating `shadow_candidate_id`, `llm_verdict_id`, model/final decisions, confidence percentage, signal status and reason code in the trade record. Partial fills retain these fields, and the final closed-trade journal entry carries them forward unchanged. This establishes a stable join key for a subsequent realized-vs-hypothetical execution scorecard; it does not infer a match from ticker and timestamp.
+
 Report results separately by ticker, direction, tick-size/price group, spread-to-ATR bucket, time of day and market regime. Required metrics include:
 - trade count and coverage of the universe;
 - net expectancy in R and rubles;
