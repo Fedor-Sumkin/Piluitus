@@ -65,6 +65,7 @@ class PaperPerformanceTests(unittest.TestCase):
         self.assertEqual(overall["losses"], 1)
         self.assertAlmostEqual(overall["win_rate_pct"], 66.667, places=3)
         self.assertEqual(overall["net_pnl_rub"], 75.0)
+        self.assertEqual(overall["gross_pnl_rub"], 81.0)
         self.assertEqual(overall["expectancy_rub"], 25.0)
         self.assertEqual(overall["profit_factor"], 2.5)
         self.assertEqual(overall["max_drawdown_rub"], 50.0)
@@ -100,6 +101,12 @@ class PaperPerformanceTests(unittest.TestCase):
         self.assertEqual(comparison["join_key"], "shadow_candidate_id")
         self.assertEqual(comparison["matched_trades"], 2)
         self.assertEqual(comparison["unmatched_trades"], 1)
+        self.assertEqual(comparison["matched_realized_net_pnl_rub"], 5.0)
+        self.assertEqual(len(comparison["matched_trade_details"]), 2)
+        self.assertEqual(
+            comparison["matched_trade_details"][0]["shadow_net_return_pct_by_horizon"]["60"],
+            0.2,
+        )
         self.assertEqual(comparison["horizons"]["60"]["labels"], 2)
         self.assertAlmostEqual(comparison["horizons"]["60"]["mean_net_return_pct"], -0.05)
         self.assertEqual(comparison["horizons"]["180"]["labels"], 1)
