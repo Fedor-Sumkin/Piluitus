@@ -194,7 +194,7 @@ class BBOReplayRecorder:
         reason = str(book_result.get("reason") or source_event.get("book_reason") or "")
         event_kind = (
             "INVALIDATION" if not valid
-            else "STATE_CHANGE" if changed
+            else "STATE_CHANGE" if price_state_changed
             else "HEARTBEAT"
         )
 
