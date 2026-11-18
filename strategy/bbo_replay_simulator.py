@@ -134,6 +134,9 @@ def _prepare_events(
         "session_events": 0,
         "duplicate_sequences": 0,
         "sequence_gaps": 0,
+        "missing_sequence_prefix": 0,
+        "first_sequence": 0,
+        "last_sequence": 0,
         "ticker_events": 0,
         "invalid_events": 0,
         "stale_events": 0,
@@ -158,8 +161,13 @@ def _prepare_events(
         rows.append(event)
     rows.sort(key=lambda item: int(_number(item.get("sequence"), 0)))
     seqs = [int(_number(row.get("sequence"), 0)) for row in rows]
+    if seqs:
+        stats["first_sequence"] = seqs[0]
+        stats["last_sequence"] = seqs[-1]
+        stats["missing_sequence_prefix"] = max(0, seqs[0] - 1)
+        stats["sequence_gaps"] = stats["missing_sequence_prefix"]
     if len(seqs) > 1:
-        stats["sequence_gaps"] = sum(
+        stats["sequence_gaps"] += sum(
             max(0, right - left - 1) for left, right in zip(seqs, seqs[1:])
         )
     previous_epoch_by_ticker: dict[str, float] = {}
