@@ -181,7 +181,6 @@ def _prepare_events(
     for row in ticker_rows:
         observed_at = _observation_epoch(row)
         if not math.isfinite(observed_at):
-            stats["missing_event_timestamps"] += 1
             continue
         if observed_at < entry_epoch:
             stats["pre_entry_events"] += 1
