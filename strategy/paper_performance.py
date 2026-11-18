@@ -105,6 +105,9 @@ class PaperPerformanceTracker:
         if str(trade.get("status") or "").upper() != "CLOSED":
             return None
         trade_id = _text(trade.get("id"), "")
+        mode = str(trade.get("mode") or "").strip().upper()
+        if mode == "LIVE" or (mode != "PAPER" and not trade_id.startswith(("PAPER_", "TRADE_"))):
+            return None
         pnl = _number(trade.get("pnl"))
         side = str(trade.get("side") or "").upper()
         if not trade_id or pnl is None or side not in {"BUY", "SELL"}:
