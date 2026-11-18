@@ -91,7 +91,7 @@ class ShadowForwardTracker:
     def _new_stats_bucket() -> dict[str, float | int]:
         return {
             "labels": 0, "ok": 0, "late": 0, "no_fresh_bbo": 0,
-            "positive": 0, "net_sum_pct": 0.0, "gross_sum_pct": 0.0,
+            "positive": 0, "negative": 0, "net_sum_pct": 0.0, "gross_sum_pct": 0.0,
             "net_positive_sum_pct": 0.0, "net_negative_sum_pct": 0.0,
             "mfe_sum_pct": 0.0, "mae_sum_pct": 0.0,
         }
@@ -110,6 +110,7 @@ class ShadowForwardTracker:
                     bucket["positive"] = int(bucket["positive"]) + 1
                     bucket["net_positive_sum_pct"] = float(bucket["net_positive_sum_pct"]) + net
                 elif net < 0.0:
+                    bucket["negative"] = int(bucket["negative"]) + 1
                     bucket["net_negative_sum_pct"] = float(bucket["net_negative_sum_pct"]) + abs(net)
             if math.isfinite(gross):
                 bucket["gross_sum_pct"] = float(bucket["gross_sum_pct"]) + gross
@@ -681,6 +682,14 @@ class ShadowForwardTracker:
             f"llm_reason_code={str(label.get('llm_reason_code') or 'NOT_LINKED')}",
             f"llm_execution_status={str(label.get('llm_execution_status') or 'NOT_LINKED')}",
             f"llm_confidence_bucket={self._score_band(_number(label, 'llm_confidence', 0.0)) if label.get('llm_confidence') is not None else 'unavailable'}",
+            # Interactions are essential: a confidence band or decision can
+            # behave very differently at 60s versus 600s. These bounded keys
+            # let the scorecard compare them without mixing horizons.
+            f"horizon_llm_model_decision={horizon}s|{str(label.get('llm_model_decision') or 'NOT_LINKED')}",
+            f"horizon_llm_final_decision={horizon}s|{str(label.get('llm_final_decision') or 'NOT_LINKED')}",
+            f"horizon_llm_confidence={horizon}s|{self._score_band(_number(label, 'llm_confidence', 0.0)) if label.get('llm_confidence') is not None else 'unavailable'}",
+            f"horizon_llm_decision_confidence={horizon}s|{str(label.get('llm_model_decision') or 'NOT_LINKED')}|{self._score_band(_number(label, 'llm_confidence', 0.0)) if label.get('llm_confidence') is not None else 'unavailable'}",
+            f"horizon_llm_execution={horizon}s|{str(label.get('llm_execution_status') or 'NOT_LINKED')}",
             *(f"hard_block={reason}" for reason in label.get("hard_blocks", [])),
         )
         for key in segment_keys:
@@ -701,6 +710,20 @@ class ShadowForwardTracker:
             loss_sum = float(row.get("net_negative_sum_pct", 0.0))
             profit_sum = float(row.get("net_positive_sum_pct", 0.0))
             row["profit_factor"] = round(profit_sum / loss_sum, 4) if loss_sum > 0.0 else None
+            positive_count = int(row.get("positive", 0))
+            negative_count = int(row.get("negative", 0))
+            row["average_win_pct"] = (
+                round(profit_sum / positive_count, 6) if positive_count else 0.0
+            )
+            row["average_loss_pct"] = (
+                round(loss_sum / negative_count, 6) if negative_count else 0.0
+            )
+            row["sample_quality"] = (
+                "INSUFFICIENT_LT_30" if count < 30 else
+                "PRELIMINARY_30_99" if count < 100 else
+                "DEVELOPING_100_299" if count < 300 else
+                "LARGE_300_PLUS"
+            )
             for metric, total in (
                 ("average_net_return_pct", "net_sum_pct"),
                 ("average_gross_return_pct", "gross_sum_pct"),
