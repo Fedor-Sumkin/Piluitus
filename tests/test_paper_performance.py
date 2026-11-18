@@ -410,5 +410,88 @@ class PaperEntryPerformanceCohortTests(unittest.TestCase):
         )
 
 
+    def test_shadow_dedup_prefers_valid_on_time_label_and_reports_all_horizon_statuses(self):
+        tracker = PaperPerformanceTracker()
+        tracker.record(trade("paper-1", 5, candidate="candidate-1"))
+        labels = [
+            {
+                "candidate_id": "candidate-1", "horizon_sec": 60,
+                "result": "OK", "label_quality": "DELAYED",
+                "label_lag_sec": 18.0, "net_executable_return_pct": 99.0,
+            },
+            {
+                "candidate_id": "candidate-1", "horizon_sec": 60,
+                "result": "OK", "label_quality": "ON_TIME",
+                "label_lag_sec": 2.0, "net_executable_return_pct": 0.2,
+            },
+            {
+                "candidate_id": "candidate-1", "horizon_sec": 180,
+                "result": "NO_FRESH_BBO",
+            },
+            {
+                "candidate_id": "candidate-1", "horizon_sec": 300,
+                "result": "LABEL_LATE",
+            },
+        ]
+
+        comparison = tracker.scorecard(labels)["shadow_comparison"]
+        self.assertEqual(comparison["horizons"]["60"]["mean_net_return_pct"], 0.2)
+        self.assertEqual(comparison["label_coverage_by_horizon"]["60"]["valid_ok_labels"], 1)
+        self.assertEqual(
+            comparison["label_coverage_by_horizon"]["180"]["status_counts"],
+            {"NO_FRESH_BBO": 1},
+        )
+        self.assertEqual(
+            comparison["label_coverage_by_horizon"]["300"]["status_counts"],
+            {"LABEL_LATE": 1},
+        )
+
+    def test_shadow_confidence_interactions_include_uncertainty_and_do_not_assume_probability(self):
+        tracker = PaperPerformanceTracker()
+        tracker.restore([
+            trade("paper-buy", 5, side="BUY", candidate="candidate-buy"),
+            trade("paper-sell", -2, side="SELL", candidate="candidate-sell"),
+        ])
+        labels = [
+            {
+                "candidate_id": "candidate-buy", "result": "OK",
+                "horizon_sec": 60, "side": "BUY",
+                "net_executable_return_pct": 0.2,
+                "llm_model_decision": "APPROVE", "llm_confidence": 87.0,
+            },
+            {
+                "candidate_id": "candidate-sell", "result": "OK",
+                "horizon_sec": 60, "side": "SELL",
+                "net_executable_return_pct": -0.1,
+                "llm_model_decision": "HOLD", "llm_confidence": 92.0,
+            },
+        ]
+        comparison = tracker.scorecard(labels)["shadow_comparison"]
+        buy = comparison["horizon_segments"]["by_horizon_side_confidence"]["60s|BUY|80-89"]
+        self.assertEqual(buy["labels"], 1)
+        self.assertEqual(buy["mean_model_confidence_pct"], 87.0)
+        self.assertEqual(len(buy["positive_rate_wilson_95_pct"]), 2)
+        self.assertLess(
+            buy["positive_rate_wilson_95_pct"][0],
+            buy["positive_rate_wilson_95_pct"][1],
+        )
+        self.assertIn(
+            "by_horizon_decision_confidence",
+            comparison["horizon_segments"],
+        )
+
+    def test_realized_drawdown_orders_mixed_timezone_timestamps_by_utc_instant(self):
+        tracker = PaperPerformanceTracker()
+        tracker.restore([
+            trade("loss-early", -100, exit_time="2026-11-18T10:00:00+02:00"),
+            trade("win-middle", 200, exit_time="2026-11-18T08:30:00Z"),
+            trade("loss-late", -150, exit_time="2026-11-18T11:00:00+02:00"),
+        ])
+        self.assertEqual(
+            tracker.scorecard()["overall"]["max_drawdown_rub"],
+            150.0,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
