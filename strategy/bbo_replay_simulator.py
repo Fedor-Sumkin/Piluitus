@@ -820,7 +820,10 @@ def _portfolio_capacity_simulation(
             exit_row = None
         timeline.append((entry_epoch, 2, "ENTRY", trade, notional))
         if exit_row is not None:
-            timeline.append((exit_epoch, 1, "EXIT", trade, notional))
+            # Release prior positions before same-time new entries, but an
+            # immediate exit cannot precede its own entry in the event order.
+            exit_priority = 1 if exit_epoch > entry_epoch else 3
+            timeline.append((exit_epoch, exit_priority, "EXIT", trade, notional))
 
     market_events_seen = 0
     for event in events:
