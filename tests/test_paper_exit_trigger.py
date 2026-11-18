@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import AsyncMock
 
 from execution_layer import BaseExecutionEngine
 
@@ -119,6 +120,29 @@ class PaperExitTriggerTests(unittest.TestCase):
             self.engine.paper_positions["TEST"]["pending_exit_reason"],
             "STOP_LOSS",
         )
+
+
+class PaperMonitorBatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_bad_ticker_event_does_not_discard_other_positions(self) -> None:
+        engine = BaseExecutionEngine.__new__(BaseExecutionEngine)
+        engine._pending_monitor_prices = {
+            "BROKEN": ("not-a-price", "LAST_TRADE", None),
+            "SBER": (100.0, "LAST_TRADE", "market-time"),
+        }
+        engine._monitor_worker_task = None
+        engine.monitor_paper_positions = AsyncMock()
+        db = object()
+
+        await engine._drain_monitor_prices(db)
+
+        engine.monitor_paper_positions.assert_awaited_once_with(
+            "SBER", 100.0, db,
+            event_source="LAST_TRADE",
+            event_timestamp="market-time",
+        )
+        self.assertIsNone(engine._monitor_worker_task)
+
+
 
 
 if __name__ == "__main__":
