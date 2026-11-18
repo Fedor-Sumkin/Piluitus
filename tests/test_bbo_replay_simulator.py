@@ -354,6 +354,56 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         self.assertIsNone(result["scenarios"][0]["exit"])
 
 
+
+    def test_batch_reports_paired_comparison_and_separate_cohort_attrition(self):
+        rows = [
+            event(1, bid=101.0, ask=101.1, epoch=1_800_000_001.0),
+            event(2, bid=102.1, ask=102.2, epoch=1_800_000_002.0),
+            event(3, bid=100.2, ask=100.3, epoch=1_800_000_003.0),
+        ]
+        first = position(position_id="P1")
+        second = position(
+            position_id="P2",
+            entry_time_epoch=1_800_000_002.5,
+        )
+        result = replay_exit_batch(
+            rows,
+            [first, second],
+            scenarios=[
+                {"name": "BASELINE", "kind": "baseline"},
+                {"name": "TIME_1S", "kind": "time_stop", "time_stop_sec": 1.0},
+            ],
+        )
+        comparison = result["matched_cohort_comparison"]
+        self.assertTrue(comparison["available"])
+        paired = comparison["comparisons_vs_baseline"]["TIME_1S"]
+        self.assertEqual(paired["cohort"]["paired_closed"], 1)
+        self.assertEqual(paired["cohort"]["baseline_closed"], 1)
+        self.assertEqual(paired["cohort"]["alternative_closed"], 2)
+        self.assertEqual(paired["cohort"]["alternative_closed_baseline_open"], 1)
+        self.assertEqual(paired["paired_difference"]["alternative_better"], 0)
+        self.assertEqual(paired["paired_difference"]["alternative_worse"], 1)
+        self.assertEqual(
+            comparison["all_scenarios_common_cohort"]["positions_closed_in_every_scenario"],
+            1,
+        )
+        self.assertEqual(len(paired["paired_trades"]), 1)
+
+    def test_batch_matched_comparison_does_not_treat_open_as_zero_pnl(self):
+        rows = [event(1, bid=100.2, ask=100.3, epoch=1_800_000_001.0)]
+        result = replay_exit_batch(
+            rows,
+            [position(position_id="P1")],
+            scenarios=[
+                {"name": "BASELINE", "kind": "baseline"},
+                {"name": "TIME_1S", "kind": "time_stop", "time_stop_sec": 1.0},
+            ],
+        )
+        paired = result["matched_cohort_comparison"]["comparisons_vs_baseline"]["TIME_1S"]
+        self.assertEqual(paired["cohort"]["paired_closed"], 0)
+        self.assertIsNone(paired["paired_difference"]["mean_delta_net_pnl_rub"])
+        self.assertEqual(paired["cohort"]["sample_quality"], "INSUFFICIENT_LT_30")
+
 if __name__ == "__main__":
     unittest.main()
 
