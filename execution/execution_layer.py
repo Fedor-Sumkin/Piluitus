@@ -1848,24 +1848,50 @@ class BaseExecutionEngine:
         if not self.paper_mode:
             return 0
 
-        # Inspect the whole persisted journal, not just OPEN rows, so previously
-        # quarantined positions remain a safety lock across repeated restarts.
-        # DBManager exposes this as an async method. Use the declared method
-        # directly so static type checkers keep its Awaitable return type;
-        # hasattr preserves compatibility with lightweight test doubles.
+        # A complete journal is mandatory: get_active_positions() omits
+        # STALE_REVIEW records and therefore cannot prove that a prior quarantine
+        # has been resolved. Any read/shape failure must retain the entry lock.
+        def _lock_unavailable_journal(reason: str) -> None:
+            self._unreconciled_paper_positions = {
+                "__PAPER_JOURNAL_UNAVAILABLE__": {
+                    "status": "STALE_REVIEW",
+                    "reconciliation_status": "JOURNAL_UNAVAILABLE",
+                    "stale_reason": reason,
+                }
+            }
+
+        getter = getattr(db, "get_all_daily_trades", None)
+        if not callable(getter):
+            reason = "DBManager не предоставляет полный журнал PAPER-сделок."
+            _lock_unavailable_journal(reason)
+            raise RuntimeError(reason)
         try:
-            if hasattr(db, "get_all_daily_trades"):
-                all_positions = await db.get_all_daily_trades()
-            else:
-                all_positions = await db.get_active_positions()
-        except Exception:
-            all_positions = await db.get_active_positions()
+            all_positions = await getter()
+        except Exception as exc:
+            reason = f"Не удалось прочитать полный журнал PAPER-сделок: {exc}"
+            _lock_unavailable_journal(reason)
+            logger.critical("[PAPER RECONCILIATION LOCK] %s; новые входы заблокированы.", reason)
+            raise RuntimeError(reason) from exc
+        if not isinstance(all_positions, Mapping):
+            reason = "Полный журнал PAPER-сделок вернул некорректный формат."
+            _lock_unavailable_journal(reason)
+            logger.critical("[PAPER RECONCILIATION LOCK] %s; новые входы заблокированы.", reason)
+            raise RuntimeError(reason)
 
         quarantined = 0
         unresolved: dict[str, TradeRecord] = {}
+        self._unreconciled_paper_positions = unresolved
         now = datetime.now().isoformat(timespec="seconds")
         for order_id, raw_trade in all_positions.items():
             if not isinstance(raw_trade, dict):
+                if str(order_id).startswith(("PAPER_", "TRADE_")):
+                    reason = f"Запись PAPER-сделки {order_id} имеет некорректный формат."
+                    unresolved[str(order_id)] = {
+                        "status": "STALE_REVIEW",
+                        "reconciliation_status": "JOURNAL_RECORD_INVALID",
+                        "stale_reason": reason,
+                    }
+                    logger.critical("[PAPER RECONCILIATION LOCK] %s; новые входы заблокированы.", reason)
                 continue
             trade = dict(raw_trade)
             # TRADE_ — legacy ID used by old PAPER builds. In PAPER mode these
@@ -1885,9 +1911,13 @@ class BaseExecutionEngine:
                     "Симулятор не восстановил её в ОЗУ; цена выхода и PnL не определялись. "
                     "До ручной сверки новые сделки заблокированы."
                 )
+                # Publish the in-memory lock before persistence. If the write
+                # fails, startup may continue for diagnostics, but new entries
+                # must remain blocked in this process.
+                unresolved[str(order_id)] = trade
+                self._unreconciled_paper_positions = unresolved
                 await db.set_json(f"piluitus:trade:{order_id}", trade)
                 quarantined += 1
-                unresolved[str(order_id)] = trade
             elif status == "STALE_REVIEW" and str(trade.get("reconciliation_status", "")).upper() == "REVIEW_REQUIRED":
                 unresolved[str(order_id)] = trade
 
