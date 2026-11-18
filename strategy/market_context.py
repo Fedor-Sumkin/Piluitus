@@ -183,10 +183,13 @@ def estimate_entry_economics(
         if direction == "BUY"
         else (mid / required_exit_quote - 1.0) * 100.0
     )
-    atr_value = (
-        float(atr_pct) if atr_pct is not None and math.isfinite(float(atr_pct))
-        and float(atr_pct) > 0.0 else None
-    )
+    atr_value = None
+    try:
+        candidate_atr = float(atr_pct) if atr_pct is not None else math.nan
+        if math.isfinite(candidate_atr) and candidate_atr > 0.0:
+            atr_value = candidate_atr
+    except (TypeError, ValueError, OverflowError):
+        pass
     cost_to_atr = required_move_pct / atr_value if atr_value else None
     return {
         "available": True,
