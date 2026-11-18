@@ -363,6 +363,9 @@ class DBManager:
             else:
                 other_trade_count += 1
 
+        paper_closed_journal_count = len(
+            await self._read_list_raw(client, "piluitus:paper:closed_trades")
+        )
         paper_history_count = 0
         live_history_count = 0
         for raw in await self._read_list_raw(client, "piluitus:trade_history"):
@@ -401,6 +404,7 @@ class DBManager:
             "live_trade_count": live_trade_count,
             "other_trade_count": other_trade_count,
             "paper_history_count": paper_history_count,
+            "paper_closed_journal_count": paper_closed_journal_count,
             "live_history_count": live_history_count,
             "paper_active_order_count": paper_active_order_count,
             "live_active_order_count": live_active_order_count,
@@ -440,6 +444,14 @@ class DBManager:
             if removed_history:
                 await self._replace_list_raw(client, "piluitus:trade_history", kept_history)
 
+            closed_journal_raw = await self._read_list_raw(
+                client, "piluitus:paper:closed_trades"
+            )
+            deleted_paper_performance_rows = len(closed_journal_raw)
+            deleted_paper_performance_keys = await client.delete(
+                "piluitus:paper:closed_trades"
+            )
+
             orders_raw = await self._read_list_raw(client, "piluitus:active_orders")
             kept_orders: list[str] = []
             removed_orders = 0
@@ -474,6 +486,8 @@ class DBManager:
             result = {
                 "deleted_paper_trade_keys": int(deleted_trade_keys),
                 "deleted_paper_history_rows": removed_history,
+                "deleted_paper_performance_rows": deleted_paper_performance_rows,
+                "deleted_paper_performance_keys": int(deleted_paper_performance_keys),
                 "deleted_paper_active_order_rows": removed_orders,
                 "deleted_verdict_history_rows": verdict_history_count,
                 "deleted_verdict_history_keys": int(deleted_verdict_history_keys),
@@ -739,7 +753,8 @@ class DBManager:
             if cursor == 0:
                 break
         await client.delete("piluitus:active_orders")
-        
+        await client.delete("piluitus:paper:closed_trades")
+
         if isinstance(client, _InMemory):
             await client._append_aof({"cmd": "clear_trades"})
             
