@@ -174,13 +174,19 @@ class PaperPerformanceTests(unittest.TestCase):
         ])
         labels = [
             {"candidate_id": "candidate-1", "ticker": "OTHER", "result": "OK",
-             "horizon_sec": 60, "net_executable_return_pct": 0.2},
+             "horizon_sec": 60, "net_executable_return_pct": 0.2,
+             "mfe_executable_pct": 0.4, "mae_executable_pct": -0.2,
+             "time_to_mfe_sec": 25, "time_to_mae_sec": 35,
+             "valid_bbo_observations": 10, "bbo_observation_span_sec": 50},
             {"candidate_id": "candidate-1", "ticker": "OTHER", "result": "OK",
              "horizon_sec": 60, "net_executable_return_pct": 99.0},
             {"candidate_id": "candidate-1", "result": "OK",
              "horizon_sec": 180, "net_executable_return_pct": -0.1},
             {"candidate_id": "candidate-2", "ticker": "SBER", "result": "OK",
-             "horizon_sec": 60, "net_executable_return_pct": -0.3},
+             "horizon_sec": 60, "net_executable_return_pct": -0.3,
+             "mfe_executable_pct": 0.2, "mae_executable_pct": -0.4,
+             "time_to_mfe_sec": 30, "time_to_mae_sec": 40,
+             "valid_bbo_observations": 20, "bbo_observation_span_sec": 60},
             {"candidate_id": "candidate-3", "ticker": "GAZP", "result": "OK",
              "horizon_sec": 60, "net_executable_return_pct": 5.0},
             {"candidate_id": "candidate-1", "result": "LABEL_LATE",
@@ -199,6 +205,12 @@ class PaperPerformanceTests(unittest.TestCase):
         )
         self.assertEqual(comparison["horizons"]["60"]["labels"], 2)
         self.assertAlmostEqual(comparison["horizons"]["60"]["mean_net_return_pct"], -0.05)
+        self.assertAlmostEqual(comparison["horizons"]["60"]["average_mfe_net_pct"], 0.3)
+        self.assertAlmostEqual(comparison["horizons"]["60"]["average_mae_net_pct"], -0.3)
+        self.assertEqual(comparison["horizons"]["60"]["average_time_to_mfe_sec"], 27.5)
+        self.assertEqual(comparison["horizons"]["60"]["average_time_to_mae_sec"], 37.5)
+        self.assertEqual(comparison["horizons"]["60"]["average_valid_bbo_observations"], 15.0)
+        self.assertEqual(comparison["horizons"]["60"]["average_bbo_observation_span_sec"], 55.0)
         self.assertEqual(comparison["horizons"]["180"]["labels"], 1)
         self.assertNotIn("300", comparison["horizons"])
 
