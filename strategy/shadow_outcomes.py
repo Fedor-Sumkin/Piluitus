@@ -302,12 +302,16 @@ class ShadowForwardTracker:
         logger.info(
             "[STRATEGY SHADOW SAMPLE] id=%s ticker=%s side=%s score=%.1f eligible=%s "
             "entry=%s entry_fill=%.6f commission=%.4f%%/side slippage=%.2fbps "
-            "trades60=%d flow30=%s spread_ATR=%s",
+            "trades60=%d flow30=%s spread_ATR=%s market_regime=%s "
+            "min_favorable_move=%s cost_to_ATR=%s",
             candidate_id, symbol, side, row["score"], row["shadow_eligible"],
             "ASK" if side == "BUY" else "BID", entry_fill, commission_pct, slippage_bps,
             row["trade_count_60s"],
             f'{row["trade_flow_imbalance_30s"]:+.3f}' if math.isfinite(row["trade_flow_imbalance_30s"]) else "NA",
             f'{row["spread_atr_ratio"]:.3f}' if math.isfinite(row["spread_atr_ratio"]) else "NA",
+            row.get("market_regime", "UNKNOWN"),
+            f'{row["minimum_favorable_move_pct"]:.4f}%' if row.get("minimum_favorable_move_pct") is not None else "NA",
+            f'{row["cost_to_atr_ratio"]:.3f}' if row.get("cost_to_atr_ratio") is not None else "NA",
         )
         return candidate_id
 
