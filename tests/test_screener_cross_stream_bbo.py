@@ -32,15 +32,15 @@ class ScreenerCrossStreamBboTests(unittest.TestCase):
                 bid_timestamp=9.80, ask_timestamp=9.80,
                 order_book_timestamp=9.80, received_monotonic=10.0,
             ))
+            stale_quote_result = asyncio.run(screener.push_tick(
+                "TESTBBO", 100.0, 100.0, bid=99.9, ask=100.2,
+                bid_size=10.0, ask_size=12.0,
+                event_timestamp=9.90, received_monotonic=10.1,
+            ))
 
         self.assertEqual(
             quote_result.get("quote_side_updates"), {"bid": True, "ask": True}
         )
-        stale_quote_result = asyncio.run(screener.push_tick(
-            "TESTBBO", 100.0, 100.0, bid=99.9, ask=100.2,
-            bid_size=10.0, ask_size=12.0,
-            event_timestamp=9.90, received_monotonic=10.1,
-        ))
         self.assertEqual(
             stale_quote_result.get("quote_side_updates"), {"bid": False, "ask": False}
         )
