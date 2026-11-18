@@ -8,6 +8,32 @@ class PaperExitTriggerTests(unittest.TestCase):
     def setUp(self):
         self.engine = BaseExecutionEngine.__new__(BaseExecutionEngine)
 
+    def test_exit_bbo_gap_tracker_counts_episodes_and_accumulates_duration(self):
+        trade = self._trade("BUY")
+
+        self.assertIsNone(
+            self.engine._track_exit_bbo_gap(trade, 10.0, fresh=False)
+        )
+        self.assertIsNone(
+            self.engine._track_exit_bbo_gap(trade, 12.0, fresh=False)
+        )
+        self.assertEqual(trade["exit_bbo_gap_count"], 1)
+        self.assertEqual(trade["current_exit_bbo_gap_sec"], 2.0)
+
+        recovered = self.engine._track_exit_bbo_gap(trade, 15.0, fresh=True)
+        self.assertEqual(recovered, 5.0)
+        self.assertEqual(trade["total_exit_bbo_gap_sec"], 5.0)
+        self.assertEqual(trade["max_exit_bbo_gap_sec"], 5.0)
+        self.assertEqual(trade["current_exit_bbo_gap_sec"], 0.0)
+
+        self.engine._track_exit_bbo_gap(trade, 20.0, fresh=False)
+        recovered = self.engine._track_exit_bbo_gap(trade, 22.0, fresh=True)
+        self.assertEqual(recovered, 2.0)
+        self.assertEqual(trade["exit_bbo_gap_count"], 2)
+        self.assertEqual(trade["total_exit_bbo_gap_sec"], 7.0)
+        self.assertEqual(trade["max_exit_bbo_gap_sec"], 5.0)
+        self.assertEqual(trade["last_exit_bbo_gap_sec"], 2.0)
+
     def _trade(self, side="BUY"):
         if side == "BUY":
             return {
