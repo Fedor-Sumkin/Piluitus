@@ -9,6 +9,7 @@ def trade(trade_id, pnl, *, side="BUY", ticker="SBER", candidate=None,
     return {
         "id": trade_id,
         "status": "CLOSED",
+        "mode": "PAPER",
         "side": side,
         "ticker": ticker,
         "pnl": pnl,
@@ -30,6 +31,7 @@ class PaperPerformanceTests(unittest.TestCase):
         tracker = PaperPerformanceTracker(max_records=10)
         self.assertFalse(tracker.record({**trade("open", 10), "status": "OPEN"}))
         self.assertFalse(tracker.record({**trade("bad", "NaN")}))
+        self.assertFalse(tracker.record({**trade("live-1", 12), "mode": "LIVE"}))
         self.assertTrue(tracker.record(trade("closed-1", 12)))
         self.assertFalse(tracker.record(trade("closed-1", 999)))
         self.assertEqual(len(tracker.records), 1)
