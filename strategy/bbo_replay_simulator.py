@@ -169,6 +169,12 @@ def _prepare_events(
         if str(row.get("ticker") or "").strip().upper().split("@")[0] == ticker
     ]
     stats["ticker_events"] = len(selected)
+    stats["ticker_bbo_events"] = sum(
+        1 for row in selected if str(row.get("event_kind") or "").upper() != "EXIT_TRIGGER"
+    )
+    stats["ticker_exit_trigger_events"] = sum(
+        1 for row in selected if str(row.get("event_kind") or "").upper() == "EXIT_TRIGGER"
+    )
     return selected, stats
 
 
@@ -186,16 +192,18 @@ def replay_exit_scenarios(
       stop_loss, take_profit, commission_pct_per_side, slippage_bps.
     entry_commission_rub is optional and is derived from entry notional when absent.
     """
-    session_id = str(position.get("session_id") or "").strip()
+    session_id = str(
+        position.get("bbo_replay_session_id") or position.get("session_id") or ""
+    ).strip()
     ticker = str(position.get("ticker") or "").strip().upper().split("@")[0]
     side = str(position.get("side") or "").strip().upper()
     entry = _number(position.get("entry_price"))
-    entry_epoch = _epoch(position.get("entry_time_epoch"))
-    quantity = _number(position.get("quantity"))
+    entry_epoch = _epoch(position.get("entry_time_epoch") or position.get("entry_timestamp"))
+    quantity = _number(position.get("quantity", position.get("volume")))
     stop = _number(position.get("stop_loss"))
     target = _number(position.get("take_profit"))
     commission = _number(position.get("commission_pct_per_side"))
-    slippage = _number(position.get("slippage_bps"))
+    slippage = _number(position.get("slippage_bps", position.get("paper_slippage_bps")))
     max_age = _number(max_bbo_age_sec)
 
     if not session_id or not ticker or side not in {"BUY", "SELL"}:
@@ -216,8 +224,16 @@ def replay_exit_scenarios(
         entry_fee = entry * quantity * commission / 100.0
     risk_per_unit = abs(entry - stop)
     rows, coverage = _prepare_events(events, session_id=session_id, ticker=ticker)
-    # Coverage describes the input stream once, not once per strategy.
-    for row in rows:
+    # Coverage describes BBO observations once, not once per strategy.
+    bbo_rows = [
+        row for row in rows
+        if str(row.get("event_kind") or "").upper() != "EXIT_TRIGGER"
+    ]
+    trigger_rows = [
+        row for row in rows
+        if str(row.get("event_kind") or "").upper() == "EXIT_TRIGGER"
+    ]
+    for row in bbo_rows:
         _price, _age, freshness = _fresh_side(row, side, max_age)
         if freshness == "OK":
             coverage["fresh_executable_observations"] += 1
@@ -231,6 +247,31 @@ def replay_exit_scenarios(
     strategy_specs = list(scenarios) if scenarios is not None else list(DEFAULT_SCENARIOS)
     outputs: list[dict[str, Any]] = []
 
+    def _make_exit(
+        reason: str, trigger_price: float, raw_price: float,
+        row: Mapping[str, Any], age: float, elapsed: float,
+    ) -> dict[str, Any]:
+        fill = _adverse_exit_fill(raw_price, side, slippage)
+        net, gross, fees = _net_pnl(
+            entry, fill, quantity, side, entry_fee, commission
+        )
+        return {
+            "reason": reason,
+            "trigger_price": round(float(trigger_price), 8),
+            "raw_executable_price": round(raw_price, 8),
+            "fill_price_after_slippage": round(fill, 8),
+            "event_sequence": int(_number(row.get("sequence"), 0)),
+            "event_time_epoch": _epoch(row.get("event_time_epoch")),
+            "elapsed_sec": round(elapsed, 3),
+            "bbo_age_sec": round(age, 6),
+            "gross_pnl_rub": round(gross, 4),
+            "total_commission_rub": round(fees, 4),
+            "net_pnl_rub": round(net, 4),
+            "net_return_pct_on_entry_notional": round(
+                net / (entry * quantity) * 100.0, 6
+            ),
+        }
+
     for spec in strategy_specs:
         name = str(spec.get("name") or spec.get("kind") or "UNNAMED")
         kind = str(spec.get("kind") or "baseline").lower()
@@ -239,6 +280,7 @@ def replay_exit_scenarios(
             "extreme": entry,
             "dynamic_stop": stop,
             "exit": None,
+            "pending_trigger": None,
             "last_fresh_price": None,
             "last_elapsed_sec": 0.0,
             "fresh_observations": 0,
@@ -246,6 +288,32 @@ def replay_exit_scenarios(
             "invalid_observations": 0,
         }
         for row in rows:
+            event_kind = str(row.get("event_kind") or "").upper()
+            if event_kind == "EXIT_TRIGGER":
+                if kind == "baseline" and state["exit"] is None:
+                    state["pending_trigger"] = state["pending_trigger"] or row
+                    pending = state["pending_trigger"]
+                    immediate_price = _number(pending.get("trigger_bbo_price"))
+                    immediate_age = _number(pending.get("trigger_bbo_age_sec"))
+                    immediate_ttl = min(
+                        max_age,
+                        _number(pending.get("trigger_bbo_max_age_sec"), max_age),
+                    )
+                    if (
+                        bool(pending.get("trigger_bbo_valid"))
+                        and math.isfinite(immediate_price) and immediate_price > 0.0
+                        and math.isfinite(immediate_age) and 0.0 <= immediate_age <= immediate_ttl
+                    ):
+                        stamp = _epoch(pending.get("event_time_epoch"))
+                        elapsed = max(state["last_elapsed_sec"], stamp - entry_epoch, 0.0)
+                        state["last_elapsed_sec"] = elapsed
+                        state["exit"] = _make_exit(
+                            str(pending.get("trigger_reason") or "STOP_LOSS").upper(),
+                            _number(pending.get("trigger_price"), stop),
+                            immediate_price, pending, immediate_age, elapsed,
+                        )
+                continue
+
             price, age, freshness = _fresh_side(row, side, max_age)
             if freshness != "OK":
                 if freshness == "STALE_EXECUTABLE_SIDE":
@@ -261,6 +329,15 @@ def replay_exit_scenarios(
             state["last_elapsed_sec"] = elapsed
             state["fresh_observations"] += 1
             state["last_fresh_price"] = price
+
+            if kind == "baseline" and state["pending_trigger"] is not None:
+                pending = state["pending_trigger"]
+                state["exit"] = _make_exit(
+                    str(pending.get("trigger_reason") or "STOP_LOSS").upper(),
+                    _number(pending.get("trigger_price"), stop),
+                    price, row, age, elapsed,
+                )
+                break
 
             sign = 1.0 if side == "BUY" else -1.0
             favorable_r = ((price - entry) * sign) / risk_per_unit
@@ -314,26 +391,9 @@ def replay_exit_scenarios(
                 if elapsed >= timeout:
                     reason, trigger = "TIME_STOP", price
             if reason:
-                fill = _adverse_exit_fill(price, side, slippage)
-                net, gross, fees = _net_pnl(
-                    entry, fill, quantity, side, entry_fee, commission
+                state["exit"] = _make_exit(
+                    reason, float(trigger), price, row, age, elapsed
                 )
-                state["exit"] = {
-                    "reason": reason,
-                    "trigger_price": round(float(trigger), 8),
-                    "raw_executable_price": round(price, 8),
-                    "fill_price_after_slippage": round(fill, 8),
-                    "event_sequence": int(_number(row.get("sequence"), 0)),
-                    "event_time_epoch": received_epoch,
-                    "elapsed_sec": round(elapsed, 3),
-                    "bbo_age_sec": round(age, 6),
-                    "gross_pnl_rub": round(gross, 4),
-                    "total_commission_rub": round(fees, 4),
-                    "net_pnl_rub": round(net, 4),
-                    "net_return_pct_on_entry_notional": round(
-                        net / (entry * quantity) * 100.0, 6
-                    ),
-                }
                 break
 
         exit_row = state["exit"]
@@ -341,6 +401,19 @@ def replay_exit_scenarios(
             "name": name,
             "kind": kind,
             "status": "CLOSED" if exit_row else "OPEN_AT_END",
+            "trigger_mode": (
+                "ACTUAL_LATCHED_TRIGGER" if kind == "baseline" and trigger_rows
+                else "BBO_THRESHOLD_PROXY" if kind == "baseline"
+                else "BBO_THRESHOLD_RESEARCH"
+            ),
+            "pending_trigger": (
+                {
+                    "reason": state["pending_trigger"].get("trigger_reason"),
+                    "trigger_price": state["pending_trigger"].get("trigger_price"),
+                    "trigger_sequence": state["pending_trigger"].get("sequence"),
+                }
+                if state["pending_trigger"] is not None and exit_row is None else None
+            ),
             "exit": exit_row,
             "armed": bool(state["armed"]),
             "last_fresh_price": state["last_fresh_price"],
@@ -370,7 +443,7 @@ def replay_exit_scenarios(
         },
         "coverage": coverage,
         "limitations": [
-            "BBO_ONLY_PROXY: production SL/TP can first trigger on INSTRUMENT_TRADES; trade-trigger events are absent from this journal.",
+            "BBO_ONLY_PROXY applies to alternative BBO-threshold scenarios. BASELINE uses journaled production EXIT_TRIGGER events when available; legacy sessions without them fall back to BBO threshold proxy.",
             "Time-stop exits occur on the first fresh executable BBO observation at or after the timeout.",
             "No queue position, passive fills, full-depth impact or exchange latency is simulated.",
             "Events use the recorded event-time clock; missing or unreliable exchange timestamps require separate quality review.",
