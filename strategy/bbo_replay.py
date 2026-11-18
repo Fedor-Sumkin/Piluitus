@@ -122,7 +122,7 @@ class BBOReplayRecorder:
         self.session_id = uuid4().hex
         self._sequence = 0
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self.queue_limit)
-        self._last_state: dict[str, tuple[float, float, float, float, bool, float]] = {}
+        self._last_state: dict[str, tuple[float, float, float, float, bool, str, float]] = {}
         self._task: asyncio.Task | None = None
         self._stopping = False
         self.accepted = 0
@@ -153,15 +153,16 @@ class BBOReplayRecorder:
             return False
 
         now_mono = time.monotonic()
+        source_event = event if isinstance(event, Mapping) else {}
+        source_name = str(source_event.get("source") or "FINAM_ORDER_BOOK").upper()
         prior = self._last_state.get(symbol)
-        state = (bid, ask, bid_size, ask_size, valid)
-        changed = prior is None or state != prior[:5]
-        heartbeat_due = prior is None or now_mono - prior[5] >= self.heartbeat_interval_sec
+        state = (bid, ask, bid_size, ask_size, valid, source_name)
+        changed = prior is None or state != prior[:6]
+        heartbeat_due = prior is None or now_mono - prior[6] >= self.heartbeat_interval_sec
         if not changed and not heartbeat_due:
             self.skipped_unchanged += 1
             return False
 
-        source_event = event if isinstance(event, Mapping) else {}
         raw_timestamp = (
             source_event.get("order_book_timestamp")
             or source_event.get("timestamp")
@@ -193,7 +194,7 @@ class BBOReplayRecorder:
             "session_id": self.session_id,
             "sequence": self._sequence,
             "ticker": symbol,
-            "source": str(source_event.get("source") or "FINAM_ORDER_BOOK").upper(),
+            "source": source_name,
             "event_kind": event_kind,
             "event_time_epoch": round(timestamp_epoch, 6),
             "event_time_source": "EXCHANGE" if event_epoch is not None else "RECEIVE_FALLBACK",
