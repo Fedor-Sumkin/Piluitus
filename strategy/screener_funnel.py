@@ -100,6 +100,90 @@ def _event_timestamp_to_monotonic(value: object, receive_monotonic: float) -> fl
 
 
 
+def _best_quote_ofi_delta(
+    previous_bid: float, previous_bid_size: float,
+    previous_ask: float, previous_ask_size: float,
+    current_bid: float, current_bid_size: float,
+    current_ask: float, current_ask_size: float,
+) -> float | None:
+    """Cont-Kukanov-Stoikov best-quote OFI increment for one ordered event."""
+    values = (
+        previous_bid, previous_bid_size, previous_ask, previous_ask_size,
+        current_bid, current_bid_size, current_ask, current_ask_size,
+    )
+    if not all(math.isfinite(float(value)) for value in values):
+        return None
+    if min(values) < 0.0 or previous_bid <= 0.0 or previous_ask <= 0.0:
+        return None
+    if current_bid <= 0.0 or current_ask <= 0.0:
+        return None
+    if previous_ask < previous_bid or current_ask < current_bid:
+        return None
+    if min(previous_bid_size, previous_ask_size, current_bid_size, current_ask_size) <= 0.0:
+        return None
+
+    bid_flow = (
+        (current_bid_size if current_bid >= previous_bid else 0.0)
+        - (previous_bid_size if current_bid <= previous_bid else 0.0)
+    )
+    ask_flow = (
+        -(current_ask_size if current_ask <= previous_ask else 0.0)
+        + (previous_ask_size if current_ask >= previous_ask else 0.0)
+    )
+    return float(bid_flow + ask_flow)
+
+
+def _ofi_window(history, now, window_sec=5.0, min_samples=3, min_coverage_sec=1.0, max_age_sec=2.0):
+    """Return depth-normalized event OFI; no fabricated zero during warmup."""
+    rows = []
+    try:
+        source = list(history or ())
+    except (TypeError, ValueError):
+        source = []
+    for item in source:
+        if not isinstance(item, (tuple, list)) or len(item) < 3:
+            continue
+        try:
+            ts, delta, depth = float(item[0]), float(item[1]), float(item[2])
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if (
+            math.isfinite(ts) and math.isfinite(delta) and math.isfinite(depth)
+            and ts <= now and now - ts <= window_sec and depth > 0.0
+        ):
+            rows.append((ts, delta, depth))
+    rows.sort(key=lambda item: item[0])
+    if not rows:
+        return {
+            "value": 0.0, "raw": 0.0, "available": 0.0,
+            "samples": 0, "coverage_sec": 0.0, "age_sec": -1.0,
+        }
+    # Keep only strictly ordered events; duplicates must not manufacture coverage.
+    ordered = []
+    for row in rows:
+        if ordered and row[0] <= ordered[-1][0]:
+            continue
+        ordered.append(row)
+    age = max(0.0, now - ordered[-1][0])
+    coverage = max(0.0, ordered[-1][0] - ordered[0][0])
+    raw = sum(row[1] for row in ordered)
+    depth_scale = sum(row[2] for row in ordered)
+    available = (
+        len(ordered) >= max(1, int(min_samples))
+        and coverage >= max(0.0, float(min_coverage_sec))
+        and age <= max(0.0, float(max_age_sec))
+        and depth_scale > 0.0
+    )
+    return {
+        "value": float(raw / depth_scale) if available else 0.0,
+        "raw": float(raw) if available else 0.0,
+        "available": float(available),
+        "samples": len(ordered),
+        "coverage_sec": float(coverage),
+        "age_sec": float(age),
+    }
+
+
 def _queue_imbalance_window(history, now, window_sec=5.0, min_samples=3, min_coverage_sec=1.0):
     """Time-weighted average of accepted best-queue imbalance observations."""
     rows = []
@@ -303,6 +387,7 @@ class HFTMemoryScreener:
             "bid_size_history": deque(maxlen=self.window_size),
             "ask_size_history": deque(maxlen=self.window_size),
             "queue_imbalance_history": deque(maxlen=1024),
+            "ofi_history": deque(maxlen=4096),
         }
         self.base_metrics[ticker] = {
             "volume_spike": 1.0,
@@ -758,6 +843,8 @@ class HFTMemoryScreener:
             quote["last_order_book_received"] = received_at
             old_bid = float(quote.get("bid", 0.0) or 0.0)
             old_ask = float(quote.get("ask", 0.0) or 0.0)
+            old_bid_size = float(quote.get("bid_size", 0.0) or 0.0)
+            old_ask_size = float(quote.get("ask_size", 0.0) or 0.0)
 
             prior_bid_event = float(quote.get("last_bid_book_event_seen", 0.0) or 0.0)
             prior_ask_event = float(quote.get("last_ask_book_event_seen", 0.0) or 0.0)
@@ -802,6 +889,7 @@ class HFTMemoryScreener:
             # only when the message authoritatively supplied that side.
             if not book_valid:
                 quote.setdefault("queue_imbalance_history", deque(maxlen=1024)).clear()
+                quote.setdefault("ofi_history", deque(maxlen=4096)).clear()
                 if bid_state_present and accept_bid_update:
                     quote["bid"] = candidate_bid
                     quote["last_bid_source_received_seen"] = received_at
@@ -846,6 +934,7 @@ class HFTMemoryScreener:
             two_sided = current_bid > 0.0 and current_ask > 0.0 and current_ask >= current_bid
             if not two_sided or crossed:
                 quote.setdefault("queue_imbalance_history", deque(maxlen=1024)).clear()
+                quote.setdefault("ofi_history", deque(maxlen=4096)).clear()
                 quote["bid"] = current_bid
                 quote["ask"] = current_ask
                 if accept_bid_update:
@@ -956,6 +1045,32 @@ class HFTMemoryScreener:
                     queue_history.append((book_seen_at, queue_value))
             else:
                 queue_history.clear()
+
+            # OFI is computed only from two consecutive accepted, coherent
+            # ORDER_BOOK states. Heartbeats with unchanged BBO/depth are ignored.
+            ofi_history = quote.setdefault("ofi_history", deque(maxlen=4096))
+            new_bid_size = float(self._current_top_size(quote, "bid", now))
+            new_ask_size = float(self._current_top_size(quote, "ask", now))
+            if new_bid_size <= 0.0 or new_ask_size <= 0.0:
+                ofi_history.clear()
+            elif accept_bid_update and accept_ask_update and (
+                old_bid > 0.0 and old_ask > 0.0
+                and (
+                    old_bid != current_bid or old_ask != current_ask
+                    or old_bid_size != new_bid_size or old_ask_size != new_ask_size
+                )
+            ):
+                delta = _best_quote_ofi_delta(
+                    old_bid, old_bid_size, old_ask, old_ask_size,
+                    current_bid, new_bid_size, current_ask, new_ask_size,
+                )
+                if delta is not None and (
+                    not ofi_history or book_seen_at > float(ofi_history[-1][0])
+                ):
+                    average_depth = (
+                        old_bid_size + old_ask_size + new_bid_size + new_ask_size
+                    ) / 4.0
+                    ofi_history.append((book_seen_at, delta, average_depth))
             return {
                 "updated": True,
                 "valid": True,
@@ -1175,6 +1290,7 @@ class HFTMemoryScreener:
             quote_ask = float(quote.get("ask", 0.0) or 0.0)
             if quote_bid > 0.0 and quote_ask > 0.0 and quote_ask < quote_bid:
                 quote.setdefault("queue_imbalance_history", deque(maxlen=1024)).clear()
+                quote.setdefault("ofi_history", deque(maxlen=4096)).clear()
                 quote["last_bid_confirmed_seen"] = 0.0
                 quote["last_ask_confirmed_seen"] = 0.0
                 quote["last_bbo_seen"] = 0.0
@@ -1276,6 +1392,11 @@ class HFTMemoryScreener:
                 quote.get("queue_imbalance_history", ()), now,
                 window_sec=5.0, min_samples=3, min_coverage_sec=1.0,
             )
+            ofi_window = _ofi_window(
+                quote.get("ofi_history", ()), now,
+                window_sec=5.0, min_samples=3, min_coverage_sec=1.0,
+                max_age_sec=self.bbo_max_age_sec,
+            )
             metrics: dict[str, Any] = {
                 "current_price": float(price),
                 "vwap": float(vwap),
@@ -1326,6 +1447,12 @@ class HFTMemoryScreener:
                 "queue_imbalance_5s_samples": int(queue_window["samples"]),
                 "queue_imbalance_5s_age_sec": round(float(queue_window["age_sec"]), 3),
                 "queue_imbalance_5s_positive_time_pct": round(float(queue_window["positive_time_pct"]), 2),
+                "ofi_5s": float(ofi_window["value"]),
+                "ofi_5s_raw": float(ofi_window["raw"]),
+                "ofi_5s_available": float(ofi_window["available"]),
+                "ofi_5s_samples": int(ofi_window["samples"]),
+                "ofi_5s_coverage_sec": round(float(ofi_window["coverage_sec"]), 3),
+                "ofi_5s_age_sec": round(float(ofi_window["age_sec"]), 3),
                 "bid_ask_available": float(bbo_fresh),
                 "bid_quote_age_sec": round(bid_age, 3) if math.isfinite(bid_age) else -1.0,
                 "ask_quote_age_sec": round(ask_age, 3) if math.isfinite(ask_age) else -1.0,
