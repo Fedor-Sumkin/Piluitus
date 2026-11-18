@@ -244,5 +244,78 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(segments["side_flow_alignment=BUY|strong_aligned"]["labels"], 1)
 
 
+    def test_llm_verdict_and_final_execution_are_linked_to_forward_labels(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,))
+        with patch("strategy.shadow_outcomes.time.monotonic", return_value=100.0):
+            candidate_id = tracker.record_candidate(
+                "SBER", "BUY", quote_metrics(100.0, 100.1),
+                {"score": 91.0, "eligible": True, "regime": "TREND_ALIGNED"},
+            )
+        self.assertIsNotNone(candidate_id)
+        self.assertTrue(tracker.attach_llm_verdict(
+            candidate_id,
+            verdict_id="verdict-123",
+            model_decision="APPROVE",
+            final_decision="BUY",
+            signal_status="APPROVED",
+            confidence=88.5,
+            reason_code="APPROVED",
+            local_guard="PRE_LLM_VALIDATED",
+            execution_status="PENDING",
+        ))
+        self.assertTrue(tracker.update_execution_result(
+            candidate_id, execution_status="OPENED",
+        ))
+
+        with patch("strategy.shadow_outcomes.time.monotonic", return_value=160.0):
+            labels = tracker.observe_market_tick("SBER", quote_metrics(100.3, 100.4))
+
+        self.assertEqual(len(labels), 1)
+        label = labels[0]
+        self.assertTrue(label["llm_linked"])
+        self.assertEqual(label["llm_verdict_id"], "verdict-123")
+        self.assertEqual(label["llm_model_decision"], "APPROVE")
+        self.assertEqual(label["llm_final_decision"], "BUY")
+        self.assertEqual(label["llm_signal_status"], "APPROVED")
+        self.assertEqual(label["llm_confidence"], 88.5)
+        self.assertEqual(label["llm_execution_status"], "OPENED")
+        segments = tracker.statistics_snapshot()["segments"]
+        self.assertEqual(segments["llm_model_decision=APPROVE"]["labels"], 1)
+        self.assertEqual(segments["llm_final_decision=BUY"]["labels"], 1)
+        self.assertEqual(segments["llm_execution_status=OPENED"]["labels"], 1)
+
+    def test_llm_approved_group_reports_profit_factor_from_net_returns(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,))
+        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 100.0]):
+            winners_id = tracker.record_candidate(
+                "SBER", "BUY", quote_metrics(100.0, 100.1),
+                {"score": 90.0, "eligible": True},
+            )
+            losers_id = tracker.record_candidate(
+                "SBER", "BUY", quote_metrics(100.5, 100.6),
+                {"score": 90.0, "eligible": True},
+            )
+        for candidate_id, verdict_id in ((winners_id, "v-win"), (losers_id, "v-loss")):
+            self.assertTrue(tracker.attach_llm_verdict(
+                candidate_id,
+                verdict_id=verdict_id,
+                model_decision="APPROVE",
+                final_decision="BUY",
+                signal_status="APPROVED",
+                confidence=90.0,
+                reason_code="APPROVED",
+                local_guard="PRE_LLM_VALIDATED",
+                execution_status="NOT_REQUESTED",
+            ))
+        with patch("strategy.shadow_outcomes.time.monotonic", return_value=160.0):
+            labels = tracker.observe_market_tick("SBER", quote_metrics(100.3, 100.4))
+
+        self.assertEqual(len(labels), 2)
+        approved = tracker.statistics_snapshot()["segments"]["llm_model_decision=APPROVE"]
+        self.assertEqual(approved["ok"], 2)
+        self.assertGreater(approved["profit_factor"], 0.0)
+        self.assertEqual(approved["positive"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
