@@ -290,7 +290,7 @@ class PaperPerformanceTracker:
             all_candidate_labels = labels_by_candidate.get(candidate_id, [])
             candidate_labels = by_candidate.get(candidate_id, {})
             if not all_candidate_labels:
-                unmatched_reasons["CANDIDATE_LABEL_NOT_YET_AVAILABLE"] += 1
+                unmatched_reasons["CANDIDATE_NO_LABEL_RECORD"] += 1
                 continue
             if not candidate_labels:
                 results = {
