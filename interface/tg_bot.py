@@ -48,7 +48,7 @@ def get_main_keyboard():
     builder.button(text="📊 Портфель")
     builder.button(text="⚙️ Status Системы")
     builder.button(text="📜 История сделок")
-    builder.button(text="🔓 Сброс RISK BLOCK")  # Новая кнопка оперативного реагирования
+    builder.button(text="🧾 Сверка PAPER-журнала")
     builder.button(text="📂 Получить Бортовой Лог")  # Новая кнопка выгрузки истории тестов
     builder.button(text="🚨 ПАНИКА")
     builder.adjust(2, 2, 1, 1)
@@ -91,27 +91,50 @@ async def cmd_start(message: types.Message):
     await message.answer(msg_text, parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard())
 
 
-# --- ОБРАБОТЧИК: 🔓 Сброс RISK BLOCK ---
-@router.message(lambda msg: msg.text in ["🔓 Сброс RISK BLOCK", "/reset_risks"])
-async def cmd_reset_risks(message: types.Message):
-    """Принудительно очищает журнал сделок, снимая аварийную блокировку риск-менеджера."""
-    if not message.from_user or str(message.from_user.id) != str(USER_ID): return
-    
+# --- ОБРАБОТЧИК: СВЕРКА PAPER-ЖУРНАЛА ---
+@router.message(lambda msg: msg.text in [
+    "🧾 Сверка PAPER-журнала", "🔓 Сброс RISK BLOCK",
+    "/paper_reconciliation", "/reset_risks",
+])
+async def cmd_paper_reconciliation_status(message: types.Message):
+    """Read-only status: never clears trade history or bypasses a risk lock."""
+    if not message.from_user or str(message.from_user.id) != str(USER_ID):
+        return
+
     try:
-        # Вызываем метод полной очистки журнала сделок и сброса AOF-команд
-        await db_manager.clear_journal()
-        
+        snapshot = await db_manager.get_paper_session_snapshot()
+        rows = snapshot.get("paper_trades", [])
+        stale_rows = [
+            row for row in rows
+            if isinstance(row, dict) and str(row.get("status", "")).upper() == "STALE_REVIEW"
+        ]
+        details = []
+        for row in stale_rows[:5]:
+            ticker = html.escape(str(row.get("ticker") or row.get("id") or "UNKNOWN"))
+            side = html.escape(str(row.get("side") or "UNKNOWN"))
+            details.append(f"• <b>{ticker}</b> / {side}: STALE_REVIEW")
+        detail_text = "\n".join(details) if details else "Нет позиций, ожидающих ручной сверки."
+
         msg_text = (
-            f"🔓 <b>АВАРИЙНЫЙ РЕЖИМ СБРОШЕН!</b>\n\n"
-            f"Суточный кумулятивный убыток сессии обнулен в Redis.\n"
-            f"Флаг <code>RISK_BLOCK</code> деактивирован. Робот готов к "
-            f"конкурентному приему импульсов и инференсу ИИ."
+            "<b>🧾 Состояние PAPER-журнала</b>\n\n"
+            f"Всего записей: <code>{int(snapshot.get('paper_trade_count', 0))}</code>\n"
+            f"Открытых: <code>{int(snapshot.get('paper_open_count', 0))}</code>\n"
+            f"На сверке: <code>{int(snapshot.get('paper_stale_count', 0))}</code>\n"
+            f"Закрытых: <code>{int(snapshot.get('paper_closed_count', 0))}</code>\n\n"
+            f"{detail_text}\n\n"
+            "Команда только читает состояние: журнал и PnL не изменяются. "
+            "Ограничения RiskManager не снимаются; hard stop серии убытков "
+            "действует до следующей торговой даты MSK."
         )
-        logger.warning("🔓 Принудительное снятие RISK_BLOCK администратором через Telegram.")
-        await message.answer(msg_text, parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard())
-    except Exception as e:
-        logger.error(f"Ошибка принудительного сброса рисков: {e}")
-        await message.answer(f"❌ Сбой сброса лимитов: {e}", reply_markup=get_main_keyboard())
+        await message.answer(
+            msg_text, parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard()
+        )
+    except Exception as exc:
+        logger.error("Ошибка чтения PAPER-журнала: %s", exc, exc_info=True)
+        await message.answer(
+            f"❌ Не удалось прочитать PAPER-журнал: {html.escape(str(exc))}",
+            reply_markup=get_main_keyboard(),
+        )
 # tg_bot.py — Стабилизированный интерактивный кибер-пульт PILUITUS V3.0 (Часть 2)
 
 # --- ОБРАБОТЧИК: 📂 Получить Бортовой Лог ---
@@ -293,6 +316,12 @@ async def cmd_panic_request(message: types.Message):
 # --- ОБРАБОТЧИК НАЖАТИЯ ИНЛАЙН-КНОПКИ ПАНИКИ ---
 @router.callback_query(lambda c: c.data == "tg_panic_kill")
 async def process_panic_callback(callback_query: types.CallbackQuery):
+    if (
+        not callback_query.from_user
+        or str(callback_query.from_user.id) != str(USER_ID)
+    ):
+        await callback_query.answer("Нет доступа.", show_alert=True)
+        return
     if not callback_query.message or not bot:
         await callback_query.answer("Ошибка инициализации.", show_alert=True)
         return
@@ -306,10 +335,15 @@ async def process_panic_callback(callback_query: types.CallbackQuery):
 
     if is_paper:
         try:
-            await db_manager.clear_journal()
-            res_msg = "🛡️ [PAPER] Все виртуальные позиции успешно стерты из памяти и файлы бэкапа сброшены."
+            if global_execution_engine_ref is None:
+                raise RuntimeError("ExecutionEngine недоступен: PAPER-позиции не изменены.")
+            result = await global_execution_engine_ref.close_all_positions(db_manager)
+            res_msg = "🛡️ [PAPER] " + html.escape(
+                str(result.get("message") or "Экстренное закрытие завершено.")
+            )
         except Exception as e:
-            res_msg = f"❌ Ошибка очистки ОЗУ-журнала: {e}"
+            logger.error("Ошибка экстренного PAPER-закрытия: %s", e, exc_info=True)
+            res_msg = f"❌ PAPER-закрытие не выполнено: {html.escape(str(e))}"
     else:
         if global_broker_ref is not None:
             asyncio.create_task(global_broker_ref.market_close_all_positions(client_id=client_id))
