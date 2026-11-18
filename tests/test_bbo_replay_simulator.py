@@ -501,5 +501,82 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         self.assertEqual(result["trades"][0]["position_id"], "valid")
 
 
+    def test_portfolio_mark_to_market_drawdown_includes_open_long_position(self):
+        trade = {
+            "position_id": "LONG-1", "session_id": "session-a", "ticker": "SBER",
+            "side": "BUY", "entry_time_epoch": 1.0, "entry_price": 100.0,
+            "quantity": 10,
+            "cost_assumptions": {
+                "commission_pct_per_side": 0.0, "slippage_bps": 0.0,
+                "entry_commission_rub": 0.0,
+            },
+            "scenarios": [{"name": "BASELINE", "exit": None}],
+        }
+        rows = [
+            event(1, bid=90.0, ask=90.1, epoch=2.0),
+            event(2, bid=95.0, ask=95.1, epoch=3.0),
+        ]
+        result = _portfolio_capacity_simulation(
+            [trade], "BASELINE", 10000.0, 15.0, events=rows, max_bbo_age_sec=2.0,
+        )
+        marked = result["mark_to_market"]
+        self.assertEqual(result["open_positions_at_end"], 1)
+        self.assertEqual(marked["complete_equity_snapshots"], 2)
+        self.assertAlmostEqual(marked["max_drawdown_rub"], 100.0)
+        self.assertAlmostEqual(marked["ending_equity_rub"], 9950.0)
+        self.assertAlmostEqual(marked["ending_unrealized_net_pnl_rub"], -50.0)
+        self.assertTrue(marked["ending_snapshot_complete"])
+
+    def test_portfolio_mark_to_market_short_uses_ask_and_estimated_costs(self):
+        trade = {
+            "position_id": "SHORT-1", "session_id": "session-a", "ticker": "SBER",
+            "side": "SELL", "entry_time_epoch": 1.0, "entry_price": 100.0,
+            "quantity": 10,
+            "cost_assumptions": {
+                "commission_pct_per_side": 0.05, "slippage_bps": 10.0,
+                "entry_commission_rub": 0.5,
+            },
+            "scenarios": [{"name": "BASELINE", "exit": None}],
+        }
+        rows = [event(1, bid=95.0, ask=105.0, epoch=2.0)]
+        result = _portfolio_capacity_simulation(
+            [trade], "BASELINE", 10000.0, 15.0, events=rows, max_bbo_age_sec=2.0,
+        )
+        marked = result["mark_to_market"]
+        expected_exit_fill = 105.0 * 1.001
+        expected_unrealized = (
+            (expected_exit_fill - 100.0) * -10.0
+            - 0.5 - expected_exit_fill * 10.0 * 0.05 / 100.0
+        )
+        self.assertAlmostEqual(marked["ending_unrealized_net_pnl_rub"], expected_unrealized)
+        self.assertAlmostEqual(marked["ending_equity_rub"], 10000.0 + expected_unrealized)
+
+    def test_portfolio_mark_to_market_rejects_stale_marks_for_ending_equity(self):
+        trade = {
+            "position_id": "LONG-1", "session_id": "session-a", "ticker": "SBER",
+            "side": "BUY", "entry_time_epoch": 1.0, "entry_price": 100.0,
+            "quantity": 10,
+            "cost_assumptions": {
+                "commission_pct_per_side": 0.0, "slippage_bps": 0.0,
+                "entry_commission_rub": 0.0,
+            },
+            "scenarios": [{"name": "BASELINE", "exit": None}],
+        }
+        rows = [
+            event(1, bid=99.0, ask=99.1, epoch=2.0),
+            event(2, ticker="GAZP", bid=100.0, ask=100.1, epoch=5.0),
+        ]
+        result = _portfolio_capacity_simulation(
+            [trade], "BASELINE", 10000.0, 15.0, events=rows, max_bbo_age_sec=2.0,
+        )
+        marked = result["mark_to_market"]
+        self.assertEqual(marked["complete_equity_snapshots"], 1)
+        self.assertGreater(marked["incomplete_equity_snapshots"], 0)
+        self.assertIsNone(marked["ending_equity_rub"])
+        self.assertFalse(marked["ending_snapshot_complete"])
+        self.assertEqual(marked["max_positions_with_stale_mark"], 1)
+
+
+
 if __name__ == "__main__":
     unittest.main()
