@@ -83,9 +83,10 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         self.assertEqual(result["coverage"]["stale_events"], 1)
 
     def test_break_even_arms_at_one_r_and_exits_at_net_break_even_threshold(self):
+        net_be_bid = ((100.0 + 0.5 / 10.0) / (1.0 - 0.05 / 100.0)) / (1.0 - 10.0 / 10_000.0)
         rows = [
             event(1, bid=101.0, ask=101.1, epoch=1_800_000_001.0),
-            event(2, bid=100.1, ask=100.2, epoch=1_800_000_002.0),
+            event(2, bid=net_be_bid, ask=net_be_bid + 0.1, epoch=1_800_000_002.0),
         ]
         result = replay_exit_scenarios(
             rows, position(),
