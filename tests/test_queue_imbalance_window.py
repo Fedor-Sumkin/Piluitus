@@ -88,6 +88,35 @@ class QueueImbalanceWindowTests(unittest.TestCase):
         self.assertEqual(result["samples"], 1)
         self.assertEqual(result["available"], 0.0)
 
+    def test_order_book_stream_publishes_ofi_only_after_ordered_depth_changes(self):
+        screener = HFTMemoryScreener()
+        snapshots = [
+            (100.0, 100.0, 100.1, 100.0, 100.0),
+            (100.5, 100.0, 100.1, 120.0, 100.0),
+            (101.0, 100.0, 100.1, 120.0, 80.0),
+            (101.5, 100.01, 100.1, 120.0, 80.0),
+        ]
+        for event_time, bid, ask, bid_size, ask_size in snapshots:
+            with patch("strategy.screener_funnel.time.monotonic", return_value=event_time):
+                result = asyncio.run(screener.push_order_book(
+                    "SBER", bid, ask, bid_size, ask_size,
+                ))
+                self.assertTrue(result.get("valid"))
+
+        with patch("strategy.screener_funnel.time.monotonic", return_value=101.5):
+            tick = asyncio.run(screener.push_tick("SBER", 100.05, 0.0))
+        metrics = tick["metrics"]
+        self.assertEqual(metrics["ofi_5s_available"], 1.0)
+        self.assertEqual(metrics["ofi_5s_samples"], 3)
+        self.assertGreater(metrics["ofi_5s"], 0.0)
+
+        with patch("strategy.screener_funnel.time.monotonic", return_value=102.0):
+            asyncio.run(screener.push_order_book(
+                "SBER", 100.01, 100.1, 120.0, 80.0,
+                book_valid=False, book_reason="TEST_INVALID",
+            ))
+        self.assertEqual(len(screener.quotes["SBER"]["ofi_history"]), 0)
+
     def test_order_book_updates_publish_rolling_metric_and_invalid_book_clears_it(self):
         screener = HFTMemoryScreener()
 
