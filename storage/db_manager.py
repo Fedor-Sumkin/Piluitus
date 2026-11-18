@@ -475,7 +475,15 @@ class DBManager:
         other_trade_count = 0
         for key in trade_keys:
             raw = await client.get(key)
+            if raw is None:
+                continue
             trade = self._decode_json_value(raw)
+            if not isinstance(trade, dict):
+                log.critical(
+                    "❌ Некорректная запись в PAPER/LIVE inventory (%s); snapshot aborted",
+                    key,
+                )
+                raise RuntimeError(f"Некорректная запись журнала сделок: {key}")
             fallback_id = key.rsplit(":", 1)[-1]
             if self.is_paper_trade(trade, fallback_id):
                 if isinstance(trade, dict):
