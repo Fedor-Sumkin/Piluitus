@@ -202,7 +202,7 @@ def _holding_time_bucket(value: object) -> str:
 
 def _numeric_bucket(value: object, *, prefix: str, thresholds: tuple[float, ...], suffixes: tuple[str, ...]) -> str:
     number = _number(value)
-    if number is None:
+    if number is None or number < 0.0:
         return f"{prefix}_UNKNOWN"
     for threshold, suffix in zip(thresholds, suffixes):
         if number < threshold:
