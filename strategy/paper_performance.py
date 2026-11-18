@@ -103,6 +103,156 @@ def _exit_timestamp_sort_key(value: object) -> tuple[int, float | str]:
     return (1, str(value or ""))
 
 
+
+def _aware_timestamp_epoch(value: object) -> float | None:
+    """Return an absolute timestamp only for valid timezone-aware ISO values."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return None
+        return parsed.astimezone(timezone.utc).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _reentry_gap_bucket(value: object) -> str:
+    seconds = _number(value)
+    if seconds is None or seconds < 0.0:
+        return "UNKNOWN"
+    if seconds < 60.0:
+        return "LT_60S"
+    if seconds < 180.0:
+        return "60_179S"
+    if seconds < 600.0:
+        return "180_599S"
+    return "600S_PLUS"
+
+
+def _reentry_diagnostics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Analyze sequential same-ticker/same-session re-entries without guessing."""
+    import heapq
+
+    groups: dict[tuple[str, str], list[tuple[float, float, dict[str, Any]]]] = defaultdict(list)
+    invalid_timestamps = 0
+    missing_identity = 0
+    eligible = 0
+
+    for row in rows:
+        entry_epoch = _aware_timestamp_epoch(row.get("entry_timestamp"))
+        exit_epoch = _aware_timestamp_epoch(row.get("exit_timestamp"))
+        if entry_epoch is None or exit_epoch is None or exit_epoch < entry_epoch:
+            invalid_timestamps += 1
+            continue
+        ticker = _text(row.get("ticker"), "")
+        session = _text(row.get("session_id"), "")
+        if not ticker or ticker == "UNKNOWN" or not session or session == "UNKNOWN":
+            missing_identity += 1
+            continue
+        eligible += 1
+        groups[(ticker, session)].append((entry_epoch, exit_epoch, row))
+
+    pairs: list[dict[str, Any]] = []
+    by_gap: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_previous_exit: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_previous_outcome: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    by_direction: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
+    for (ticker, session), items in groups.items():
+        ordered = sorted(items, key=lambda item: item[0])
+        pending_exits: list[tuple[float, int, dict[str, Any]]] = []
+        next_prior = 0
+        latest_closed: tuple[float, dict[str, Any]] | None = None
+
+        for entry_epoch, _exit_epoch, current in ordered:
+            while next_prior < len(ordered) and ordered[next_prior][0] < entry_epoch:
+                prior_entry, prior_exit, prior_row = ordered[next_prior]
+                if prior_exit >= prior_entry:
+                    heapq.heappush(pending_exits, (prior_exit, next_prior, prior_row))
+                next_prior += 1
+
+            while pending_exits and pending_exits[0][0] <= entry_epoch:
+                closed_epoch, _sequence, prior_row = heapq.heappop(pending_exits)
+                if latest_closed is None or closed_epoch >= latest_closed[0]:
+                    latest_closed = (closed_epoch, prior_row)
+
+            if latest_closed is None:
+                continue
+
+            previous_exit_epoch, previous = latest_closed
+            gap_sec = max(0.0, entry_epoch - previous_exit_epoch)
+            previous_pnl = _number(previous.get("pnl"))
+            previous_outcome = (
+                "LOSS" if previous_pnl is not None and previous_pnl < 0.0
+                else "WIN" if previous_pnl is not None and previous_pnl > 0.0
+                else "BREAKEVEN" if previous_pnl == 0.0
+                else "UNKNOWN"
+            )
+            previous_reason = _text(previous.get("exit_reason"))
+            same_side = str(previous.get("side") or "").upper() == str(current.get("side") or "").upper()
+            pair = dict(current)
+            pair.update({
+                "reentry_gap_sec": round(gap_sec, 3),
+                "previous_trade_id": _text(previous.get("id"), ""),
+                "previous_trade_pnl_rub": previous_pnl,
+                "previous_exit_reason": previous_reason,
+                "previous_trade_outcome": previous_outcome,
+                "same_direction_as_previous": same_side,
+            })
+            pairs.append({
+                "ticker": ticker,
+                "session_id": session,
+                "previous_trade_id": pair["previous_trade_id"],
+                "trade_id": _text(current.get("id"), ""),
+                "side": _text(current.get("side")),
+                "previous_side": _text(previous.get("side")),
+                "gap_sec": round(gap_sec, 3),
+                "gap_bucket": _reentry_gap_bucket(gap_sec),
+                "previous_exit_reason": previous_reason,
+                "previous_trade_outcome": previous_outcome,
+                "previous_trade_pnl_rub": previous_pnl,
+                "current_trade_pnl_rub": _number(current.get("pnl")),
+            })
+            by_gap[_reentry_gap_bucket(gap_sec)].append(pair)
+            by_previous_exit[previous_reason].append(pair)
+            by_previous_outcome[previous_outcome].append(pair)
+            by_direction["SAME_SIDE" if same_side else "OPPOSITE_SIDE"].append(pair)
+
+    def summarize(source: Mapping[str, list[dict[str, Any]]]) -> dict[str, Any]:
+        return {
+            key: _metrics(sorted(
+                bucket,
+                key=lambda item: _exit_timestamp_sort_key(item.get("exit_timestamp")),
+            ))
+            for key, bucket in sorted(source.items())
+        }
+
+    return {
+        "paired_reentries": len(pairs),
+        "eligible_trades": eligible,
+        "trades_without_valid_aware_entry_exit_timestamps": invalid_timestamps,
+        "trades_without_ticker_or_session_identity": missing_identity,
+        "sample_quality": (
+            "INSUFFICIENT_LT_30" if len(pairs) < 30
+            else "PRELIMINARY_30_99" if len(pairs) < 100
+            else "DEVELOPING_100_299" if len(pairs) < 300
+            else "LARGE_300_PLUS"
+        ),
+        "by_gap": summarize(by_gap),
+        "by_previous_exit_reason": summarize(by_previous_exit),
+        "by_previous_trade_outcome": summarize(by_previous_outcome),
+        "by_direction": summarize(by_direction),
+        "pairs": pairs[-200:],
+        "note": (
+            "A re-entry is paired only when a prior trade for the same ticker and "
+            "known PAPER session has an aware entry/exit timestamp and closed no "
+            "later than the next entry. Unknown sessions, naive timestamps and "
+            "overlapping positions are not inferred. Cohorts are descriptive and "
+            "do not establish that the prior exit caused the next outcome."
+        ),
+    }
+
 def _wilson_interval_pct(wins: int, total: int) -> list[float] | None:
     """95% Wilson interval for a descriptive positive-outcome rate."""
     if total <= 0:
@@ -535,6 +685,7 @@ class PaperPerformanceTracker:
             ),
             "entry_diagnostics": _entry_diagnostics(rows),
             "loss_diagnostics": _loss_diagnostics(rows),
+            "reentry_diagnostics": _reentry_diagnostics(rows),
         }
         result["shadow_comparison"] = self._compare_shadow(rows, shadow_labels)
         return result
