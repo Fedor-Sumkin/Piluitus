@@ -293,11 +293,16 @@ class PaperPerformanceTracker:
                 unmatched_reasons["CANDIDATE_LABEL_NOT_YET_AVAILABLE"] += 1
                 continue
             if not candidate_labels:
-                results = sorted({
+                results = {
                     str(label.get("result") or "UNKNOWN").upper()
                     for label in all_candidate_labels
-                })
-                reason = "CANDIDATE_HAS_NO_VALID_OK_LABEL"
+                }
+                if results == {"NO_FRESH_BBO"}:
+                    reason = "CANDIDATE_LABEL_NO_FRESH_BBO"
+                elif results == {"LABEL_LATE"}:
+                    reason = "CANDIDATE_LABEL_LATE"
+                else:
+                    reason = "CANDIDATE_HAS_NO_VALID_OK_LABEL"
                 unmatched_reasons[reason] += 1
                 continue
 
