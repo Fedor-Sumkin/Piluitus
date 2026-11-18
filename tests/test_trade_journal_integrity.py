@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import fnmatch
+import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -20,6 +22,30 @@ class FakeRedis:
 class FakeListRedis:
     def __init__(self) -> None:
         self.lists: dict[str, list[str]] = {}
+        self.values: dict[str, str] = {}
+
+    async def scan(self, cursor: int, match: str, count: int):
+        keys = [key.encode() for key in self.values if fnmatch.fnmatch(key, match)]
+        return 0, keys
+
+    async def get(self, key: str):
+        return self.values.get(key)
+
+    async def delete(self, *keys: str) -> int:
+        deleted = 0
+        for key in keys:
+            if key in self.values:
+                self.values.pop(key, None)
+                deleted += 1
+            if key in self.lists:
+                self.lists.pop(key, None)
+                deleted += 1
+        return deleted
+
+    async def lrange(self, key: str, start: int, stop: int):
+        rows = self.lists.get(key, [])
+        end = len(rows) if stop < 0 else stop + 1
+        return rows[start:end]
 
     async def lpush(self, key: str, value: str) -> int:
         self.lists.setdefault(key, []).insert(0, value)
@@ -56,6 +82,31 @@ class TradeJournalIntegrityTests(unittest.IsolatedAsyncioTestCase):
             client.lists["piluitus:strategy:shadow:outcomes"][0],
             '{"candidate_id": "new"}',
         )
+
+    async def test_paper_session_clear_removes_dedicated_closed_trade_journal(self) -> None:
+        client = FakeListRedis()
+        closed = {
+            "id": "PAPER_CLOSED_1",
+            "status": "CLOSED",
+            "mode": "PAPER",
+            "side": "BUY",
+            "pnl": 12.5,
+        }
+        client.values["piluitus:trade:PAPER_OPEN_1"] = json.dumps({
+            "id": "PAPER_OPEN_1", "status": "OPEN", "mode": "PAPER",
+        })
+        client.lists["piluitus:paper:closed_trades"] = [json.dumps(closed)]
+        client.lists["piluitus:trade_history"] = [json.dumps(closed)]
+
+        with patch.object(RedisClient, "get_client", new=AsyncMock(return_value=client)):
+            db = DBManager()
+            snapshot = await db.get_paper_session_snapshot()
+            result = await db.clear_paper_session()
+
+        self.assertEqual(snapshot["paper_closed_journal_count"], 1)
+        self.assertEqual(result["deleted_paper_performance_rows"], 1)
+        self.assertEqual(result["deleted_paper_performance_keys"], 1)
+        self.assertNotIn("piluitus:paper:closed_trades", client.lists)
 
     async def test_valid_trade_record_is_returned(self) -> None:
         client = FakeRedis(b'{"status":"OPEN","mode":"PAPER","ticker":"SBER"}')
