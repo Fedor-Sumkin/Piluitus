@@ -170,3 +170,51 @@ performance coverage as incomplete and inspect the log.
 - Bailey, Borwein, López de Prado and Zhu, *The Probability of Backtest Overfitting*, 2017. DOI: 10.21314/JCF.2016.322. Proposes combinatorially symmetric cross-validation to assess selection/backtest overfitting.
 
 These studies motivate features and validation discipline; they do not establish profitability on MOEX or for PILUITUS.
+
+
+## Point-in-time market regime and entry economics (research-only)
+
+Every Shadow candidate now stores a second, descriptive market-context label in
+addition to the original strategy hypothesis regime:
+
+- `market_regime`: `TREND`, `RANGE_OR_MIXED`, `HIGH_VOLATILITY`,
+  `LOW_LIQUIDITY` or `INSUFFICIENT_DATA`;
+- `directional_regime`: `TREND_UP`, `TREND_DOWN`,
+  `RANGE_OR_MIXED` or `DIRECTION_UNAVAILABLE`;
+- `volatility_regime`: relative ATR state;
+- `liquidity_regime`: spread/ATR and sufficiently warmed trade-count evidence.
+
+Volatility is compared with the median ATR percentage from up to 300 *earlier*
+candidate snapshots for the same ticker. At least 20 prior observations are
+required; otherwise the volatility field remains `VOLATILITY_UNCLASSIFIED`.
+The current candidate is appended only after its classification, preventing
+look-ahead. This reference is based on candidate snapshots, not every market
+tick, and restarts with a warmup after process restart. The thresholds (1.50x
+and 0.65x of prior median ATR) are exploratory grouping rules, not trading
+signals. Low-liquidity classification takes precedence in the combined regime
+when spread/ATR exceeds 0.50 or a fully covered 60-second trade window has
+fewer than three prints. Missing evidence remains explicitly unavailable.
+
+The entry-economics snapshot solves for the future opposite-side executable
+quote at which the hypothetical entry would break even after both-side
+commission and adverse slippage. BUY enters at Ask and exits at Bid; SELL enters
+at Bid and exits at Ask. `minimum_favorable_move_pct` is measured from the
+entry-time midpoint to that future executable quote, so it includes the cost of
+crossing the entry spread, both commission charges and both slippage
+assumptions. `move_beyond_entry_executable_pct` separately shows the extra
+move beyond the entry-side quote. `cost_to_atr_ratio` compares the required
+midpoint-to-exit move with the observed M1 ATR percentage.
+
+The cost calculation uses the currently configured
+`PILUITUS_PAPER_COMMISSION_PCT` and `PILUITUS_PAPER_SLIPPAGE_BPS` values.
+If either assumption is zero, the record is marked
+`INCOMPLETE_OR_ZERO_ASSUMPTION`; the output is still calculated, but must not
+be interpreted as a complete Finam cost estimate. Verify the actual account
+tariff and calibrate slippage from PAPER fills before drawing conclusions.
+
+The new fields are copied into forward labels and grouped by market regime,
+volatility, liquidity, direction and cost-to-ATR bucket. They do not add score
+points, change Shadow eligibility, block the LLM, change position sizing, or
+modify PAPER orders. Compare net executable outcomes by ticker, side, horizon
+and regime only after adequate sample sizes; overlapping horizons from one
+candidate are correlated observations, not independent trades.
