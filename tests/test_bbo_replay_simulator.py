@@ -1,6 +1,6 @@
 import unittest
 
-from strategy.bbo_replay_simulator import replay_exit_scenarios
+from strategy.bbo_replay_simulator import replay_exit_batch, replay_exit_scenarios
 
 
 def event(sequence, ticker="SBER", *, bid=100.0, ask=100.1, age=0.1,
@@ -152,6 +152,84 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         self.assertEqual(result["coverage"]["fresh_executable_observations"], 1)
         self.assertEqual(result["coverage"]["stale_events"], 1)
         self.assertEqual(len(result["scenarios"]), 5)
+
+    def test_actual_latched_trigger_fills_at_trigger_bbo_when_fresh(self):
+        rows = [
+            event(1, bid=100.0, ask=100.1, epoch=1_800_000_001.0),
+            {
+                "session_id": "session-a", "sequence": 2, "ticker": "SBER",
+                "event_kind": "EXIT_TRIGGER", "event_time_epoch": 1_800_000_002.0,
+                "trigger_reason": "STOP_LOSS", "trigger_price": 99.0,
+                "trigger_bbo_valid": True, "trigger_bbo_price": 98.8,
+                "trigger_bbo_age_sec": 0.2, "trigger_bbo_max_age_sec": 2.0,
+            },
+        ]
+        result = replay_exit_scenarios(
+            rows, position(),
+            scenarios=[{"name": "baseline", "kind": "baseline"}],
+        )
+        scenario = result["scenarios"][0]
+        self.assertEqual(scenario["trigger_mode"], "ACTUAL_LATCHED_TRIGGER")
+        self.assertEqual(scenario["exit"]["reason"], "STOP_LOSS")
+        self.assertEqual(scenario["exit"]["event_sequence"], 2)
+        self.assertEqual(scenario["exit"]["raw_executable_price"], 98.8)
+
+    def test_actual_trigger_waits_for_next_fresh_executable_quote(self):
+        rows = [
+            {
+                "session_id": "session-a", "sequence": 1, "ticker": "SBER",
+                "event_kind": "EXIT_TRIGGER", "event_time_epoch": 1_800_000_001.0,
+                "trigger_reason": "TAKE_PROFIT", "trigger_price": 102.0,
+                "trigger_bbo_valid": False,
+            },
+            event(2, bid=101.8, ask=101.9, epoch=1_800_000_003.0),
+        ]
+        result = replay_exit_scenarios(
+            rows, position(),
+            scenarios=[{"name": "baseline", "kind": "baseline"}],
+        )
+        scenario = result["scenarios"][0]
+        self.assertEqual(scenario["trigger_mode"], "ACTUAL_LATCHED_TRIGGER")
+        self.assertEqual(scenario["exit"]["reason"], "TAKE_PROFIT")
+        self.assertEqual(scenario["exit"]["event_sequence"], 2)
+        self.assertEqual(scenario["exit"]["raw_executable_price"], 101.8)
+
+    def test_research_variants_ignore_production_trigger_events(self):
+        rows = [{
+            "session_id": "session-a", "sequence": 1, "ticker": "SBER",
+            "event_kind": "EXIT_TRIGGER", "event_time_epoch": 1_800_000_001.0,
+            "trigger_reason": "STOP_LOSS", "trigger_price": 99.0,
+            "trigger_bbo_valid": True, "trigger_bbo_price": 98.0,
+            "trigger_bbo_age_sec": 0.1, "trigger_bbo_max_age_sec": 2.0,
+        }, event(2, bid=100.5, ask=100.6, epoch=1_800_000_002.0)]
+        result = replay_exit_scenarios(
+            rows, position(),
+            scenarios=[{"name": "be", "kind": "break_even", "arm_r": 1.0}],
+        )
+        self.assertEqual(result["scenarios"][0]["status"], "OPEN_AT_END")
+        self.assertEqual(result["scenarios"][0]["trigger_mode"], "BBO_THRESHOLD_RESEARCH")
+
+    def test_batch_replay_summarizes_net_expectancy_and_sample_quality(self):
+        rows = [
+            event(1, bid=102.1, ask=102.2, epoch=1_800_000_001.0),
+            event(2, ticker="GAZP", bid=98.8, ask=98.9, epoch=1_800_000_002.0),
+        ]
+        positions = [
+            position(position_id="P1"),
+            position(ticker="GAZP", position_id="P2"),
+        ]
+        result = replay_exit_batch(
+            rows, positions,
+            scenarios=[{"name": "base", "kind": "baseline"}],
+        )
+        summary = result["summary_by_scenario"]["base"]["overall"]
+        self.assertEqual(result["positions"], 2)
+        self.assertEqual(summary["closed"], 2)
+        self.assertEqual(summary["sample_quality"], "INSUFFICIENT_LT_30")
+        self.assertEqual(summary["wins"], 1)
+        self.assertEqual(summary["losses"], 1)
+        self.assertIsNotNone(summary["profit_factor"])
+        self.assertEqual(set(result["summary_by_scenario"]["base"]["by_ticker"]), {"SBER", "GAZP"})
 
     def test_invalid_position_contract_is_rejected(self):
         with self.assertRaises(ValueError):
