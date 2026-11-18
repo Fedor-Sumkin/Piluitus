@@ -197,7 +197,10 @@ class ShadowForwardTrackerTests(unittest.TestCase):
             None,
             {},
             {"candidate_id": "x", "ticker": "SBER", "result": "UNKNOWN"},
-            {"candidate_id": "x", "ticker": "SBER", "result": "OK", "side": "BUY"},
+            {
+                "candidate_id": "x", "ticker": "SBER", "result": "OK",
+                "side": "BUY", "shadow_eligible": True,
+            },
         ])
         self.assertEqual(restored, 1)
         self.assertEqual(tracker.statistics_snapshot()["eligible"]["labels"], 1)
