@@ -41,6 +41,7 @@ def build_entry_execution_diagnostics(
     keys = (
         "entry_mid_price",
         "entry_executable_bbo_price",
+        "entry_signal_reference_price",
         "entry_bid_age_sec",
         "entry_ask_age_sec",
         "entry_spread_to_atr_ratio",
@@ -93,6 +94,7 @@ def build_entry_execution_diagnostics(
 
     signal_reference = _finite(signal_reference_price)
     if signal_reference is not None and signal_reference > 0.0:
+        result["entry_signal_reference_price"] = round(signal_reference, 8)
         result["entry_signal_adverse_drift_pct"] = round(
             (fill - signal_reference) / signal_reference * 100.0 * sign, 6
         )
