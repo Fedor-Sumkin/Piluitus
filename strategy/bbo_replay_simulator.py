@@ -133,6 +133,8 @@ def _prepare_events(
         "stale_events": 0,
         "missing_side_events": 0,
         "fresh_executable_observations": 0,
+        "missing_event_timestamps": 0,
+        "event_time_regressions": 0,
     }
     for event in events:
         if not isinstance(event, Mapping) or str(event.get("session_id") or "") != session_id:
@@ -153,6 +155,15 @@ def _prepare_events(
         stats["sequence_gaps"] = sum(
             max(0, right - left - 1) for left, right in zip(seqs, seqs[1:])
         )
+    previous_epoch = math.nan
+    for row in rows:
+        stamp = _epoch(row.get("event_time_epoch"))
+        if not math.isfinite(stamp):
+            stats["missing_event_timestamps"] += 1
+            continue
+        if math.isfinite(previous_epoch) and stamp < previous_epoch:
+            stats["event_time_regressions"] += 1
+        previous_epoch = stamp
     selected = [
         row for row in rows
         if str(row.get("ticker") or "").strip().upper().split("@")[0] == ticker
@@ -343,6 +354,7 @@ def replay_exit_scenarios(
         "schema_version": 1,
         "engine": "BBO_ONLY_EXIT_PROXY",
         "session_id": session_id,
+        "position_id": str(position.get("position_id") or position.get("id") or ""),
         "ticker": ticker,
         "side": side,
         "entry_price": entry,
@@ -364,4 +376,144 @@ def replay_exit_scenarios(
             "Events use the recorded event-time clock; missing or unreliable exchange timestamps require separate quality review.",
         ],
         "scenarios": outputs,
+    }
+
+
+def _sample_quality(sample_size: int) -> str:
+    if sample_size < 30:
+        return "INSUFFICIENT_LT_30"
+    if sample_size < 100:
+        return "PRELIMINARY_30_99"
+    if sample_size < 300:
+        return "DEVELOPING_100_299"
+    return "LARGE_300_PLUS"
+
+
+def _summarize_replay_trades(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
+    closed = [row for row in rows if isinstance(row.get("exit"), Mapping)]
+    closed.sort(key=lambda row: (
+        _number(row["exit"].get("event_time_epoch"), 0.0),
+        str(row.get("position_id") or ""),
+    ))
+    pnls = [_number(row["exit"].get("net_pnl_rub"), 0.0) for row in closed]
+    wins = [value for value in pnls if value > 0.0]
+    losses = [value for value in pnls if value < 0.0]
+    risk_values = [
+        _number(row.get("risk_rub"), math.nan) for row in closed
+    ]
+    r_values = [
+        pnl / risk for pnl, risk in zip(pnls, risk_values)
+        if math.isfinite(risk) and risk > 0.0
+    ]
+    cumulative = 0.0
+    peak = 0.0
+    max_drawdown = 0.0
+    for pnl in pnls:
+        cumulative += pnl
+        peak = max(peak, cumulative)
+        max_drawdown = max(max_drawdown, peak - cumulative)
+    return {
+        "trades": len(rows),
+        "closed": len(closed),
+        "open_at_end": len(rows) - len(closed),
+        "sample_quality": _sample_quality(len(closed)),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate_pct": round(len(wins) / len(closed) * 100.0, 3) if closed else None,
+        "net_pnl_rub": round(sum(pnls), 4) if closed else None,
+        "expectancy_rub": round(sum(pnls) / len(pnls), 4) if pnls else None,
+        "average_win_rub": round(sum(wins) / len(wins), 4) if wins else None,
+        "average_loss_rub": round(sum(losses) / len(losses), 4) if losses else None,
+        "profit_factor": (
+            round(sum(wins) / abs(sum(losses)), 4)
+            if losses else None
+        ),
+        "expectancy_r": round(sum(r_values) / len(r_values), 4) if r_values else None,
+        "max_drawdown_rub": round(max_drawdown, 4) if closed else None,
+        "average_holding_sec": round(sum(
+            _number(row["exit"].get("elapsed_sec"), 0.0) for row in closed
+        ) / len(closed), 3) if closed else None,
+    }
+
+
+def replay_exit_batch(
+    events: Iterable[Mapping[str, Any]],
+    positions: Iterable[Mapping[str, Any]],
+    *,
+    max_bbo_age_sec: float = 2.0,
+    scenarios: Iterable[Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Replay many PAPER positions and summarize each exit hypothesis.
+
+    This is an offline research helper. It does not read Memurai or alter positions.
+    """
+    event_rows = list(events)
+    position_rows = list(positions)
+    if not position_rows:
+        return {
+            "schema_version": 1,
+            "engine": "BBO_ONLY_EXIT_PROXY",
+            "positions": 0,
+            "trades": [],
+            "summary_by_scenario": {},
+        }
+
+    trade_results: list[dict[str, Any]] = []
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for index, position in enumerate(position_rows):
+        if not isinstance(position, Mapping):
+            continue
+        result = replay_exit_scenarios(
+            event_rows,
+            position,
+            max_bbo_age_sec=max_bbo_age_sec,
+            scenarios=scenarios,
+        )
+        risk_rub = result["risk_per_unit"] * result["quantity"]
+        result["risk_rub"] = round(risk_rub, 4)
+        result["trade_index"] = index
+        trade_results.append(result)
+        for scenario in result["scenarios"]:
+            grouped.setdefault(str(scenario["name"]), []).append({
+                "position_id": result["position_id"],
+                "ticker": result["ticker"],
+                "side": result["side"],
+                "session_id": result["session_id"],
+                "risk_rub": result["risk_rub"],
+                "exit": scenario["exit"],
+            })
+
+    summaries: dict[str, Any] = {}
+    for name, rows in grouped.items():
+        summaries[name] = {
+            "overall": _summarize_replay_trades(rows),
+            "by_ticker": {},
+            "by_side": {},
+            "by_session": {},
+        }
+        for field, target in (
+            ("ticker", "by_ticker"),
+            ("side", "by_side"),
+            ("session_id", "by_session"),
+        ):
+            buckets: dict[str, list[Mapping[str, Any]]] = {}
+            for row in rows:
+                key = str(row.get(field) or "UNKNOWN")
+                buckets.setdefault(key, []).append(row)
+            summaries[name][target] = {
+                key: _summarize_replay_trades(bucket)
+                for key, bucket in sorted(buckets.items())
+            }
+
+    return {
+        "schema_version": 1,
+        "engine": "BBO_ONLY_EXIT_PROXY",
+        "positions": len(trade_results),
+        "trades": trade_results,
+        "summary_by_scenario": summaries,
+        "limitations": [
+            "BBO_ONLY_PROXY: production SL/TP can first trigger on INSTRUMENT_TRADES; trade-trigger events are absent from this journal.",
+            "Open positions at the end of the replay are excluded from realized scenario PnL.",
+            "Portfolio-level overlap, capital contention and simultaneous execution are not modeled.",
+        ],
     }
