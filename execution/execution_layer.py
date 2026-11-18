@@ -1391,6 +1391,16 @@ class BaseExecutionEngine:
             "закрытие ожидает свежую исполнимую сторону BBO.",
             ticker, side, reason, str(source or "UNKNOWN").upper(), price, trigger_price,
         )
+        recorder = getattr(self, "paper_exit_event_recorder", None)
+        if callable(recorder):
+            try:
+                executable_quote = self._latest_fresh_exit_quote(ticker, side)
+                recorder(ticker, trade, executable_quote)
+            except Exception as recorder_exc:
+                logger.warning(
+                    "[PAPER BBO REPLAY] failed to record exit trigger for %s: %s",
+                    ticker, recorder_exc,
+                )
         return reason
 
     # ------------------------------------------------------------------
@@ -1729,6 +1739,9 @@ class BaseExecutionEngine:
                     if self.paper_mode and paper_depth_fill is not None else None
                 ),
                 "session_id": self.session_id,
+                "bbo_replay_session_id": str(
+                    getattr(self, "bbo_replay_session_id", "") or ""
+                ) or None,
                 **_decision_attribution_fields(ai_analysis),
                 "ticker": ticker,
                 "entry_time": now.strftime("%H:%M:%S"),
