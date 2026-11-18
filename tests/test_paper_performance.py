@@ -38,6 +38,13 @@ class PaperPerformanceTests(unittest.TestCase):
         self.assertEqual(len(tracker.records), 1)
         self.assertEqual(tracker.records[0]["pnl"], 12.0)
 
+    def test_explicit_session_reset_clears_in_memory_performance(self):
+        tracker = PaperPerformanceTracker()
+        tracker.record(trade("reset-me", 10))
+        self.assertEqual(tracker.clear(), 1)
+        self.assertEqual(tracker.records, [])
+        self.assertEqual(tracker.scorecard()["overall"]["trades"], 0)
+
     def test_restore_deduplicates_newest_first_records_and_respects_limit(self):
         tracker = PaperPerformanceTracker(max_records=2)
         restored = tracker.restore([
