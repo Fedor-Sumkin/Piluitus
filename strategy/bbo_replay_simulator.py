@@ -205,6 +205,18 @@ def replay_exit_scenarios(
         entry_fee = entry * quantity * commission / 100.0
     risk_per_unit = abs(entry - stop)
     rows, coverage = _prepare_events(events, session_id=session_id, ticker=ticker)
+    # Coverage describes the input stream once, not once per strategy.
+    for row in rows:
+        _price, _age, freshness = _fresh_side(row, side, max_age)
+        if freshness == "OK":
+            coverage["fresh_executable_observations"] += 1
+        elif freshness == "STALE_EXECUTABLE_SIDE":
+            coverage["stale_events"] += 1
+        elif freshness in {"INVALID_BBO", "CROSSED_BBO"}:
+            coverage["invalid_events"] += 1
+        else:
+            coverage["missing_side_events"] += 1
+
     strategy_specs = list(scenarios) if scenarios is not None else list(DEFAULT_SCENARIOS)
     outputs: list[dict[str, Any]] = []
 
@@ -227,13 +239,9 @@ def replay_exit_scenarios(
             if freshness != "OK":
                 if freshness == "STALE_EXECUTABLE_SIDE":
                     state["stale_observations"] += 1
-                    coverage["stale_events"] += 1
                 else:
                     state["invalid_observations"] += 1
-                    if freshness in {"INVALID_BBO", "CROSSED_BBO"}:
-                        coverage["invalid_events"] += 1
-                    else:
-                        coverage["missing_side_events"] += 1
+
                 continue
             received_epoch = _epoch(row.get("event_time_epoch"))
             if not math.isfinite(received_epoch):
