@@ -215,5 +215,65 @@ class PaperPerformanceTests(unittest.TestCase):
         self.assertNotIn("300", comparison["horizons"])
 
 
+    def test_shadow_comparison_exposes_horizon_side_decision_confidence_segments(self):
+        tracker = PaperPerformanceTracker()
+        tracker.restore([
+            trade("paper-buy", 12, side="BUY", candidate="candidate-buy",
+                  confidence=87.0, exit_time="2026-11-18T10:00:00"),
+            trade("paper-sell", -4, side="SELL", candidate="candidate-sell",
+                  confidence=92.0, exit_time="2026-11-18T10:01:00"),
+        ])
+        labels = [
+            {
+                "candidate_id": "candidate-buy", "result": "OK", "horizon_sec": 60,
+                "side": "BUY", "net_executable_return_pct": 0.20,
+                "mfe_executable_pct": 0.35, "mae_executable_pct": -0.08,
+                "llm_model_decision": "APPROVE", "llm_final_decision": "BUY",
+                "llm_confidence": 87.0, "llm_execution_status": "EXECUTED",
+            },
+            {
+                "candidate_id": "candidate-sell", "result": "OK", "horizon_sec": 60,
+                "side": "SELL", "net_executable_return_pct": -0.10,
+                "mfe_executable_pct": 0.05, "mae_executable_pct": -0.22,
+                "llm_model_decision": "HOLD", "llm_final_decision": "HOLD",
+                "llm_confidence": 92.0, "llm_execution_status": "NOT_EXECUTED",
+            },
+            {
+                "candidate_id": "candidate-buy", "result": "OK", "horizon_sec": 180,
+                "side": "BUY", "net_executable_return_pct": 0.30,
+                "llm_model_decision": "APPROVE", "llm_final_decision": "BUY",
+                "llm_confidence": 87.0, "llm_execution_status": "EXECUTED",
+            },
+        ]
+
+        comparison = tracker.scorecard(labels)["shadow_comparison"]
+        segments = comparison["horizon_segments"]
+        self.assertEqual(segments["by_side"]["60s|BUY"]["labels"], 1)
+        self.assertEqual(segments["by_side"]["60s|SELL"]["labels"], 1)
+        self.assertEqual(
+            segments["by_model_decision"]["60s|APPROVE"]["mean_net_return_pct"], 0.2
+        )
+        self.assertEqual(
+            segments["by_model_decision"]["60s|HOLD"]["mean_net_return_pct"], -0.1
+        )
+        self.assertEqual(
+            segments["by_confidence"]["60s|80-89"]["positive_rate_pct"], 100.0
+        )
+        self.assertEqual(
+            segments["by_confidence"]["60s|90-99"]["positive_rate_pct"], 0.0
+        )
+        self.assertEqual(
+            segments["by_model_decision_confidence"]["60s|APPROVE|80-89"]["labels"], 1
+        )
+        self.assertEqual(
+            segments["by_execution_status"]["60s|EXECUTED"]["labels"], 1
+        )
+        self.assertEqual(
+            segments["by_execution_status"]["60s|NOT_EXECUTED"]["labels"], 1
+        )
+        self.assertIn("hypothetical Shadow outcomes", comparison["horizon_segment_note"])
+        self.assertNotIn("180s|SELL", segments["by_side"])
+
+
 if __name__ == "__main__":
     unittest.main()
