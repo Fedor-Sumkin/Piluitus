@@ -244,6 +244,19 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         )
         self.assertEqual(result["summary_by_scenario"]["only"]["overall"]["closed"], 2)
 
+    def test_persisted_trade_shape_accepts_naive_legacy_entry_timestamp(self):
+        trade = position()
+        trade.pop("entry_time_epoch")
+        trade["entry_timestamp"] = "2026-11-18T10:00:00"
+        trade["volume"] = trade.pop("quantity")
+        trade["paper_slippage_bps"] = trade.pop("slippage_bps")
+        trade["bbo_replay_session_id"] = trade.pop("session_id")
+        result = replay_exit_scenarios(
+            [], trade, scenarios=[{"name": "base", "kind": "baseline"}]
+        )
+        self.assertEqual(result["session_id"], "session-a")
+        self.assertGreater(result["entry_time_epoch"], 0.0)
+
     def test_invalid_position_contract_is_rejected(self):
         with self.assertRaises(ValueError):
             replay_exit_scenarios([], position(stop_loss=100.0))
