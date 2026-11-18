@@ -850,6 +850,7 @@ def _portfolio_capacity_simulation(
     closed = 0
     peak_open_positions = 0
     mark_updates = mark_stale_events = mark_invalid_events = 0
+    mark_out_of_order_events = 0
     complete_snapshots = incomplete_snapshots = 0
     max_missing_marks = max_stale_marks = 0
     running_equity = capital
@@ -956,10 +957,15 @@ def _portfolio_capacity_simulation(
                 side = str(trade.get("side") or "").upper()
                 price, quote_age, freshness = _fresh_side(event, side, max_age)
                 if freshness == "OK":
-                    # Preserve the quote's already-consumed age at capture;
-                    # freshness must not restart at the local receive timestamp.
+                    # Preserve captured age and reject a delayed quote that
+                    # would move the executable mark backwards in time.
+                    effective_stamp = stamp - quote_age
+                    previous_mark = marks.get(position_id)
+                    if previous_mark is not None and effective_stamp < previous_mark["timestamp"]:
+                        mark_out_of_order_events += 1
+                        continue
                     marks[position_id] = {
-                        "price": price, "timestamp": stamp - quote_age
+                        "price": price, "timestamp": effective_stamp
                     }
                     mark_updates += 1
                 elif freshness == "STALE_EXECUTABLE_SIDE":
@@ -1062,6 +1068,7 @@ def _portfolio_capacity_simulation(
             "valid_bbo_mark_updates": mark_updates,
             "stale_bbo_mark_events": mark_stale_events,
             "invalid_bbo_mark_events": mark_invalid_events,
+            "out_of_order_bbo_mark_events": mark_out_of_order_events,
             "max_positions_without_fresh_mark": max_missing_marks,
             "max_positions_with_stale_mark": max_stale_marks,
             "last_complete_snapshot_epoch": latest_complete_epoch,
