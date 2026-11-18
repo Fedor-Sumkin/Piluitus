@@ -1546,22 +1546,26 @@ async def _resume_pending_bbo_candidate(
         getattr(execution_engine, "_maintenance_active", False)
         or payload.get("paper_session_generation") != _paper_session_generation
     ):
+        _mark_shadow_llm_not_called(payload.get("shadow_candidate_id"), "PAPER_SESSION_CHANGED")
         _trade_flow_inc("bbo_resume_session_cancelled")
         _cancel_pending_bbo_candidate(key, pending)
         return
 
     funnel_status = screener.get_status()
     if not funnel_status.get("ready"):
+        _mark_shadow_llm_not_called(payload.get("shadow_candidate_id"), "FUNNEL_NOT_READY")
         _trade_flow_inc("bbo_resume_funnel_not_ready")
         _cancel_pending_bbo_candidate(key, pending)
         return
     if key not in set(funnel_status.get("selected_tickers", [])):
+        _mark_shadow_llm_not_called(payload.get("shadow_candidate_id"), "TOP15_DESELECTED")
         _trade_flow_inc("bbo_resume_not_selected")
         _cancel_pending_bbo_candidate(key, pending)
         return
 
     active_tickers = execution_engine.get_open_position_tickers()
     if key in active_tickers or key in getattr(execution_engine, "_opening_tickers", set()):
+        _mark_shadow_llm_not_called(payload.get("shadow_candidate_id"), "POSITION_ALREADY_OPEN")
         _trade_flow_inc("bbo_resume_active_position")
         _cancel_pending_bbo_candidate(key, pending)
         _trade_flow_inc("active_position_skipped")
@@ -1569,6 +1573,7 @@ async def _resume_pending_bbo_candidate(
 
     metrics = payload.get("metrics")
     if not isinstance(metrics, dict):
+        _mark_shadow_llm_not_called(payload.get("shadow_candidate_id"), "INVALID_METRICS_PAYLOAD")
         _trade_flow_inc("bbo_resume_invalid_payload")
         _cancel_pending_bbo_candidate(key, pending)
         return
