@@ -152,7 +152,10 @@ class BBOReplayRecorder:
         ask = _finite(book_result.get("ask"))
         bid_size = _finite(book_result.get("bid_size"))
         ask_size = _finite(book_result.get("ask_size"))
-        if valid and (bid <= 0.0 or ask <= 0.0 or ask < bid):
+        if valid and (
+            (bid <= 0.0 and ask <= 0.0)
+            or (bid > 0.0 and ask > 0.0 and ask < bid)
+        ):
             return False
 
         now_mono = time.monotonic()
