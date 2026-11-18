@@ -516,6 +516,7 @@ def _summarize_replay_trades(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         ),
         "expectancy_r": round(sum(r_values) / len(r_values), 4) if r_values else None,
         "max_drawdown_rub": round(max_drawdown, 4) if closed else None,
+        "drawdown_basis": "SEQUENTIAL_CLOSED_TRADE_PNL_NOT_PORTFOLIO_DRAWDOWN",
         "average_holding_sec": round(sum(
             _number(row["exit"].get("elapsed_sec"), 0.0) for row in closed
         ) / len(closed), 3) if closed else None,
