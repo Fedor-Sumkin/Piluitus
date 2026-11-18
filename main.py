@@ -852,6 +852,49 @@ _trade_flow_counts: dict[str, int] = {}
 _trade_flow_last_log_at = time_module.monotonic()
 # Forward labels are research-only and bounded in memory; all observations are logged.
 scalping_shadow_tracker = ShadowForwardTracker()
+SHADOW_OUTCOMES_STORAGE_KEY = "piluitus:strategy:shadow:outcomes"
+SHADOW_OUTCOMES_STORAGE_LIMIT = 20000
+
+
+async def _persist_shadow_outcomes(labels: list[dict[str, Any]], *, source: str) -> None:
+    """Persist each completed forward label; never let research storage block trading."""
+    if not labels:
+        return
+    saved = 0
+    try:
+        for label in labels:
+            await db_manager.push_to_list(
+                SHADOW_OUTCOMES_STORAGE_KEY,
+                label,
+                max_len=SHADOW_OUTCOMES_STORAGE_LIMIT,
+            )
+            saved += 1
+        logger.info(
+            "[STRATEGY SHADOW PERSIST] source=%s saved=%d retained_limit=%d",
+            source, saved, SHADOW_OUTCOMES_STORAGE_LIMIT,
+        )
+    except Exception as exc:
+        logger.error(
+            "[STRATEGY SHADOW PERSIST ERROR] source=%s saved_before_error=%d/%d error=%s",
+            source, saved, len(labels), exc, exc_info=True,
+        )
+
+
+async def _restore_shadow_outcomes() -> None:
+    """Rebuild cumulative strategy research statistics from the bounded outcome journal."""
+    try:
+        stored = await db_manager.get_list(
+            SHADOW_OUTCOMES_STORAGE_KEY, start=0, stop=SHADOW_OUTCOMES_STORAGE_LIMIT - 1
+        )
+        restored = scalping_shadow_tracker.restore_completed_labels(stored)
+        logger.info(
+            "[STRATEGY SHADOW RESTORE] loaded=%d restored=%d pending=0 "
+            "storage_limit=%d; pending forward labels from a prior process are not resumed",
+            len(stored), restored, SHADOW_OUTCOMES_STORAGE_LIMIT,
+        )
+    except Exception as exc:
+        logger.error("[STRATEGY SHADOW RESTORE ERROR] %s", exc, exc_info=True)
+
 
 # One outstanding AI event per ticker prevents repeated nearly identical
 # anomaly events from filling the queue while inference is still running.
@@ -1879,7 +1922,9 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                     screener, book_ticker, shadow_metrics, now=time_module.monotonic()
                 )
                 if shadow_bbo_ready:
-                    scalping_shadow_tracker.observe_market_tick(book_ticker, shadow_metrics)
+                    shadow_labels = scalping_shadow_tracker.observe_market_tick(book_ticker, shadow_metrics)
+                    if shadow_labels:
+                        await _persist_shadow_outcomes(shadow_labels, source="ORDER_BOOK")
                 await _resume_pending_bbo_candidate(book_ticker, trigger="ORDER_BOOK")
                 # ORDER_BOOK can refresh BBO independently of QUOTES. Re-run the
                 # PAPER exit monitor only after a coherent book confirmation.
@@ -1988,7 +2033,9 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
             await _resume_pending_bbo_candidate(ticker, trigger="QUOTES")
         quote_metrics_for_shadow = analysis.get("metrics", {})
         if isinstance(quote_metrics_for_shadow, dict):
-            scalping_shadow_tracker.observe_market_tick(ticker, quote_metrics_for_shadow)
+            shadow_labels = scalping_shadow_tracker.observe_market_tick(ticker, quote_metrics_for_shadow)
+            if shadow_labels:
+                await _persist_shadow_outcomes(shadow_labels, source="QUOTES")
         funnel_status = screener.get_status()
         terminal_status.update_funnel(screener.get_status_text())
         if analysis.get("selected") and analysis.get("selection_ready"):
@@ -3316,6 +3363,7 @@ async def lifespan(app: FastAPI):
 
     try:
         await db_manager.connect()
+        await _restore_shadow_outcomes()
         maintenance_state = await db_manager.get_json("piluitus:paper:maintenance")
         if isinstance(maintenance_state, dict) and bool(maintenance_state.get("active")):
             execution_engine._maintenance_active = True
