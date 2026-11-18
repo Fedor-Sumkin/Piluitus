@@ -628,14 +628,64 @@ def replay_exit_batch(
     rejected_positions: list[dict[str, str]] = []
     grouped: dict[str, list[dict[str, Any]]] = {}
 
-    # Index once instead of rescanning the complete bounded journal for every trade.
-    events_by_session: dict[str, list[Mapping[str, Any]]] = {}
+    # Index once by session and ticker; precompute session-wide sequence diagnostics.
+    events_by_session_ticker: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    session_rows: dict[str, list[Mapping[str, Any]]] = {}
     for event in event_rows:
         if not isinstance(event, Mapping):
             continue
         event_session = str(event.get("session_id") or "").strip()
-        if event_session:
-            events_by_session.setdefault(event_session, []).append(event)
+        event_ticker = str(event.get("ticker") or "").strip().upper().split("@")[0]
+        if not event_session:
+            continue
+        session_rows.setdefault(event_session, []).append(event)
+        if event_ticker:
+            events_by_session_ticker.setdefault(
+                (event_session, event_ticker), []
+            ).append(event)
+
+    session_metadata: dict[str, dict[str, int]] = {}
+    for event_session, rows in session_rows.items():
+        sequence_counts: dict[int, int] = {}
+        valid_rows: list[Mapping[str, Any]] = []
+        for event in rows:
+            sequence = _number(event.get("sequence"), math.nan)
+            if not math.isfinite(sequence) or sequence <= 0 or int(sequence) != sequence:
+                continue
+            sequence_int = int(sequence)
+            sequence_counts[sequence_int] = sequence_counts.get(sequence_int, 0) + 1
+            if sequence_counts[sequence_int] == 1:
+                valid_rows.append(event)
+        valid_rows.sort(key=lambda item: int(_number(item.get("sequence"), 0)))
+        sequences = [int(_number(row.get("sequence"), 0)) for row in valid_rows]
+        gaps = max(0, sequences[0] - 1) if sequences else 0
+        if len(sequences) > 1:
+            gaps += sum(
+                max(0, right - left - 1)
+                for left, right in zip(sequences, sequences[1:])
+            )
+        previous_epoch_by_ticker: dict[str, float] = {}
+        missing_timestamps = regressions = 0
+        for row in valid_rows:
+            stamp = _epoch(row.get("event_time_epoch"))
+            if not math.isfinite(stamp):
+                missing_timestamps += 1
+                continue
+            symbol = str(row.get("ticker") or "").strip().upper().split("@")[0]
+            previous_epoch = previous_epoch_by_ticker.get(symbol, math.nan)
+            if math.isfinite(previous_epoch) and stamp < previous_epoch:
+                regressions += 1
+            previous_epoch_by_ticker[symbol] = stamp
+        session_metadata[event_session] = {
+            "session_events": len(rows),
+            "duplicate_sequences": sum(count - 1 for count in sequence_counts.values()),
+            "sequence_gaps": gaps,
+            "missing_sequence_prefix": max(0, sequences[0] - 1) if sequences else 0,
+            "first_sequence": sequences[0] if sequences else 0,
+            "last_sequence": sequences[-1] if sequences else 0,
+            "missing_event_timestamps": missing_timestamps,
+            "event_time_regressions": regressions,
+        }
 
     for index, position in enumerate(position_rows):
         if not isinstance(position, Mapping):
@@ -643,13 +693,17 @@ def replay_exit_batch(
         position_session = str(
             position.get("bbo_replay_session_id") or position.get("session_id") or ""
         ).strip()
-        relevant_events = events_by_session.get(position_session, [])
+        position_ticker = str(position.get("ticker") or "").strip().upper().split("@")[0]
+        relevant_events = events_by_session_ticker.get(
+            (position_session, position_ticker), []
+        )
         try:
             result = replay_exit_scenarios(
                 relevant_events,
                 position,
                 max_bbo_age_sec=max_bbo_age_sec,
                 scenarios=scenario_specs,
+                _session_metadata=session_metadata.get(position_session),
             )
         except ValueError as exc:
             rejected_positions.append({
