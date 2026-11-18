@@ -2102,12 +2102,22 @@ class BaseExecutionEngine:
             _finite_or_default(updated.get("realized_exit_slippage_rub"), 0.0)
             + (exit_price - raw_exit_price) * filled_shares * sign
         )
+        updated["realized_exit_notional_rub"] = (
+            _finite_or_default(updated.get("realized_exit_notional_rub"), 0.0)
+            + exit_price * filled_shares
+        )
+        updated["realized_exit_quantity_shares"] = (
+            int(_finite_or_default(updated.get("realized_exit_quantity_shares"), 0.0))
+            + filled_shares
+        )
         updated["realized_market_move_after_trigger_rub"] = (
             _finite_or_default(updated.get("realized_market_move_after_trigger_rub"), 0.0)
             + ((raw_exit_price - trigger_price) * filled_shares * sign if trigger_price > 0.0 else 0.0)
         )
         updated["exit_partial_fills"] = fills[-100:]
-        updated["exit_partial_fill_count"] = len(fills)
+        updated["exit_partial_fill_count"] = (
+            int(_finite_or_default(updated.get("exit_partial_fill_count"), 0.0)) + 1
+        )
         updated["exit_partial_fill_enabled"] = True
         updated["exit_fill_model"] = "DEPTH_PARTIAL_FILL"
         updated["exit_depth_unit"] = self.paper_book_size_unit
@@ -2239,10 +2249,20 @@ class BaseExecutionEngine:
             (exit_price - raw_exit_price) * share_qty * (1 if side == "BUY" else -1)
         )
         closed_trade = dict(trade)
+        prior_exit_quantity = int(_finite_or_default(
+            trade.get("realized_exit_quantity_shares"), 0.0
+        ))
+        prior_exit_notional = _finite_or_default(trade.get("realized_exit_notional_rub"), 0.0)
+        total_exit_quantity = prior_exit_quantity + share_qty
+        weighted_exit_price = (
+            (prior_exit_notional + exit_price * share_qty) / total_exit_quantity
+            if total_exit_quantity > 0 else exit_price
+        )
         closed_trade.update({
             "status": "CLOSED",
-            "volume": int(_finite_or_default(trade.get("original_volume"), share_qty)),
+            "volume": int(_finite_or_default(trade.get("original_volume"), total_exit_quantity)),
             "lots": int(_finite_or_default(trade.get("original_lots"), trade.get("lots", 0))),
+            "exit_price": round(weighted_exit_price, 6),
             "exit_time": now.strftime("%H:%M:%S"),
             "exit_timestamp": now.isoformat(timespec="milliseconds"),
             "exit_price": exit_price,
@@ -2284,8 +2304,9 @@ class BaseExecutionEngine:
                 else "FULL_FILL_AT_EXECUTABLE_BBO_DEPTH_UNVERIFIED"
             ),
             "exit_partial_fill_enabled": depth_confirmed,
-            "exit_partial_fill_count": len(trade.get("exit_partial_fills", []))
-                if isinstance(trade.get("exit_partial_fills"), list) else 0,
+            "exit_partial_fill_count": int(_finite_or_default(
+                trade.get("exit_partial_fill_count"), 0.0
+            )),
             "exit_depth_unit": self.paper_book_size_unit,
             "exit_depth_levels_used": (
                 int(depth_fill.get("levels_used", 0)) if isinstance(depth_fill, Mapping) else None
@@ -2315,7 +2336,7 @@ class BaseExecutionEngine:
             "pnl": round(net_pnl, 2),
             "pnl_percent": round(net_pct, 4),
             "fill_vs_trigger_pct": (
-                round((exit_price - trigger_price) / trigger_price * 100.0 * (1 if side == "BUY" else -1), 6)
+                round((weighted_exit_price - trigger_price) / trigger_price * 100.0 * (1 if side == "BUY" else -1), 6)
                 if trigger_price > 0.0 else None
             ),
             "time_in_trade_sec": round(held_seconds, 3) if held_seconds is not None else None,
@@ -2824,6 +2845,7 @@ class BaseExecutionEngine:
         logger.warning("🚨 Запущено экстренное PAPER-закрытие %s позиций.", len(raw_positions))
         closed_count = 0
         blocked_count = 0
+        partial_count = 0
         for raw_ticker in list(raw_positions.keys()):
             ticker = str(raw_ticker).strip().upper().split("@")[0]
             pos_obj = raw_positions.get(raw_ticker)
@@ -2865,6 +2887,8 @@ class BaseExecutionEngine:
                 )
                 if str(close_result.get("status", "")).upper() == "CLOSED":
                     closed_count += 1
+                elif str(close_result.get("last_partial_exit_at") or ""):
+                    partial_count += 1
                 else:
                     blocked_count += 1
             except Exception as exc:
@@ -2875,8 +2899,12 @@ class BaseExecutionEngine:
 
         result = {
             "closed": closed_count,
+            "partial": partial_count,
             "blocked": blocked_count,
-            "message": f"Экстренное PAPER-закрытие завершено: закрыто {closed_count}, не закрыто {blocked_count}.",
+            "message": (
+                f"Экстренное PAPER-закрытие: полностью закрыто {closed_count}, "
+                f"частично закрыто {partial_count}, ожидает исполнения/заблокировано {blocked_count}."
+            ),
         }
         logger.warning("🚨 [PAPER CLOSE ALL] %s", result["message"])
         return result
