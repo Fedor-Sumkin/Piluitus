@@ -90,6 +90,51 @@ class PaperPerformanceTests(unittest.TestCase):
         self.assertEqual(scorecard["by_exit_reason"]["STOP_LOSS"]["trades"], 1)
         self.assertEqual(scorecard["by_confidence"]["80-89"]["trades"], 1)
 
+    def test_scorecard_aggregates_exit_bbo_gaps_overall_and_by_ticker(self):
+        tracker = PaperPerformanceTracker()
+        tracker.restore([
+            {
+                **trade("gap-2", -2, ticker="GAZP", exit_time="2026-11-18T11:00:00"),
+                "exit_bbo_gap_count": 1,
+                "total_exit_bbo_gap_sec": 4.0,
+                "max_exit_bbo_gap_sec": 4.0,
+                "current_exit_bbo_gap_sec": 0.0,
+            },
+            {
+                **trade("gap-1", 3, ticker="SBER", exit_time="2026-11-18T10:00:00"),
+                "exit_bbo_gap_count": 2,
+                "total_exit_bbo_gap_sec": 3.5,
+                "max_exit_bbo_gap_sec": 2.5,
+                "last_exit_bbo_gap_sec": 1.5,
+                "current_exit_bbo_gap_sec": 0.0,
+            },
+        ])
+
+        scorecard = tracker.scorecard()
+        overall = scorecard["overall"]
+        self.assertEqual(overall["trades_with_exit_bbo_gap"], 2)
+        self.assertEqual(overall["exit_bbo_gap_trade_rate_pct"], 100.0)
+        self.assertEqual(overall["exit_bbo_gap_episodes"], 3)
+        self.assertEqual(overall["total_exit_bbo_gap_sec"], 7.5)
+        self.assertEqual(overall["average_exit_bbo_gap_sec"], 2.5)
+        self.assertEqual(overall["max_exit_bbo_gap_sec"], 4.0)
+        self.assertEqual(
+            scorecard["by_ticker"]["SBER"]["total_exit_bbo_gap_sec"], 3.5
+        )
+        self.assertEqual(
+            scorecard["by_ticker"]["GAZP"]["exit_bbo_gap_episodes"], 1
+        )
+
+    def test_scorecard_reports_zero_exit_bbo_gaps_when_no_gap_metadata_exists(self):
+        tracker = PaperPerformanceTracker()
+        tracker.record(trade("no-gap", 1))
+        overall = tracker.scorecard()["overall"]
+        self.assertEqual(overall["trades_with_exit_bbo_gap"], 0)
+        self.assertEqual(overall["exit_bbo_gap_episodes"], 0)
+        self.assertEqual(overall["total_exit_bbo_gap_sec"], 0.0)
+        self.assertEqual(overall["max_exit_bbo_gap_sec"], 0.0)
+        self.assertIsNone(overall["average_exit_bbo_gap_sec"])
+
     def test_shadow_join_uses_candidate_id_and_deduplicates_candidate_horizon(self):
         tracker = PaperPerformanceTracker()
         tracker.restore([
