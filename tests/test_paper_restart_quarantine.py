@@ -70,6 +70,20 @@ class PaperRestartQuarantineTests(unittest.IsolatedAsyncioTestCase):
             "REVIEW_REQUIRED",
         )
 
+    async def test_malformed_trade_record_keeps_entry_gate_locked(self) -> None:
+        db = type("DB", (), {
+            "get_all_daily_trades": AsyncMock(return_value={"UNKNOWN_ID": ["broken"]}),
+        })()
+
+        quarantined = await self.engine.quarantine_unreconciled_paper_positions(db)
+
+        self.assertEqual(quarantined, 0)
+        self.assertIn("UNKNOWN_ID", self.engine._unreconciled_paper_positions)
+        self.assertEqual(
+            self.engine._unreconciled_paper_positions["UNKNOWN_ID"]["reconciliation_status"],
+            "JOURNAL_RECORD_INVALID",
+        )
+
     async def test_existing_stale_review_is_preserved_across_restart(self) -> None:
         stale = {
             "status": "STALE_REVIEW",
