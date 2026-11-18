@@ -159,6 +159,49 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(by_horizon["180s"]["ok"], 2)
 
 
+    def test_completed_labels_restore_cumulative_statistics_after_restart(self) -> None:
+        original = ShadowForwardTracker(horizons_seconds=(60,))
+        with patch("strategy.shadow_outcomes.time.monotonic", side_effect=[100.0, 160.0]):
+            original.record_candidate(
+                "SBER", "BUY", quote_metrics(100.0, 100.1),
+                {
+                    "score": 92.0,
+                    "eligible": True,
+                    "regime": "TREND_ALIGNED",
+                    "spread_atr_ratio": 0.12,
+                    "hard_blocks": [],
+                },
+            )
+            labels = original.observe_market_tick("SBER", quote_metrics(100.5, 100.6))
+        self.assertEqual(len(labels), 1)
+
+        restored = ShadowForwardTracker(horizons_seconds=(60,))
+        count = restored.restore_completed_labels(labels)
+        self.assertEqual(count, 1)
+        self.assertEqual(
+            restored.statistics_snapshot()["eligible"],
+            original.statistics_snapshot()["eligible"],
+        )
+        self.assertEqual(
+            restored.statistics_snapshot()["by_horizon"],
+            original.statistics_snapshot()["by_horizon"],
+        )
+        self.assertEqual(
+            restored.statistics_snapshot()["segments"],
+            original.statistics_snapshot()["segments"],
+        )
+
+    def test_restore_ignores_malformed_or_unrecognized_outcome_rows(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,))
+        restored = tracker.restore_completed_labels([
+            None,
+            {},
+            {"candidate_id": "x", "ticker": "SBER", "result": "UNKNOWN"},
+            {"candidate_id": "x", "ticker": "SBER", "result": "OK", "side": "BUY"},
+        ])
+        self.assertEqual(restored, 1)
+        self.assertEqual(tracker.statistics_snapshot()["eligible"]["labels"], 1)
+
     def test_outcomes_segment_by_spread_atr_trade_count_and_directional_flow(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
         metrics = quote_metrics(100.0, 100.1)
