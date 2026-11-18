@@ -387,6 +387,12 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(segments["market_regime=TREND"]["ok"], 1)
         self.assertEqual(segments["directional_regime=TREND_UP"]["ok"], 1)
         self.assertEqual(segments["cost_to_atr_bucket=0.25-0.50"]["ok"], 1)
+        self.assertEqual(
+            segments[
+                "market_regime_signal_confluence=TREND|BUY|Q=unavailable|FLOW=strong_aligned|OFI=unavailable"
+            ]["ok"],
+            1,
+        )
 
     def test_ofi_snapshot_is_carried_into_forward_label_and_segment(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
