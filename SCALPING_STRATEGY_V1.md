@@ -241,3 +241,39 @@ change Shadow eligibility, block the LLM, change position sizing, or modify
 PAPER orders. Compare net executable outcomes by ticker, side, horizon and
 regime only after adequate sample sizes; overlapping horizons from one
 candidate are correlated observations, not independent trades.
+
+
+## PAPER executable-BBO replay journal
+
+The PAPER process now records a bounded, ordered journal of accepted Finam
+ORDER_BOOK best-quote states for the active Top-N universe and currently open
+PAPER positions. Each event stores the process session ID and sequence,
+ticker, exchange event time (or an explicit receive-time fallback), receive
+UTC/monotonic clocks, Bid/Ask, displayed best-level sizes, validity and the
+provider/parser invalidation reason.
+
+Capture is observational and does not feed prices into the execution path.
+Price/size/validity changes are retained; unchanged heartbeats are sampled at
+a configurable interval so replay can distinguish an unchanged but confirmed
+book from a long data gap. Invalidations are retained as explicit events.
+Stale/out-of-order events rejected by the screener are not represented as
+accepted market states.
+
+Events enter a bounded in-memory queue without waiting for Memurai. A separate
+writer batches them into the bounded list
+`piluitus:paper:bbo_replay` (default retention 100,000 events). The queue,
+batch size, flush interval, heartbeat interval and storage cap are bounded;
+queue overflow and persistence failures are counted and reported. On orderly
+shutdown the writer drains its queue before the database connection is closed.
+The journal is process-session scoped: monotonic timestamps must never be
+compared across different session IDs.
+
+This first recorder stores top-of-book prices and sizes, not full depth or
+exchange order IDs. It supports replay of executable BBO-triggered exit
+decisions and quote-gap behavior, but it cannot prove queue position, passive
+limit-order fills, or multi-level market impact. Replay must use Bid to exit
+BUY positions and Ask to exit SELL positions, preserve event order, reject
+invalid states, and enforce the same freshness TTL as the original PAPER
+monitor. A replayed strategy must not be promoted to the active PAPER exit
+rules until it has been compared against the unchanged baseline on identical
+sessions and realistic commission/slippage assumptions.
