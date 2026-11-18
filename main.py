@@ -860,23 +860,20 @@ async def _persist_shadow_outcomes(labels: list[dict[str, Any]], *, source: str)
     """Persist each completed forward label; never let research storage block trading."""
     if not labels:
         return
-    saved = 0
     try:
-        for label in labels:
-            await db_manager.push_to_list(
-                SHADOW_OUTCOMES_STORAGE_KEY,
-                label,
-                max_len=SHADOW_OUTCOMES_STORAGE_LIMIT,
-            )
-            saved += 1
+        await db_manager.push_many_to_list(
+            SHADOW_OUTCOMES_STORAGE_KEY,
+            labels,
+            max_len=SHADOW_OUTCOMES_STORAGE_LIMIT,
+        )
         logger.info(
             "[STRATEGY SHADOW PERSIST] source=%s saved=%d retained_limit=%d",
-            source, saved, SHADOW_OUTCOMES_STORAGE_LIMIT,
+            source, len(labels), SHADOW_OUTCOMES_STORAGE_LIMIT,
         )
     except Exception as exc:
         logger.error(
-            "[STRATEGY SHADOW PERSIST ERROR] source=%s saved_before_error=%d/%d error=%s",
-            source, saved, len(labels), exc, exc_info=True,
+            "[STRATEGY SHADOW PERSIST ERROR] source=%s batch_size=%d error=%s",
+            source, len(labels), exc, exc_info=True,
         )
 
 
