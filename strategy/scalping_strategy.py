@@ -289,6 +289,24 @@ def evaluate_scalping_candidate(
         "queue_imbalance_5s": round(queue_imbalance, 4) if queue_available else None,
         "queue_imbalance_5s_coverage_sec": round(queue_coverage, 3),
         "trade_flow_imbalance_30s": round(flow_imbalance, 4) if flow_ready and math.isfinite(flow_imbalance) else None,
+        # OFI is reported for research only; it deliberately contributes no
+        # points and creates no eligibility block until independently validated.
+        "ofi_5s": (
+            round(_number(metrics, "ofi_5s"), 6)
+            if _number(metrics, "ofi_5s_available") >= 0.5 else None
+        ),
+        "ofi_5s_available": _number(metrics, "ofi_5s_available"),
+        "ofi_5s_samples": int(max(0.0, _number(metrics, "ofi_5s_samples"))),
+        "ofi_5s_coverage_sec": round(_number(metrics, "ofi_5s_coverage_sec"), 3),
+        "ofi_directional_alignment": (
+            "SUPPORTS" if (
+                _number(metrics, "ofi_5s_available") >= 0.5
+                and (_number(metrics, "ofi_5s") if side == "BUY" else -_number(metrics, "ofi_5s")) > 0.0
+            ) else "OPPOSES" if (
+                _number(metrics, "ofi_5s_available") >= 0.5
+                and (_number(metrics, "ofi_5s") if side == "BUY" else -_number(metrics, "ofi_5s")) < 0.0
+            ) else "NEUTRAL_OR_UNAVAILABLE"
+        ),
         "spread_atr_ratio": round(spread_atr_ratio, 4) if math.isfinite(spread_atr_ratio) else None,
         "threshold": 85.0,
         "spread_atr_limit": max_spread_atr_ratio,
