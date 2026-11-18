@@ -3147,6 +3147,7 @@ class MarketWorker:
                     "llm_reason_code": model_reason_code,
                     "llm_local_guard": local_evidence_diagnostic,
                     "candidate_direction": candidate_decision,
+                    "llm_shadow_linked": bool(verdict_data.get("shadow_linked", False)),
                 })
                 ai_analysis["tactic_opinion"] = tactic_text
                 ai_analysis["critic_opinion"] = critic_text
