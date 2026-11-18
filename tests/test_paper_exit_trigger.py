@@ -352,11 +352,13 @@ class PaperPartialExitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["exit_fill_model"], "DEPTH_PARTIALS_PLUS_FINAL_DEPTH_FILL")
         self.assertAlmostEqual(result["exit_price"], 100.75)
         self.assertAlmostEqual(result["entry_commission_rub"], 2.0)
-        self.assertAlmostEqual(result["pnl"], partial_net + (
+        expected_net_pnl = partial_net + (
             (100.5 - 100.0) * 10
             - 100.5 * 10 * 0.001
             - 1.0
-        ), places=4)
+        )
+        # Closed-trade PnL is deliberately persisted in RUB to kopeck precision.
+        self.assertAlmostEqual(result["pnl"], round(expected_net_pnl, 2), places=2)
         self.assertNotIn("SBER", engine.paper_positions)
         db.set_json.assert_awaited()
         db.push_to_list.assert_awaited_once()
