@@ -92,6 +92,23 @@ class PaperPerformanceTests(unittest.TestCase):
         self.assertEqual(scorecard["by_volatility_regime"]["HIGH"]["trades"], 1)
         self.assertEqual(scorecard["by_liquidity_regime"]["GOOD"]["trades"], 1)
         self.assertEqual(scorecard["by_directional_regime"]["TREND_DOWN"]["trades"], 1)
+        self.assertEqual(scorecard["by_market_regime"]["TREND"]["sample_quality"], "INSUFFICIENT_LT_30")
+        interval = scorecard["by_ticker_side"]["SBER|BUY"]["win_rate_95_wilson_pct"]
+        self.assertIsInstance(interval, list)
+        self.assertEqual(len(interval), 2)
+        self.assertLessEqual(interval[0], 100.0)
+        self.assertGreaterEqual(interval[1], 0.0)
+
+    def test_legacy_cohorts_report_unknown_regimes_without_inference(self):
+        tracker = PaperPerformanceTracker()
+        tracker.restore([trade("legacy-regime", 2)])
+        scorecard = tracker.scorecard()
+        self.assertEqual(scorecard["by_market_regime"]["UNKNOWN"]["trades"], 1)
+        self.assertEqual(scorecard["by_volatility_regime"]["UNKNOWN"]["trades"], 1)
+        self.assertEqual(scorecard["by_liquidity_regime"]["UNKNOWN"]["trades"], 1)
+        self.assertEqual(scorecard["by_directional_regime"]["UNKNOWN"]["trades"], 1)
+        self.assertEqual(scorecard["overall"]["sample_quality"], "INSUFFICIENT_LT_30")
+        self.assertEqual(len(scorecard["overall"]["win_rate_95_wilson_pct"]), 2)
 
     def test_scorecard_calculates_net_metrics_groups_and_drawdown(self):
         tracker = PaperPerformanceTracker()
