@@ -156,7 +156,7 @@ class PaperPerformanceTests(unittest.TestCase):
         self.assertEqual(comparison["matched_trade_rate_pct"], 25.0)
         self.assertEqual(comparison["unmatched_by_reason"], {
             "NO_SHADOW_CANDIDATE_ID": 1,
-            "CANDIDATE_LABEL_NOT_YET_AVAILABLE": 1,
+            "CANDIDATE_NO_LABEL_RECORD": 1,
             "CANDIDATE_LABEL_NO_FRESH_BBO": 1,
         })
 
