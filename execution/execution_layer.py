@@ -368,14 +368,14 @@ class BaseExecutionEngine:
             )
             if self.paper_book_size_unit in {"shares", "lots"}:
                 logger.warning(
-                    "🧩 [PAPER DEPTH MODEL] Частичное исполнение входа включено: unit=%s, "
-                    "лимит участия в каждом уровне=%.1f%%. Исполнение выхода пока использует свежий BBO.",
+                    "🧩 [PAPER DEPTH MODEL] Частичное исполнение включено: unit=%s, "
+                    "лимит участия в каждом уровне=%.1f%%; depth-fill применяется и на выходе.",
                     self.paper_book_size_unit, self.paper_max_book_participation_pct,
                 )
             else:
                 logger.warning(
                     "⚠️ [PAPER DEPTH MODEL DISABLED] Единицы buy_size/sell_size Finam не подтверждены; "
-                    "для PAPER-входов сохраняется допущение полного fill по top-of-book. "
+                    "для входов и выходов сохраняется допущение полного fill по top-of-book. "
                     "Не устанавливайте unit=shares/lots без проверки данных."
                 )
             if self.paper_commission_pct <= 0.0 or self.paper_slippage_bps <= 0.0:
