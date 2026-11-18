@@ -671,11 +671,14 @@ snapshot is excluded and ending mark-to-market equity is returned as null when
 the final replay state is incomplete. The report exposes complete/incomplete
 snapshot counts, mark coverage, stale/invalid mark events, peak simultaneous
 positions, marked equity drawdown in RUB and percent, and the last complete
-snapshot time. The prior realized-only drawdown remains separately available
-as portfolio_max_drawdown_rub.
+snapshot time. Capital output also includes free cash and peak
+allocation/capital utilization. The prior realized-only drawdown remains
+separately available as portfolio_max_drawdown_rub.
 
 This is an executable-BBO liquidation proxy, not broker account equity:
-the journal contains top-of-book rather than full depth, and the model does
+the simulation includes only positions selected into the replay batch and can
+omit overlapping trades outside that cohort or older than the retained event
+journal. The journal contains top-of-book rather than full depth, and the model does
 not include margin, short collateral, settlement, queue position, market
 impact beyond configured slippage or losses during data gaps. Drawdown is
 measured only over complete observed snapshots; it must not be interpreted as
