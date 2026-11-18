@@ -1493,6 +1493,10 @@ class HFTMemoryScreener:
                 "selection_ready": self.selection_ready,
                 "eligible_count": self.eligible_count,
                 "selected_tickers": list(self.selected_tickers),
+                "quote_side_updates": {
+                    "bid": bool(accept_bid_update),
+                    "ask": bool(accept_ask_update),
+                },
                 "metrics": metrics,
             }
 
