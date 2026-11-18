@@ -449,3 +449,22 @@ The current PAPER execution model still has explicit fill assumptions: the
 measured shortfall is relative to the recorded executable BBO and simulated
 depth VWAP, not a claim about actual exchange queue position or live market
 impact.
+
+
+## Consolidated PAPER research report
+
+`GET /api/v1/paper/research/report?limit=30` provides one read-only snapshot
+combining the realized PAPER performance scorecard (including entry-quality
+cohorts and loss diagnostics), exact-ID Shadow reconciliation and batch BBO
+exit replay. The limit is 1–100 and is applied to the replay cohort and the
+bounded reconciliation details; it does not truncate the in-memory scorecard
+or change the underlying retained journals. If no BBO replay events remain for
+the selected trades, the report returns the replay section as unavailable
+rather than failing the complete report. The response includes a generation
+timestamp and an explicit interpretation note.
+
+The report is a best-effort point-in-time read, not an atomic database
+transaction or a permanently archived session artifact. Compare the same
+PAPER session/cohort when evaluating changes. Realized trade PnL, Shadow
+forward labels and simulated exit scenarios remain distinct and must not be
+added together or interpreted as independent samples.
