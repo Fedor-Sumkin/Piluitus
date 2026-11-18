@@ -69,6 +69,16 @@ class InMemoryAOFTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "fail-closed"):
                 await store.ping()
 
+    async def test_paper_session_snapshot_fails_closed_on_corrupt_trade_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = _InMemory(str(Path(directory) / "fallback.aof"))
+            await store.set("piluitus:trade:PAPER_CORRUPT", "{not-json")
+            database = DBManager()
+            database._redis = store
+
+            with self.assertRaisesRegex(RuntimeError, "Некорректная запись журнала сделок"):
+                await database.get_paper_session_snapshot()
+
     async def test_atomic_trade_write_restores_trade_and_active_order_index(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = _InMemory(str(Path(directory) / "fallback.aof"))
