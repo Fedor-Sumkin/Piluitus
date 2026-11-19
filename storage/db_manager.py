@@ -587,7 +587,7 @@ class DBManager:
                         f"Невозможно безопасно архивировать PAPER-запись {fallback_id}: некорректный формат."
                     )
                 status = str(trade.get("status", "")).strip().upper()
-                if status in {"OPEN", "ACTIVE", "STALE_REVIEW"} or status not in {"CLOSED"}:
+                if status != "CLOSED":
                     archive_record = {
                         "archive_type": "PAPER_SESSION_RESET",
                         "archived_at": archived_at,
