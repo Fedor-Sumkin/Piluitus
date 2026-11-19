@@ -18,6 +18,35 @@ JOURNAL_FILE = "trading_journal.json"
 _MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
 
 
+def _coalesce_queued_market_event(queue: asyncio.Queue, event: dict[str, Any]) -> bool:
+    """Replace an older queued snapshot for the same symbol without changing queue accounting.
+
+    ORDER_BOOK events contain the gateway's fully reconstructed depth snapshot and
+    QUOTES are latest-value state. Replacing an older same-symbol snapshot is safer
+    than allowing the queue to accumulate stale market state. Trade prints are
+    deliberately never coalesced.
+    """
+    event_type = str(event.get("event_type") or "QUOTES").strip().upper()
+    if event_type not in {"ORDER_BOOK", "QUOTES"}:
+        return False
+    ticker = str(event.get("ticker") or event.get("security_code") or "").strip().upper().split("@")[0]
+    if not ticker:
+        return False
+    pending = getattr(queue, "_queue", None)
+    if pending is None:
+        return False
+    for index in range(len(pending) - 1, -1, -1):
+        queued = pending[index]
+        if not isinstance(queued, dict):
+            continue
+        queued_type = str(queued.get("event_type") or "QUOTES").strip().upper()
+        queued_ticker = str(queued.get("ticker") or queued.get("security_code") or "").strip().upper().split("@")[0]
+        if queued_type == event_type and queued_ticker == ticker:
+            pending[index] = event
+            return True
+    return False
+
+
 def _event_timestamp_to_monotonic(value: object, receive_monotonic: float) -> float:
     """Map provider event time to the local monotonic clock without aging it."""
     event_dt: datetime | None = None
@@ -2061,6 +2090,9 @@ class FinamBrokerClient:
                     instrument_trade_messages = 0
                     instrument_trade_events = 0
                     instrument_trade_queue_dropped = 0
+                    instrument_trade_queue_backpressure = 0
+                    order_book_events_coalesced = 0
+                    quote_events_coalesced = 0
                     last_trade_diag = asyncio.get_running_loop().time()
                     order_book_decode_warned = False
                     order_book_messages = 0
@@ -2903,10 +2935,15 @@ class FinamBrokerClient:
                                     if book_update.get("ask_present"):
                                         enqueued_bbo_side_updates += 1
                                 except asyncio.QueueFull:
-                                    order_book_queue_dropped += 1
-                                    if symbol_stats is not None:
-                                        symbol_stats["window_dropped"] += 1
-                                    _record_queue_overflow("ORDER_BOOK", book_update.get("ticker"))
+                                    if _coalesce_queued_market_event(queue, book_update):
+                                        order_book_events_coalesced += 1
+                                        if symbol_stats is not None:
+                                            symbol_stats["window_coalesced"] = symbol_stats.get("window_coalesced", 0) + 1
+                                    else:
+                                        order_book_queue_dropped += 1
+                                        if symbol_stats is not None:
+                                            symbol_stats["window_dropped"] += 1
+                                        _record_queue_overflow("ORDER_BOOK", book_update.get("ticker"))
                             continue
 
                         if subscription_type in {"INSTRUMENT_TRADES", "INSTRUMENT_TRADE"}:
@@ -2917,13 +2954,11 @@ class FinamBrokerClient:
                                 try:
                                     queue.put_nowait(trade_event)
                                 except asyncio.QueueFull:
-                                    instrument_trade_queue_dropped += 1
-                                    # Do not reset accumulated trade-flow history on a single
-                                    # queue overflow; that amplified data loss for the ticker.
-                                    _record_queue_overflow(
-                                        "INSTRUMENT_TRADE", trade_event.get("ticker")
-                                    )
-                                    continue
+                                    # Individual exchange prints are not replaceable snapshots.
+                                    # Apply bounded backpressure instead of silently losing
+                                    # trade-flow evidence when the consumer briefly falls behind.
+                                    instrument_trade_queue_backpressure += 1
+                                    await queue.put(trade_event)
                             if trade_events and not first_trade_logged:
                                 logger.info(
                                     "📈 Первые сделки Finam: распознано=%d, тикер=%s, side=%s.",
@@ -2968,7 +3003,10 @@ class FinamBrokerClient:
                             try:
                                 queue.put_nowait(tick)
                             except asyncio.QueueFull:
-                                _record_queue_overflow("QUOTES", tick.get("ticker"))
+                                if _coalesce_queued_market_event(queue, tick):
+                                    quote_events_coalesced += 1
+                                else:
+                                    _record_queue_overflow("QUOTES", tick.get("ticker"))
                                 continue
 
                             enqueued_quotes += 1
