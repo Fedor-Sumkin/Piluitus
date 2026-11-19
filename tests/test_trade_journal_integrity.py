@@ -31,6 +31,10 @@ class FakeListRedis:
     async def get(self, key: str):
         return self.values.get(key)
 
+    async def set(self, key: str, value: str) -> bool:
+        self.values[key] = value
+        return True
+
     async def delete(self, *keys: str) -> int:
         deleted = 0
         for key in keys:
@@ -107,6 +111,14 @@ class TradeJournalIntegrityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["deleted_paper_performance_rows"], 1)
         self.assertEqual(result["deleted_paper_performance_keys"], 1)
         self.assertNotIn("piluitus:paper:closed_trades", client.lists)
+        self.assertNotIn("piluitus:trade:PAPER_OPEN_1", client.values)
+        archived = json.loads(
+            client.values["piluitus:paper:archive:position:PAPER_OPEN_1"]
+        )
+        self.assertEqual(archived["trade"]["id"], "PAPER_OPEN_1")
+        self.assertEqual(archived["original_status"], "OPEN")
+        self.assertFalse(archived["realized_pnl_created"])
+        self.assertFalse(archived["exit_price_created"])
 
     async def test_panic_journal_clear_removes_realized_paper_journal(self) -> None:
         client = FakeListRedis()
