@@ -1788,12 +1788,10 @@ class BaseExecutionEngine:
                     self._stop_risk_with_costs(price, stop_loss, lots * lot_multiplier, side), 2
                 ),
                 "entry_commission_rub": round(entry_commission, 4),
-            "original_volume": int(_finite_or_default(
-                trade.get("original_volume"), share_qty
-            )),
-            "original_lots": int(_finite_or_default(
-                trade.get("original_lots"), trade.get("lots", share_qty)
-            )),
+                # Preserve the initial position size for later partial-exit
+                # accounting. At entry, the accepted lots are the original size.
+                "original_volume": int(lots * lot_multiplier),
+                "original_lots": int(lots),
                 "commission_pct_per_side": self.paper_commission_pct if self.paper_mode else 0.0,
                 "paper_slippage_bps": self.paper_slippage_bps if self.paper_mode else 0.0,
                 "entry_executable_side": entry_bbo.get("executable_side") if entry_bbo is not None else None,
