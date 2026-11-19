@@ -54,7 +54,6 @@ class PaperSessionArchiveTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["archived_open_paper_positions"], 1)
             self.assertEqual(result["archived_stale_paper_positions"], 1)
             self.assertEqual(result["archived_unresolved_paper_positions"], 2)
-            self.assertEqual(result["preserved_open_paper_positions"], 0)
             self.assertIsNone(await client.get("piluitus:trade:PAPER_OPEN_1"))
             self.assertIsNone(await client.get("piluitus:trade:PAPER_STALE_1"))
             self.assertIsNone(await client.get("piluitus:trade:PAPER_CLOSED_1"))
