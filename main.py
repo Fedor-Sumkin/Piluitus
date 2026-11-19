@@ -70,6 +70,10 @@ from dashboard_verdicts import (
     nonnegative_int,
     normalise_execution_status,
 )
+from strategy.decision_diagnostics import (
+    build_llm_feature_snapshot,
+    classify_hold_reason_bucket,
+)
 import tg_bot
 from news_parser import MarketNewsParser
 
@@ -875,28 +879,33 @@ paper_shadow_labels: list[dict[str, Any]] = []
 
 
 async def _persist_shadow_outcomes(labels: list[dict[str, Any]], *, source: str) -> None:
-    """Persist each completed forward label; never let research storage block trading."""
+    """Persist completed labels with a session marker; storage stays a research archive."""
     if not labels:
+        return
+    session_id = str(getattr(execution_engine, "session_id", "unknown"))
+    session_labels = [
+        {**dict(label), "paper_session_id": session_id}
+        for label in labels if isinstance(label, dict)
+    ]
+    if not session_labels:
         return
     try:
         await db_manager.push_many_to_list(
             SHADOW_OUTCOMES_STORAGE_KEY,
-            labels,
+            session_labels,
             max_len=SHADOW_OUTCOMES_STORAGE_LIMIT,
         )
-        paper_shadow_labels.extend(
-            dict(label) for label in labels if isinstance(label, dict)
-        )
+        paper_shadow_labels.extend(session_labels)
         if len(paper_shadow_labels) > SHADOW_OUTCOMES_STORAGE_LIMIT:
             del paper_shadow_labels[:-SHADOW_OUTCOMES_STORAGE_LIMIT]
         logger.info(
-            "[STRATEGY SHADOW PERSIST] source=%s saved=%d retained_limit=%d",
-            source, len(labels), SHADOW_OUTCOMES_STORAGE_LIMIT,
+            "[STRATEGY SHADOW PERSIST] source=%s saved=%d retained_limit=%d session_id=%s",
+            source, len(session_labels), SHADOW_OUTCOMES_STORAGE_LIMIT, session_id,
         )
     except Exception as exc:
         logger.error(
             "[STRATEGY SHADOW PERSIST ERROR] source=%s batch_size=%d error=%s",
-            source, len(labels), exc, exc_info=True,
+            source, len(session_labels), exc, exc_info=True,
         )
 
 
@@ -961,23 +970,47 @@ def _record_paper_bbo_replay(
 
 
 async def _restore_shadow_outcomes() -> None:
-    """Rebuild cumulative strategy research statistics from the bounded outcome journal."""
+    """Restore historical research only outside PAPER; PAPER starts with empty aggregates."""
+    paper_shadow_labels.clear()
+    if getattr(execution_engine, "paper_mode", True):
+        discarded_pending = scalping_shadow_tracker.clear()
+        logger.info(
+            "[STRATEGY SHADOW SESSION RESET] active_session=%s labels=0 pending_discarded=%d "
+            "historical_journal_retained=true historical_labels_loaded=false",
+            getattr(execution_engine, "session_id", "unknown"),
+            discarded_pending,
+        )
+        return
     try:
         stored = await db_manager.get_list(
             SHADOW_OUTCOMES_STORAGE_KEY, start=0, stop=SHADOW_OUTCOMES_STORAGE_LIMIT - 1
         )
         restored = scalping_shadow_tracker.restore_completed_labels(stored)
-        paper_shadow_labels.clear()
         paper_shadow_labels.extend(
             dict(label) for label in stored if isinstance(label, dict)
         )
         logger.info(
-            "[STRATEGY SHADOW RESTORE] loaded=%d restored=%d pending=0 "
-            "storage_limit=%d; pending forward labels from a prior process are not resumed",
+            "[STRATEGY SHADOW RESTORE] loaded=%d restored=%d pending=0 storage_limit=%d",
             len(stored), restored, SHADOW_OUTCOMES_STORAGE_LIMIT,
         )
     except Exception as exc:
         logger.error("[STRATEGY SHADOW RESTORE ERROR] %s", exc, exc_info=True)
+
+
+async def _rotate_paper_bbo_replay_session() -> None:
+    """Drain the previous replay writer and start a clean recorder session."""
+    global paper_bbo_replay_recorder
+    previous = paper_bbo_replay_recorder
+    await previous.close()
+    recorder = BBOReplayRecorder()
+    paper_bbo_replay_recorder = recorder
+    execution_engine.bbo_replay_session_id = recorder.session_id
+    execution_engine.paper_exit_event_recorder = recorder.record_exit_trigger
+    recorder.start(db_manager)
+    logger.info(
+        "[PAPER BBO REPLAY SESSION RESET] session_id=%s previous_session_id=%s",
+        recorder.session_id, previous.session_id,
+    )
 
 
 async def _restore_paper_performance() -> None:
@@ -1208,6 +1241,12 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "local_candidate_buy", "local_candidate_sell",
         "prefilter_pass_buy", "prefilter_pass_sell",
         "llm_calls", "llm_model_approve", "llm_model_hold",
+        "llm_hold_buy_m1", "llm_hold_buy_support", "llm_hold_buy_risk_reward",
+        "llm_hold_buy_direction", "llm_hold_buy_volume", "llm_hold_buy_spread",
+        "llm_hold_buy_stale", "llm_hold_buy_other",
+        "llm_hold_sell_m1", "llm_hold_sell_support", "llm_hold_sell_risk_reward",
+        "llm_hold_sell_direction", "llm_hold_sell_volume", "llm_hold_sell_spread",
+        "llm_hold_sell_stale", "llm_hold_sell_other",
         "llm_request_error", "llm_timeout",
         "post_llm_evidence_blocked", "post_llm_confidence_blocked",
         "llm_approve_buy", "llm_approve_sell",
@@ -1241,6 +1280,12 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "duplicate=%(candidate_deduplicated)d; локально(BUY=%(local_candidate_buy)d,SELL=%(local_candidate_sell)d), "
         "до_LLM(BUY=%(prefilter_pass_buy)d,SELL=%(prefilter_pass_sell)d;доля=%(prefilter_pass_pct).1f%%); "
         "LLM=%(llm_calls)d, model(APPROVE=%(llm_model_approve)d,HOLD=%(llm_model_hold)d), "
+        "HOLD_reason BUY(M1=%(llm_hold_buy_m1)d,support=%(llm_hold_buy_support)d,RR=%(llm_hold_buy_risk_reward)d,"
+        "direction=%(llm_hold_buy_direction)d,volume=%(llm_hold_buy_volume)d,spread=%(llm_hold_buy_spread)d,"
+        "stale=%(llm_hold_buy_stale)d,other=%(llm_hold_buy_other)d); "
+        "SELL(M1=%(llm_hold_sell_m1)d,support=%(llm_hold_sell_support)d,RR=%(llm_hold_sell_risk_reward)d,"
+        "direction=%(llm_hold_sell_direction)d,volume=%(llm_hold_sell_volume)d,spread=%(llm_hold_sell_spread)d,"
+        "stale=%(llm_hold_sell_stale)d,other=%(llm_hold_sell_other)d); "
         "после_LLM(guard_block=%(post_llm_evidence_blocked)d,confidence_block=%(post_llm_confidence_blocked)d), "
         "итог(APPROVE_BUY=%(llm_approve_buy)d,APPROVE_SELL=%(llm_approve_sell)d,"
         "HOLD_BUY-кандидат=%(llm_hold_buy)d,HOLD_SELL-кандидат=%(llm_hold_sell)d), "
@@ -1288,11 +1333,12 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
     ineligible = shadow["ineligible"]
     cost_model = shadow.get("cost_model", {})
     logger.info(
-        "[STRATEGY SHADOW SCORECARD] costs=commission %.4f%%/side slippage %.2fbps; "
+        "[STRATEGY SHADOW SCORECARD] cost_status=%s costs=commission %.4f%%/side slippage %.2fbps; "
         "eligible labels=%d ok=%d positive=%.1f%% avg_gross=%+.5f%% avg_net=%+.5f%% "
         "MFE=%+.5f%%@%.1fs MAE=%+.5f%%@%.1fs BBO_obs=%.1f span=%.1fs; "
         "ineligible labels=%d ok=%d positive=%.1f%% avg_gross=%+.5f%% avg_net=%+.5f%% "
         "MFE=%+.5f%%@%.1fs MAE=%+.5f%%@%.1fs BBO_obs=%.1f span=%.1fs; pending=%d",
+        str(cost_model.get("status", "UNKNOWN")),
         float(cost_model.get("commission_pct_per_side", 0.0)),
         float(cost_model.get("slippage_bps", 0.0)),
         eligible["labels"], eligible["ok"], eligible["positive_rate_pct"],
@@ -2504,9 +2550,17 @@ class MarketWorker:
                 shadow_candidate_id, execution_status=execution_status
             )
         result_message = str(result.get("message", ""))
+        outcome_requested_lots = nonnegative_int(result.get("requested_lots"))
+        if outcome_requested_lots is None or outcome_requested_lots <= 0:
+            outcome_requested_lots = max(0, int(lots))
+        outcome_filled_lots = nonnegative_int(result.get("lots"))
+        if outcome_filled_lots is None:
+            outcome_filled_lots = (
+                outcome_requested_lots if execution_status in {"OPENED", "ACCEPTED"} else 0
+            )
         logger.info(
-            "[EXECUTION OUTCOME] %s %s: status=%s mode=%s lots=%d message=%s",
-            side, ticker, execution_status, result_mode, int(lots),
+            "[EXECUTION OUTCOME] %s %s: status=%s mode=%s requested_lots=%d filled_lots=%d message=%s",
+            side, ticker, execution_status, result_mode, outcome_requested_lots, outcome_filled_lots,
             result_message.replace(chr(10), " ").replace(chr(13), " ")[:240] or "-",
         )
         if "BBO_ENTRY_BLOCK" in result_message:
@@ -2733,61 +2787,7 @@ class MarketWorker:
                 if not isinstance(metrics, dict):
                     metrics = {}
                 candidate_direction_for_diag = str(event_payload.get("candidate_direction") or "").upper()
-                llm_input_features = {
-                    "price_change_pct": _parse_finite_float(metrics.get("price_change_pct")),
-                    "price_vs_vwap_pct": _parse_finite_float(metrics.get("price_vs_vwap_pct")),
-                    "direction_evidence_state": str(metrics.get("direction_evidence_state") or "UNAVAILABLE"),
-                    "volume_spike": _parse_finite_float(metrics.get("volume_spike")),
-                    "volume_spike_raw": _parse_finite_float(metrics.get("volume_spike_raw")),
-                    "trade_data_mode": _parse_finite_float(metrics.get("trade_data_mode")),
-                    "trade_data_ready": _parse_finite_float(metrics.get("trade_data_ready")),
-                    "trade_vwap_60s": _parse_finite_float(metrics.get("trade_vwap_60s")),
-                    "trade_volume_5s": _parse_finite_float(metrics.get("trade_volume_5s")),
-                    "trade_volume_baseline_5s": _parse_finite_float(metrics.get("trade_volume_baseline_5s")),
-                    "trade_flow_imbalance_30s": _parse_finite_float(metrics.get("trade_flow_imbalance_30s")),
-                    "trade_buy_volume_30s": _parse_finite_float(metrics.get("trade_buy_volume_30s")),
-                    "trade_sell_volume_30s": _parse_finite_float(metrics.get("trade_sell_volume_30s")),
-                    "trade_count_60s": _parse_finite_float(metrics.get("trade_count_60s")),
-                    "trade_count_5s": _parse_finite_float(metrics.get("trade_count_5s")),
-                    "trade_baseline_bucket_count": _parse_finite_float(metrics.get("trade_baseline_bucket_count")),
-                    "trade_baseline_trade_count": _parse_finite_float(metrics.get("trade_baseline_trade_count")),
-                    "trade_baseline_min_bucket_count": _parse_finite_float(metrics.get("trade_baseline_min_bucket_count")),
-                    "volume_spike_raw": _parse_finite_float(metrics.get("volume_spike_raw")),
-                    "trade_history_coverage_sec": _parse_finite_float(metrics.get("trade_history_coverage_sec")),
-                    "trade_metrics_age_sec": _parse_finite_float(metrics.get("trade_metrics_age_sec")),
-                    "trade_price_change_30s_pct": _parse_finite_float(metrics.get("trade_price_change_30s_pct")),
-                    "trade_realized_volatility_60s_pct": _parse_finite_float(metrics.get("trade_realized_volatility_60s_pct")),
-                    "spread_pct": _parse_finite_float(metrics.get("spread_pct")),
-                    "m1_pattern": str(metrics.get("bar_pattern_name") or ""),
-                    "m1_pattern_confirmed": _parse_finite_float(metrics.get("bar_pattern_confirmed")),
-                    "m1_pattern_direction_code": _parse_finite_float(metrics.get("bar_pattern_direction_code")),
-                    "m1_breakout_up": _parse_finite_float(metrics.get("bar_breakout_up")),
-                    "m1_breakout_down": _parse_finite_float(metrics.get("bar_breakout_down")),
-                    "m1_pullback_buy": _parse_finite_float(metrics.get("bar_pullback_buy")),
-                    "m1_pullback_sell": _parse_finite_float(metrics.get("bar_pullback_sell")),
-                    "m1_trend_up": _parse_finite_float(metrics.get("bar_trend_up")),
-                    "m1_trend_down": _parse_finite_float(metrics.get("bar_trend_down")),
-                    "m1_signal_gap_atr": _parse_finite_float(metrics.get("bar_signal_gap_atr")),
-                    "bid_size_drop_pct": _parse_finite_float(metrics.get("bid_size_drop_pct")),
-                    "ask_size_drop_pct": _parse_finite_float(metrics.get("ask_size_drop_pct")),
-                    "top_bid_history_samples": _parse_finite_float(metrics.get("top_bid_history_samples")),
-                    "top_ask_history_samples": _parse_finite_float(metrics.get("top_ask_history_samples")),
-                    "bid_size_drop_age_sec": _parse_finite_float(metrics.get("bid_size_drop_age_sec")),
-                    "ask_size_drop_age_sec": _parse_finite_float(metrics.get("ask_size_drop_age_sec")),
-                    "bid_size_available": _parse_finite_float(metrics.get("bid_size_available")),
-                    "ask_size_available": _parse_finite_float(metrics.get("ask_size_available")),
-                    "bid_ask_available": _parse_finite_float(metrics.get("bid_ask_available")),
-                    "spread_available": _parse_finite_float(metrics.get("spread_available")),
-                    "m1_atr": _parse_finite_float(metrics.get("bar_atr")),
-                    "m1_atr_periods": _parse_finite_float(metrics.get("bar_atr_periods")),
-                    "m1_close_position": _parse_finite_float(metrics.get("bar_close_position")),
-                    "m1_body_ratio": _parse_finite_float(metrics.get("bar_body_ratio")),
-                    "queue_imbalance": _parse_finite_float(metrics.get("queue_imbalance")),
-                    "queue_imbalance_available": _parse_finite_float(metrics.get("queue_imbalance_available")),
-                    "queue_imbalance_age_sec": _parse_finite_float(metrics.get("queue_imbalance_age_sec")),
-                    "bid_quote_age_sec": _parse_finite_float(metrics.get("bid_quote_age_sec")),
-                    "ask_quote_age_sec": _parse_finite_float(metrics.get("ask_quote_age_sec")),
-                }
+                llm_input_features = build_llm_feature_snapshot(metrics)
                 volume_spike = _parse_finite_float(metrics.get("volume_spike"))
                 volume_5s = _parse_finite_float(metrics.get("trade_volume_5s"))
                 volume_baseline_5s = _parse_finite_float(metrics.get("trade_volume_baseline_5s"))
@@ -2966,6 +2966,9 @@ class MarketWorker:
                     ai_analysis.get("model_reason_code")
                     or ("NO_LOCAL_CANDIDATE" if candidate_direction not in {"BUY", "SELL"} else "NOT_PROVIDED")
                 ).strip().upper()
+                if model_decision == "HOLD" and candidate_direction in {"BUY", "SELL"} and not request_error:
+                    hold_bucket = classify_hold_reason_bucket(model_reason_code)
+                    _trade_flow_inc(f"llm_hold_{candidate_direction.lower()}_{hold_bucket}")
                 candidate_decision = candidate_direction if candidate_direction in {"BUY", "SELL"} else "HOLD"
                 model_contract_violation = bool(ai_analysis.get("model_contract_violation", False))
                 if not request_error:
@@ -3063,6 +3066,12 @@ class MarketWorker:
                     )
                 elif decision in {"BUY", "SELL"}:
                     valid_evidence, block_reason = validate_signal_evidence(decision, evidence)
+                post_llm_features = build_llm_feature_snapshot(evidence)
+                post_llm_evidence_validation = (
+                    "NOT_APPLICABLE"
+                    if decision not in {"BUY", "SELL"}
+                    else "PASS" if valid_evidence else "BLOCKED"
+                )
                 signal_reason = (
                     f"Ошибка запроса к vLLM ({request_error_type}); вход запрещён."
                     if request_error else
@@ -3215,7 +3224,7 @@ class MarketWorker:
                     "[LLM DECISION] %s candidate=%s model=%s final=%s confidence=%s "
                     "confidence_valid=%s contract_violation=%s model_reason_code=%s model_reason_raw=%s "
                     "reason_validation=%s m1=%s direction_gate=%s prompt_chars=%s prompt_fingerprint=%s "
-                    "reason=%s local_evidence=%s features=%s",
+                    "reason=%s local_evidence=%s features=%s post_llm_features=%s post_llm_evidence_validation=%s",
                     ticker,
                     candidate_direction or "NONE",
                     model_decision,
@@ -3233,6 +3242,8 @@ class MarketWorker:
                     signal_reason or ("APPROVED" if decision in {"BUY", "SELL"} else "MODEL_HOLD"),
                     local_evidence_diagnostic,
                     json.dumps(llm_input_features, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    json.dumps(post_llm_features, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    post_llm_evidence_validation,
                 )
 
                 signal_status = (
@@ -3266,6 +3277,9 @@ class MarketWorker:
                     "critic_opinion": critic_text,
                     "local_evidence_reason": local_evidence_diagnostic,
                     "llm_input_features": llm_input_features,
+                    "pre_llm_features": llm_input_features,
+                    "post_llm_features": post_llm_features,
+                    "post_llm_evidence_validation": post_llm_evidence_validation,
                     "llm_candidate_direction": candidate_decision,
                     "llm_model_decision": model_decision,
                     "llm_reason_code": model_reason_code,
@@ -3621,6 +3635,8 @@ async def lifespan(app: FastAPI):
             try:
                 reset_result = await db_manager.clear_paper_session()
                 paper_performance_tracker.clear()
+                scalping_shadow_tracker.clear()
+                paper_shadow_labels.clear()
                 risk_manager._balance_initialized = False
                 risk_manager.block_trading = False
                 risk_manager._blocked_date = None
@@ -4260,6 +4276,7 @@ async def reconcile_paper_position(order_id: str, payload: dict[str, object] = B
 @app.post("/api/v1/paper/session/clear")
 async def clear_paper_session(payload: dict[str, object] = Body(...)):
     global _paper_session_generation, last_ai_verdicts_cache, _balance_guard_last_signature
+    global _trade_flow_last_log_at
     _require_paper_mode()
     if str(payload.get("confirmation", "")).strip() != PAPER_CLEAR_CONFIRMATION:
         raise HTTPException(status_code=400, detail=f"Для подтверждения введите точную фразу: {PAPER_CLEAR_CONFIRMATION}")
@@ -4314,11 +4331,16 @@ async def clear_paper_session(payload: dict[str, object] = Body(...)):
         removed_memory_positions = len(execution_engine.paper_positions)
         removed_memory_closed = len(execution_engine.closed_trades)
         removed_memory_performance = paper_performance_tracker.clear()
+        removed_memory_shadow_pending = scalping_shadow_tracker.clear()
+        removed_memory_shadow_labels = len(paper_shadow_labels)
+        paper_shadow_labels.clear()
         removed_memory_stale = len(execution_engine._unreconciled_paper_positions)
         execution_engine.paper_positions.clear()
         execution_engine.closed_trades.clear()
         execution_engine._unreconciled_paper_positions.clear()
         execution_engine._ticker_cooldowns.clear()
+        execution_engine._recent_stop_losses.clear()
+        execution_engine._hydrated_stop_loss_keys.clear()
         execution_engine._reserved_notional.clear()
         execution_engine._reserved_stop_risk.clear()
 
@@ -4326,6 +4348,8 @@ async def clear_paper_session(payload: dict[str, object] = Body(...)):
         risk_manager.block_trading = False
         risk_manager._blocked_date = None
         risk_manager.total_session_pnl = 0.0
+        risk_manager.realized_pnl = 0.0
+        risk_manager.open_pnl = 0.0
         risk_manager.current_equity = DEPOSIT
         risk_manager.free_margin = DEPOSIT
         risk_manager.high_water_mark = DEPOSIT
@@ -4339,6 +4363,23 @@ async def clear_paper_session(payload: dict[str, object] = Body(...)):
         last_ai_verdicts_cache.clear()
         with _trade_flow_lock:
             _trade_flow_counts.clear()
+            _trade_flow_last_log_at = time_module.monotonic()
+        with _pending_bbo_lock:
+            _pending_bbo_candidates.clear()
+        with _position_order_book_diag_lock:
+            _position_order_book_diag.clear()
+        try:
+            await _rotate_paper_bbo_replay_session()
+        except Exception as replay_exc:
+            execution_engine._maintenance_active = True
+            execution_engine._maintenance_reason = (
+                "PAPER-сессия очищена, но новый BBO replay-сеанс не запустился; торговля оставлена на паузе."
+            )
+            logger.critical(
+                "[PAPER BBO REPLAY SESSION RESET ERROR] trading remains paused: %s",
+                replay_exc, exc_info=True,
+            )
+            raise HTTPException(status_code=500, detail=execution_engine._maintenance_reason) from replay_exc
         _balance_guard_last_signature = None
         balance = await _refresh_dashboard_balance_snapshot([])
 
@@ -4353,6 +4394,9 @@ async def clear_paper_session(payload: dict[str, object] = Body(...)):
             "status": "ok",
             "maintenance_active": True,
             "message": "PAPER-сессия очищена. Для защиты от старых сигналов торговый конвейер оставлен на паузе.",
+            "shadow_pending_discarded": removed_memory_shadow_pending,
+            "shadow_labels_discarded": removed_memory_shadow_labels,
+            "bbo_replay_session_id": paper_bbo_replay_recorder.session_id,
             "storage": storage_result,
             "memory": {
                 "removed_open_positions": removed_memory_positions,

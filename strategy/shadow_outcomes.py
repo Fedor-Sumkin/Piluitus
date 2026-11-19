@@ -93,6 +93,19 @@ class ShadowForwardTracker:
         # Per-ticker ATR reference uses only earlier candidate snapshots.
         self._atr_history: dict[str, deque[float]] = {}
 
+    def clear(self) -> int:
+        """Drop pending labels and all in-memory aggregates for a clean session."""
+        discarded_pending = sum(len(rows) for rows in self._pending.values())
+        self._pending.clear()
+        self._pending_backlog_warned.clear()
+        self._label_stats = {
+            "eligible": self._new_stats_bucket(),
+            "ineligible": self._new_stats_bucket(),
+        }
+        self._segment_stats.clear()
+        self._atr_history.clear()
+        return discarded_pending
+
     @staticmethod
     def _new_stats_bucket() -> dict[str, float | int]:
         return {

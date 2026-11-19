@@ -58,6 +58,28 @@ class ShadowScorecardTests(unittest.TestCase):
         self.assertEqual(segments["side_m1_pattern=SELL|NONE"]["ok"], 1)
         self.assertEqual(segments["hard_block=atr_not_ready"]["ok"], 1)
 
+    def test_clear_resets_pending_labels_and_session_aggregates(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,))
+        metrics = {
+            "bid": 100.0, "ask": 100.1,
+            "bid_quote_age_sec": 0.1, "ask_quote_age_sec": 0.1,
+            "bbo_max_age_sec": 2.0, "bid_ask_available": 1,
+            "spread_available": 1, "spread_pct": 0.1,
+        }
+        with patch("shadow_outcomes.time.monotonic", return_value=1000.0):
+            tracker.record_candidate(
+                "TEST", "BUY", metrics,
+                {"eligible": True, "score": 90.0, "regime": "TREND"},
+            )
+        self.assertEqual(tracker.pending_count(), 1)
+        self.assertEqual(tracker.clear(), 1)
+        snapshot = tracker.statistics_snapshot()
+        self.assertEqual(tracker.pending_count(), 0)
+        self.assertEqual(snapshot["eligible"]["labels"], 0)
+        self.assertEqual(snapshot["ineligible"]["labels"], 0)
+        self.assertEqual(snapshot["segments"], {})
+        self.assertEqual(snapshot["by_horizon"], {})
+
     def test_completed_labels_are_aggregated_by_eligibility(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
         metrics = {

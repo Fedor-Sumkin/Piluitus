@@ -7,6 +7,16 @@ from execution_layer import BaseExecutionEngine
 
 
 class PaperBboGapMetricsTests(unittest.TestCase):
+    def test_close_log_exposes_bbo_gap_and_execution_model(self) -> None:
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parents[1] / "execution" / "execution_layer.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("fill_model=%s depth_unit=%s; BBO_gap=%d episodes", source)
+        self.assertIn("trigger_to_fresh_BBO=%.3fs", source)
+        self.assertIn("FULL_FILL_AT_EXECUTABLE_BBO_DEPTH_UNVERIFIED", source)
+
     def test_gap_episode_tracks_count_last_max_and_total_duration(self) -> None:
         trade: dict[str, object] = {}
 

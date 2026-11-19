@@ -1869,13 +1869,14 @@ class BaseExecutionEngine:
             if self.paper_mode and entry_bbo is not None:
                 logger.info(
                     "🧾 [PAPER FILL] %s %s: requested=%d lots, filled=%d lots; last_reference=%.4f, "
-                    "executable_%s=%.4f, fill=%.4f, top_size_raw=%.2f unit=%s, "
+                    "executable_%s=%.4f, fill=%.4f, top_size_raw=%.2f unit=%s fill_model=%s, "
                     "commission=%.4f ₽, slippage=%.2f bps.",
                     ticker, side, requested_lots, lots, signal_reference_price,
                     str(entry_bbo.get("executable_side", "BBO")),
                     _finite_or_default(entry_bbo.get("executable_price"), 0.0), price,
                     entry_quote_size,
                     self.paper_book_size_unit if self.paper_book_size_unit in {"shares", "lots"} else "unconfirmed",
+                    "CONFIRMED_DEPTH" if self.paper_book_size_unit in {"shares", "lots"} else "FULL_TOP_OF_BOOK_UNVERIFIED",
                     entry_commission, self.paper_slippage_bps,
                 )
             logger.info("✅ [EXECUTION] Позиция %s по %s записана; mode=%s.",
@@ -2630,10 +2631,16 @@ class BaseExecutionEngine:
         logger.warning(
             "💾 [PAPER JOURNAL] Сделка %s (%s) закрыта. Gross=%+.2f₽, commission=%.2f₽, Net=%+.2f₽; "
             "qty=%d; entry=%.4f; exit=%.4f; source=%s; reason=%s; top_size_raw=%.2f (unit unconfirmed); "
-            "MFE=%.4f%%; MAE=%.4f%%; held=%.1fs",
+            "fill_model=%s depth_unit=%s; BBO_gap=%d episodes total=%.1fs max=%.1fs; "
+            "trigger_to_fresh_BBO=%.3fs; MFE=%.4f%%; MAE=%.4f%%; held=%.1fs",
             order_id, ticker, gross_pnl, total_commission, net_pnl, share_qty,
             entry_price, exit_price, closed_trade["exit_price_source"], exit_reason,
-            exit_size,
+            exit_size, closed_trade.get("exit_fill_model", "UNKNOWN"),
+            closed_trade.get("exit_top_size_unit", "UNKNOWN"),
+            int(closed_trade.get("exit_bbo_gap_count", 0) or 0),
+            _finite_or_default(closed_trade.get("total_exit_bbo_gap_sec"), 0.0),
+            _finite_or_default(closed_trade.get("max_exit_bbo_gap_sec"), 0.0),
+            _finite_or_default(closed_trade.get("trigger_to_executable_bbo_delay_sec"), -1.0),
             _finite_or_default(trade.get("max_favorable_excursion_pct"), 0.0),
             _finite_or_default(trade.get("max_adverse_excursion_pct"), 0.0),
             held_seconds if held_seconds is not None else -1.0,
