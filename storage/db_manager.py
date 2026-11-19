@@ -618,9 +618,8 @@ class DBManager:
                     nested = item.get("data") if isinstance(item.get("data"), dict) else item
                     fallback_id = str(item.get("id") or "")
                     if self.is_paper_trade(nested, fallback_id):
-                        nested_status = str(nested.get("status", "")).strip().upper()
                         nested_id = str(nested.get("id") or fallback_id)
-                        if nested_status in {"OPEN", "ACTIVE"} and nested_id in preserved_open_trade_ids:
+                        if nested_id in preserved_open_trade_ids:
                             kept_orders.append(raw)
                             continue
                         removed_orders += 1
