@@ -2028,6 +2028,34 @@ class FinamBrokerClient:
                     enqueued_order_book_events = 0
                     enqueued_bbo_side_updates = 0
                     first_data_logged = False
+                    queue_overflow_counts = {
+                        "ORDER_BOOK": 0, "INSTRUMENT_TRADE": 0, "QUOTES": 0,
+                    }
+                    queue_overflow_last_log = 0.0
+                    queue_overflow_last_ticker = "-"
+
+                    def _record_queue_overflow(event_kind: str, ticker: object) -> None:
+                        nonlocal queue_overflow_last_log, queue_overflow_last_ticker
+                        queue_overflow_counts[event_kind] = queue_overflow_counts.get(event_kind, 0) + 1
+                        queue_overflow_last_ticker = str(ticker or "-")
+                        now = time.monotonic()
+                        if now - queue_overflow_last_log < 5.0:
+                            return
+                        total_dropped = sum(queue_overflow_counts.values())
+                        logger.warning(
+                            "[FINAM QUEUE OVERFLOW] за последние %.1fс: всего=%d, "
+                            "ORDER_BOOK=%d, INSTRUMENT_TRADE=%d, QUOTES=%d; последний тикер=%s. "
+                            "Поток не успевает обрабатываться потребителем; события теряются.",
+                            max(0.0, now - queue_overflow_last_log) if queue_overflow_last_log else 5.0,
+                            total_dropped,
+                            queue_overflow_counts["ORDER_BOOK"],
+                            queue_overflow_counts["INSTRUMENT_TRADE"],
+                            queue_overflow_counts["QUOTES"],
+                            queue_overflow_last_ticker,
+                        )
+                        for key in queue_overflow_counts:
+                            queue_overflow_counts[key] = 0
+                        queue_overflow_last_log = now
                     first_order_book_logged = False
                     first_trade_logged = False
                     instrument_trade_messages = 0
@@ -2878,10 +2906,7 @@ class FinamBrokerClient:
                                     order_book_queue_dropped += 1
                                     if symbol_stats is not None:
                                         symbol_stats["window_dropped"] += 1
-                                    logger.warning(
-                                        "Очередь рыночных событий заполнена; ORDER_BOOK %s отброшен.",
-                                        book_update.get("ticker"),
-                                    )
+                                    _record_queue_overflow("ORDER_BOOK", book_update.get("ticker"))
                             continue
 
                         if subscription_type in {"INSTRUMENT_TRADES", "INSTRUMENT_TRADE"}:
@@ -2893,11 +2918,10 @@ class FinamBrokerClient:
                                     queue.put_nowait(trade_event)
                                 except asyncio.QueueFull:
                                     instrument_trade_queue_dropped += 1
-                                    if screener is not None:
-                                        screener.reset_trade_history(trade_event.get("ticker"))
-                                    logger.error(
-                                        "Очередь рыночных событий переполнена; INSTRUMENT_TRADE %s id=%s отброшен.",
-                                        trade_event.get("ticker"), trade_event.get("trade_id"),
+                                    # Do not reset accumulated trade-flow history on a single
+                                    # queue overflow; that amplified data loss for the ticker.
+                                    _record_queue_overflow(
+                                        "INSTRUMENT_TRADE", trade_event.get("ticker")
                                     )
                                     continue
                             if trade_events and not first_trade_logged:
@@ -2944,10 +2968,7 @@ class FinamBrokerClient:
                             try:
                                 queue.put_nowait(tick)
                             except asyncio.QueueFull:
-                                logger.error(
-                                    "Очередь рыночных тиков переполнена; тик %s отброшен.",
-                                    tick["ticker"],
-                                )
+                                _record_queue_overflow("QUOTES", tick.get("ticker"))
                                 continue
 
                             enqueued_quotes += 1
