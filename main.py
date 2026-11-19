@@ -3680,8 +3680,9 @@ async def lifespan(app: FastAPI):
         logger.error("⚠️ Не удалось загрузить базу ai_market_knowledge.json в RAG: %s", rag_start_err, exc_info=True)
 
     try:
-        # PAPER-позиции из прежних запусков не восстанавливаются как активные автоматически:
-        # они переводятся в STALE_REVIEW без фиктивной цены выхода/PnL.
+        # Normal PAPER startup archives prior-session positions during reset.
+        # This is a defensive fail-closed check for residual records if reset was
+        # interrupted or a nonstandard PAPER record escaped the reset inventory.
         quarantined = await execution_engine.quarantine_unreconciled_paper_positions(db_manager)
         if quarantined:
             logger.warning("В старом PAPER-журнале найдено позиций для ручной проверки: %d", quarantined)
