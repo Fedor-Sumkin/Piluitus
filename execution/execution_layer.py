@@ -153,6 +153,11 @@ def _decision_attribution_fields(ai_analysis: object) -> dict[str, object]:
             "llm_local_guard": None,
             "candidate_direction": "UNKNOWN",
             "llm_shadow_linked": False,
+            "pre_llm_features": {},
+            "post_llm_features": {},
+            "post_llm_evidence_validation": "UNKNOWN",
+            "post_llm_evidence_reason": None,
+            "post_llm_refresh": {},
         }
 
     def bounded_text(key: str, default: str | None = None, limit: int = 160) -> str | None:
@@ -161,6 +166,25 @@ def _decision_attribution_fields(ai_analysis: object) -> dict[str, object]:
             return default
         value = str(raw).strip()
         return value[:limit] if value else default
+
+    def bounded_snapshot(key: str, max_items: int = 96) -> dict[str, object]:
+        raw = ai_analysis.get(key)
+        if not isinstance(raw, Mapping):
+            return {}
+        snapshot: dict[str, object] = {}
+        for raw_name, raw_value in list(raw.items())[:max_items]:
+            name = str(raw_name).strip()[:48]
+            if not name:
+                continue
+            if isinstance(raw_value, bool):
+                snapshot[name] = raw_value
+            elif isinstance(raw_value, str):
+                snapshot[name] = raw_value[:160]
+            elif isinstance(raw_value, (int, float)):
+                number = _finite_or_default(raw_value, math.nan)
+                if math.isfinite(number):
+                    snapshot[name] = round(number, 8)
+        return snapshot
 
     confidence_raw = ai_analysis.get("llm_confidence_pct")
     confidence = _finite_or_default(confidence_raw, math.nan)
@@ -180,6 +204,11 @@ def _decision_attribution_fields(ai_analysis: object) -> dict[str, object]:
         "llm_local_guard": bounded_text("llm_local_guard", limit=240),
         "candidate_direction": bounded_text("candidate_direction", "UNKNOWN", 16),
         "llm_shadow_linked": bool(ai_analysis.get("llm_shadow_linked", False)),
+        "pre_llm_features": bounded_snapshot("pre_llm_features"),
+        "post_llm_features": bounded_snapshot("post_llm_features"),
+        "post_llm_evidence_validation": bounded_text("post_llm_evidence_validation", "UNKNOWN", 32),
+        "post_llm_evidence_reason": bounded_text("post_llm_evidence_reason", limit=240),
+        "post_llm_refresh": bounded_snapshot("post_llm_refresh", max_items=16),
         "market_regime": bounded_text("market_regime", "UNKNOWN", 32),
         "volatility_regime": bounded_text("volatility_regime", "UNKNOWN", 32),
         "liquidity_regime": bounded_text("liquidity_regime", "UNKNOWN", 32),

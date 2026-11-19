@@ -47,7 +47,11 @@ from signal_guard import (
 )
 from strategy.candidate_dedup import CandidateDeduplicator, candidate_is_expired
 from rag_prompt_utils import select_prompt_rules
-from candidate_recovery import coalesce_pending_bbo_entry, refresh_candidate_bbo_metrics
+from candidate_recovery import (
+    coalesce_pending_bbo_entry,
+    refresh_candidate_bbo_metrics,
+    refresh_post_llm_evidence,
+)
 from scalping_strategy import evaluate_scalping_candidate
 from shadow_outcomes import ShadowForwardTracker
 from strategy.bbo_replay import (
@@ -3034,28 +3038,28 @@ class MarketWorker:
                             _trade_flow_inc("llm_hold_buy")
                         elif candidate_direction == "SELL":
                             _trade_flow_inc("llm_hold_sell")
-                # Независимый численный фильтр: свободный текст и confidence LLM
-                # не заменяют обязательную проверку измеряемых условий входа.
+                # Rebuild executable BBO and trade-flow evidence after LLM latency.
+                # Pre-LLM metrics remain available separately for attribution, but
+                # stale quote sides must never authorize a new entry.
                 evidence = metrics if isinstance(metrics, dict) else {}
-                if isinstance(evidence, dict) and _parse_finite_float(evidence.get("trade_data_mode")) >= 0.5:
-                    # Recompute the trade window after the model response. A candidate
-                    # can become stale while vLLM is thinking; never authorize it from
-                    # the original pre-LLM snapshot alone.
-                    fresh_trade = screener.refresh_trade_metrics(ticker)
-                    evidence = dict(evidence)
-                    for key in (
-                        "trade_data_ready", "trade_vwap_60s", "trade_flow_imbalance_30s",
-                        "trade_buy_volume_30s", "trade_sell_volume_30s",
-                        "trade_volume_5s", "trade_volume_baseline_5s",
-                        "trade_count_60s", "trade_history_coverage_sec", "trade_metrics_age_sec", "volume_spike",
-                        "price_change_pct", "trade_price_change_30s_pct",
-                        "trade_realized_volatility_60s_pct", "current_price", "vwap",
-                        "price_vs_vwap_pct",
+                post_llm_refresh: dict[str, Any] = {}
+                if candidate_direction in {"BUY", "SELL"}:
+                    evidence, post_llm_refresh = refresh_post_llm_evidence(
+                        screener, ticker, evidence
+                    )
+                    evidence["direction_evidence_state"] = classify_direction_evidence(
+                        candidate_direction, evidence
+                    )
+                    if (
+                        post_llm_refresh.get("trade_refresh_status") == "PASS"
+                        and post_llm_refresh.get("price_refreshed")
                     ):
-                        if key in fresh_trade:
-                            evidence[key] = fresh_trade[key]
+                        refreshed_price = _parse_finite_float(evidence.get("current_price"))
+                        if refreshed_price is not None and refreshed_price > 0.0:
+                            price = refreshed_price
                     if isinstance(metrics, dict):
                         metrics.update(evidence)
+
                 valid_evidence = True
                 block_reason = ""
                 if decision in {"BUY", "SELL"} and candidate_direction in {"BUY", "SELL"} and decision != candidate_direction:
@@ -3071,6 +3075,11 @@ class MarketWorker:
                     "NOT_APPLICABLE"
                     if decision not in {"BUY", "SELL"}
                     else "PASS" if valid_evidence else "BLOCKED"
+                )
+                post_llm_evidence_reason = (
+                    block_reason if block_reason
+                    else "PASS" if decision in {"BUY", "SELL"}
+                    else "NOT_APPLICABLE"
                 )
                 signal_reason = (
                     f"Ошибка запроса к vLLM ({request_error_type}); вход запрещён."
@@ -3224,7 +3233,8 @@ class MarketWorker:
                     "[LLM DECISION] %s candidate=%s model=%s final=%s confidence=%s "
                     "confidence_valid=%s contract_violation=%s model_reason_code=%s model_reason_raw=%s "
                     "reason_validation=%s m1=%s direction_gate=%s prompt_chars=%s prompt_fingerprint=%s "
-                    "reason=%s local_evidence=%s features=%s post_llm_features=%s post_llm_evidence_validation=%s",
+                    "reason=%s local_evidence=%s pre_llm_features=%s post_llm_features=%s "
+                    "post_llm_evidence_validation=%s post_llm_evidence_reason=%s post_llm_refresh=%s",
                     ticker,
                     candidate_direction or "NONE",
                     model_decision,
@@ -3244,6 +3254,8 @@ class MarketWorker:
                     json.dumps(llm_input_features, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
                     json.dumps(post_llm_features, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
                     post_llm_evidence_validation,
+                    post_llm_evidence_reason,
+                    json.dumps(post_llm_refresh, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
                 )
 
                 signal_status = (
@@ -3280,6 +3292,8 @@ class MarketWorker:
                     "pre_llm_features": llm_input_features,
                     "post_llm_features": post_llm_features,
                     "post_llm_evidence_validation": post_llm_evidence_validation,
+                    "post_llm_evidence_reason": post_llm_evidence_reason,
+                    "post_llm_refresh": post_llm_refresh,
                     "llm_candidate_direction": candidate_decision,
                     "llm_model_decision": model_decision,
                     "llm_reason_code": model_reason_code,
@@ -3324,6 +3338,11 @@ class MarketWorker:
                     "llm_local_guard": local_evidence_diagnostic,
                     "candidate_direction": candidate_decision,
                     "llm_shadow_linked": bool(verdict_data.get("shadow_linked", False)),
+                    "pre_llm_features": llm_input_features,
+                    "post_llm_features": post_llm_features,
+                    "post_llm_evidence_validation": post_llm_evidence_validation,
+                    "post_llm_evidence_reason": post_llm_evidence_reason,
+                    "post_llm_refresh": post_llm_refresh,
                     # Persist point-in-time regime labels with the trade. Missing
                     # source fields remain UNKNOWN rather than being inferred later.
                     "market_regime": metrics.get("market_regime", metrics.get("regime", "UNKNOWN")),
