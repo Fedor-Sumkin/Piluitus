@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import time
 import unittest
 from collections import deque
@@ -118,19 +117,16 @@ class TradeFlowMetricsTests(unittest.TestCase):
     def test_trade_flow_reset_does_not_erase_quote_driven_m1_history(self):
         screener = HFTMemoryScreener()
         engine = screener.minute_bar_patterns
-        # Keep the synthetic quote clock in the same monotonic domain as
-        # push_trade(); mixing timestamps near zero with the real monotonic
-        # clock simulates a multi-day feed outage and correctly clears the bars.
-        # Align synthetic monotonic samples to a fixed sub-minute offset.
-        # Adding exact 60-second steps from an arbitrary fractional offset can
-        # cross a float rounding edge and skip a bucket nondeterministically.
-        base = math.floor((time.monotonic() - 6 * 60.0 - 10.0) / 60.0) * 60.0 + 10.0
+        # The quote/M1 and INSTRUMENT_TRADES streams are independent. Build
+        # M1 candles on a deterministic synthetic monotonic clock, then submit
+        # a trade using the real receive clock; resetting trades must not touch
+        # the already-built quote candles.
+        base = 10.0
         for minute in range(7):
             engine.update("SBER", 100.0 + minute, now=base + minute * 60.0)
         self.assertEqual(len(engine._states["SBER"]["bars"]), 6)
 
-        now = base + 6 * 60.0
-        screener.push_trade("SBER", 107.0, 10.0, "trade-1", "SIDE_BUY", received_monotonic=now)
+        screener.push_trade("SBER", 107.0, 10.0, "trade-1", "SIDE_BUY")
         self.assertEqual(len(screener.history["SBER"]["trade_events"]), 1)
         screener.reset_trade_history("SBER")
         self.assertEqual(len(screener.history["SBER"]["trade_events"]), 0)
