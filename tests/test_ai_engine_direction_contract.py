@@ -98,6 +98,26 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertEqual(reason, "HOLD_INSUFFICIENT_SUPPORT")
         self.assertEqual(status, "RECLASSIFIED")
 
+    def test_false_m1_contradiction_is_reclassified_to_measured_wide_spread(self) -> None:
+        metrics = {
+            "bar_count": 30, "bar_atr_periods": 14, "bar_atr_age_sec": 5.0,
+            "bar_trend_up": 1.0, "bar_trend_down": 0.0,
+            "bar_pattern_confirmed": 0.0, "bar_pattern_direction_code": 0.0,
+            "trade_data_ready": 1.0, "trade_metrics_age_sec": 0.5,
+            "price_change_pct": 0.12, "price_vs_vwap_pct": 0.08,
+            "bid": 100.0, "ask": 100.6,
+            "bid_quote_age_sec": 0.3, "ask_quote_age_sec": 0.3,
+            "bid_ask_available": 1.0, "spread_available": 1.0,
+            "spread_pct": 0.6, "bar_atr_pct": 0.2,
+            "volume_spike": 2.0,
+        }
+        self.assertEqual(AIEngine._m1_evidence_state(metrics, "BUY"), "ALIGNED")
+        reason, status = AIEngine._validate_model_reason_code(
+            "HOLD", "HOLD_M1_CONTRADICTION", "BUY", metrics
+        )
+        self.assertEqual(reason, "HOLD_WIDE_SPREAD")
+        self.assertEqual(status, "RECLASSIFIED")
+
     def test_fresh_opposite_closed_m1_pattern_is_a_contradiction(self) -> None:
         metrics = {
             "bar_count": 6, "bar_atr_periods": 5, "bar_atr_age_sec": 2.0,
