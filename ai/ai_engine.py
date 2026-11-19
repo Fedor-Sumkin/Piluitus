@@ -782,7 +782,13 @@ class AIEngine:
             if reason == "APPROVED":
                 replacement = "HOLD_UNCLEAR"
             elif reason == "HOLD_M1_CONTRADICTION" and prepared.get("m1_evidence_state") != "OPPOSITE":
-                replacement = "HOLD_INSUFFICIENT_SUPPORT"
+                # The model's reason is advisory. If its claimed M1 contradiction
+                # disagrees with the measured closed-bar state, reclassify the
+                # HOLD using the other independent evidence instead of masking a
+                # measurable spread/BBO/volume problem as generic insufficiency.
+                replacement = cls._infer_hold_reason_code(candidate_direction, prepared)
+                if replacement == "HOLD_M1_CONTRADICTION":
+                    replacement = "HOLD_INSUFFICIENT_SUPPORT"
             elif reason == "HOLD_WEAK_DIRECTION":
                 direction = str(candidate_direction or "").strip().upper()
                 price_change = cls._metric_number(prepared, "price_change_pct", math.nan)
