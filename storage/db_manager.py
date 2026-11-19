@@ -630,9 +630,7 @@ class DBManager:
                 client, "piluitus:paper:closed_trades"
             )
             deleted_paper_performance_rows = len(closed_journal_raw)
-            deleted_paper_performance_keys = await client.delete(
-                "piluitus:paper:closed_trades"
-            )
+            deleted_paper_performance_keys = await client.delete("piluitus:paper:closed_trades")
 
             orders_raw = await self._read_list_raw(client, "piluitus:active_orders")
             kept_orders: list[str] = []
