@@ -3448,7 +3448,7 @@ async def background_broker_init():
                 exc_info=True,
             )
 
-        bridge_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=10000)
+        bridge_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=50000)
         async def _run_market_stream():
             await broker.start_market_data_stream(
                 tickers=TICKERS_TO_TRADE,
