@@ -565,12 +565,29 @@ class DBManager:
                     "Сначала используйте отдельное хранилище/проверьте LIVE-журнал."
                 )
 
+            # Closed PAPER trades belong to the previous measurement session and
+            # are removed. OPEN/ACTIVE positions are never deleted here: after
+            # restart they must be quarantined as STALE_REVIEW by the execution
+            # engine, otherwise committed capital and unresolved risk disappear.
             paper_trade_keys: list[str] = []
+            preserved_open_trade_ids: set[str] = set()
+            preserved_stale_trade_ids: set[str] = set()
             for key in await self._scan_matching_keys(client, "piluitus:trade:*"):
                 raw = await client.get(key)
                 trade = self._decode_json_value(raw)
-                if self.is_paper_trade(trade, key.rsplit(":", 1)[-1]):
+                fallback_id = key.rsplit(":", 1)[-1]
+                if not self.is_paper_trade(trade, fallback_id):
+                    continue
+                status = str(trade.get("status", "")).strip().upper() if isinstance(trade, dict) else ""
+                if status in {"OPEN", "ACTIVE"}:
+                    preserved_open_trade_ids.add(str((trade or {}).get("id") or fallback_id))
+                elif status == "STALE_REVIEW":
+                    preserved_stale_trade_ids.add(str((trade or {}).get("id") or fallback_id))
+                elif status == "CLOSED":
                     paper_trade_keys.append(key)
+                else:
+                    # Unknown PAPER states are preserved fail-closed for manual review.
+                    preserved_stale_trade_ids.add(str((trade or {}).get("id") or fallback_id))
             deleted_trade_keys = await client.delete(*paper_trade_keys) if paper_trade_keys else 0
 
             history_raw = await self._read_list_raw(client, "piluitus:trade_history")
@@ -601,6 +618,11 @@ class DBManager:
                     nested = item.get("data") if isinstance(item.get("data"), dict) else item
                     fallback_id = str(item.get("id") or "")
                     if self.is_paper_trade(nested, fallback_id):
+                        nested_status = str(nested.get("status", "")).strip().upper()
+                        nested_id = str(nested.get("id") or fallback_id)
+                        if nested_status in {"OPEN", "ACTIVE"} and nested_id in preserved_open_trade_ids:
+                            kept_orders.append(raw)
+                            continue
                         removed_orders += 1
                         continue
                 kept_orders.append(raw)
@@ -625,6 +647,8 @@ class DBManager:
 
             result = {
                 "deleted_paper_trade_keys": int(deleted_trade_keys),
+                "preserved_open_paper_positions": len(preserved_open_trade_ids),
+                "preserved_stale_paper_positions": len(preserved_stale_trade_ids),
                 "deleted_paper_history_rows": removed_history,
                 "deleted_paper_performance_rows": deleted_paper_performance_rows,
                 "deleted_paper_performance_keys": int(deleted_paper_performance_keys),
