@@ -3614,6 +3614,45 @@ async def lifespan(app: FastAPI):
 
     try:
         await db_manager.connect()
+        if getattr(execution_engine, "paper_mode", True):
+            # Every process start is a new PAPER measurement session. Remove only
+            # PAPER execution/risk journals; DBManager refuses to proceed if LIVE
+            # records are present in the shared store.
+            try:
+                reset_result = await db_manager.clear_paper_session()
+                paper_performance_tracker.clear()
+                risk_manager._balance_initialized = False
+                risk_manager.block_trading = False
+                risk_manager._blocked_date = None
+                risk_manager.total_session_pnl = 0.0
+                risk_manager.realized_pnl = 0.0
+                risk_manager.open_pnl = 0.0
+                risk_manager.current_equity = DEPOSIT
+                risk_manager.free_margin = DEPOSIT
+                risk_manager.high_water_mark = DEPOSIT
+                risk_manager.current_drawdown_pct = 0.0
+                risk_manager._drawdown_warning_active = False
+                risk_manager._loss_streak_count = 0
+                risk_manager._loss_pause_signature = None
+                risk_manager._cached_trading_allowed = None
+                risk_manager._last_risk_snapshot_monotonic = 0.0
+                logger.warning(
+                    "🧹 [PAPER SESSION START] previous PAPER execution/risk data cleared; "
+                    "fresh session_id=%s; storage=%s",
+                    getattr(execution_engine, "session_id", "unknown"),
+                    reset_result,
+                )
+            except Exception:
+                execution_engine._maintenance_active = True
+                execution_engine._maintenance_reason = (
+                    "Автоматическая очистка предыдущей PAPER-сессии не завершилась. "
+                    "Новые входы заблокированы до устранения причины."
+                )
+                logger.critical(
+                    "⛔ [PAPER SESSION START] reset failed; trading remains paused to avoid "
+                    "mixing old and new session statistics.",
+                    exc_info=True,
+                )
         paper_bbo_replay_recorder.start(db_manager)
         logger.info(
             "[PAPER BBO REPLAY] recorder started; selected Top-N + open positions, "
@@ -3623,7 +3662,8 @@ async def lifespan(app: FastAPI):
             paper_bbo_replay_recorder.storage_limit,
         )
         await _restore_shadow_outcomes()
-        await _restore_paper_performance()
+        if not getattr(execution_engine, "paper_mode", True):
+            await _restore_paper_performance()
         maintenance_state = await db_manager.get_json("piluitus:paper:maintenance")
         if isinstance(maintenance_state, dict) and bool(maintenance_state.get("active")):
             execution_engine._maintenance_active = True
