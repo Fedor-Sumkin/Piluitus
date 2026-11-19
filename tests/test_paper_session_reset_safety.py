@@ -2,7 +2,7 @@ import ast
 from pathlib import Path
 
 
-def test_paper_session_reset_preserves_unresolved_positions_and_deletes_only_closed():
+def test_paper_session_reset_archives_unresolved_positions_and_deletes_old_session_data():
     source_path = Path(__file__).resolve().parents[1] / "storage" / "db_manager.py"
     module = ast.parse(source_path.read_text(encoding="utf-8"))
     manager = next(
@@ -15,7 +15,7 @@ def test_paper_session_reset_preserves_unresolved_positions_and_deletes_only_clo
     )
     source = ast.get_source_segment(source_path.read_text(encoding="utf-8"), reset)
 
-    assert 'status in {"OPEN", "ACTIVE", "STALE_REVIEW"}' in source
+    assert 'if status != "CLOSED":' in source
     assert "piluitus:paper:archive:position:" in source
     assert '"realized_pnl_created": False' in source
     assert '"exit_price_created": False' in source
