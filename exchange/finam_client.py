@@ -2449,12 +2449,14 @@ class FinamBrokerClient:
 
                         if now_loop - last_trade_diag >= 60.0:
                             logger.info(
-                                "📈 Finam INSTRUMENT_TRADES 60s: messages=%d, trades=%d, queue_dropped=%d.",
-                                instrument_trade_messages, instrument_trade_events, instrument_trade_queue_dropped,
+                                "📈 Finam INSTRUMENT_TRADES 60s: messages=%d, trades=%d, queue_dropped=%d, backpressure_waits=%d.",
+                                instrument_trade_messages, instrument_trade_events,
+                                instrument_trade_queue_dropped, instrument_trade_queue_backpressure,
                             )
                             instrument_trade_messages = 0
                             instrument_trade_events = 0
                             instrument_trade_queue_dropped = 0
+                            instrument_trade_queue_backpressure = 0
                             last_trade_diag = now_loop
 
                         if now_loop - last_order_book_diag >= 60.0:
@@ -2534,6 +2536,7 @@ class FinamBrokerClient:
                                 "heartbeat_без_движения_BBO=%d, некорректных_состояний=%d "
                                 "(причины=%s; тикеры=%s), CROSSED_BBO_эпизодов=%d, "
                                 "без_timestamp_envelope=%d, out_of_order=%d, потерь_очереди=%d, "
+                                "coalesced_ORDER_BOOK=%d, coalesced_QUOTES=%d, "
                                 "ошибок_разбора=%d; позиции=[%s]; сообщений_без_тикера=%d.",
                                 len(order_book_subscribed), order_book_messages,
                                 enqueued_order_book_events, enqueued_bbo_side_updates,
@@ -2541,6 +2544,7 @@ class FinamBrokerClient:
                                 invalid_reason_summary, invalid_ticker_summary,
                                 order_book_crossed_episodes, order_book_missing_envelope_timestamp,
                                 order_book_out_of_order, order_book_queue_dropped,
+                                order_book_events_coalesced, quote_events_coalesced,
                                 order_book_decode_failures,
                                 position_diag_summary, order_book_unattributed_messages,
                             )
@@ -2581,6 +2585,8 @@ class FinamBrokerClient:
                             order_book_missing_envelope_timestamp = 0
                             order_book_out_of_order = 0
                             order_book_queue_dropped = 0
+                            order_book_events_coalesced = 0
+                            quote_events_coalesced = 0
                             enqueued_order_book_events = 0
                             enqueued_bbo_side_updates = 0
                             order_book_unattributed_messages = 0
