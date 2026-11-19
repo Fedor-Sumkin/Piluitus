@@ -22,4 +22,6 @@ def test_paper_session_reset_preserves_unresolved_positions_and_deletes_only_clo
     assert "preserved_stale_trade_ids" in source
     assert "preserved_open_paper_positions" in source
     assert "preserved_stale_paper_positions" in source
-    assert 'await client.delete("piluitus:paper:closed_trades")' in source
+    assert 'closed_journal_raw = await self._read_list_raw(' in source
+    assert '"piluitus:paper:closed_trades"' in source
+    assert 'deleted_paper_performance_keys = await client.delete(' in source
