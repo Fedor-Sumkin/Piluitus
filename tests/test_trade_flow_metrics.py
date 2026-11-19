@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 import unittest
 from collections import deque
@@ -120,7 +121,10 @@ class TradeFlowMetricsTests(unittest.TestCase):
         # Keep the synthetic quote clock in the same monotonic domain as
         # push_trade(); mixing timestamps near zero with the real monotonic
         # clock simulates a multi-day feed outage and correctly clears the bars.
-        base = time.monotonic() - 6 * 60.0
+        # Align synthetic monotonic samples to a fixed sub-minute offset.
+        # Adding exact 60-second steps from an arbitrary fractional offset can
+        # cross a float rounding edge and skip a bucket nondeterministically.
+        base = math.floor((time.monotonic() - 6 * 60.0 - 10.0) / 60.0) * 60.0 + 10.0
         for minute in range(7):
             engine.update("SBER", 100.0 + minute, now=base + minute * 60.0)
         self.assertEqual(len(engine._states["SBER"]["bars"]), 6)
