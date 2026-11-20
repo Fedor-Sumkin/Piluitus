@@ -7,7 +7,7 @@ import random
 from collections.abc import Mapping
 from datetime import datetime
 from pypdf import PdfReader  # Легковесный парсер PDF
-from db_manager import DBManager
+from storage.db_manager import DBManager
 from config import PROJECT_ROOT
 
 logger = logging.getLogger("Piluitus.KnowledgeParser")
