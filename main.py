@@ -3268,15 +3268,19 @@ class MarketWorker:
                 else:
                     local_evidence_diagnostic = "PRE_LLM_VALIDATED"
                 logger.info(
-                    "[LLM DECISION] %s candidate=%s model=%s final=%s confidence=%s "
-                    "confidence_valid=%s contract_violation=%s model_reason_code=%s model_reason_raw=%s "
+                    "[LLM DECISION] %s candidate=%s candidate_id=%s verdict_id=%s model=%s final=%s "
+                    "model_confidence=%s final_confidence=%s confidence_valid=%s "
+                    "contract_violation=%s model_reason_code=%s model_reason_raw=%s "
                     "reason_validation=%s m1=%s direction_gate=%s prompt_chars=%s prompt_fingerprint=%s "
                     "reason=%s local_evidence=%s pre_llm_features=%s post_llm_features=%s "
                     "post_llm_evidence_validation=%s post_llm_evidence_reason=%s post_llm_refresh=%s",
                     ticker,
                     candidate_direction or "NONE",
+                    str(event_payload.get("shadow_candidate_id") or "NONE"),
+                    verdict_id,
                     model_decision,
                     decision,
+                    f"{candidate_confidence:.1f}%" if candidate_confidence is not None else "invalid",
                     f"{confidence:.1f}%" if confidence_valid else "invalid",
                     confidence_valid,
                     model_contract_violation,
@@ -3312,7 +3316,10 @@ class MarketWorker:
                     "decision": decision,
                     "candidate_decision": candidate_decision,
                     "model_decision": model_decision,
+                    # Keep model confidence separate from the post-LLM final gate.
                     "confidence": round(candidate_confidence, 1) if candidate_confidence is not None else None,
+                    "model_confidence": round(candidate_confidence, 1) if candidate_confidence is not None else None,
+                    "final_confidence": round(confidence, 1) if confidence_valid else None,
                     "signal_status": signal_status,
                     "signal_reason": signal_reason,
                     "execution_status": execution_status,
@@ -3371,6 +3378,7 @@ class MarketWorker:
                     "llm_model_decision": model_decision,
                     "llm_final_decision": decision,
                     "llm_confidence_pct": candidate_confidence,
+                    "llm_final_confidence_pct": round(confidence, 1) if confidence_valid else None,
                     "llm_signal_status": signal_status,
                     "llm_reason_code": model_reason_code,
                     "llm_local_guard": local_evidence_diagnostic,
@@ -3412,13 +3420,33 @@ class MarketWorker:
                     if len(last_ai_verdicts_cache) > MAX_CACHE_SIZE:
                         last_ai_verdicts_cache.pop(0)
 
-                    try:
-                        redis_inst = getattr(self.db, "redis", getattr(self.db, "_redis", None))
-                        if redis_inst is not None:
-                            await redis_inst.lpush("piluitus:verdicts:history", json.dumps(verdict_data, ensure_ascii=False))
-                            await redis_inst.ltrim("piluitus:verdicts:history", 0, MAX_CACHE_SIZE - 1)
-                    except Exception as redis_err:
-                        logger.error(f"❌ Ошибка буферизации вердикта в Redis: {redis_err}")
+                    redis_inst = getattr(self.db, "redis", getattr(self.db, "_redis", None))
+                    if redis_inst is None:
+                        logger.error(
+                            "[LLM VERDICT PERSIST ERROR] verdict_id=%s candidate_id=%s ticker=%s: "
+                            "Redis/Memurai client unavailable; verdict remains only in memory.",
+                            verdict_id,
+                            str(event_payload.get("shadow_candidate_id") or "NONE"),
+                            ticker,
+                        )
+                    else:
+                        try:
+                            await redis_inst.lpush(
+                                "piluitus:verdicts:history",
+                                json.dumps(verdict_data, ensure_ascii=False),
+                            )
+                            await redis_inst.ltrim(
+                                "piluitus:verdicts:history", 0, MAX_CACHE_SIZE - 1
+                            )
+                        except Exception as redis_err:
+                            logger.error(
+                                "[LLM VERDICT PERSIST ERROR] verdict_id=%s candidate_id=%s ticker=%s error=%s",
+                                verdict_id,
+                                str(event_payload.get("shadow_candidate_id") or "NONE"),
+                                ticker,
+                                redis_err,
+                                exc_info=True,
+                            )
 
                     current_balance = dict(_dashboard_balance_snapshot)
                     payload_for_ws = {
