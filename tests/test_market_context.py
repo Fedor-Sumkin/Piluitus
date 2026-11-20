@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from strategy.market_context import classify_market_regime, estimate_entry_economics
+from strategy.market_context import classify_market_regime, estimate_entry_economics, validate_entry_economics
 
 
 class MarketContextTests(unittest.TestCase):
@@ -144,6 +144,32 @@ class MarketContextTests(unittest.TestCase):
         )
         self.assertFalse(crossed["available"])
         self.assertFalse(invalid_cost["available"])
+
+
+    def test_cost_to_atr_gate_accepts_reasonable_round_trip_costs(self) -> None:
+        result = validate_entry_economics(
+            side="BUY", bid=99.9, ask=100.0,
+            commission_pct_per_side=0.0354,
+            slippage_bps_per_side=0.0,
+            atr_pct=0.40,
+            max_cost_to_atr_ratio=0.50,
+        )
+        self.assertTrue(result["available"])
+        self.assertTrue(result["eligible"])
+        self.assertLessEqual(result["cost_to_atr_ratio"], 0.50)
+        self.assertEqual(result["cost_model_status"], "INCOMPLETE_OR_ZERO_ASSUMPTION")
+
+    def test_cost_to_atr_gate_rejects_expensive_entry(self) -> None:
+        result = validate_entry_economics(
+            side="BUY", bid=99.9, ask=100.0,
+            commission_pct_per_side=0.0354,
+            slippage_bps_per_side=0.0,
+            atr_pct=0.15,
+            max_cost_to_atr_ratio=0.50,
+        )
+        self.assertTrue(result["available"])
+        self.assertFalse(result["eligible"])
+        self.assertEqual(result["reason"], "ENTRY_COST_TO_ATR_EXCEEDED")
 
 
 if __name__ == "__main__":
