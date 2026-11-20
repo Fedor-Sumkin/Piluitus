@@ -17,6 +17,7 @@ from uuid import uuid4
 # Единый справочник лотности хранится в config.py.
 from config import ASSET_METADATA, FINAM_TRADE_LOT_SIZES, LOT_SIZES, Settings, PAPER_TRADING
 from strategy.signal_guard import validate_spread_to_atr
+from strategy.market_context import validate_entry_economics
 from strategy.paper_performance import (
     PAPER_CLOSED_TRADES_STORAGE_KEY,
     PAPER_CLOSED_TRADES_STORAGE_LIMIT,
@@ -1617,6 +1618,17 @@ class BaseExecutionEngine:
                     _finite_or_default(entry_bbo.get("bid"), 0.0)
                     + _finite_or_default(entry_bbo.get("ask"), 0.0)
                 ) / 2.0
+                book_age = _finite_or_default(entry_bbo.get("order_book_age_sec"), math.inf)
+                book_max_age = min(5.0, max(0.25, _finite_or_default(entry_bbo.get("max_age_sec"), 2.0)))
+                if not bool(entry_bbo.get("order_book_valid")) or not math.isfinite(book_age) or book_age < 0.0 or book_age > book_max_age:
+                    message = (
+                        "PAPER_ORDER_BOOK_ENTRY_BLOCK: подтверждённый свежий стакан отсутствует "
+                        f"(valid={bool(entry_bbo.get('order_book_valid'))}, age={book_age:.2f}s, "
+                        f"limit={book_max_age:.2f}s)."
+                    )
+                    logger.warning("🧱 [PAPER ORDER_BOOK ENTRY BLOCK] %s %s: %s", side, ticker, message)
+                    return {"status": "BLOCKED", "message": message}
+
                 spread_atr_ok, spread_atr_reason = validate_spread_to_atr(
                     {
                         "bar_atr_periods": ai_analysis.get("atr_periods_at_entry", 0),
@@ -1631,6 +1643,43 @@ class BaseExecutionEngine:
                     message = f"SPREAD_ATR_ENTRY_BLOCK: {spread_atr_reason}"
                     logger.warning("🧱 [PAPER SPREAD/ATR BLOCK] %s %s: %s", side, ticker, message)
                     return {"status": "BLOCKED", "message": message}
+
+                atr_for_costs = _finite_or_default(ai_analysis.get("atr_at_entry"), 0.0)
+                atr_pct_for_costs = (
+                    atr_for_costs / entry_mid * 100.0
+                    if entry_mid > 0.0 and atr_for_costs > 0.0 else 0.0
+                )
+                try:
+                    max_cost_to_atr = float(os.getenv("PILUITUS_MAX_ENTRY_COST_TO_ATR_RATIO", "0.50"))
+                except (TypeError, ValueError, OverflowError):
+                    max_cost_to_atr = 0.50
+                entry_economics = validate_entry_economics(
+                    side=side,
+                    bid=_finite_or_default(entry_bbo.get("bid"), 0.0),
+                    ask=_finite_or_default(entry_bbo.get("ask"), 0.0),
+                    commission_pct_per_side=self.paper_commission_pct,
+                    slippage_bps_per_side=self.paper_slippage_bps,
+                    atr_pct=atr_pct_for_costs,
+                    max_cost_to_atr_ratio=max_cost_to_atr,
+                )
+                if not entry_economics.get("available") or not entry_economics.get("eligible"):
+                    message = (
+                        "PAPER_ENTRY_COST_BLOCK: round-trip издержки слишком велики или не измерены "
+                        f"(cost/ATR={entry_economics.get('cost_to_atr_ratio')}, "
+                        f"limit={entry_economics.get('max_cost_to_atr_ratio', max_cost_to_atr):.2f}, "
+                        f"reason={entry_economics.get('reason', 'UNKNOWN')})."
+                    )
+                    logger.warning("🧱 [PAPER ENTRY ECONOMICS BLOCK] %s %s: %s", side, ticker, message)
+                    return {"status": "BLOCKED", "message": message}
+                logger.info(
+                    "[PAPER ENTRY ECONOMICS] %s %s cost/ATR=%.3f limit=%.2f "
+                    "breakeven_move=%.4f%% cost_model=%s.",
+                    side, ticker,
+                    float(entry_economics["cost_to_atr_ratio"]),
+                    float(entry_economics["max_cost_to_atr_ratio"]),
+                    float(entry_economics["minimum_favorable_move_pct"]),
+                    entry_economics.get("cost_model_status", "UNKNOWN"),
+                )
 
                 executable_price = _finite_or_default(entry_bbo.get("executable_price"), 0.0)
                 if executable_price <= 0.0:
