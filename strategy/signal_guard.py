@@ -11,6 +11,8 @@ import time
 import os
 from typing import Any
 
+from strategy.market_context import validate_entry_economics
+
 MIN_VOLUME_SPIKE = 1.5
 MIN_TOP_SIZE_DROP_PCT = 50.0
 MIN_SIZE_HISTORY_SAMPLES = 3
@@ -408,6 +410,65 @@ def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bo
     )
 
 
+
+def validate_paper_market_quality(
+    decision: str,
+    metrics: dict[str, Any],
+) -> tuple[bool, str]:
+    """Require a fresh confirmed book and positive round-trip cost/ATR edge in PAPER."""
+    side = str(decision or "").strip().upper()
+    if side not in {"BUY", "SELL"} or not isinstance(metrics, dict):
+        return False, "PAPER entry quality requires a BUY/SELL candidate and measured metrics."
+
+    if _num(metrics, "order_book_valid") < 0.5:
+        return False, "PAPER-вход заблокирован: актуальный ORDER_BOOK не подтверждён."
+
+    book_age = _num(metrics, "order_book_age_sec", -1.0)
+    max_age = min(5.0, max(0.25, _num(metrics, "bbo_max_age_sec", 2.0)))
+    if book_age < 0.0 or book_age > max_age:
+        age_text = "неизвестен" if book_age < 0.0 else f"{book_age:.2f}s"
+        return False, (
+            f"PAPER-вход заблокирован: стакан устарел (age={age_text}; "
+            f"лимит={max_age:.2f}s)."
+        )
+
+    bid = _num(metrics, "bid", math.nan)
+    ask = _num(metrics, "ask", math.nan)
+    atr_pct = _num(metrics, "bar_atr_pct", math.nan)
+    try:
+        commission = float(os.getenv("PILUITUS_PAPER_COMMISSION_PCT", "0.0354"))
+        slippage = float(os.getenv("PILUITUS_PAPER_SLIPPAGE_BPS", "0"))
+        max_cost_ratio = float(os.getenv("PILUITUS_MAX_ENTRY_COST_TO_ATR_RATIO", "0.50"))
+    except (TypeError, ValueError, OverflowError):
+        return False, "PAPER-вход заблокирован: параметры модели издержек некорректны."
+
+    economics = validate_entry_economics(
+        side=side,
+        bid=bid,
+        ask=ask,
+        commission_pct_per_side=commission,
+        slippage_bps_per_side=slippage,
+        atr_pct=atr_pct,
+        max_cost_to_atr_ratio=max_cost_ratio,
+    )
+    if not economics.get("available") or not economics.get("eligible"):
+        ratio = economics.get("cost_to_atr_ratio")
+        ratio_text = f"{float(ratio):.3f}" if isinstance(ratio, (int, float)) and math.isfinite(float(ratio)) else "н/д"
+        return False, (
+            "PAPER-вход заблокирован: round-trip издержки слишком велики или не измерены "
+            f"(cost/ATR={ratio_text}, лимит={max_cost_ratio:.2f}, "
+            f"причина={economics.get('reason', 'UNKNOWN')})."
+        )
+
+    return True, (
+        "PAPER market quality подтверждена: свежий ORDER_BOOK; "
+        f"cost/ATR={float(economics['cost_to_atr_ratio']):.3f} "
+        f"<= {float(economics['max_cost_to_atr_ratio']):.2f}; "
+        f"минимальное движение до безубыточности="
+        f"{float(economics['minimum_favorable_move_pct']):.4f}%; "
+        f"модель издержек={economics.get('cost_model_status', 'UNKNOWN')}."
+    )
+
 def validate_entry_evidence(
     decision: str,
     metrics: dict[str, Any],
@@ -422,6 +483,10 @@ def validate_entry_evidence(
     ok, reason = validate_signal_evidence(decision, metrics)
     if not ok:
         return ok, reason
+    if paper_mode:
+        market_ok, market_reason = validate_paper_market_quality(decision, metrics)
+        if not market_ok:
+            return False, market_reason
     if str(decision or "").strip().upper() == "SELL" and paper_mode:
         sell_ok, sell_reason = validate_paper_sell_quality(metrics, paper_mode=True)
         if not sell_ok:
