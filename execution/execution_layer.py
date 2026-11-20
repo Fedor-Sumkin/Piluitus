@@ -369,6 +369,22 @@ class BaseExecutionEngine:
         self._pending_monitor_prices: dict[str, tuple[float, str, object]] = {}
         self._monitor_worker_task: asyncio.Task | None = None
         self._last_bbo_exit_warning_at: dict[str, float] = {}
+        try:
+            self.paper_exit_status_log_interval_sec = min(
+                900.0,
+                max(
+                    60.0,
+                    _finite_or_default(
+                        os.getenv("PILUITUS_PAPER_EXIT_STATUS_LOG_INTERVAL_SEC", "300"),
+                        300.0,
+                    ),
+                ),
+            )
+        except (TypeError, ValueError, OverflowError):
+            self.paper_exit_status_log_interval_sec = 300.0
+        # Per-order/event throttling keeps repeated BBO gaps visible in metrics
+        # without flooding the console with every stale/fresh transition.
+        self._last_exit_status_log_at: dict[str, float] = {}
         # Old PAPER positions cannot be resumed safely after restart because the
         # simulator does not restore their monitor state. Keep them visible as
         # unresolved committed capital and fail closed until they are reviewed.
@@ -2686,6 +2702,12 @@ class BaseExecutionEngine:
             self.paper_positions.pop(ticker, None)
         self.closed_trades.append(dict(closed_trade))
         self._last_bbo_exit_warning_at.pop(ticker, None)
+        last_exit_logs = getattr(self, "_last_exit_status_log_at", None)
+        if isinstance(last_exit_logs, dict):
+            order_prefix = f"{order_id}:"
+            for log_key in list(last_exit_logs):
+                if str(log_key).startswith(order_prefix):
+                    last_exit_logs.pop(log_key, None)
         logger.warning(
             "💾 [PAPER JOURNAL] Сделка %s (%s) закрыта. Gross=%+.2f₽, commission=%.2f₽, Net=%+.2f₽; "
             "qty=%d; entry=%.4f; exit=%.4f; source=%s; reason=%s; top_size_raw=%.2f (unit unconfirmed); "
@@ -2751,6 +2773,35 @@ class BaseExecutionEngine:
             return duration
         trade["current_exit_bbo_gap_sec"] = 0.0
         return None
+
+    def _should_log_paper_exit_status(
+        self,
+        order_id: str,
+        event_type: str,
+        now_monotonic: float | None = None,
+    ) -> bool:
+        """Throttle repetitive BBO wait/recovery messages per order and event type."""
+        order_key = str(order_id or "").strip()
+        event_key = str(event_type or "status").strip().lower()[:24] or "status"
+        if not order_key:
+            return True
+        last_logs = getattr(self, "_last_exit_status_log_at", None)
+        if not isinstance(last_logs, dict):
+            last_logs = {}
+            self._last_exit_status_log_at = last_logs
+        interval = _finite_or_default(
+            getattr(self, "paper_exit_status_log_interval_sec", 300.0), 300.0
+        )
+        interval = min(900.0, max(60.0, interval if math.isfinite(interval) else 300.0))
+        now = time.monotonic() if now_monotonic is None else _finite_or_default(now_monotonic, math.nan)
+        if not math.isfinite(now) or now < 0.0:
+            return False
+        key = f"{order_key}:{event_key}"
+        previous = _finite_or_default(last_logs.get(key, 0.0), 0.0)
+        if now - previous < interval:
+            return False
+        last_logs[key] = now
+        return True
 
     async def monitor_paper_positions(
         self,
@@ -2879,11 +2930,14 @@ class BaseExecutionEngine:
                 if previous_wait_state != wait_state:
                     trade["exit_monitor_state"] = wait_state
                     trade["exit_monitor_wait_reason"] = wait_reason
-                    logger.warning(
-                        "⏸️ [PAPER POSITION WAIT] %s %s: %s; позиция и SL/TP сохранены, "
-                        "закрытие будет проверено после появления свежего исполнимого BBO.",
-                        ticker, side, wait_reason,
-                    )
+                    if self._should_log_paper_exit_status(
+                        order_id, "wait", time.monotonic()
+                    ):
+                        logger.warning(
+                            "⏸️ [PAPER POSITION WAIT] %s %s: %s; позиция и SL/TP сохранены, "
+                            "закрытие будет проверено после появления свежего исполнимого BBO.",
+                            ticker, side, wait_reason,
+                        )
                 exit_transaction_side = "SELL" if side == "BUY" else "BUY"
                 estimated_exit_price = self._apply_paper_slippage(observed_last_price, exit_transaction_side)
                 estimated_gross_pnl = (estimated_exit_price - entry_price) * share_qty * sign
@@ -2936,7 +2990,7 @@ class BaseExecutionEngine:
                             ticker, persist_exc,
                         )
                 last_warn = self._last_bbo_exit_warning_at.get(ticker, 0.0)
-                if now_mono - last_warn >= 60.0:
+                if now_mono - last_warn >= self.paper_exit_status_log_interval_sec:
                     quote_obj: object = (
                         self.screener.quotes.get(ticker, {})
                         if self.screener is not None else {}
@@ -3015,13 +3069,16 @@ class BaseExecutionEngine:
                         "[PAPER BBO GAP PERSIST] %s: не удалось сохранить восстановленный BBO: %s",
                         ticker, persist_exc,
                     )
-                logger.warning(
-                    "[PAPER BBO GAP RECOVERED] %s %s: gap=%.3fs max_gap=%.3fs total_gap=%.3fs; "
-                    "SL/TP monitor resumed only on fresh executable BBO.",
-                    ticker, side, gap_duration,
-                    _finite_or_default(trade.get("max_exit_bbo_gap_sec"), 0.0),
-                    _finite_or_default(trade.get("total_exit_bbo_gap_sec"), 0.0),
-                )
+                if self._should_log_paper_exit_status(
+                    order_id, "recovery", time.monotonic()
+                ):
+                    logger.warning(
+                        "[PAPER BBO GAP RECOVERED] %s %s: gap=%.3fs max_gap=%.3fs total_gap=%.3fs; "
+                        "SL/TP monitor resumed only on fresh executable BBO.",
+                        ticker, side, gap_duration,
+                        _finite_or_default(trade.get("max_exit_bbo_gap_sec"), 0.0),
+                        _finite_or_default(trade.get("total_exit_bbo_gap_sec"), 0.0),
+                    )
 
             # A coherent executable BBO has returned; resume the monitor without
             # manufacturing a fill or changing the saved SL/TP levels.
@@ -3029,11 +3086,14 @@ class BaseExecutionEngine:
                 previous_reason = str(trade.get("exit_monitor_wait_reason") or "ожидание BBO")
                 trade["exit_monitor_state"] = "ACTIVE"
                 trade.pop("exit_monitor_wait_reason", None)
-                logger.info(
-                    "▶️ [PAPER POSITION RESUMED] %s %s: получен свежий исполнимый BBO; "
-                    "мониторинг SL/TP продолжен (предыдущее состояние: %s).",
-                    ticker, side, previous_reason,
-                )
+                if gap_duration is None and self._should_log_paper_exit_status(
+                    order_id, "resume", time.monotonic()
+                ):
+                    logger.info(
+                        "▶️ [PAPER POSITION RESUMED] %s %s: получен свежий исполнимый BBO; "
+                        "мониторинг SL/TP продолжен (предыдущее состояние: %s).",
+                        ticker, side, previous_reason,
+                    )
 
             # Closing a long means selling at Bid; closing a short means buying at Ask.
             executable_exit_price = float(bbo["executable_price"])
