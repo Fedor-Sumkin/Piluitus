@@ -9,8 +9,8 @@ import os
 from httpx import AsyncClient, HTTPStatusError
 from config import Settings
 import httpx
-from rag_prompt_utils import normalise_rag_context, select_prompt_rules
-from signal_guard import classify_direction_evidence
+from ai.rag_prompt_utils import normalise_rag_context, select_prompt_rules
+from strategy.signal_guard import classify_direction_evidence
 
 log = logging.getLogger("Piluitus.AIEngine")
 thought_log = logging.getLogger("Piluitus.EvolutionThoughts")
