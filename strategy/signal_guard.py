@@ -496,7 +496,9 @@ def validate_entry_evidence(
         sell_ok, sell_reason = validate_paper_sell_quality(metrics, paper_mode=True)
         if not sell_ok:
             return False, sell_reason
-        return True, f"{reason} {sell_reason}".strip()
+        reason = f"{reason} {sell_reason}".strip()
+    if paper_mode:
+        reason = f"{reason} {market_reason}".strip()
     return True, reason
 
 
