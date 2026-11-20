@@ -152,11 +152,20 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
         self.assertFalse(result["eligible"])
         self.assertIn("queue_trade_flow_conflict", result["hard_blocks"])
 
-    def test_fresh_queue_flow_conflict_is_detected_for_paper_guard(self):
+    def test_fresh_queue_flow_conflict_is_directional_for_paper_guard(self):
+        # Queue supports BUY while aggressive selling opposes BUY.
         metrics = strong_buy_metrics()
         metrics["trade_flow_imbalance_30s"] = -0.30
         self.assertTrue(has_queue_trade_flow_conflict("BUY", metrics))
+        # The same raw measurements are not a conflict against SELL flow:
+        # the queue opposes SELL, while aggressive selling confirms SELL.
         self.assertFalse(has_queue_trade_flow_conflict("SELL", metrics))
+
+        # Mirror the case: queue supports SELL and aggressive buying opposes it.
+        metrics["queue_imbalance_5s"] = -0.32
+        metrics["trade_flow_imbalance_30s"] = 0.30
+        self.assertTrue(has_queue_trade_flow_conflict("SELL", metrics))
+        self.assertFalse(has_queue_trade_flow_conflict("BUY", metrics))
 
     def test_queue_flow_guard_ignores_unavailable_or_stale_measurements(self):
         metrics = strong_buy_metrics()
