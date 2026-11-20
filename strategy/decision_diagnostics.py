@@ -66,6 +66,20 @@ _NUMERIC_FIELDS = {
     "queue_imbalance": "queue_imbalance",
     "queue_imbalance_available": "queue_imbalance_available",
     "queue_imbalance_age_sec": "queue_imbalance_age_sec",
+    "queue_imbalance_5s": "queue_imbalance_5s",
+    "queue_imbalance_5s_available": "queue_imbalance_5s_available",
+    "queue_imbalance_5s_coverage_sec": "queue_imbalance_5s_coverage_sec",
+    "queue_imbalance_5s_age_sec": "queue_imbalance_5s_age_sec",
+    "queue_imbalance_5s_samples": "queue_imbalance_5s_samples",
+    "queue_imbalance_5s_positive_time_pct": "queue_imbalance_5s_positive_time_pct",
+    "ofi_5s": "ofi_5s",
+    "ofi_5s_available": "ofi_5s_available",
+    "ofi_5s_samples": "ofi_5s_samples",
+    "ofi_5s_coverage_sec": "ofi_5s_coverage_sec",
+    "ofi_5s_age_sec": "ofi_5s_age_sec",
+    "entry_cost_to_atr_ratio": "entry_cost_to_atr_ratio",
+    "entry_cost_to_atr_limit": "entry_cost_to_atr_limit",
+    "entry_minimum_favorable_move_pct": "entry_minimum_favorable_move_pct",
     "bid_quote_age_sec": "bid_quote_age_sec",
     "ask_quote_age_sec": "ask_quote_age_sec",
 }
@@ -93,6 +107,9 @@ def build_llm_feature_snapshot(metrics: object) -> dict[str, Any]:
         metrics.get("direction_evidence_state") or "UNAVAILABLE"
     )
     snapshot["m1_pattern"] = str(metrics.get("bar_pattern_name") or "")
+    snapshot["entry_cost_model_status"] = str(
+        metrics.get("entry_cost_model_status") or "UNAVAILABLE"
+    )
     return snapshot
 
 
