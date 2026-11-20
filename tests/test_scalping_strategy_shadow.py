@@ -58,8 +58,27 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
         metrics["queue_imbalance"] = -0.45
         metrics["queue_imbalance_5s"] = -0.45
         result = evaluate_scalping_candidate("BUY", metrics)
+        baseline = evaluate_scalping_candidate("BUY", strong_buy_metrics())
         self.assertFalse(result["eligible"])
         self.assertEqual(result["side"], "BUY")
+        self.assertLess(result["score"], baseline["score"])
+        self.assertEqual(result["components"]["queue_imbalance"], -3.0)
+        self.assertIn("time_weighted_queue_imbalance_opposes_side", result["reasons"])
+
+    def test_strong_opposing_queue_reduces_sell_score_without_inverting_side(self) -> None:
+        metrics = strong_buy_metrics()
+        metrics["price_change_pct"] = -0.20
+        metrics["price_vs_vwap_pct"] = -0.12
+        metrics["queue_imbalance"] = 0.45
+        metrics["queue_imbalance_5s"] = 0.45
+        metrics["bar_pattern_name"] = "M1_RANGE_BREAKOUT_SELL"
+        metrics["bar_trend_up"] = 0.0
+        metrics["bar_trend_down"] = 1.0
+        metrics["trade_flow_imbalance_30s"] = -0.35
+        result = evaluate_scalping_candidate("SELL", metrics)
+        self.assertFalse(result["eligible"])
+        self.assertEqual(result["side"], "SELL")
+        self.assertEqual(result["components"]["queue_imbalance"], -3.0)
         self.assertIn("time_weighted_queue_imbalance_opposes_side", result["reasons"])
 
     def test_stale_or_invalid_book_is_a_shadow_hard_block(self) -> None:
