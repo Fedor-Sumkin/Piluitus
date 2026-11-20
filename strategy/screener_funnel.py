@@ -17,7 +17,7 @@ from collections import deque
 from typing import Any
 
 import numpy as np
-from minute_bar_patterns import MinuteBarPatternEngine
+from strategy.minute_bar_patterns import MinuteBarPatternEngine
 
 logger = logging.getLogger("Piluitus.Screener")
 
