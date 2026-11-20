@@ -1792,7 +1792,7 @@ async def _resume_pending_bbo_candidate(
         shadow_result = _log_scalping_shadow(key, direction, metrics)
         payload["shadow_candidate_id"] = shadow_result.get("candidate_id")
 
-     evidence_ok, evidence_reason = validate_signal_evidence(direction, metrics)
+    evidence_ok, evidence_reason = validate_signal_evidence(direction, metrics)
     if not evidence_ok:
         if _guard_reason_bucket(evidence_reason) == "quotes":
             _trade_flow_inc("bbo_resume_evidence_quotes")
@@ -2033,10 +2033,10 @@ def _sync_write_trading_log(filename: str, log_line: str):
 async def log_trading_event_to_file(ticker: str, price: float, decision: str, confidence: float, tactic: str, critic: str):
     """Асинхронный неблокирующий регистратор торговых сессий."""
     os.makedirs("trading_logs", exist_ok=True)
-    
+
     date_str = datetime.now().strftime("%Y-%m-%d")
     filename = f"trading_logs/piluitus_session_{date_str}.txt"
-    
+
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     log_line = (
         f"========================================================================\n"
@@ -2047,7 +2047,7 @@ async def log_trading_event_to_file(ticker: str, price: float, decision: str, co
         f"🧐 КРИТИКА: {critic}\n"
         f"========================================================================\n"
     )
-    
+
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, _sync_write_trading_log, filename, log_line)
 # --------------------------------------------------------------
@@ -2065,7 +2065,7 @@ class ConnectionManager:
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
             logger.info("🔌 WS‑клиент отключён")
-        
+
     async def broadcast(self, message: str):
         for conn in self.active_connections:
             try:
@@ -2773,7 +2773,7 @@ class MarketWorker:
                             _AI_CANDIDATE_TTL_SEC,
                         )
                         continue
-                
+
                 if priority == 0:
                     logger.warning(f"🚨 [ПРИОРИТЕТНЫЙ ПЕРЕХВАТ] Выполнение экстренной команды: {event_type}")
                     if event_type == "CMD_CLOSE_ALL":
@@ -4601,10 +4601,10 @@ async def websocket_frontend_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         logger.info("🔌 К WS‑шлюзу подключился веб-интерфейс. Отправка стартового пакета...")
-        
+
         initial_positions = await _get_dashboard_open_positions()
         initial_balance = await _refresh_dashboard_balance_snapshot(initial_positions)
-        
+
         cached_news = []
         try:
             redis_inst = getattr(db_manager, "redis", getattr(db_manager, "_redis", None))
@@ -4660,7 +4660,7 @@ async def websocket_frontend_endpoint(websocket: WebSocket):
                             )
                             asyncio.create_task(process_market_event(mock_event))
                 await asyncio.sleep(0.0001)
-            
+
             elif isinstance(message, dict):
                 # ПЕРЕХВАТ ИНТЕРАКТИВНЫХ WS-КОМАНД ИЗ ИНТЕРФЕЙСА (Мгновенный перевод на Priority 0)
                 msg_type = message.get("type")
