@@ -8,7 +8,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 # Нативный менеджер памяти проекта
-from db_manager import DBManager
+from storage.db_manager import DBManager
 
 logger = logging.getLogger("Piluitus.PnLExporter")
 
