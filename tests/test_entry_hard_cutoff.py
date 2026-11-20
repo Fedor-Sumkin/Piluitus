@@ -5,7 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from execution.execution_layer import ExecutionLayer
+from execution.execution_layer import BaseExecutionEngine
 
 
 MSK = timezone(timedelta(hours=3))
@@ -35,7 +35,7 @@ def _fixed_datetime(value: datetime):
 class EntryHardCutoffTests(unittest.IsolatedAsyncioTestCase):
     async def _status_at(self, clock: str):
         fixed = datetime.fromisoformat(f"2026-11-20T{clock}:00+03:00")
-        layer = ExecutionLayer.__new__(ExecutionLayer)
+        layer = BaseExecutionEngine.__new__(ExecutionLayer)
         layer.broker = _ScheduleBroker()
         with patch("execution.execution_layer.datetime", _fixed_datetime(fixed)), patch.dict(
             os.environ,
