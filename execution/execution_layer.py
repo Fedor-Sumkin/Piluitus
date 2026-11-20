@@ -258,7 +258,7 @@ class BaseExecutionEngine:
 
         try:
             self.initial_capital = max(0.0, float(
-                initial_capital if initial_capital is not None else os.getenv("TRADING_DEPOSIT", "100000")
+                initial_capital if initial_capital is not None else Settings.TRADE_DEPOSIT
             ))
         except (TypeError, ValueError):
             self.initial_capital = 100000.0
