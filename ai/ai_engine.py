@@ -918,13 +918,13 @@ class AIEngine:
                 f"Directional check: signed price momentum must agree with candidate BUY "
                 f"(>+{momentum_neutral_band_pct:.3f}%); "
                 "A fresh matching closed M1 pattern may support the candidate when VWAP is not materially opposite; "
-                "positive 30s flow supports BUY."
+                "BUY requires positive 15s trade momentum; positive 30s flow supports BUY."
             ),
             "SELL": (
                 f"Directional check: signed price momentum must agree with candidate SELL "
                 f"(<-{momentum_neutral_band_pct:.3f}%); "
                 "A fresh matching closed M1 pattern may support the candidate when VWAP is not materially opposite; "
-                "negative 30s flow supports SELL."
+                "SELL requires negative 15s trade momentum; negative 30s flow supports SELL."
             ),
             "NONE": "No local direction: MUST HOLD.",
         }[direction]
