@@ -16,7 +16,7 @@ from aiogram.filters import Command
 from aiogram.types import FSInputFile  # Для отправки файлов бортового журнала
 
 # Нативные модули v3.0
-from db_manager import DBManager
+from storage.db_manager import DBManager
 from config import PROJECT_ROOT
 
 load_dotenv()
