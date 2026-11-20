@@ -3420,7 +3420,7 @@ class MarketWorker:
                     if len(last_ai_verdicts_cache) > MAX_CACHE_SIZE:
                         last_ai_verdicts_cache.pop(0)
 
-                    redis_inst = getattr(self.db, "redis", getattr(self.db, "_redis", None))
+                    redis_inst = getattr(self.db, "redis", None) or getattr(self.db, "_redis", None)
                     if redis_inst is None:
                         logger.error(
                             "[LLM VERDICT PERSIST ERROR] verdict_id=%s candidate_id=%s ticker=%s: "
