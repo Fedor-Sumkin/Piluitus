@@ -480,10 +480,10 @@ def validate_entry_evidence(
     *,
     paper_mode: bool = False,
 ) -> tuple[bool, str]:
-    """Validate common signal evidence, then apply the optional PAPER-only SELL gate.
+    """Validate common evidence, then enforce PAPER-only market-quality and SELL gates.
 
     The base signal validator remains suitable for diagnostics and unit tests.
-    The stricter research gate is applied only by the actual PAPER entry path.
+    PAPER-specific checks run only on the actual PAPER entry path.
     """
     ok, reason = validate_signal_evidence(decision, metrics)
     if not ok:
