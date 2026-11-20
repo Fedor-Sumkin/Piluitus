@@ -2050,26 +2050,86 @@ screener.set_universe(TICKERS_TO_TRADE)
 # --------------------------------------------------------------
 #  2️⃣  НЕБЛОКИРУЮЩИЙ ДИСКОВЫЙ БОРТОВОЙ ЖУРНАЛ ТЕСТОВ
 # --------------------------------------------------------------
-def _sync_write_trading_log(filename: str, log_line: str):
-    """Синхронная запись блока лога на диск, изолированная в пуле потоков ОС."""
-    try:
-        with open(filename, "a", encoding="utf-8") as f:
-            f.write(log_line + "\n")
-    except Exception as e:
-        logger.error(f"❌ Ошибка записи в текстовый лог: {e}")
+_tracked_operation_tasks: set[asyncio.Task] = set()
+_trading_log_file_lock = threading.Lock()
 
-async def log_trading_event_to_file(ticker: str, price: float, decision: str, confidence: float, tactic: str, critic: str):
-    """Асинхронный неблокирующий регистратор торговых сессий."""
+
+def _spawn_tracked_operation(coro, *, name: str) -> asyncio.Task:
+    """Keep a strong reference to critical fire-and-forget work until it completes."""
+    task = asyncio.create_task(coro, name=name)
+    _tracked_operation_tasks.add(task)
+
+    def _on_done(completed: asyncio.Task) -> None:
+        _tracked_operation_tasks.discard(completed)
+        if completed.cancelled():
+            return
+        try:
+            error = completed.exception()
+        except asyncio.CancelledError:
+            return
+        if error is not None:
+            logger.error(
+                "[BACKGROUND OPERATION FAILED] task=%s error=%r",
+                completed.get_name(),
+                error,
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
+    task.add_done_callback(_on_done)
+    return task
+
+
+async def _drain_tracked_operations() -> None:
+    """Wait for queued verdict-file writes and in-flight order publications at shutdown."""
+    while _tracked_operation_tasks:
+        pending = tuple(_tracked_operation_tasks)
+        await asyncio.gather(*pending, return_exceptions=True)
+        for task in pending:
+            _tracked_operation_tasks.discard(task)
+    logger.info("[BACKGROUND OPERATIONS] shutdown drain complete.")
+
+
+def _sync_write_trading_log(filename: str, log_line: str):
+    """Синхронная сериализованная запись блока торгового лога на диск."""
+    try:
+        with _trading_log_file_lock:
+            with open(filename, "a", encoding="utf-8") as file:
+                file.write(log_line + "\n")
+    except Exception as e:
+        logger.error(f"❌ Ошибка записи в текстовый лог: {e}", exc_info=True)
+
+
+async def log_trading_event_to_file(
+    ticker: str,
+    price: float,
+    decision: str,
+    confidence: float,
+    tactic: str,
+    critic: str,
+    *,
+    candidate_id: str | None = None,
+    verdict_id: str | None = None,
+    model_confidence: float | None = None,
+    final_confidence: float | None = None,
+):
+    """Асинхронный неблокирующий регистратор торговых событий текущего запуска."""
     os.makedirs("trading_logs", exist_ok=True)
 
     date_str = datetime.now().strftime("%Y-%m-%d")
-    filename = f"trading_logs/piluitus_session_{date_str}.txt"
+    run_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(RUN_ID or "unknown"))
+    filename = f"trading_logs/piluitus_session_{date_str}_{run_id}.txt"
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    model_confidence_value = confidence if model_confidence is None else model_confidence
+    final_confidence_text = (
+        f"{final_confidence:.1f}%" if final_confidence is not None else "N/A"
+    )
     log_line = (
         f"========================================================================\n"
         f"⏰ ВРЕМЯ: {timestamp} | АКТИВ: {ticker} | ЦЕНА: {price} ₽\n"
-        f"🎯 РЕШЕНИЕ ИИ: {decision} (Уверенность: {confidence:.1f}%)\n"
+        f"🧩 ЗАПУСК: {run_id} | candidate_id={candidate_id or 'NONE'} | verdict_id={verdict_id or 'NONE'}\n"
+        f"🎯 РЕШЕНИЕ ИИ: {decision} (Модель: {model_confidence_value:.1f}% | "
+        f"Финальный фильтр: {final_confidence_text})\n"
         f"------------------------------------------------------------------------\n"
         f"📝 ТАКТИКА: {tactic}\n"
         f"🧐 КРИТИКА: {critic}\n"
@@ -2859,7 +2919,7 @@ class MarketWorker:
                 else:
                     volatility_text = "Волатильность: Н/Д — нет подтверждённой истории."
 
-                asyncio.create_task(
+                _spawn_tracked_operation(
                     log_trading_event_to_file(
                         ticker=ticker,
                         price=price,
@@ -2867,7 +2927,9 @@ class MarketWorker:
                         confidence=0.0,
                         tactic=volume_text,
                         critic=volatility_text,
-                    )
+                        candidate_id=str(event_payload.get("shadow_candidate_id") or "") or None,
+                    ),
+                    name=f"trading-log-queue:{ticker}",
                 )
 
                 trading_allowed = await risk_manager.is_trading_allowed(self.db)
@@ -2878,11 +2940,17 @@ class MarketWorker:
                     continue
                 if not trading_allowed:
                     _trade_flow_inc("risk_blocked")
-                    asyncio.create_task(
+                    _spawn_tracked_operation(
                         log_trading_event_to_file(
-                            ticker, price, "RISK_BLOCK", 0.0,
-                            "Торговля заблокирована.", "RiskManager запретил торговлю до запроса к ИИ."
-                        )
+                            ticker,
+                            price,
+                            "RISK_BLOCK",
+                            0.0,
+                            "Торговля заблокирована.",
+                            "RiskManager запретил торговлю до запроса к ИИ.",
+                            candidate_id=str(event_payload.get("shadow_candidate_id") or "") or None,
+                        ),
+                        name=f"trading-log-risk-block:{ticker}",
                     )
                     await self._publish_pre_llm_risk_block(
                         event_payload, int(event_payload.get("paper_session_generation", -1))
@@ -3399,15 +3467,20 @@ class MarketWorker:
                 ai_analysis["tactic_opinion"] = tactic_text
                 ai_analysis["critic_opinion"] = critic_text
 
-                asyncio.create_task(
+                _spawn_tracked_operation(
                     log_trading_event_to_file(
                         ticker=ticker,
                         price=price,
                         decision=f"ВЕРДИКТ ИИ: {decision} (кандидат={candidate_decision}, исполнение={execution_status})",
-                        confidence=round(confidence, 1) if confidence_valid else 0.0,
+                        confidence=round(candidate_confidence, 1) if candidate_confidence is not None else 0.0,
                         tactic=tactic_text,
                         critic=critic_text,
-                    )
+                        candidate_id=shadow_candidate_id or None,
+                        verdict_id=verdict_id,
+                        model_confidence=candidate_confidence,
+                        final_confidence=round(confidence, 1) if confidence_valid else None,
+                    ),
+                    name=f"trading-log-verdict:{ticker}:{verdict_id}",
                 )
 
                 async with _paper_session_lock:
@@ -3465,7 +3538,7 @@ class MarketWorker:
                     await _safe_broadcast(payload_for_ws)
 
                     if execution_status == "PENDING":
-                        asyncio.create_task(
+                        _spawn_tracked_operation(
                             self._execute_and_publish(
                                 verdict_id=verdict_id,
                                 ticker=ticker,
@@ -3476,7 +3549,8 @@ class MarketWorker:
                                 session_generation=int(event_payload.get("paper_session_generation", -1)),
                                 candidate_created_monotonic=event_payload.get("candidate_created_monotonic"),
                                 shadow_candidate_id=shadow_candidate_id or None,
-                            )
+                            ),
+                            name=f"paper-execution:{ticker}:{verdict_id}",
                         )
 
             except Exception as outer_exc:
@@ -3851,6 +3925,17 @@ async def lifespan(app: FastAPI):
             for result in results:
                 if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
                     logger.warning("Ошибка при завершении фоновой задачи: %r", result)
+
+        # Producers are stopped; finish all retained verdict writes and order publications
+        # before closing the replay writer or the event loop.
+        try:
+            await _drain_tracked_operations()
+        except Exception as operation_drain_err:
+            logger.error(
+                "[BACKGROUND OPERATIONS] shutdown drain failed: %s",
+                operation_drain_err,
+                exc_info=True,
+            )
 
         # Stop producers first (broker/market workers), then drain the replay writer.
         try:
