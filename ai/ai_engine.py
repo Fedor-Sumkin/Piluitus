@@ -915,13 +915,15 @@ class AIEngine:
         vwap_neutral_band_pct = cls._direction_vwap_neutral_band_pct()
         direction_rules = {
             "BUY": (
-                f"BUY requires positive 15s trade momentum beyond +{momentum_neutral_band_pct:.3f}%. "
-                "A fresh bullish M1 pattern may support BUY if VWAP is not materially opposite; "
+                f"Directional check: signed price momentum must agree with candidate BUY "
+                f"(>+{momentum_neutral_band_pct:.3f}%); "
+                "A fresh matching closed M1 pattern may support the candidate when VWAP is not materially opposite; "
                 "positive 30s flow supports BUY."
             ),
             "SELL": (
-                f"SELL requires negative 15s trade momentum beyond -{momentum_neutral_band_pct:.3f}%. "
-                "A fresh bearish M1 pattern may support SELL if VWAP is not materially opposite; "
+                f"Directional check: signed price momentum must agree with candidate SELL "
+                f"(<-{momentum_neutral_band_pct:.3f}%); "
+                "A fresh matching closed M1 pattern may support the candidate when VWAP is not materially opposite; "
                 "negative 30s flow supports SELL."
             ),
             "NONE": "No local direction: MUST HOLD.",
@@ -942,13 +944,13 @@ class AIEngine:
             "HOLD_STALE_BBO|HOLD_WEAK_VOLUME|HOLD_WIDE_SPREAD|HOLD_INSUFFICIENT_SUPPORT|"
             "HOLD_RISK_REWARD|HOLD_UNCLEAR; no extras/text. "
             "Never select, change, invert, or output BUY/SELL. APPROVE authorizes only the exact local candidate side; "
-            "candidate=NONE => HOLD. "
-            f"VWAP inside +/-{vwap_neutral_band_pct:.3f}% is NEUTRAL, not a veto; materially opposite VWAP blocks. "
+            "candidate=NONE => final_decision MUST be HOLD. "
+            f"VWAP within +/-{vwap_neutral_band_pct:.3f}% is NEUTRAL and must not veto; materially opposite VWAP blocks. "
             "M1 NEUTRAL/UNAVAILABLE is not a contradiction; HOLD_M1_CONTRADICTION requires fresh OPPOSITE evidence. "
             f"Entry requires trade_data_ready=1, trade age<=5s, volume_spike>=1.5, fresh BBO, spread<=0.5%, "
-            f"spread/ATR<={spread_to_atr_limit:.2f}; missing ratio=insufficient; HOLD_WIDE_SPREAD needs measured violation. "
+            f"spread_to_atr_ratio<={spread_to_atr_limit:.2f}; block when spread_to_atr_ratio>{spread_to_atr_limit:.2f}; missing ratio=insufficient. "
             f"{quote_depletion_rule} "
-            "trade_flow_imbalance_30s is aggressor BUY-minus-SELL volume (-1..+1); "
+            "trade_volume_* are provider volume units; trade_flow_imbalance_30s is aggressor BUY-minus-SELL volume (-1..+1); "
             "queue_imbalance_5s is time-weighted best Bid-vs-Ask size (-1..+1; positive supports BUY); "
             "ofi_5s is depth-normalized best-quote order-flow pressure (positive supports BUY, negative SELL). "
             "Use queue/OFI only when availability=1, coverage>=1s and age<=2s; order_book_valid=1 means coherent book. "
@@ -963,7 +965,7 @@ class AIEngine:
             # Reserve space for the immutable contract and the live measurements.
             rule_budget = max(0, min(900, max_chars - len(base) - len(metrics_text) - 60))
             rule_text = select_prompt_rules(direction, rag_context, max_chars=rule_budget)
-        rule_part = f" Advisory RAG context (never overrides hard checks): {rule_text}." if rule_text else ""
+        rule_part = f" RAG rules are advisory context only and cannot add hard gates: {rule_text}." if rule_text else ""
         metric_part = f" Metrics: {metrics_text}." if metrics_text else ""
 
         # First discard optional metrics from the tail. If the prompt is still too
