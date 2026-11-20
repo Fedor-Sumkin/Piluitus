@@ -215,6 +215,57 @@ def validate_spread_to_atr(
     return True, f"Spread/ATR пройден: ratio={ratio:.3f} при лимите {limit:.2f}."
 
 
+def validate_paper_sell_quality(metrics: dict[str, Any]) -> tuple[bool, str]:
+    """Apply a deliberately stricter, PAPER-only SELL quality gate.
+
+    The 2026-11-20 sample showed materially weaker SELL expectancy than BUY.
+    This gate requires measured price/VWAP alignment and fresh negative
+    aggressor flow; it never changes LIVE behaviour and can be disabled
+    explicitly for controlled A/B research.
+    """
+    paper_mode = str(os.getenv("PAPER_TRADING", "True")).strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    enabled = str(os.getenv("PILUITUS_PAPER_SELL_STRICT_GATE", "true")).strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    if not paper_mode or not enabled:
+        return True, ""
+
+    direction_state = classify_direction_evidence("SELL", metrics)
+    if direction_state != "ALIGNED":
+        return False, (
+            "PAPER SELL требует полного согласования отрицательного импульса "
+            "цены и VWAP; нейтральное подтверждение недостаточно."
+        )
+
+    if _num(metrics, "trade_data_ready") < 0.5:
+        return False, "PAPER SELL заблокирован: поток сделок не готов для подтверждения продавцов."
+    flow_age = _num(metrics, "trade_metrics_age_sec", -1.0)
+    if flow_age < 0.0 or flow_age > 5.0:
+        return False, (
+            f"PAPER SELL заблокирован: поток сделок устарел ({flow_age:.2f}s; лимит 5.00s)."
+        )
+    flow = _num(metrics, "trade_flow_imbalance_30s", math.nan)
+    try:
+        minimum_flow = float(os.getenv("PILUITUS_PAPER_SELL_MIN_FLOW_IMBALANCE", "0.10"))
+    except (TypeError, ValueError, OverflowError):
+        minimum_flow = 0.10
+    if not math.isfinite(minimum_flow):
+        minimum_flow = 0.10
+    minimum_flow = min(0.75, max(0.05, minimum_flow))
+    if not math.isfinite(flow) or flow > -minimum_flow:
+        flow_text = f"{flow:.3f}" if math.isfinite(flow) else "недоступен"
+        return False, (
+            "PAPER SELL заблокирован: недостаточно подтверждённого агрессивного потока продавцов "
+            f"(imbalance_30s={flow_text}; требуется <= {-minimum_flow:.2f})."
+        )
+    return True, (
+        f"PAPER SELL прошёл строгую проверку: цена/VWAP согласованы, "
+        f"trade_flow_imbalance_30s={flow:.3f}, возраст={flow_age:.2f}s."
+    )
+
+
 def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bool, str]:
     """Validate independent entry evidence; top-size depletion is supporting, not mandatory.
 
@@ -345,6 +396,11 @@ def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bo
             f"(подтверждено={drop_pct:.1f}%, {observed_text}, история={samples}, "
             f"возраст={drop_age:.2f}s); размер — дополнительный, не обязательный признак"
         )
+
+    if decision == "SELL":
+        sell_ok, sell_reason = validate_paper_sell_quality(metrics)
+        if not sell_ok:
+            return False, sell_reason
 
     return True, (
         f"Обязательные условия пройдены: {direction_evidence}, volume_spike={volume_spike:.2f}×, "
