@@ -326,7 +326,10 @@ class BaseExecutionEngine:
         # Percentage is charged on each side (entry and exit). Slippage is an
         # additional adverse adjustment beyond the executable Bid/Ask price.
         self.paper_commission_pct = min(
-            1.0, max(0.0, _finite_or_default(os.getenv("PILUITUS_PAPER_COMMISSION_PCT", "0"), 0.0))
+            1.0, max(0.0, _finite_or_default(
+                os.getenv("PILUITUS_PAPER_COMMISSION_PCT", str(getattr(Settings, "PAPER_COMMISSION_PCT", 0.0354))),
+                0.0354,
+            ))
         )
         self.paper_slippage_bps = min(
             100.0, max(0.0, _finite_or_default(os.getenv("PILUITUS_PAPER_SLIPPAGE_BPS", "0"), 0.0))
@@ -987,6 +990,22 @@ class BaseExecutionEngine:
         value = _finite_or_default(os.getenv("PILUITUS_ENTRY_CUTOFF_MINUTES", "5"), 5.0)
         return min(30.0, max(0.0, value))
 
+    @staticmethod
+    def _entry_hard_cutoff_msk(now: datetime) -> datetime | None:
+        """Return the configured hard cutoff for new entries on this Moscow date."""
+        raw = str(os.getenv("PILUITUS_ENTRY_HARD_CUTOFF_MSK", getattr(
+            Settings, "ENTRY_HARD_CUTOFF_MSK", "22:00"
+        )) or "22:00").strip()
+        try:
+            clock = datetime_time.fromisoformat(raw)
+        except (TypeError, ValueError):
+            logger.error(
+                "[ENTRY HARD CUTOFF CONFIG] invalid PILUITUS_ENTRY_HARD_CUTOFF_MSK=%r; "
+                "using safe default 22:00 MSK", raw
+            )
+            clock = datetime_time(22, 0)
+        return datetime.combine(now.date(), clock, tzinfo=_MOSCOW_TZ)
+
     async def _market_session_status(self, ticker: str) -> dict[str, Any]:
         """Read the current instrument-specific Finam schedule in Moscow time."""
         getter = getattr(self.broker, "get_asset_schedule", None)
@@ -1031,15 +1050,25 @@ class BaseExecutionEngine:
 
         active = [(start, end, kind) for start, end, kind in parsed_windows if start <= now < end]
         if active:
-            start, end, kind = min(active, key=lambda item: item[1])
-            seconds_to_close = max(0.0, (end - now).total_seconds())
+            start, provider_end, kind = min(active, key=lambda item: item[1])
+            hard_cutoff = self._entry_hard_cutoff_msk(now)
+            effective_end = min(provider_end, hard_cutoff) if hard_cutoff is not None else provider_end
+            seconds_to_close = max(0.0, (effective_end - now).total_seconds())
             cutoff_minutes = self._entry_cutoff_minutes()
             allowed = seconds_to_close > cutoff_minutes * 60.0
+            hard_cutoff_reached = hard_cutoff is not None and now >= hard_cutoff
+            reason = (
+                "hard_entry_cutoff_reached" if hard_cutoff_reached
+                else "active_session" if allowed
+                else "entry_cutoff_reached"
+            )
             return {
                 "known": True, "is_open": True, "entry_allowed": allowed,
-                "reason": "active_session" if allowed else "entry_cutoff_reached",
-                "session_type": kind, "session_start": start.isoformat(),
-                "session_end": end.isoformat(), "seconds_to_close": seconds_to_close,
+                "reason": reason, "session_type": kind,
+                "session_start": start.isoformat(),
+                "session_end": provider_end.isoformat(),
+                "entry_hard_cutoff": hard_cutoff.isoformat() if hard_cutoff else None,
+                "seconds_to_close": seconds_to_close,
                 "cutoff_minutes": cutoff_minutes,
             }
 
