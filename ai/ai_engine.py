@@ -870,6 +870,12 @@ class AIEngine:
             "trade_volume_5s", "trade_volume_baseline_5s", "trade_count_60s",
             "trade_flow_imbalance_30s", "trade_price_change_30s_pct",
             "trade_realized_volatility_60s_pct",
+            "order_book_valid", "order_book_age_sec",
+            "queue_imbalance_5s", "queue_imbalance_5s_available",
+            "queue_imbalance_5s_coverage_sec", "queue_imbalance_5s_age_sec",
+            "ofi_5s", "ofi_5s_available", "ofi_5s_coverage_sec", "ofi_5s_age_sec",
+            "entry_cost_to_atr_ratio", "entry_cost_to_atr_limit",
+            "entry_minimum_favorable_move_pct", "entry_cost_model_status",
             "bar_count", "bar_atr_periods", "bar_atr_age_sec", "m1_evidence_state",
             "bar_trend_up", "bar_trend_down",
             "price_change_pct", "price_vs_vwap_pct", "volume_spike", "volume_spike_raw",
@@ -949,6 +955,12 @@ class AIEngine:
             f"{quote_depletion_rule} "
             "trade_flow_imbalance_30s is signed BUY-vs-SELL volume (-1..+1); "
             "trade_volume_5s and trade_volume_baseline_5s are provider volume units. "
+            "order_book_valid=1 means a coherent current book; order_book_age_sec is its age. "
+            "queue_imbalance_5s is time-weighted best Bid-vs-Ask size (-1..+1; positive supports BUY). "
+            "ofi_5s is depth-normalized best-quote order-flow pressure (positive supports BUY, negative SELL). "
+            "Use queue/OFI only when availability=1, coverage>=1s and age<=2s; otherwise treat as unavailable. "
+            "entry_cost_to_atr_ratio includes spread, both commission sides and configured slippage; "
+            "if entry_cost_model_status is incomplete, it is only a lower-bound cost estimate. "
             "30s price change and 60s realized volatility are context, not standalone gates. "
             "RAG rules are advisory context only and cannot add hard gates. "
             f"candidate={direction};ticker={str(ticker)[:10]};price={cls._prompt_value(price, 12)};"
