@@ -62,7 +62,10 @@ from strategy.bbo_replay import (
 from strategy.bbo_replay_simulator import replay_exit_batch, replay_exit_scenarios
 from strategy.paper_reconciliation import build_shadow_reconciliation
 from strategy.paper_execution_reconciliation import build_actual_vs_replay_reconciliation
-from strategy.shadow_validation import build_shadow_walk_forward_validation
+from strategy.shadow_validation import (
+    build_shadow_cost_sensitivity,
+    build_shadow_walk_forward_validation,
+)
 from strategy.paper_performance import (
     PAPER_CLOSED_TRADES_STORAGE_KEY,
     PAPER_CLOSED_TRADES_STORAGE_LIMIT,
@@ -4197,6 +4200,25 @@ async def get_paper_shadow_walk_forward(
     }
 
 
+@app.get("/api/v1/paper/shadow/cost-sensitivity")
+async def get_paper_shadow_cost_sensitivity(limit: int = 20000):
+    """Read-only Shadow net-return stress test for 0/1/2/5 bps extra slippage per side."""
+    _require_paper_mode()
+    if limit < 1 or limit > SHADOW_OUTCOMES_STORAGE_LIMIT:
+        raise HTTPException(
+            status_code=422,
+            detail=f"limit должен быть от 1 до {SHADOW_OUTCOMES_STORAGE_LIMIT}.",
+        )
+    return {
+        "paper_mode": True,
+        **build_shadow_cost_sensitivity(
+            paper_shadow_labels,
+            scenarios_bps=(0.0, 1.0, 2.0, 5.0),
+            limit=limit,
+        ),
+    }
+
+
 @app.get("/api/v1/paper/research/report")
 async def get_paper_research_report(limit: int = 30):
     """Return a read-only consolidated PAPER research snapshot."""
@@ -4232,6 +4254,11 @@ async def get_paper_research_report(limit: int = 30):
             folds=5,
             embargo_seconds=30.0,
             max_horizon_seconds=600,
+            limit=SHADOW_OUTCOMES_STORAGE_LIMIT,
+        ),
+        "shadow_cost_sensitivity": build_shadow_cost_sensitivity(
+            paper_shadow_labels,
+            scenarios_bps=(0.0, 1.0, 2.0, 5.0),
             limit=SHADOW_OUTCOMES_STORAGE_LIMIT,
         ),
         "exit_replay": exit_replay,
