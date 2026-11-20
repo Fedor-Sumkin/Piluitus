@@ -8,7 +8,7 @@ import httpx
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
-from db_manager import DBManager
+from storage.db_manager import DBManager
 from config import Settings, RSS_FEEDS as CONFIG_RSS_FEEDS
 from typing import cast, Any
 
