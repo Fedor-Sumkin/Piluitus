@@ -397,15 +397,33 @@ def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bo
             f"возраст={drop_age:.2f}s); размер — дополнительный, не обязательный признак"
         )
 
-    if decision == "SELL":
-        sell_ok, sell_reason = validate_paper_sell_quality(metrics)
-        if not sell_ok:
-            return False, sell_reason
-
     return True, (
         f"Обязательные условия пройдены: {direction_evidence}, volume_spike={volume_spike:.2f}×, "
         f"свежий BBO и спред={spread_pct:.3f}%; {size_evidence}."
     )
+
+
+def validate_entry_evidence(
+    decision: str,
+    metrics: dict[str, Any],
+    *,
+    paper_mode: bool = False,
+) -> tuple[bool, str]:
+    """Validate common signal evidence, then apply the optional PAPER-only SELL gate.
+
+    The base signal validator remains suitable for diagnostics and unit tests.
+    The stricter research gate is applied only by the actual PAPER entry path.
+    """
+    ok, reason = validate_signal_evidence(decision, metrics)
+    if not ok:
+        return ok, reason
+    if str(decision or "").strip().upper() == "SELL" and paper_mode:
+        sell_ok, sell_reason = validate_paper_sell_quality(metrics)
+        if not sell_ok:
+            return False, sell_reason
+        return True, f"{reason} {sell_reason}".strip()
+    return True, reason
+
 
 _CORRUPT_MARKERS = re.compile(
     r"\bregex\b|vendorsky|на\s*-\s*[a-zа-яё]+|на[a-z]{5,}|"
