@@ -10,8 +10,8 @@ import asyncio
 import json
 import os
 import logging
-from db_manager import DBManager
-from knowledge_parser import KNOWLEDGE_BASE_FILE
+from storage.db_manager import DBManager
+from ai.knowledge_parser import KNOWLEDGE_BASE_FILE
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("Piluitus.CleanRAG")
