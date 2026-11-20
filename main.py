@@ -3072,7 +3072,7 @@ class MarketWorker:
                     )
                 elif decision in {"BUY", "SELL"}:
                     valid_evidence, block_reason = validate_signal_evidence(decision, evidence)
-                 post_llm_features = build_llm_feature_snapshot(evidence)
+                post_llm_features = build_llm_feature_snapshot(evidence)
                 post_llm_evidence_validation = (
                     "NOT_APPLICABLE"
                     if decision not in {"BUY", "SELL"}
