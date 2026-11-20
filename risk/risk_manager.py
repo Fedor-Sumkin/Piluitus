@@ -9,7 +9,7 @@ from datetime import datetime, date, timedelta, timezone
 from collections.abc import Callable
 import websockets
 import httpx
-from db_manager import DBManager
+from storage.db_manager import DBManager
 from config import ASSET_METADATA, FINAM_TRADE_LOT_SIZES, LOT_SIZES, TICKERS_TO_TRADE, PAPER_TRADING
 
 _MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
