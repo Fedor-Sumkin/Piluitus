@@ -34,6 +34,44 @@ def _minimum_atr_periods() -> int:
         return 5
 
 
+def has_queue_trade_flow_conflict(direction: str, metrics: Mapping[str, Any] | None) -> bool:
+    """Return True only when fresh persistent queue and aggressor flow oppose each other.
+
+    Missing or warming-up measurements are not treated as a conflict. The active
+    PAPER guard uses this narrow condition; all other strategy-score criteria remain
+    research-only until separately validated.
+    """
+    side = str(direction or "").strip().upper()
+    if side not in {"BUY", "SELL"} or not isinstance(metrics, Mapping):
+        return False
+
+    max_age = min(5.0, max(0.25, _number(metrics, "bbo_max_age_sec", 2.0)))
+    queue_available = (
+        _number(metrics, "queue_imbalance_5s_available") >= 0.5
+        and _number(metrics, "queue_imbalance_available") >= 0.5
+        and _number(metrics, "order_book_valid") >= 0.5
+    )
+    queue_age = _number(metrics, "queue_imbalance_5s_age_sec", math.inf)
+    queue_imbalance = _number(metrics, "queue_imbalance_5s", math.nan)
+    queue_coverage = _number(metrics, "queue_imbalance_5s_coverage_sec")
+    flow_age = _number(metrics, "trade_metrics_age_sec", math.inf)
+    flow_ready = _number(metrics, "trade_data_ready") >= 0.5 and 0.0 <= flow_age <= 5.0
+    flow_imbalance = _number(metrics, "trade_flow_imbalance_30s", math.nan)
+    if (
+        not queue_available or queue_age < 0.0 or queue_age > max_age
+        or not math.isfinite(queue_imbalance) or queue_coverage < 1.0
+        or not flow_ready or not math.isfinite(flow_imbalance)
+    ):
+        return False
+
+    signed_queue = queue_imbalance if side == "BUY" else -queue_imbalance
+    signed_flow = flow_imbalance if side == "BUY" else -flow_imbalance
+    return (
+        (signed_queue >= 0.10 and signed_flow <= -0.10)
+        or (signed_queue <= -0.10 and signed_flow >= 0.10)
+    )
+
+
 def evaluate_scalping_candidate(
     direction: str,
     metrics: Mapping[str, Any] | None,
@@ -206,7 +244,7 @@ def evaluate_scalping_candidate(
             else:
                 components["trade_flow_confirmation"] = 0.0
                 reasons.append("aggressor_trade_flow_opposes_side")
-            if (signed_imbalance >= 0.10 and signed_flow <= -0.10) or (signed_imbalance <= -0.10 and signed_flow >= 0.10):
+            if has_queue_trade_flow_conflict(side, metrics):
                 hard_blocks.append("queue_trade_flow_conflict")
         else:
             components["trade_flow_confirmation"] = 0.0
