@@ -42,7 +42,8 @@ from screener_funnel import HFTMemoryScreener
 from execution_layer import BaseExecutionEngine
 from risk_manager import RiskManager
 from signal_guard import (
-    validate_signal_evidence, infer_candidate_direction, validate_atr_readiness,
+    validate_signal_evidence, validate_entry_evidence,
+    infer_candidate_direction, validate_atr_readiness,
     classify_direction_evidence,
 )
 from strategy.candidate_dedup import CandidateDeduplicator, candidate_is_expired
@@ -1823,7 +1824,9 @@ async def _resume_pending_bbo_candidate(
         _cancel_pending_bbo_candidate(key, pending)
         return
 
-    evidence_ok, evidence_reason = validate_signal_evidence(direction, metrics)
+    evidence_ok, evidence_reason = validate_entry_evidence(
+        direction, metrics, paper_mode=bool(getattr(execution_engine, "paper_mode", False))
+    )
     if not evidence_ok:
         if _guard_reason_bucket(evidence_reason) == "quotes":
             _trade_flow_inc("bbo_resume_evidence_quotes")
@@ -2450,7 +2453,10 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                     if queue_flow_reason:
                         evidence_ok, evidence_reason = False, queue_flow_reason
                     else:
-                        evidence_ok, evidence_reason = validate_signal_evidence(candidate_direction, metrics_payload)
+                        evidence_ok, evidence_reason = validate_entry_evidence(
+                            candidate_direction, metrics_payload,
+                            paper_mode=bool(getattr(execution_engine, "paper_mode", False)),
+                        )
                     if not evidence_ok:
                         if _guard_reason_bucket(evidence_reason) == "quotes":
                             pending_payload = {
@@ -3178,7 +3184,10 @@ class MarketWorker:
                     if queue_flow_reason:
                         valid_evidence, block_reason = False, queue_flow_reason
                     else:
-                        valid_evidence, block_reason = validate_signal_evidence(decision, evidence)
+                        valid_evidence, block_reason = validate_entry_evidence(
+                            decision, evidence,
+                            paper_mode=bool(getattr(execution_engine, "paper_mode", False)),
+                        )
                 post_llm_features = build_llm_feature_snapshot(evidence)
                 post_llm_evidence_validation = (
                     "NOT_APPLICABLE"
