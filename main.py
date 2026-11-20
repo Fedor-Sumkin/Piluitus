@@ -43,7 +43,7 @@ from execution_layer import BaseExecutionEngine
 from risk_manager import RiskManager
 from signal_guard import (
     validate_signal_evidence, infer_candidate_direction, validate_atr_readiness,
-    classify_direction_evidence, validate_paper_shadow_entry,
+    classify_direction_evidence,
 )
 from strategy.candidate_dedup import CandidateDeduplicator, candidate_is_expired
 from rag_prompt_utils import select_prompt_rules
@@ -1792,19 +1792,7 @@ async def _resume_pending_bbo_candidate(
         shadow_result = _log_scalping_shadow(key, direction, metrics)
         payload["shadow_candidate_id"] = shadow_result.get("candidate_id")
 
-    # Re-evaluate on the refreshed BBO before allowing a delayed candidate into LLM.
-    shadow_gate_result = evaluate_scalping_candidate(direction, metrics)
-    shadow_gate_ok, shadow_gate_reason = validate_paper_shadow_entry(
-        shadow_gate_result, paper_trading=Settings.PAPER_TRADING,
-    )
-    if not shadow_gate_ok:
-        _mark_shadow_llm_not_called(payload.get("shadow_candidate_id"), "PAPER_SHADOW_GATE_BLOCKED")
-        _trade_flow_inc("paper_shadow_gate_blocked")
-        _cancel_pending_bbo_candidate(key, pending)
-        _log_prefilter_blocked(key, shadow_gate_reason)
-        return
-
-    evidence_ok, evidence_reason = validate_signal_evidence(direction, metrics)
+     evidence_ok, evidence_reason = validate_signal_evidence(direction, metrics)
     if not evidence_ok:
         if _guard_reason_bucket(evidence_reason) == "quotes":
             _trade_flow_inc("bbo_resume_evidence_quotes")
@@ -2367,15 +2355,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                     )
                     shadow_result = _log_scalping_shadow(ticker, candidate_direction, metrics_payload)
                     shadow_candidate_id = shadow_result.get("candidate_id")
-                    shadow_gate_ok, shadow_gate_reason = validate_paper_shadow_entry(
-                        shadow_result, paper_trading=Settings.PAPER_TRADING,
-                    )
-                    if shadow_gate_ok:
-                        evidence_ok, evidence_reason = validate_signal_evidence(candidate_direction, metrics_payload)
-                    else:
-                        evidence_ok, evidence_reason = False, shadow_gate_reason
-                        _mark_shadow_llm_not_called(shadow_candidate_id, "PAPER_SHADOW_GATE_BLOCKED")
-                        _trade_flow_inc("paper_shadow_gate_blocked")
+                    evidence_ok, evidence_reason = validate_signal_evidence(candidate_direction, metrics_payload)
                     if not evidence_ok:
                         if _guard_reason_bucket(evidence_reason) == "quotes":
                             pending_payload = {
@@ -3092,16 +3072,7 @@ class MarketWorker:
                     )
                 elif decision in {"BUY", "SELL"}:
                     valid_evidence, block_reason = validate_signal_evidence(decision, evidence)
-                    if valid_evidence and Settings.PAPER_TRADING:
-                        # Re-score the post-LLM refreshed evidence; a stale or degraded
-                        # candidate must not pass using its earlier pre-LLM score.
-                        post_shadow_result = evaluate_scalping_candidate(decision, evidence)
-                        valid_evidence, block_reason = validate_paper_shadow_entry(
-                            post_shadow_result, paper_trading=True,
-                        )
-                        if not valid_evidence:
-                            _trade_flow_inc("paper_shadow_gate_blocked")
-                post_llm_features = build_llm_feature_snapshot(evidence)
+                 post_llm_features = build_llm_feature_snapshot(evidence)
                 post_llm_evidence_validation = (
                     "NOT_APPLICABLE"
                     if decision not in {"BUY", "SELL"}
