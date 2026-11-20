@@ -52,7 +52,7 @@ from candidate_recovery import (
     refresh_candidate_bbo_metrics,
     refresh_post_llm_evidence,
 )
-from scalping_strategy import evaluate_scalping_candidate
+from scalping_strategy import evaluate_scalping_candidate, has_queue_trade_flow_conflict
 from shadow_outcomes import ShadowForwardTracker
 from strategy.bbo_replay import (
     BBOReplayRecorder,
@@ -1520,6 +1520,25 @@ def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -
     return result
 
 
+def _paper_queue_flow_conflict_reason(direction: str, metrics: dict[str, Any]) -> str:
+    """Block only fresh, persistent queue/flow contradictions in PAPER mode."""
+    if not bool(Settings.PAPER_TRADING):
+        return ""
+    enabled = str(os.getenv("PILUITUS_PAPER_QUEUE_FLOW_CONFLICT_GUARD", "1")).strip().lower()
+    if enabled in {"0", "false", "no", "off", "disabled"}:
+        return ""
+    if not has_queue_trade_flow_conflict(direction, metrics):
+        return ""
+    queue = finite_float(metrics.get("queue_imbalance_5s"))
+    flow = finite_float(metrics.get("trade_flow_imbalance_30s"))
+    return (
+        "Устойчивый дисбаланс очереди 5s противоречит агрессивному потоку сделок 30s "
+        f"(queue={queue:+.3f}, flow={flow:+.3f}); PAPER-вход заблокирован."
+        if queue is not None and flow is not None
+        else "Устойчивый дисбаланс очереди противоречит потоку сделок; PAPER-вход заблокирован."
+    )
+
+
 def _reserve_ai_ticker(
     ticker: str,
     direction: str = "NONE",
@@ -1791,6 +1810,15 @@ async def _resume_pending_bbo_candidate(
     if not payload.get("shadow_candidate_id"):
         shadow_result = _log_scalping_shadow(key, direction, metrics)
         payload["shadow_candidate_id"] = shadow_result.get("candidate_id")
+
+    queue_flow_reason = _paper_queue_flow_conflict_reason(direction, metrics)
+    if queue_flow_reason:
+        _mark_shadow_llm_not_called(payload.get("shadow_candidate_id"), "QUEUE_TRADE_FLOW_CONFLICT")
+        _trade_flow_inc("bbo_resume_evidence_blocked")
+        _trade_flow_guard_block(queue_flow_reason)
+        _log_prefilter_blocked(key, queue_flow_reason)
+        _cancel_pending_bbo_candidate(key, pending)
+        return
 
     evidence_ok, evidence_reason = validate_signal_evidence(direction, metrics)
     if not evidence_ok:
@@ -2355,7 +2383,11 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                     )
                     shadow_result = _log_scalping_shadow(ticker, candidate_direction, metrics_payload)
                     shadow_candidate_id = shadow_result.get("candidate_id")
-                    evidence_ok, evidence_reason = validate_signal_evidence(candidate_direction, metrics_payload)
+                    queue_flow_reason = _paper_queue_flow_conflict_reason(candidate_direction, metrics_payload)
+                    if queue_flow_reason:
+                        evidence_ok, evidence_reason = False, queue_flow_reason
+                    else:
+                        evidence_ok, evidence_reason = validate_signal_evidence(candidate_direction, metrics_payload)
                     if not evidence_ok:
                         if _guard_reason_bucket(evidence_reason) == "quotes":
                             pending_payload = {
@@ -3071,7 +3103,11 @@ class MarketWorker:
                         f"модель предложила {decision}."
                     )
                 elif decision in {"BUY", "SELL"}:
-                    valid_evidence, block_reason = validate_signal_evidence(decision, evidence)
+                    queue_flow_reason = _paper_queue_flow_conflict_reason(decision, evidence)
+                    if queue_flow_reason:
+                        valid_evidence, block_reason = False, queue_flow_reason
+                    else:
+                        valid_evidence, block_reason = validate_signal_evidence(decision, evidence)
                 post_llm_features = build_llm_feature_snapshot(evidence)
                 post_llm_evidence_validation = (
                     "NOT_APPLICABLE"
