@@ -42,7 +42,7 @@ from screener_funnel import HFTMemoryScreener
 from execution_layer import BaseExecutionEngine
 from risk_manager import RiskManager
 from signal_guard import (
-    validate_signal_evidence, validate_entry_evidence,
+    validate_entry_evidence,
     infer_candidate_direction, validate_atr_readiness,
     classify_direction_evidence,
 )
