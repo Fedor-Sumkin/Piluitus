@@ -1,7 +1,7 @@
-"""Point-in-time market regime and executable entry-cost research helpers.
+"""Point-in-time market regime and executable entry-cost helpers.
 
-These helpers are descriptive only. They do not affect candidate eligibility,
-order sizing, entries, exits, or PAPER execution.
+Market-regime classification remains descriptive. The cost-to-ATR validator
+is used as a conservative PAPER-only entry-quality gate.
 """
 from __future__ import annotations
 
@@ -265,7 +265,11 @@ def validate_entry_economics(
     )
     if not result.get("available"):
         return {**result, "eligible": False, "reason": "ENTRY_ECONOMICS_UNAVAILABLE"}
-    ratio = _finite(result.get("cost_to_atr_ratio"))
+    try:
+        ratio_value = float(result.get("cost_to_atr_ratio"))
+    except (TypeError, ValueError, OverflowError):
+        ratio_value = math.nan
+    ratio = ratio_value if math.isfinite(ratio_value) else None
     if ratio is None:
         return {
             **result,
