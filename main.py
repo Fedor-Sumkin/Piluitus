@@ -3899,7 +3899,7 @@ async def lifespan(app: FastAPI):
     _spawn_background(_start_news_updater(), name="news-updater")
     _spawn_background(_start_tables_sync_loop(), name="tables-sync")
 
-    from interface from interface import tg_bot as tb
+    from interface import tg_bot as tb
     tb.global_broker_ref = broker
     tb.global_execution_engine_ref = execution_engine
 
