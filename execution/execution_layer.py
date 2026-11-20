@@ -148,6 +148,7 @@ def _decision_attribution_fields(ai_analysis: object) -> dict[str, object]:
             "llm_model_decision": "UNKNOWN",
             "llm_final_decision": "UNKNOWN",
             "llm_confidence_pct": None,
+            "llm_final_confidence_pct": None,
             "llm_signal_status": "UNKNOWN",
             "llm_reason_code": "UNKNOWN",
             "llm_local_guard": None,
@@ -193,12 +194,20 @@ def _decision_attribution_fields(ai_analysis: object) -> dict[str, object]:
     else:
         confidence_value = round(confidence, 3)
 
+    final_confidence_raw = ai_analysis.get("llm_final_confidence_pct")
+    final_confidence = _finite_or_default(final_confidence_raw, math.nan)
+    if not math.isfinite(final_confidence) or not 0.0 <= final_confidence <= 100.0:
+        final_confidence_value: float | None = None
+    else:
+        final_confidence_value = round(final_confidence, 3)
+
     return {
         "shadow_candidate_id": bounded_text("shadow_candidate_id", limit=64),
         "llm_verdict_id": bounded_text("llm_verdict_id", limit=96),
         "llm_model_decision": bounded_text("llm_model_decision", "UNKNOWN", 32),
         "llm_final_decision": bounded_text("llm_final_decision", "UNKNOWN", 32),
         "llm_confidence_pct": confidence_value,
+        "llm_final_confidence_pct": final_confidence_value,
         "llm_signal_status": bounded_text("llm_signal_status", "UNKNOWN", 32),
         "llm_reason_code": bounded_text("llm_reason_code", "UNKNOWN", 96),
         "llm_local_guard": bounded_text("llm_local_guard", limit=240),
