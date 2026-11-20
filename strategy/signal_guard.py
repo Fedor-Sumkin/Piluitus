@@ -451,6 +451,11 @@ def validate_paper_market_quality(
         atr_pct=atr_pct,
         max_cost_to_atr_ratio=max_cost_ratio,
     )
+    if economics.get("available"):
+        metrics["entry_cost_to_atr_ratio"] = economics.get("cost_to_atr_ratio")
+        metrics["entry_minimum_favorable_move_pct"] = economics.get("minimum_favorable_move_pct")
+        metrics["entry_cost_to_atr_limit"] = economics.get("max_cost_to_atr_ratio")
+        metrics["entry_cost_model_status"] = economics.get("cost_model_status")
     if not economics.get("available") or not economics.get("eligible"):
         ratio = economics.get("cost_to_atr_ratio")
         ratio_text = f"{float(ratio):.3f}" if isinstance(ratio, (int, float)) and math.isfinite(float(ratio)) else "н/д"
