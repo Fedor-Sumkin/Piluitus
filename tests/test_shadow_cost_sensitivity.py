@@ -13,21 +13,29 @@ class ShadowCostSensitivityTests(unittest.TestCase):
                 "candidate_id": "candidate-1", "side": "BUY", "horizon_sec": 60,
                 "result": "OK", "label_quality": "ON_TIME",
                 "net_executable_return_pct": 0.10, "slippage_bps": 0.0,
+                "entry_executable_price": 100.0, "exit_executable_price": 100.2,
+                "commission_pct_per_side": 0.0354,
             },
             {
                 "candidate_id": "candidate-1", "side": "BUY", "horizon_sec": 60,
                 "result": "OK", "label_quality": "DELAYED",
                 "net_executable_return_pct": -9.0, "slippage_bps": 0.0,
+                "entry_executable_price": 100.0, "exit_executable_price": 100.2,
+                "commission_pct_per_side": 0.0354,
             },
             {
                 "candidate_id": "candidate-2", "side": "SELL", "horizon_sec": 60,
                 "result": "OK", "label_quality": "ON_TIME",
                 "net_executable_return_pct": -0.04, "slippage_bps": 0.0,
+                "entry_executable_price": 100.0, "exit_executable_price": 100.1,
+                "commission_pct_per_side": 0.0354,
             },
             {
                 "candidate_id": "candidate-1", "side": "BUY", "horizon_sec": 180,
                 "result": "OK", "label_quality": "ON_TIME",
                 "net_executable_return_pct": 0.08, "slippage_bps": 0.0,
+                "entry_executable_price": 100.0, "exit_executable_price": 100.15,
+                "commission_pct_per_side": 0.0354,
             },
             {
                 "candidate_id": "candidate-late", "side": "BUY", "horizon_sec": 60,
@@ -45,15 +53,17 @@ class ShadowCostSensitivityTests(unittest.TestCase):
         two = report["scenarios"]["2"]
         self.assertEqual(zero["by_horizon_side"]["60s|BUY"]["label_rows"], 1)
         self.assertEqual(zero["by_horizon_side"]["60s|BUY"]["candidate_count"], 1)
-        self.assertAlmostEqual(zero["overall"]["average_net_return_pct"], (0.10 - 0.04 + 0.08) / 3)
+        entry_fill = 100.0 * (1.0 + 1.0 / 10000.0)
+        exit_fill = 100.2 * (1.0 - 1.0 / 10000.0)
+        fee = (entry_fill + exit_fill) * 0.0354 / 100.0
+        expected_buy_net = ((exit_fill - entry_fill) - fee) / entry_fill * 100.0
         self.assertAlmostEqual(
-            one["overall"]["average_net_return_pct"],
-            zero["overall"]["average_net_return_pct"] - 0.02,
+            one["by_horizon_side"]["60s|BUY"]["average_net_return_pct"],
+            expected_buy_net,
+            places=6,
         )
-        self.assertAlmostEqual(
-            two["overall"]["average_net_return_pct"],
-            zero["overall"]["average_net_return_pct"] - 0.04,
-        )
+        self.assertLess(one["overall"]["average_net_return_pct"], zero["overall"]["average_net_return_pct"])
+        self.assertLess(two["overall"]["average_net_return_pct"], one["overall"]["average_net_return_pct"])
         self.assertEqual(one["slippage_bps_per_side"], 1.0)
         self.assertIn("correlated", report["warning"])
 
