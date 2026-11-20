@@ -17,6 +17,17 @@ class PaperBboGapMetricsTests(unittest.TestCase):
         self.assertIn("trigger_to_fresh_BBO=%.3fs", source)
         self.assertIn("FULL_FILL_AT_EXECUTABLE_BBO_DEPTH_UNVERIFIED", source)
 
+    def test_exit_status_log_throttle_is_per_order_and_event_type(self) -> None:
+        engine = BaseExecutionEngine.__new__(BaseExecutionEngine)
+        engine.paper_exit_status_log_interval_sec = 300.0
+        engine._last_exit_status_log_at = {}
+
+        self.assertTrue(engine._should_log_paper_exit_status("PAPER_A", "wait", 100.0))
+        self.assertFalse(engine._should_log_paper_exit_status("PAPER_A", "wait", 399.9))
+        self.assertTrue(engine._should_log_paper_exit_status("PAPER_A", "wait", 400.0))
+        self.assertTrue(engine._should_log_paper_exit_status("PAPER_A", "recovery", 101.0))
+        self.assertTrue(engine._should_log_paper_exit_status("PAPER_B", "wait", 101.0))
+
     def test_gap_episode_tracks_count_last_max_and_total_duration(self) -> None:
         trade: dict[str, object] = {}
 
