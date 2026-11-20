@@ -73,6 +73,47 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         ):
             self.assertIn(expected, prompt)
 
+    def test_prompt_includes_confirmed_book_queue_ofi_and_round_trip_costs(self) -> None:
+        prompt = AIEngine._build_live_prompt(
+            ticker="SBER",
+            price=100.0,
+            volume=10,
+            candidate_direction="BUY",
+            metrics={
+                "trade_data_ready": 1.0,
+                "trade_metrics_age_sec": 0.2,
+                "trade_flow_imbalance_30s": 0.25,
+                "order_book_valid": 1.0,
+                "order_book_age_sec": 0.3,
+                "queue_imbalance_5s": 0.35,
+                "queue_imbalance_5s_available": 1.0,
+                "queue_imbalance_5s_coverage_sec": 4.0,
+                "queue_imbalance_5s_age_sec": 0.2,
+                "ofi_5s": 0.18,
+                "ofi_5s_available": 1.0,
+                "ofi_5s_coverage_sec": 4.0,
+                "ofi_5s_age_sec": 0.2,
+                "entry_cost_to_atr_ratio": 0.31,
+                "entry_cost_to_atr_limit": 0.50,
+                "entry_minimum_favorable_move_pct": 0.12,
+                "entry_cost_model_status": "INCOMPLETE_OR_ZERO_ASSUMPTION",
+            },
+            rag_context="",
+            max_chars=2100,
+            include_rule_text=False,
+        )
+        for expected in (
+            "order_book_valid=1",
+            "queue_imbalance_5s=0.35",
+            "ofi_5s=0.18",
+            "entry_cost_to_atr_ratio=0.31",
+            "entry_minimum_favorable_move_pct=0.12",
+        ):
+            self.assertIn(expected, prompt)
+        self.assertIn("time-weighted best Bid-vs-Ask size", prompt)
+        self.assertIn("depth-normalized best-quote order-flow pressure", prompt)
+        self.assertLessEqual(len(prompt), 2100)
+
     def test_prompt_distinguishes_neutral_m1_from_opposite_m1(self) -> None:
         prompt = AIEngine._build_live_prompt(
             ticker="SBER", price=100.0, volume=10, candidate_direction="BUY",
