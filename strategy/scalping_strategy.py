@@ -66,10 +66,10 @@ def has_queue_trade_flow_conflict(direction: str, metrics: Mapping[str, Any] | N
 
     signed_queue = queue_imbalance if side == "BUY" else -queue_imbalance
     signed_flow = flow_imbalance if side == "BUY" else -flow_imbalance
-    return (
-        (signed_queue >= 0.10 and signed_flow <= -0.10)
-        or (signed_queue <= -0.10 and signed_flow >= 0.10)
-    )
+    # A conflict is a strong queue that supports the candidate while fresh
+    # aggressor flow strongly opposes it. If flow confirms the candidate while
+    # the queue opposes it, this predicate must not label the flow as a conflict.
+    return signed_queue >= 0.10 and signed_flow <= -0.10
 
 
 def evaluate_scalping_candidate(
