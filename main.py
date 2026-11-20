@@ -32,29 +32,29 @@ from config import (
     FINAM_TRADE_LOT_SIZES,
     LOT_SIZES,
 )
-from risk_limits import validate_daily_loss_limit
+from risk.risk_limits import validate_daily_loss_limit
 
 # --- PILUITUS‑V3 modules ------------------------------------------------
-from ai_engine import AIEngine
-from db_manager import DBManager
-from finam_client import FinamBrokerClient
-from screener_funnel import HFTMemoryScreener
-from execution_layer import BaseExecutionEngine
-from risk_manager import RiskManager
-from signal_guard import (
+from ai.ai_engine import AIEngine
+from storage.db_manager import DBManager
+from exchange.finam_client import FinamBrokerClient
+from strategy.screener_funnel import HFTMemoryScreener
+from execution.execution_layer import BaseExecutionEngine
+from risk.risk_manager import RiskManager
+from strategy.signal_guard import (
     validate_entry_evidence,
     infer_candidate_direction, validate_atr_readiness,
     classify_direction_evidence,
 )
 from strategy.candidate_dedup import CandidateDeduplicator, candidate_is_expired
-from rag_prompt_utils import select_prompt_rules
-from candidate_recovery import (
+from ai.rag_prompt_utils import select_prompt_rules
+from strategy.candidate_recovery import (
     coalesce_pending_bbo_entry,
     refresh_candidate_bbo_metrics,
     refresh_post_llm_evidence,
 )
-from scalping_strategy import evaluate_scalping_candidate, has_queue_trade_flow_conflict
-from shadow_outcomes import ShadowForwardTracker
+from strategy.scalping_strategy import evaluate_scalping_candidate, has_queue_trade_flow_conflict
+from strategy.shadow_outcomes import ShadowForwardTracker
 from strategy.bbo_replay import (
     BBOReplayRecorder,
     BBO_REPLAY_STORAGE_KEY,
@@ -72,7 +72,7 @@ from strategy.paper_performance import (
     PAPER_CLOSED_TRADES_STORAGE_LIMIT,
     paper_performance_tracker,
 )
-from dashboard_verdicts import (
+from ai.dashboard_verdicts import (
     build_verdict_explanation,
     finite_float,
     nonnegative_int,
@@ -82,8 +82,8 @@ from strategy.decision_diagnostics import (
     build_llm_feature_snapshot,
     classify_hold_reason_bucket,
 )
-import tg_bot
-from news_parser import MarketNewsParser
+from interface import tg_bot
+from ai.news_parser import MarketNewsParser
 
 # --------------------------------------------------------------
 #  ENVIRONMENT & INITIALIZATION
@@ -837,7 +837,7 @@ def _current_paper_assets_cost() -> float:
     """Cost basis of active and quarantined PAPER positions, never mark-to-market."""
     if not getattr(execution_engine, "paper_mode", True):
         return 0.0
-    from portfolio_metrics import calculate_assets_used
+    from portfolio.portfolio_metrics import calculate_assets_used
 
     positions = list(getattr(execution_engine, "paper_positions", {}).values())
     unresolved = getattr(execution_engine, "_unreconciled_paper_positions", {})
@@ -1951,7 +1951,7 @@ async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = Non
     risk limits; equity reports deposit plus total (realized + floating) PnL.
     """
     global _dashboard_balance_snapshot
-    from portfolio_metrics import calculate_assets_used, calculate_free_balance
+    from portfolio.portfolio_metrics import calculate_assets_used, calculate_free_balance
 
     if positions is None:
         positions = await _get_dashboard_open_positions()
@@ -2967,7 +2967,7 @@ class MarketWorker:
                     continue
 
                 try:
-                    from knowledge_parser import TechnicalKnowledgeParser
+                    from ai.knowledge_parser import TechnicalKnowledgeParser
 
                     rag_context_str = await TechnicalKnowledgeParser.get_knowledge_context(
                         db=self.db,
@@ -3674,7 +3674,7 @@ async def _start_news_updater() -> None:
 
 async def _finam_metadata_refresh_loop() -> None:
     """Refresh exchange lots for PAPER or account-specific lots for LIVE."""
-    from risk_manager import RiskManager
+    from risk.risk_manager import RiskManager
 
     try:
         refresh_sec = max(300.0, float(os.getenv("FINAM_METADATA_REFRESH_SEC", "900")))
@@ -3861,7 +3861,7 @@ async def lifespan(app: FastAPI):
 
     # В v17 функция существовала, но не вызывалась при запуске: JSON мог не попасть в Redis.
     try:
-        from knowledge_parser import TechnicalKnowledgeParser
+        from ai.knowledge_parser import TechnicalKnowledgeParser
         await TechnicalKnowledgeParser.warm_up_rag_cache(db_manager)
     except Exception as rag_start_err:
         logger.error("⚠️ Не удалось загрузить базу ai_market_knowledge.json в RAG: %s", rag_start_err, exc_info=True)
@@ -3899,7 +3899,7 @@ async def lifespan(app: FastAPI):
     _spawn_background(_start_news_updater(), name="news-updater")
     _spawn_background(_start_tables_sync_loop(), name="tables-sync")
 
-    import tg_bot as tb
+    from interface from interface import tg_bot as tb
     tb.global_broker_ref = broker
     tb.global_execution_engine_ref = execution_engine
 
