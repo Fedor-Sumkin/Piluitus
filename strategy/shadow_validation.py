@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any
 
-from strategy.shadow_label_quality import shadow_label_quality_rank
+from strategy.shadow_label_quality import deduplicate_shadow_labels, shadow_label_quality_rank
 
 
 def _finite(value: object) -> float | None:
@@ -387,5 +387,113 @@ def build_shadow_walk_forward_validation(
             "Forward labels overlap within a candidate, so candidate IDs—not horizon rows—are the "
             "sampling unit. Results below 30 valid labels are insufficient for conclusions. "
             "This is not a substitute for an untouched final holdout or multiple-testing controls."
+        ),
+    }
+
+
+def build_shadow_cost_sensitivity(
+    labels: Any,
+    *,
+    scenarios_bps: tuple[float, ...] = (0.0, 1.0, 2.0, 5.0),
+    limit: int = 20000,
+) -> dict[str, Any]:
+    """Stress Shadow net returns under alternative adverse slippage assumptions.
+
+    Scenarios are basis points per transaction side. The executable BBO spread
+    is already embedded in each label; this function adds only the difference
+    between the requested and recorded extra slippage on entry and exit.
+    Candidate/horizon duplicates are resolved with the shared label-quality
+    policy before any statistics are calculated.
+    """
+    try:
+        row_limit = int(limit)
+        scenarios = sorted({float(value) for value in scenarios_bps})
+    except (TypeError, ValueError, OverflowError):
+        return {"available": False, "reason": "INVALID_PARAMETERS"}
+    if (
+        row_limit < 1 or row_limit > 20000
+        or not scenarios
+        or any(not math.isfinite(value) or value < 0.0 or value > 100.0 for value in scenarios)
+    ):
+        return {"available": False, "reason": "INVALID_PARAMETERS"}
+
+    source = labels if isinstance(labels, (list, tuple)) else []
+    deduplicated = deduplicate_shadow_labels(source)[-row_limit:]
+    valid_rows: list[dict[str, Any]] = []
+    for row in deduplicated:
+        if str(row.get("result") or "").strip().upper() != "OK":
+            continue
+        net = _finite(row.get("net_executable_return_pct"))
+        if net is None:
+            continue
+        side = str(row.get("side") or "").strip().upper()
+        candidate_id = str(row.get("candidate_id") or "").strip()
+        horizon = _finite(row.get("horizon_sec"))
+        if side not in {"BUY", "SELL"} or not candidate_id or horizon is None or horizon <= 0.0:
+            continue
+        base_slippage = _finite(row.get("slippage_bps"))
+        if base_slippage is None or base_slippage < 0.0:
+            base_slippage = 0.0
+        valid_rows.append({
+            "candidate_id": candidate_id,
+            "side": side,
+            "horizon_sec": int(horizon),
+            "net": net,
+            "base_slippage_bps": base_slippage,
+        })
+
+    def summarize(rows: list[dict[str, Any]], scenario_bps: float) -> dict[str, Any]:
+        adjusted = [
+            row["net"] - 2.0 * (scenario_bps - row["base_slippage_bps"]) / 100.0
+            for row in rows
+        ]
+        wins = [value for value in adjusted if value > 0.0]
+        losses = [abs(value) for value in adjusted if value < 0.0]
+        gross_profit = sum(wins)
+        gross_loss = sum(losses)
+        return {
+            "candidate_count": len({row["candidate_id"] for row in rows}),
+            "label_rows": len(adjusted),
+            "positive_labels": len(wins),
+            "positive_rate_pct": round(len(wins) / len(adjusted) * 100.0, 3) if adjusted else None,
+            "average_net_return_pct": round(sum(adjusted) / len(adjusted), 6) if adjusted else None,
+            "profit_factor": round(gross_profit / gross_loss, 4) if gross_loss > 0.0 else None,
+        }
+
+    by_scenario: dict[str, Any] = {}
+    for scenario in scenarios:
+        by_side = {
+            side: summarize([row for row in valid_rows if row["side"] == side], scenario)
+            for side in ("BUY", "SELL")
+        }
+        by_horizon_side = {
+            f"{horizon}s|{side}": summarize(
+                [row for row in valid_rows if row["horizon_sec"] == horizon and row["side"] == side],
+                scenario,
+            )
+            for horizon in sorted({row["horizon_sec"] for row in valid_rows})
+            for side in ("BUY", "SELL")
+            if any(row["horizon_sec"] == horizon and row["side"] == side for row in valid_rows)
+        }
+        by_scenario[f"{scenario:g}"] = {
+            "slippage_bps_per_side": scenario,
+            "additional_round_trip_cost_pct_points_vs_zero": round(2.0 * scenario / 100.0, 6),
+            "overall": summarize(valid_rows, scenario),
+            "by_side": by_side,
+            "by_horizon_side": by_horizon_side,
+        }
+
+    return {
+        "available": bool(valid_rows),
+        "method": "DEDUPLICATED_CANDIDATE_HORIZON_NET_RETURN_SLIPPAGE_STRESS",
+        "input_label_rows": len(source),
+        "deduplicated_label_rows": len(deduplicated),
+        "valid_label_rows": len(valid_rows),
+        "unique_candidates": len({row["candidate_id"] for row in valid_rows}),
+        "scenarios": by_scenario,
+        "warning": (
+            "Stress scenarios are assumptions, not measured slippage. BBO spread and configured "
+            "commission remain in the recorded net return; only additional adverse slippage is changed. "
+            "Horizon rows from one candidate are correlated and must not be interpreted as independent trades."
         ),
     }
