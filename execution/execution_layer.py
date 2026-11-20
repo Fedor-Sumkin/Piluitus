@@ -681,6 +681,10 @@ class BaseExecutionEngine:
                 return 0, self._maintenance_reason or "PAPER-торговля приостановлена для обслуживания сессии."
             now = time.monotonic()
             cooldown_key = (str(ticker).strip().upper().split("@")[0], str(side).strip().upper())
+            capital_cooldowns = getattr(self, "_capital_reject_cooldowns", None)
+            if not isinstance(capital_cooldowns, dict):
+                capital_cooldowns = {}
+                self._capital_reject_cooldowns = capital_cooldowns
             cooldown_until = self._ticker_cooldowns.get(cooldown_key, 0.0)
             if cooldown_until > now:
                 remaining = cooldown_until - now
@@ -688,13 +692,13 @@ class BaseExecutionEngine:
             self._ticker_cooldowns.pop(cooldown_key, None)
 
             if self.paper_mode:
-                capital_retry_until = self._capital_reject_cooldowns.get(cooldown_key, 0.0)
+                capital_retry_until = capital_cooldowns.get(cooldown_key, 0.0)
                 if capital_retry_until > now:
                     return 0, (
                         f"PAPER capital retry cooldown для {cooldown_key[1]} ещё "
                         f"{capital_retry_until - now:.0f} сек.; повторная проверка будет позже."
                     )
-                self._capital_reject_cooldowns.pop(cooldown_key, None)
+                capital_cooldowns.pop(cooldown_key, None)
 
             if ticker in self._opening_tickers:
                 return 0, "По тикеру уже создаётся позиция."
@@ -773,7 +777,7 @@ class BaseExecutionEngine:
                         retry_cooldown_sec = 10.0
                     retry_cooldown_sec = min(120.0, max(0.0, retry_cooldown_sec))
                     if retry_cooldown_sec > 0.0:
-                        self._capital_reject_cooldowns[cooldown_key] = now + retry_cooldown_sec
+                        capital_cooldowns[cooldown_key] = now + retry_cooldown_sec
                 return 0, (
                     f"Лимиты портфеля: капитал доступен {headroom:.2f} ₽ "
                     f"(экспозиция {open_notional:.2f}/{gross_cap:.2f} ₽), "
