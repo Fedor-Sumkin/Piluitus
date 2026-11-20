@@ -30,6 +30,14 @@ def sell_metrics() -> dict[str, float]:
     }
 
 
+def buy_metrics() -> dict[str, float]:
+    metrics = sell_metrics()
+    metrics["price_change_pct"] = 0.20
+    metrics["price_vs_vwap_pct"] = 0.12
+    metrics["trade_flow_imbalance_30s"] = 0.25
+    return metrics
+
+
 class PaperSellQualityGateTests(unittest.TestCase):
     def test_sell_passes_only_with_full_direction_and_fresh_seller_flow(self) -> None:
         with patch.dict("os.environ", {
@@ -106,7 +114,7 @@ class PaperSellQualityGateTests(unittest.TestCase):
         self.assertIn("агрессивного потока продавцов", reason)
 
     def test_paper_entry_requires_a_confirmed_order_book(self) -> None:
-        metrics = sell_metrics()
+        metrics = buy_metrics()
         metrics["order_book_valid"] = 0.0
         with patch.dict("os.environ", {
             "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",
@@ -118,7 +126,7 @@ class PaperSellQualityGateTests(unittest.TestCase):
         self.assertIn("ORDER_BOOK не подтверждён", reason)
 
     def test_paper_entry_rejects_stale_order_book(self) -> None:
-        metrics = sell_metrics()
+        metrics = buy_metrics()
         metrics["order_book_age_sec"] = 2.5
         with patch.dict("os.environ", {
             "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",
@@ -130,7 +138,7 @@ class PaperSellQualityGateTests(unittest.TestCase):
         self.assertIn("стакан устарел", reason)
 
     def test_paper_entry_blocks_round_trip_costs_that_consume_too_much_atr(self) -> None:
-        metrics = sell_metrics()
+        metrics = buy_metrics()
         metrics["bar_atr_pct"] = 0.15
         with patch.dict("os.environ", {
             "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",
@@ -142,7 +150,7 @@ class PaperSellQualityGateTests(unittest.TestCase):
         self.assertIn("round-trip издержки слишком велики", reason)
 
     def test_paper_entry_accepts_confirmed_book_when_known_costs_fit_atr(self) -> None:
-        metrics = sell_metrics()
+        metrics = buy_metrics()
         with patch.dict("os.environ", {
             "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",
             "PILUITUS_PAPER_SLIPPAGE_BPS": "0",
