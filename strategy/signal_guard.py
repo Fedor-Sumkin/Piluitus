@@ -215,7 +215,11 @@ def validate_spread_to_atr(
     return True, f"Spread/ATR пройден: ratio={ratio:.3f} при лимите {limit:.2f}."
 
 
-def validate_paper_sell_quality(metrics: dict[str, Any]) -> tuple[bool, str]:
+def validate_paper_sell_quality(
+    metrics: dict[str, Any],
+    *,
+    paper_mode: bool | None = None,
+) -> tuple[bool, str]:
     """Apply a deliberately stricter, PAPER-only SELL quality gate.
 
     The 2026-11-20 sample showed materially weaker SELL expectancy than BUY.
@@ -223,9 +227,10 @@ def validate_paper_sell_quality(metrics: dict[str, Any]) -> tuple[bool, str]:
     aggressor flow; it never changes LIVE behaviour and can be disabled
     explicitly for controlled A/B research.
     """
-    paper_mode = str(os.getenv("PAPER_TRADING", "True")).strip().lower() in {
-        "1", "true", "yes", "on",
-    }
+    if paper_mode is None:
+        paper_mode = str(os.getenv("PAPER_TRADING", "True")).strip().lower() in {
+            "1", "true", "yes", "on",
+        }
     enabled = str(os.getenv("PILUITUS_PAPER_SELL_STRICT_GATE", "true")).strip().lower() in {
         "1", "true", "yes", "on",
     }
@@ -418,7 +423,7 @@ def validate_entry_evidence(
     if not ok:
         return ok, reason
     if str(decision or "").strip().upper() == "SELL" and paper_mode:
-        sell_ok, sell_reason = validate_paper_sell_quality(metrics)
+        sell_ok, sell_reason = validate_paper_sell_quality(metrics, paper_mode=True)
         if not sell_ok:
             return False, sell_reason
         return True, f"{reason} {sell_reason}".strip()
