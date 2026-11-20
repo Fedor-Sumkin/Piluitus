@@ -2806,9 +2806,10 @@ class BaseExecutionEngine:
         if not math.isfinite(now) or now < 0.0:
             return False
         key = f"{order_key}:{event_key}"
-        previous = _finite_or_default(last_logs.get(key, 0.0), 0.0)
-        if now - previous < interval:
-            return False
+        if key in last_logs:
+            previous = _finite_or_default(last_logs.get(key), now)
+            if now - previous < interval:
+                return False
         last_logs[key] = now
         return True
 
