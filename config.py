@@ -11,6 +11,26 @@ BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR / ".env"
 load_dotenv(dotenv_path=ENV_PATH)   # .env необязателен – если нет, просто читаем системные переменные
 
+def _resolve_trade_deposit(
+    canonical_raw: str | None,
+    legacy_raw: str | None,
+    default: float = 400000.0,
+) -> tuple[float, str]:
+    """Resolve one authoritative start-capital value and reject conflicting aliases."""
+    canonical = str(canonical_raw).strip() if canonical_raw is not None else ""
+    legacy = str(legacy_raw).strip() if legacy_raw is not None else ""
+    if canonical and legacy and abs(float(canonical) - float(legacy)) > 0.01:
+        raise ValueError(
+            "Конфликт стартового капитала: TRADE_DEPOSIT и TRADING_DEPOSIT "
+            "заданы разными значениями. Оставьте одно значение или синхронизируйте оба."
+        )
+    if canonical:
+        return float(canonical), "TRADE_DEPOSIT"
+    if legacy:
+        return float(legacy), "TRADING_DEPOSIT (legacy)"
+    return float(default), "default"
+
+
 
 # --------------------------------------------------------------
 #  Справочники инструментов проекта (единая точка настройки)
@@ -197,10 +217,10 @@ class Settings:
     ATR_MULTIPLIER: float = float(os.getenv("ATR_MULTIPLIER", "1.5"))
     # One capital source for every subsystem. TRADE_DEPOSIT is canonical;
     # TRADING_DEPOSIT remains a backward-compatible fallback for existing .env files.
-    _TRADE_DEPOSIT_RAW = os.getenv("TRADE_DEPOSIT")
-    if _TRADE_DEPOSIT_RAW is None or not str(_TRADE_DEPOSIT_RAW).strip():
-        _TRADE_DEPOSIT_RAW = os.getenv("TRADING_DEPOSIT", "100000.0")
-    TRADE_DEPOSIT: float = float(_TRADE_DEPOSIT_RAW)
+    TRADE_DEPOSIT, TRADE_DEPOSIT_SOURCE = _resolve_trade_deposit(
+        os.getenv("TRADE_DEPOSIT"),
+        os.getenv("TRADING_DEPOSIT"),
+    )
 
     # ---------- Прочие ----------
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
