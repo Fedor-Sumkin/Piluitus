@@ -1,2 +1,0 @@
-2026-11-20 17:05:42,713 [ERROR] [RUN=20261120_164541_19588_96eab650] Piluitus.FinamGateway: Finam WebSocket отключён/не подключён: received 1000 (OK); then sent 1000 (OK). Повтор через 1 сек.
-2026-11-20 17:12:25,032 [ERROR] [RUN=20261120_164541_19588_96eab650] Piluitus.FinamGateway: Finam WebSocket отключён/не подключён: sent 1011 (internal error) keepalive ping timeout; no close frame received. Повтор через 1 сек.
