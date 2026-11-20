@@ -12,6 +12,7 @@ class PaperDecisionAttributionTests(unittest.TestCase):
             "llm_model_decision": "APPROVE",
             "llm_final_decision": "BUY",
             "llm_confidence_pct": 87.4567,
+            "llm_final_confidence_pct": 0.0,
             "llm_signal_status": "APPROVED",
             "llm_reason_code": "TREND_CONFIRMED",
             "llm_local_guard": "LOCAL_EVIDENCE_OK",
@@ -24,6 +25,7 @@ class PaperDecisionAttributionTests(unittest.TestCase):
         self.assertEqual(fields["llm_model_decision"], "APPROVE")
         self.assertEqual(fields["llm_final_decision"], "BUY")
         self.assertEqual(fields["llm_confidence_pct"], 87.457)
+        self.assertEqual(fields["llm_final_confidence_pct"], 0.0)
         self.assertEqual(fields["llm_reason_code"], "TREND_CONFIRMED")
         self.assertTrue(fields["llm_shadow_linked"])
 
@@ -57,9 +59,11 @@ class PaperDecisionAttributionTests(unittest.TestCase):
     def test_invalid_confidence_and_non_mapping_input_are_safe(self):
         invalid = _decision_attribution_fields({
             "llm_confidence_pct": 101.0,
+            "llm_final_confidence_pct": 101.0,
             "llm_model_decision": "APPROVE",
         })
         self.assertIsNone(invalid["llm_confidence_pct"])
+        self.assertIsNone(invalid["llm_final_confidence_pct"])
         self.assertEqual(invalid["llm_model_decision"], "APPROVE")
 
         empty = _decision_attribution_fields(None)
