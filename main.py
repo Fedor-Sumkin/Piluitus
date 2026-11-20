@@ -806,7 +806,8 @@ if not math.isclose(
         "Несогласованный стартовый капитал: ExecutionLayer и RiskManager должны использовать единый Settings.TRADE_DEPOSIT."
     )
 logger.info(
-    "💰 [CAPITAL SYNC] TRADE_DEPOSIT (TRADING_DEPOSIT legacy fallback)=%.2f ₽; ExecutionLayer=%.2f ₽; RiskManager=%.2f ₽.",
+    "💰 [CAPITAL SYNC] source=%s; TRADE_DEPOSIT=%.2f ₽; ExecutionLayer=%.2f ₽; RiskManager=%.2f ₽.",
+    Settings.TRADE_DEPOSIT_SOURCE,
     DEPOSIT, execution_engine.initial_capital, risk_manager.initial_deposit,
 )
 
