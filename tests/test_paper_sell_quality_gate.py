@@ -3,7 +3,9 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from strategy.signal_guard import validate_paper_sell_quality, validate_signal_evidence
+from strategy.signal_guard import (
+    validate_entry_evidence, validate_paper_sell_quality, validate_signal_evidence,
+)
 
 
 def sell_metrics() -> dict[str, float]:
@@ -80,16 +82,34 @@ class PaperSellQualityGateTests(unittest.TestCase):
         }, clear=False):
             self.assertTrue(validate_paper_sell_quality({})[0])
 
-    def test_sell_quality_gate_is_applied_by_the_common_signal_validator(self) -> None:
+    def test_common_signal_validator_does_not_require_trade_flow_metrics(self) -> None:
+        metrics = sell_metrics()
+        metrics.pop("trade_data_ready")
+        metrics.pop("trade_metrics_age_sec")
+        metrics.pop("trade_flow_imbalance_30s")
+        valid, reason = validate_signal_evidence("SELL", metrics)
+        self.assertTrue(valid, reason)
+
+    def test_strict_sell_gate_is_applied_by_paper_entry_validator(self) -> None:
         metrics = sell_metrics()
         metrics["trade_flow_imbalance_30s"] = 0.0
         with patch.dict("os.environ", {
             "PAPER_TRADING": "true",
             "PILUITUS_PAPER_SELL_STRICT_GATE": "true",
         }, clear=False):
-            valid, reason = validate_signal_evidence("SELL", metrics)
+            valid, reason = validate_entry_evidence("SELL", metrics, paper_mode=True)
         self.assertFalse(valid)
         self.assertIn("агрессивного потока продавцов", reason)
+
+    def test_paper_entry_validator_does_not_apply_sell_gate_outside_paper_mode(self) -> None:
+        metrics = sell_metrics()
+        metrics["trade_flow_imbalance_30s"] = 0.0
+        with patch.dict("os.environ", {
+            "PAPER_TRADING": "true",
+            "PILUITUS_PAPER_SELL_STRICT_GATE": "true",
+        }, clear=False):
+            valid, reason = validate_entry_evidence("SELL", metrics, paper_mode=False)
+        self.assertTrue(valid, reason)
 
 
 if __name__ == "__main__":
