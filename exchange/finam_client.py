@@ -18,6 +18,28 @@ JOURNAL_FILE = "trading_journal.json"
 _MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
 
 
+def _websocket_close_code(exc: BaseException) -> int | None:
+    """Read a WebSocket close code across websockets versions."""
+    candidates = (
+        getattr(exc, "code", None),
+        getattr(getattr(exc, "rcvd", None), "code", None),
+        getattr(getattr(exc, "sent", None), "code", None),
+    )
+    for value in candidates:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+    return None
+
+
+def _websocket_disconnect_log_level(exc: BaseException) -> int:
+    """A normal 1000/1001 close is informational; abnormal closes remain errors."""
+    return (
+        logging.INFO
+        if _websocket_close_code(exc) in {1000, 1001}
+        else logging.ERROR
+    )
+
+
 def _coalesce_queued_market_event(queue: asyncio.Queue, event: dict[str, Any]) -> bool:
     """Replace an older queued snapshot for the same symbol without changing queue accounting.
 
@@ -3072,11 +3094,23 @@ class FinamBrokerClient:
                     self.is_ws_running = False
                     break
 
-                logger.error(
-                    "Finam WebSocket отключён/не подключён: %s. Повтор через %d сек.",
-                    exc,
-                    backoff,
-                )
+                close_code = _websocket_close_code(exc)
+                if _websocket_disconnect_log_level(exc) == logging.INFO:
+                    logger.info(
+                        "Finam WebSocket штатно закрыл соединение (code=%s): %s. "
+                        "Переподключение через %d сек.",
+                        close_code if close_code is not None else "unknown",
+                        exc,
+                        backoff,
+                    )
+                else:
+                    logger.error(
+                        "Finam WebSocket отключён/не подключён (close_code=%s): %s. "
+                        "Повтор через %d сек.",
+                        close_code if close_code is not None else "unknown",
+                        exc,
+                        backoff,
+                    )
                 refresh_token_before_retry = True
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30)
