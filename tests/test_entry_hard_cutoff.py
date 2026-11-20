@@ -35,7 +35,7 @@ def _fixed_datetime(value: datetime):
 class EntryHardCutoffTests(unittest.IsolatedAsyncioTestCase):
     async def _status_at(self, clock: str):
         fixed = datetime.fromisoformat(f"2026-11-20T{clock}:00+03:00")
-        layer = BaseExecutionEngine.__new__(ExecutionLayer)
+        layer = BaseExecutionEngine.__new__(BaseExecutionEngine)
         layer.broker = _ScheduleBroker()
         with patch("execution.execution_layer.datetime", _fixed_datetime(fixed)), patch.dict(
             os.environ,
@@ -62,7 +62,7 @@ class EntryHardCutoffTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(state["reason"], "hard_entry_cutoff_reached")
 
     def test_finam_fee_model_uses_percentage_per_side(self):
-        gross, exit_fee, total_fee, net = ExecutionLayer._calculate_paper_pnl(
+        gross, exit_fee, total_fee, net = BaseExecutionEngine._calculate_paper_pnl(
             entry_price=100.0,
             exit_price=101.0,
             share_qty=100,
