@@ -5,7 +5,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from scalping_strategy import evaluate_scalping_candidate
+from scalping_strategy import evaluate_scalping_candidate, has_queue_trade_flow_conflict
 
 
 def strong_buy_metrics() -> dict[str, float | str]:
@@ -151,6 +151,21 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
         result = evaluate_scalping_candidate("BUY", metrics)
         self.assertFalse(result["eligible"])
         self.assertIn("queue_trade_flow_conflict", result["hard_blocks"])
+
+    def test_fresh_queue_flow_conflict_is_detected_for_paper_guard(self):
+        metrics = strong_buy_metrics()
+        metrics["trade_flow_imbalance_30s"] = -0.30
+        self.assertTrue(has_queue_trade_flow_conflict("BUY", metrics))
+        self.assertFalse(has_queue_trade_flow_conflict("SELL", metrics))
+
+    def test_queue_flow_guard_ignores_unavailable_or_stale_measurements(self):
+        metrics = strong_buy_metrics()
+        metrics["trade_flow_imbalance_30s"] = -0.30
+        metrics["queue_imbalance_5s_age_sec"] = 8.0
+        self.assertFalse(has_queue_trade_flow_conflict("BUY", metrics))
+        metrics["queue_imbalance_5s_age_sec"] = 0.2
+        metrics["trade_data_ready"] = 0.0
+        self.assertFalse(has_queue_trade_flow_conflict("BUY", metrics))
 
     def test_queue_warmup_does_not_fall_back_to_single_snapshot(self):
         metrics = strong_buy_metrics()
