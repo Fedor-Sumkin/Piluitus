@@ -220,3 +220,65 @@ def estimate_entry_economics(
             else "INCOMPLETE_OR_ZERO_ASSUMPTION"
         ),
     }
+
+
+
+def validate_entry_economics(
+    *,
+    side: str,
+    bid: float,
+    ask: float,
+    commission_pct_per_side: float,
+    slippage_bps_per_side: float,
+    atr_pct: float,
+    max_cost_to_atr_ratio: float = 0.50,
+) -> dict[str, Any]:
+    """Gate an entry when known round-trip execution costs consume too much M1 ATR.
+
+    The calculation includes crossing the current spread, commission on both
+    sides, and configured adverse slippage. A zero slippage assumption is still
+    reported as incomplete; the resulting cost/ATR ratio is then a lower bound.
+    """
+    try:
+        limit = float(max_cost_to_atr_ratio)
+        atr_value = float(atr_pct)
+    except (TypeError, ValueError, OverflowError):
+        return {
+            "available": False,
+            "eligible": False,
+            "reason": "INVALID_COST_GATE_INPUT",
+        }
+    if not math.isfinite(limit) or limit <= 0.0 or not math.isfinite(atr_value) or atr_value <= 0.0:
+        return {
+            "available": False,
+            "eligible": False,
+            "reason": "ATR_OR_COST_LIMIT_UNAVAILABLE",
+        }
+    limit = min(2.0, max(0.05, limit))
+    result = estimate_entry_economics(
+        side=side,
+        bid=bid,
+        ask=ask,
+        commission_pct_per_side=commission_pct_per_side,
+        slippage_bps_per_side=slippage_bps_per_side,
+        atr_pct=atr_value,
+    )
+    if not result.get("available"):
+        return {**result, "eligible": False, "reason": "ENTRY_ECONOMICS_UNAVAILABLE"}
+    ratio = _finite(result.get("cost_to_atr_ratio"))
+    if ratio is None:
+        return {
+            **result,
+            "eligible": False,
+            "max_cost_to_atr_ratio": limit,
+            "reason": "COST_TO_ATR_UNAVAILABLE",
+        }
+    eligible = ratio <= limit + 1e-12
+    return {
+        **result,
+        "eligible": eligible,
+        "max_cost_to_atr_ratio": limit,
+        "reason": (
+            "ENTRY_COST_TO_ATR_OK" if eligible else "ENTRY_COST_TO_ATR_EXCEEDED"
+        ),
+    }
