@@ -459,3 +459,42 @@ def compact_fallback(decision: str, metrics: dict[str, Any], reason: str = "") -
     tactic = _complete_short_text(tactic, 150, "Вход не подтверждён измеряемыми условиями.")
     critic = _complete_short_text(critic, 165, "Не пройдены обязательные проверки входа.")
     return tactic, critic
+
+
+def validate_paper_shadow_entry(
+    shadow_result: Any,
+    *,
+    paper_trading: bool,
+    enabled: bool | None = None,
+) -> tuple[bool, str]:
+    """Gate PAPER entries with the deterministic Shadow quality score.
+
+    The gate is PAPER-only and defaults on. LIVE decisions are never changed.
+    Set PILUITUS_PAPER_SHADOW_ENTRY_GATE=0 to disable it for controlled A/B tests.
+    """
+    if not paper_trading:
+        return True, "Shadow entry gate is PAPER-only; LIVE path unchanged."
+    if enabled is None:
+        raw = str(os.getenv("PILUITUS_PAPER_SHADOW_ENTRY_GATE", "1")).strip().lower()
+        enabled = raw not in {"0", "false", "no", "off", "disabled"}
+    if not enabled:
+        return True, "PAPER Shadow entry gate explicitly disabled."
+    if not isinstance(shadow_result, dict):
+        return False, "PAPER Shadow gate: результат оценки отсутствует; вход заблокирован."
+    try:
+        score = float(shadow_result.get("score", 0.0))
+        threshold = float(shadow_result.get("threshold", 85.0))
+    except (TypeError, ValueError, OverflowError):
+        score, threshold = 0.0, 85.0
+    if not math.isfinite(score) or not math.isfinite(threshold):
+        return False, "PAPER Shadow gate: некорректная оценка; вход заблокирован."
+    hard_blocks = shadow_result.get("hard_blocks", [])
+    if not isinstance(hard_blocks, (list, tuple)):
+        hard_blocks = ["invalid_shadow_blocks"]
+    if shadow_result.get("eligible") is not True or hard_blocks or score < threshold:
+        blocks = ",".join(str(item) for item in hard_blocks[:4]) or "score_below_threshold"
+        return False, (
+            f"PAPER Shadow gate: кандидат не прошёл независимую оценку "
+            f"({score:.1f}/{threshold:.1f}; blocks={blocks}); вход заблокирован."
+        )
+    return True, f"PAPER Shadow gate пройден: {score:.1f}/{threshold:.1f}."
