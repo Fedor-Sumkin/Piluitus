@@ -2,7 +2,7 @@ import logging
 import os
 import numpy as np
 from datetime import datetime
-from db_manager import DBManager
+from storage.db_manager import DBManager
 import asyncio
 
 logger = logging.getLogger("Piluitus.ExecutionLayer")
@@ -290,7 +290,7 @@ class BaseExecutionEngine:
                         f"Pnl {pnl_rub:.2f}₽ ({pnl_percent:+.2f}%)."
                     )
 
-                    import tg_bot
+                    from interface import tg_bot
                     if hasattr(tg_bot, "bot") and tg_bot.bot:
                         chat_id = os.getenv("TELEGRAM_USER_ID")
                         if chat_id:
