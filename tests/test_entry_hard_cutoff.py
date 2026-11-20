@@ -72,8 +72,8 @@ class EntryHardCutoffTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertAlmostEqual(gross, 100.0)
         self.assertAlmostEqual(exit_fee, 101.0 * 100 * 0.0354 / 100.0)
-        self.assertAlmostEqual(total_fee, 71.154)
-        self.assertAlmostEqual(net, 28.846)
+        self.assertAlmostEqual(total_fee, 7.1154)
+        self.assertAlmostEqual(net, 92.8846)
 
 
 if __name__ == "__main__":
