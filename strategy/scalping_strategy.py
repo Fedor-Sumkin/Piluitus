@@ -225,7 +225,11 @@ def evaluate_scalping_candidate(
             components["queue_imbalance"] = 3.0
             reasons.append("time_weighted_queue_imbalance_neutral")
         else:
-            components["queue_imbalance"] = 0.0
+            # A materially opposing persistent queue should lower the shadow
+            # score, not merely remove the positive points: otherwise a very
+            # strong momentum/volume setup can still cross the eligibility
+            # threshold despite a clearly adverse book imbalance.
+            components["queue_imbalance"] = -3.0
             reasons.append("time_weighted_queue_imbalance_opposes_side")
         if flow_ready and math.isfinite(flow_imbalance):
             signed_flow = flow_imbalance if side == "BUY" else -flow_imbalance
