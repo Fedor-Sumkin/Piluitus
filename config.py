@@ -156,6 +156,13 @@ class Settings:
     PAPER_MAX_BOOK_PARTICIPATION_PCT: float = float(
         os.getenv("PILUITUS_PAPER_MAX_BOOK_PARTICIPATION_PCT", "10.0")
     )
+    # Conservative upper bound supplied by the operator: Finam RF securities tariff.
+    # Charged on each side of the PAPER round trip.
+    PAPER_COMMISSION_PCT: float = min(
+        1.0, max(0.0, float(os.getenv("PILUITUS_PAPER_COMMISSION_PCT", "0.0354")))
+    )
+    # Hard Moscow-time cutoff for new entries; open-position exits remain active.
+    ENTRY_HARD_CUTOFF_MSK: str = os.getenv("PILUITUS_ENTRY_HARD_CUTOFF_MSK", "22:00").strip()
 
     # ---------- Finam ----------
     FINAM_TOKEN: str = os.getenv("FINAM_TOKEN", "")
