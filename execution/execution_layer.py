@@ -10,7 +10,7 @@ import math
 import time
 import numpy as np
 from datetime import datetime, timezone, timedelta, time as datetime_time
-from db_manager import DBManager
+from storage.db_manager import DBManager
 import asyncio
 from uuid import uuid4
 
@@ -2253,7 +2253,7 @@ class BaseExecutionEngine:
                     stale_trade.get("pending_exit_reason") or "нет",
                     stale_trade.get("entry_timestamp") or "нет",
                 )
-            from portfolio_metrics import calculate_assets_used
+            from portfolio.portfolio_metrics import calculate_assets_used
             unresolved_cost = calculate_assets_used(unresolved.values(), lot_sizes=LOT_SIZES)
             logger.critical(
                 "🛑 [PAPER RECONCILIATION GUARD] Найдено %d не сверенных PAPER-позиций (себестоимость %.2f ₽). "
@@ -2812,7 +2812,7 @@ class BaseExecutionEngine:
         )
 
         try:
-            import tg_bot
+            from interface import tg_bot
             current_bot = getattr(tg_bot, "bot", None)
             chat_id = os.getenv("TELEGRAM_USER_ID")
             if current_bot and chat_id:
