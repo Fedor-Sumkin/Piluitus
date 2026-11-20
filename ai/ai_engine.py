@@ -921,6 +921,13 @@ class AIEngine:
             "NONE": "No local direction: MUST HOLD.",
         }[direction]
 
+        quote_depletion_rule = (
+            "Ask depletion is supporting evidence, not mandatory for BUY."
+            if direction == "BUY"
+            else "Bid depletion is supporting evidence, not mandatory for SELL."
+            if direction == "SELL"
+            else "Best-quote depletion is supporting evidence, not mandatory."
+        )
         spread_to_atr_limit = cls._max_spread_to_atr_ratio()
         # Compact immutable contract; reserve the remaining budget for live evidence.
         base = (
@@ -939,7 +946,7 @@ class AIEngine:
             "spread_pct<=0.5; if ATR exists, spread_to_atr_ratio>"
             f"{spread_to_atr_limit:.2f} is wide; require spread_to_atr_ratio<={spread_to_atr_limit:.2f}; missing ratio means insufficient support. "
             "HOLD_WIDE_SPREAD requires spread_pct>0.5 or ratio above limit. "
-            "Ask depletion is supporting evidence, not mandatory. "
+            f"{quote_depletion_rule} "
             "trade_flow_imbalance_30s is signed BUY-vs-SELL volume (-1..+1); "
             "trade_volume_5s and trade_volume_baseline_5s are provider volume units. "
             "30s price change and 60s realized volatility are context, not standalone gates. "
