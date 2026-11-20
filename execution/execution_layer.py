@@ -373,6 +373,8 @@ class BaseExecutionEngine:
         self._portfolio_lock = asyncio.Lock()
         # Cooldowns are side-specific: a short stop does not suppress a valid long setup.
         self._ticker_cooldowns: dict[tuple[str, str], float] = {}
+        # Repeated capital/risk-limit rejections are briefly suppressed per ticker/side.
+        self._capital_reject_cooldowns: dict[tuple[str, str], float] = {}
         self._recent_stop_losses: dict[tuple[str, str], deque[float]] = {}
         self._hydrated_stop_loss_keys: set[tuple[str, str]] = set()
         self._pending_monitor_prices: dict[str, tuple[float, str, object]] = {}
@@ -685,6 +687,15 @@ class BaseExecutionEngine:
                 return 0, f"STOP_LOSS cooldown для {cooldown_key[1]} ещё {remaining:.0f} сек."
             self._ticker_cooldowns.pop(cooldown_key, None)
 
+            if self.paper_mode:
+                capital_retry_until = self._capital_reject_cooldowns.get(cooldown_key, 0.0)
+                if capital_retry_until > now:
+                    return 0, (
+                        f"PAPER capital retry cooldown для {cooldown_key[1]} ещё "
+                        f"{capital_retry_until - now:.0f} сек.; повторная проверка будет позже."
+                    )
+                self._capital_reject_cooldowns.pop(cooldown_key, None)
+
             if ticker in self._opening_tickers:
                 return 0, "По тикеру уже создаётся позиция."
 
@@ -751,6 +762,18 @@ class BaseExecutionEngine:
             risk_lots = int(math.floor((risk_headroom + 1e-9) / risk_per_lot))
             approved_lots = min(int(requested_lots), affordable_lots, risk_lots)
             if approved_lots <= 0:
+                if self.paper_mode:
+                    try:
+                        retry_cooldown_sec = float(
+                            os.getenv("PILUITUS_PAPER_CAPITAL_REJECT_COOLDOWN_SEC", "10")
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        retry_cooldown_sec = 10.0
+                    if not math.isfinite(retry_cooldown_sec):
+                        retry_cooldown_sec = 10.0
+                    retry_cooldown_sec = min(120.0, max(0.0, retry_cooldown_sec))
+                    if retry_cooldown_sec > 0.0:
+                        self._capital_reject_cooldowns[cooldown_key] = now + retry_cooldown_sec
                 return 0, (
                     f"Лимиты портфеля: капитал доступен {headroom:.2f} ₽ "
                     f"(экспозиция {open_notional:.2f}/{gross_cap:.2f} ₽), "
