@@ -46,10 +46,8 @@ from execution.outcome_publisher import publish_execution_outcome
 from execution.verdict_publisher import publish_market_verdict
 from risk.risk_manager import RiskManager
 from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory
-from runtime.market_event_normalizer import (
-    build_market_candidate_payload,
-    normalize_market_quote_event,
-)
+from runtime.market_event_normalizer import build_market_candidate_payload
+from runtime.market_data_event_runtime import MarketDataEventRuntime
 from runtime.market_event_router import (
     MarketAuxiliaryEventRouter,
     PaperBBOReplayAdapter,
@@ -231,8 +229,6 @@ if execution_engine.paper_mode:
 # Глобальные кэши и лимиты ОЗУ под High-Load тики
 last_ai_verdicts_cache: list[dict[str, Any]] = []
 MAX_CACHE_SIZE = 100  # Защита ОЗУ от утечек памяти
-tick_counter = 0
-spinner_frames = ["|", "/", "-", "\\"]
 
 # Асинхронная очередь с приоритетами. Второй элемент — уникальный sequence ID:
 # PriorityQueue сравнивает tuple поэлементно; без уникального ID при совпадении
@@ -244,9 +240,6 @@ priority_queue_item_factory = PriorityQueueItemFactory()
 _paper_session_lock = asyncio.Lock()
 _paper_session_generation = 0
 bg_market_task = None
-_last_funnel_log_at = 0.0
-_last_funnel_log_key: tuple[str, ...] | None = None
-_last_funnel_ready = False
 
 # Диагностический накопитель; окно отчёта остаётся 60 секунд.
 _trade_flow_counters = TradeFlowCounters(time_module.monotonic())
@@ -691,153 +684,28 @@ market_candidate_pipeline = MarketCandidatePipeline(
 )
 
 
+market_data_event_runtime = MarketDataEventRuntime(
+    execution_engine=execution_engine,
+    db_manager=db_manager,
+    screener=screener,
+    auxiliary_event_router=market_auxiliary_event_router,
+    candidate_pipeline=market_candidate_pipeline,
+    pending_bbo_runtime=pending_bbo_runtime,
+    shadow_tracker=scalping_shadow_tracker,
+    persist_shadow_outcomes=_persist_shadow_outcomes,
+    schedule_m1_history_warmup=_schedule_m1_history_warmup,
+    trade_flow_increment=_trade_flow_inc,
+    terminal_status=terminal_status,
+    logger=logger,
+    session_generation_provider=lambda: _paper_session_generation,
+    monotonic=time_module.monotonic,
+)
+
+
 async def process_market_event(event: Union[SimpleNamespace, dict]):
-    """Обновляет локальную воронку по каждой котировке и направляет в LLM только top-N."""
-    global tick_counter, _last_funnel_log_at, _last_funnel_log_key, _last_funnel_ready
-    event_session_generation = _paper_session_generation
-    if getattr(execution_engine, "_maintenance_active", False):
-        return
-    _expire_pending_bbo_candidates()
-    try:
-        if await market_auxiliary_event_router.process_if_handled(event):
-            return
+    await market_data_event_runtime.process_event(event)
 
-        quote_event = normalize_market_quote_event(event)
-        ticker = quote_event.ticker
-        price = quote_event.price
-        volume = quote_event.volume
-        bid = quote_event.bid
-        ask = quote_event.ask
-        bid_size = quote_event.bid_size
-        ask_size = quote_event.ask_size
-        bid_present = quote_event.bid_present
-        ask_present = quote_event.ask_present
-        bid_size_present = quote_event.bid_size_present
-        ask_size_present = quote_event.ask_size_present
-        day_volume = quote_event.day_volume
-        supplied_metrics = quote_event.metrics
-        event_timestamp = quote_event.timestamp
-        received_monotonic = quote_event.received_monotonic
-        if price <= 0.0 or not ticker or volume < 0.0:
-            return
-        # Quote ticks do not cancel deferred candidates. They may refresh the
-        # two-sided quote confirmation clocks; a pending candidate can resume on
-        # QUOTES only while a recently confirmed coherent ORDER_BOOK is still fresh.
 
-        tick_counter += 1
-        current_frame = spinner_frames[tick_counter % len(spinner_frames)]
-        terminal_status.update(
-            f"⚡ [WS ПОТОК ФИНАМ] {current_frame} "
-            f"Тиков: {tick_counter:,} | {ticker} {price}₽"
-        )
-
-        # Учитываем каждый инструмент в рейтинге, а не только аномальные тики.
-        analysis = await screener.push_tick(
-            ticker=ticker,
-            price=price,
-            volume=volume,
-            bid=bid,
-            ask=ask,
-            bid_size=bid_size,
-            ask_size=ask_size,
-            day_volume=day_volume,
-            bid_present=bid_present,
-            ask_present=ask_present,
-            bid_size_present=bid_size_present,
-            ask_size_present=ask_size_present,
-            event_timestamp=event_timestamp,
-            received_monotonic=received_monotonic,
-        )
-
-        _trade_flow_inc("quotes_received")
-        accepted_quote_sides = analysis.get("quote_side_updates", {})
-        market_auxiliary_event_router.bbo_replay.record(
-            ticker,
-            source="FINAM_QUOTES",
-            event_timestamp=event_timestamp,
-            received_monotonic=received_monotonic,
-            sides_present=bool(
-                isinstance(accepted_quote_sides, Mapping)
-                and (
-                    (bid_present and accepted_quote_sides.get("bid"))
-                    or (ask_present and accepted_quote_sides.get("ask"))
-                )
-            ),
-        )
-        # ORDER_BOOK and QUOTES use independent provider streams. A valid recent
-        # book can be confirmed by the newest two-sided QUOTES packet between
-        # book deltas; this prevents a pending candidate from expiring merely
-        # because no new best-level ORDER_BOOK event arrived within its 1.5s TTL.
-        has_pending_bbo = pending_bbo_runtime.has_pending(ticker)
-        if has_pending_bbo:
-            await _resume_pending_bbo_candidate(ticker, trigger="QUOTES")
-        quote_metrics_for_shadow = analysis.get("metrics", {})
-        if isinstance(quote_metrics_for_shadow, dict):
-            shadow_labels = scalping_shadow_tracker.observe_market_tick(ticker, quote_metrics_for_shadow)
-            if shadow_labels:
-                await _persist_shadow_outcomes(shadow_labels, source="QUOTES")
-        funnel_status = screener.get_status()
-        terminal_status.update_funnel(screener.get_status_text())
-        if analysis.get("selected") and analysis.get("selection_ready"):
-            _trade_flow_inc("selected_quotes")
-        now_mono = time_module.monotonic()
-        selected_snapshot = tuple(funnel_status.get("selected_tickers", []))
-        if funnel_status.get("ready") and selected_snapshot:
-            _schedule_m1_history_warmup(selected_snapshot)
-        if not funnel_status["ready"]:
-            _last_funnel_ready = False
-            if _last_funnel_log_at == 0.0 or now_mono - _last_funnel_log_at >= 30.0:
-                logger.info(
-                    "🎯 Воронка прогревается: котировки получены по %d/%d инструментам; пригодны для рейтинга %d; цель top-%d.",
-                    funnel_status["observed_count"], funnel_status["universe_count"], funnel_status["eligible_count"], funnel_status["top_n"],
-                )
-                _last_funnel_log_at = now_mono
-        elif selected_snapshot:
-            first_ready = not _last_funnel_ready
-            selection_changed = _last_funnel_log_key is None or selected_snapshot != _last_funnel_log_key
-            cooldown_elapsed = _last_funnel_log_at == 0.0 or now_mono - _last_funnel_log_at >= 30.0
-            if first_ready or (selection_changed and cooldown_elapsed):
-                logger.info(
-                    "🎯 ВОРОНКА ГОТОВА: %d → %d тикеров для LLM: %s",
-                    funnel_status["universe_count"], len(selected_snapshot), ", ".join(selected_snapshot),
-                )
-                _last_funnel_log_at = now_mono
-                _last_funnel_log_key = selected_snapshot
-            _last_funnel_ready = True
-
-        logger.debug(
-            "📥 [ВХОДЯЩИЙ ТИК] %s price=%s anomaly=%s selected=%s rank=%s score=%s",
-            ticker, price, analysis["is_anomaly"], analysis.get("selected", False),
-            analysis.get("metrics", {}).get("funnel_rank", 0),
-            analysis.get("metrics", {}).get("funnel_score", 0.0),
-        )
-
-        market_candidate_pipeline.process_candidate(
-            ticker=ticker,
-            price=price,
-            volume=volume,
-            bid=bid,
-            ask=ask,
-            bid_size=bid_size,
-            ask_size=ask_size,
-            day_volume=day_volume,
-            analysis=analysis,
-            supplied_metrics=supplied_metrics,
-            session_generation=event_session_generation,
-            received_monotonic=received_monotonic,
-        )
-
-        # Обновление позиции продолжается по всем 88 котировкам, а не только по top-N.
-        execution_engine.schedule_paper_position_monitor(
-            ticker,
-            price,
-            db_manager,
-            event_source="LAST_TRADE",
-            event_timestamp=event_timestamp,
-        )
-
-    except Exception as e:
-        logger.error("💥 Ошибка в обработчике тиков: %s", e, exc_info=True)
 # --------------------------------------------------------------
 #  5️⃣  MARKET WORKER С ПРИОРИТЕТНЫМ ПЕРЕХВАТОМ И КОНТУРОМ RAG
 # --------------------------------------------------------------

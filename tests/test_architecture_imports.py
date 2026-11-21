@@ -646,46 +646,49 @@ def test_lifespan_delegates_long_running_task_ownership_to_supervisor() -> None:
 
 def test_main_delegates_market_event_normalization_to_runtime() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
-    router_source = (ROOT / "runtime" / "market_event_router.py").read_text(encoding="utf-8")
+    runtime_source = (
+        ROOT / "runtime" / "market_data_event_runtime.py"
+    ).read_text(encoding="utf-8")
+    normalizer_source = (
+        ROOT / "runtime" / "market_event_normalizer.py"
+    ).read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
     imported = {
         alias.name
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
-        and node.module == "runtime.market_event_normalizer"
+        and node.module == "runtime.market_data_event_runtime"
         for alias in node.names
     }
-    assert {
-        "build_market_candidate_payload",
-        "normalize_market_quote_event",
-    } <= imported
-    assert "quote_event = normalize_market_quote_event(event)" in source
-    assert "build_market_candidate_payload(" not in source
-    assert "market_candidate_pipeline.process_candidate(" in source
-    assert "market_event_type" in router_source
-    assert "normalize_market_ticker" in router_source
-    assert "normalize_order_book_event" in router_source
-    assert "await self.screener.push_order_book(**normalized)" in router_source
+    assert imported == {"MarketDataEventRuntime"}
+    assert "market_data_event_runtime = MarketDataEventRuntime(" in source
+    assert "await market_data_event_runtime.process_event(event)" in source
+    assert "quote_event = normalize_market_quote_event(event)" in runtime_source
+    assert "def normalize_market_quote_event(" in normalizer_source
+    assert "self.candidate_pipeline.process_candidate(" in runtime_source
+    assert "build_market_candidate_payload(" not in runtime_source
+
 
 def test_main_delegates_auxiliary_market_events_and_bbo_replay_to_runtime() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imported = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "runtime.market_event_router"
-        for alias in node.names
-    }
-    assert {"MarketAuxiliaryEventRouter", "PaperBBOReplayAdapter"} <= imported
-    assert "if await market_auxiliary_event_router.process_if_handled(event):" in source
-    assert "_record_paper_bbo_replay" not in source
-
-
+    runtime_source = (
+        ROOT / "runtime" / "market_data_event_runtime.py"
+    ).read_text(encoding="utf-8")
+    router_source = (
+        ROOT / "runtime" / "market_event_router.py"
+    ).read_text(encoding="utf-8")
+    assert "MarketAuxiliaryEventRouter(" in source
+    assert "if await self.auxiliary_event_router.process_if_handled(event):" in runtime_source
+    assert "self.auxiliary_event_router.bbo_replay.record(" in runtime_source
+    assert "await self.screener.push_order_book(**normalized)" in router_source
+    assert "await self.pending_bbo_runtime.resume(ticker, trigger=\"QUOTES\")" in runtime_source
 
 
 def test_main_delegates_candidate_admission_to_strategy_pipeline() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
+    runtime_source = (
+        ROOT / "runtime" / "market_data_event_runtime.py"
+    ).read_text(encoding="utf-8")
     pipeline_source = (
         ROOT / "strategy" / "market_candidate_pipeline.py"
     ).read_text(encoding="utf-8")
@@ -698,14 +701,15 @@ def test_main_delegates_candidate_admission_to_strategy_pipeline() -> None:
         for alias in node.names
     }
     assert imported == {"MarketCandidatePipeline"}
-    assert "market_candidate_pipeline.process_candidate(" in source
-    event_handler = source[source.index("async def process_market_event"):source.index("#  5️⃣  MARKET WORKER")]
-    assert "validate_atr_readiness" not in event_handler
-    assert "infer_direction(direction_metrics)" in pipeline_source or "self.infer_direction(metrics)" in pipeline_source
-    assert "infer_direction=infer_candidate_direction" in source
+    assert "market_candidate_pipeline = MarketCandidatePipeline(" in source
+    assert "self.candidate_pipeline.process_candidate(" in runtime_source
+    assert "validate_atr_readiness" not in runtime_source
+    assert "infer_candidate_direction" not in runtime_source
+    assert "self.infer_direction(metrics)" in pipeline_source
     assert "validate_entry_evidence" in pipeline_source
     assert "validate_atr_readiness" in pipeline_source
     assert "anomaly_queue.put_nowait" in pipeline_source
+
 
 def test_main_delegates_pending_bbo_candidate_lifecycle_to_strategy_runtime() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
