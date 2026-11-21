@@ -104,6 +104,24 @@ from monitoring.logging_setup import (
     update_numpy_impulse_status,
 )
 
+def _parse_finite_float(value: object) -> float | None:
+    """Convert an untrusted JSON scalar to a finite float."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        raw = value
+    elif isinstance(value, (int, float)):
+        raw = value
+    else:
+        return None
+    try:
+        number = float(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+
 FINAM_TOKEN = os.getenv("FINAM_TOKEN", "")
 # PAPER orders are recorded against an internal simulator identity, never a Finam client/account ID.
 CLIENT_ID = "PILUITUS_PAPER" if Settings.PAPER_TRADING else os.getenv("FINAM_CLIENT_ID", "UNKNOWN_ACCOUNT")
