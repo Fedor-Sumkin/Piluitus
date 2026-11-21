@@ -12,7 +12,7 @@ migration would create unnecessary startup and environment-loading risk.
 | `ai/` | LLM integration, prompt helpers, verdict formatting, news and knowledge parsing |
 | `exchange/` | Finam connectivity and market-data transport |
 | `execution/` | Order execution, PAPER simulation and legacy evolution support |
-| `interface/` | Telegram bot and polling/runtime integration |
+| `interface/` | Telegram bot, polling/runtime integration and WebSocket client management |
 | `monitoring/` | Runtime monitoring, thread-safe TRADE FLOW counters, diagnostic classification and terminal status/logging presentation |
 | `portfolio/` | Book-cost accounting, portfolio metrics and exports |
 | `risk/` | Risk manager and risk limits |
