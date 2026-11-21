@@ -1,7 +1,6 @@
 import asyncio
 import json
 import math
-import logging
 import re
 import os
 import sys
@@ -26,8 +25,6 @@ from fastapi.templating import Jinja2Templates
 from config import (
     Settings,
     PROJECT_ROOT,
-    LOG_REDACT_TELEGRAM_ID,
-    LOG_REDACT_PROJECT_PATH,
     TICKERS_TO_TRADE,
     FINAM_TRADE_LOT_SIZES,
     LOT_SIZES,
