@@ -8,10 +8,12 @@ on:
   push:
     branches:
       - refactor/project-structure
+      - refactor/architecture-cleanup
   pull_request:
     branches:
       - master
       - refactor/project-structure
+      - refactor/architecture-cleanup
   workflow_dispatch:
 
 jobs:
