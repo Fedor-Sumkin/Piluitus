@@ -50,7 +50,7 @@ from strategy.candidate_recovery import (
     refresh_candidate_bbo_metrics,
     refresh_post_llm_evidence,
 )
-from strategy.scalping_strategy import evaluate_scalping_candidate, has_queue_trade_flow_conflict
+from strategy.scalping_strategy import has_queue_trade_flow_conflict
 from strategy.shadow_outcomes import ShadowForwardTracker
 from strategy.bbo_replay import (
     BBOReplayRecorder,
@@ -97,6 +97,7 @@ from monitoring.background_tasks import BackgroundOperationTracker
 from monitoring.position_order_book_diagnostics import PositionOrderBookDiagnostics
 from monitoring.shadow_scorecard_logger import StrategyShadowScorecardLogger
 from monitoring.trade_flow_report import TradeFlowReportLogger
+from monitoring.strategy_shadow_diagnostics import StrategyShadowDiagnostics
 from monitoring.prefilter_diagnostics import PrefilterBlockLogger
 from monitoring.logging_setup import (
     RUN_LOG_PATHS,
@@ -508,16 +509,21 @@ def _trade_flow_guard_block(reason: str) -> None:
     _trade_flow_inc(bucket)
 
 
+strategy_shadow_diagnostics = StrategyShadowDiagnostics(
+    logger,
+    scalping_shadow_tracker,
+    _trade_flow_inc,
+    _guard_reason_bucket,
+    __import__("strategy.scalping_strategy", fromlist=["evaluate_scalping_candidate"]).evaluate_scalping_candidate,
+)
+
+
 def _mark_shadow_llm_not_called(candidate_id: object, reason_code: str) -> None:
-    """Keep known pre-LLM rejects distinct from missing candidate/verdict links."""
-    identifier = str(candidate_id or "").strip()
-    if not identifier:
-        return
-    if scalping_shadow_tracker.mark_llm_not_called(
-        identifier, reason_code=reason_code,
-    ):
-        _trade_flow_inc("shadow_llm_not_called")
-        _trade_flow_inc("shadow_llm_not_called_" + _guard_reason_bucket(reason_code))
+    strategy_shadow_diagnostics.mark_llm_not_called(candidate_id, reason_code)
+
+
+def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -> dict[str, Any]:
+    return strategy_shadow_diagnostics.log_candidate(ticker, direction, metrics)
 
 
 def _log_prefilter_blocked(ticker: str, reason: str, *, interval_sec: float = 15.0) -> None:
