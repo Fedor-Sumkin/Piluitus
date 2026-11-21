@@ -316,3 +316,20 @@ def test_main_delegates_prefilter_warning_rate_limiting_to_monitoring() -> None:
     assert "prefilter_block_logger = PrefilterBlockLogger(logger)" in source
     assert "_prefilter_last_logged" not in source
     assert "_prefilter_log_lock" not in source
+
+
+
+def test_main_delegates_strategy_shadow_scorecard_logging_to_monitoring() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imports = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "monitoring.shadow_scorecard_logger"
+        for alias in node.names
+    }
+    assert "StrategyShadowScorecardLogger" in imports
+    assert "shadow_scorecard_logger = StrategyShadowScorecardLogger(logger)" in source
+    assert "shadow_scorecard_logger.log(scalping_shadow_tracker)" in source
+    assert "scalping_shadow_tracker.statistics_snapshot()" not in source
