@@ -83,6 +83,7 @@ from strategy.decision_diagnostics import (
     classify_hold_reason_bucket,
 )
 from interface import tg_bot
+from interface.websocket_manager import ConnectionManager
 from ai.news_parser import MarketNewsParser
 from monitoring.terminal_status import TerminalStatusLine, StatusAwareStreamHandler
 from monitoring.trade_flow_diagnostics import (
@@ -1831,26 +1832,6 @@ async def log_trading_event_to_file(
 # --------------------------------------------------------------
 #  3️⃣  CONNECTION MANAGER (WebSocket)
 # --------------------------------------------------------------
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-            logger.info("🔌 WS‑клиент отключён")
-
-    async def broadcast(self, message: str):
-        for conn in self.active_connections:
-            try:
-                await conn.send_text(message)
-            except Exception:
-                pass
-
 manager = ConnectionManager()
 
 # --------------------------------------------------------------
