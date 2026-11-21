@@ -41,7 +41,7 @@ def test_normalize_execution_fill_falls_back_to_requested_lots():
 
 def test_normalize_execution_fill_uses_zero_lot_multiplier_when_unknown():
     result = normalize_execution_fill(
-        {"lots": 2}, requested_lots=5, ticker="UNKNOWN", price=10.0, lot_sizes=LOT_SIZES,
+        {"lots": 2}, requested_lots=5, ticker="UNKNOWN", price=10.0, lot_sizes=LOT_SIZES, allow_fallback=True,
     )
     assert result["actual_lots"] == 2
     assert result["actual_shares"] == 0
@@ -59,7 +59,7 @@ def test_normalize_execution_fill_does_not_invent_shares_for_invalid_lots():
 
 def test_normalize_execution_fill_uses_executor_requested_lots_when_valid():
     result = normalize_execution_fill(
-        {"requested_lots": "8"}, requested_lots=4, ticker="SBER", price=10.0, lot_sizes=LOT_SIZES,
+        {"requested_lots": "8"}, requested_lots=4, ticker="SBER", price=10.0, lot_sizes=LOT_SIZES, allow_fallback=True,
     )
     assert result["requested_lots"] == 8
     assert result["actual_lots"] == 4
