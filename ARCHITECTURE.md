@@ -13,7 +13,7 @@ migration would create unnecessary startup and environment-loading risk.
 | `exchange/` | Finam connectivity and market-data transport |
 | `execution/` | Order execution, PAPER simulation and legacy evolution support |
 | `interface/` | Telegram bot, polling/runtime integration and WebSocket client management |
-| `monitoring/` | Runtime monitoring, thread-safe TRADE FLOW counters, diagnostic classification and terminal status/logging presentation |
+| `monitoring/` | Runtime logging setup and durable run journals, terminal status, thread-safe TRADE FLOW counters and diagnostic classification |
 | `portfolio/` | Book-cost accounting, portfolio metrics and exports |
 | `risk/` | Risk manager and risk limits |
 | `storage/` | Redis-compatible persistence and database manager |
