@@ -902,13 +902,26 @@ class AIEngine:
             )
         metric_keys = common_keys + directional_keys + ("bar_pattern_name", "bar_signal_gap_atr")
         prompt_metrics = cls._prepare_prompt_metrics(metrics, direction)
-        metric_parts: list[str] = []
+        # These fields are part of the decision evidence contract. Keep them
+        # even when the prompt must shed optional diagnostics to meet max_chars.
+        required_metric_keys = {
+            "trade_data_ready", "trade_metrics_age_sec", "trade_flow_imbalance_30s",
+            "order_book_valid", "queue_imbalance_5s", "ofi_5s",
+            "entry_cost_to_atr_ratio", "entry_minimum_favorable_move_pct",
+        }
+        required_metric_parts: list[str] = []
+        optional_metric_parts: list[str] = []
         if prompt_metrics:
             for key in metric_keys:
                 value = prompt_metrics.get(key)
                 if value is None:
                     continue
-                metric_parts.append(f"{key}={cls._prompt_value(value, 18)}")
+                part = f"{key}={cls._prompt_value(value, 18)}"
+                if key in required_metric_keys:
+                    required_metric_parts.append(part)
+                else:
+                    optional_metric_parts.append(part)
+        metric_parts = required_metric_parts + optional_metric_parts
         metrics_text = ";".join(metric_parts)
 
         momentum_neutral_band_pct = cls._direction_momentum_neutral_band_pct()
@@ -968,13 +981,18 @@ class AIEngine:
         rule_part = f" RAG rules are advisory context only and cannot add hard gates: {rule_text}." if rule_text else ""
         metric_part = f" Metrics: {metrics_text}." if metrics_text else ""
 
-        # First discard optional metrics from the tail. If the prompt is still too
-        # long, omit the RAG block as a whole; never slice a rule or the contract.
-        parts = metric_parts[:]
+        # Remove optional diagnostics first. Decision-critical evidence above is
+        # never sacrificed to retain lower-priority metrics or advisory RAG text.
+        optional_parts = optional_metric_parts[:]
+        metric_part = (
+            f" Metrics: {';'.join(required_metric_parts + optional_parts)}."
+            if required_metric_parts or optional_parts else ""
+        )
         prompt = base + rule_part + metric_part
-        while len(prompt) > max_chars and parts:
-            parts.pop()
-            metric_part = f" Metrics: {';'.join(parts)}." if parts else ""
+        while len(prompt) > max_chars and optional_parts:
+            optional_parts.pop()
+            remaining_parts = required_metric_parts + optional_parts
+            metric_part = f" Metrics: {';'.join(remaining_parts)}." if remaining_parts else ""
             prompt = base + rule_part + metric_part
         if len(prompt) > max_chars and rule_part:
             rule_part = ""
