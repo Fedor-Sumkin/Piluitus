@@ -84,6 +84,7 @@ from strategy.market_data_runtime import (
 )
 from portfolio.dashboard_runtime import DashboardRuntime
 from interface.paper_api_helpers import PaperAPIHelpers
+from interface.paper_research_routes import create_paper_research_router
 from storage.paper_session_runtime import PaperSessionRuntime
 from strategy.shadow_outcomes import ShadowForwardTracker
 from strategy.bbo_replay import (
@@ -2083,73 +2084,7 @@ paper_research_runtime = PaperResearchRuntime(
 )
 
 
-@app.get("/api/v1/paper/performance")
-async def get_paper_performance():
-    """Return realized PAPER trade statistics and exact-ID Shadow comparisons."""
-    return paper_research_runtime.get_performance()
-
-
-@app.get("/api/v1/paper/replay/batch")
-async def replay_paper_exit_batch(
-    limit: int = 30,
-    ticker: str | None = None,
-    session_id: str | None = None,
-    portfolio_capital_rub: float | None = None,
-    max_allocation_pct: float = 15.0,
-):
-    return await paper_research_runtime.replay_batch(
-        limit=limit,
-        ticker=ticker,
-        session_id=session_id,
-        portfolio_capital_rub=portfolio_capital_rub,
-        max_allocation_pct=max_allocation_pct,
-    )
-
-
-@app.get("/api/v1/paper/reconciliation/shadow")
-async def get_paper_shadow_reconciliation(limit: int = 100):
-    return paper_research_runtime.get_shadow_reconciliation(limit=limit)
-
-
-@app.get("/api/v1/paper/shadow/walk-forward")
-async def get_paper_shadow_walk_forward(
-    folds: int = 5,
-    embargo_seconds: float = 30.0,
-    limit: int = 20000,
-):
-    return paper_research_runtime.get_shadow_walk_forward(
-        folds=folds,
-        embargo_seconds=embargo_seconds,
-        limit=limit,
-    )
-
-
-@app.get("/api/v1/paper/shadow/cost-sensitivity")
-async def get_paper_shadow_cost_sensitivity(limit: int = 20000):
-    return paper_research_runtime.get_shadow_cost_sensitivity(limit=limit)
-
-
-@app.get("/api/v1/paper/research/report")
-async def get_paper_research_report(limit: int = 30):
-    return await paper_research_runtime.get_research_report(limit=limit)
-
-
-@app.get("/api/v1/paper/replay/{order_id}")
-async def replay_paper_exit_scenarios(order_id: str):
-    return await paper_research_runtime.replay_trade(order_id)
-
-
-@app.get("/api/v1/paper/reconciliation")
-async def get_paper_reconciliation():
-    return await paper_research_runtime.get_reconciliation()
-
-
-@app.post("/api/v1/paper/reconciliation/{order_id}")
-async def reconcile_paper_position(
-    order_id: str,
-    payload: dict[str, object] = Body(...),
-):
-    return await paper_research_runtime.reconcile_position(order_id, payload)
+app.include_router(create_paper_research_router(paper_research_runtime))
 
 
 @app.post("/api/v1/paper/session/clear")

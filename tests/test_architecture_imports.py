@@ -852,3 +852,34 @@ def test_main_delegates_post_llm_entry_and_execution_readiness_gates() -> None:
     assert "_apply_confidence_gate" in module_source
     assert "_prepare_atr_protected_size" in module_source
     assert "confidence >= 75.0" in module_source
+
+
+
+def test_main_delegates_paper_research_routes_to_interface() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "interface.paper_research_routes"
+        for alias in node.names
+    }
+    assert imported == {"create_paper_research_router"}
+    assert "app.include_router(create_paper_research_router(paper_research_runtime))" in source
+
+    legacy_handlers = {
+        node.name for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    assert not {
+        "get_paper_performance",
+        "replay_paper_exit_batch",
+        "get_paper_shadow_reconciliation",
+        "get_paper_shadow_walk_forward",
+        "get_paper_shadow_cost_sensitivity",
+        "get_paper_research_report",
+        "replay_paper_exit_scenarios",
+        "get_paper_reconciliation",
+        "reconcile_paper_position",
+    } & legacy_handlers
