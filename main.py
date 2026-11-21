@@ -113,6 +113,7 @@ from portfolio.paper_accounting import (
     calculate_open_pnl,
     parse_finite_float as _parse_finite_float,
 )
+from portfolio.dashboard_accounting import build_dashboard_balance_snapshot
 
 
 
@@ -921,8 +922,6 @@ async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = Non
     risk limits; equity reports deposit plus total (realized + floating) PnL.
     """
     global _dashboard_balance_snapshot
-    from portfolio.portfolio_metrics import calculate_assets_used, calculate_free_balance
-
     if positions is None:
         positions = await _get_dashboard_open_positions()
 
@@ -954,63 +953,43 @@ async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = Non
     except (TypeError, ValueError, OverflowError):
         open_pnl = pnl - realized_pnl
 
-    # Old PAPER positions are not restored as live simulated positions after a
-    # restart. Until an operator reviews them, their saved acquisition cost stays
-    # reserved and all new entries are blocked by ExecutionLayer.
+    # Old PAPER positions remain reserved until an operator reviews them.
     unresolved_map = (
         getattr(execution_engine, "_unreconciled_paper_positions", {})
         if getattr(execution_engine, "paper_mode", True) else {}
     )
     unresolved_positions = list(unresolved_map.values()) if isinstance(unresolved_map, dict) else []
-    capital_positions = list(positions)
-    seen_ids = {str(p.get("id", "")) for p in capital_positions if isinstance(p, dict)}
-    for unresolved in unresolved_positions:
-        if isinstance(unresolved, dict) and str(unresolved.get("id", "")) not in seen_ids:
-            capital_positions.append(unresolved)
-
-    assets_used = calculate_assets_used(
-        positions=capital_positions,
-        # The helper intentionally ignores live prices and uses purchase price.
-        latest_prices=None,
+    calculation = build_dashboard_balance_snapshot(
+        positions=positions,
+        unresolved_positions=unresolved_positions,
+        initial_deposit=initial_deposit,
+        total_pnl=pnl,
+        realized_pnl=realized_pnl,
+        open_pnl=open_pnl,
+        max_gross_exposure_pct=getattr(execution_engine, "max_gross_exposure_pct", 0.15),
+        max_single_position_pct=getattr(execution_engine, "max_single_position_pct", 0.05),
         lot_sizes=LOT_SIZES,
     )
-    free_balance = calculate_free_balance(initial_deposit + realized_pnl, assets_used)
-    max_gross_pct = min(max(0.0, float(getattr(execution_engine, "max_gross_exposure_pct", 0.15))), 0.15)
-    max_single_pct = min(max(0.0, float(getattr(execution_engine, "max_single_position_pct", 0.05))), 0.05)
-    exposure_cap = round(initial_deposit * max_gross_pct, 2)
-    single_position_cap = round(initial_deposit * max_single_pct, 2)
-    _dashboard_balance_snapshot = {
-        "equity": round(initial_deposit + pnl, 2),
-        "initial_deposit": round(initial_deposit, 2),
-        "free_margin": free_balance,
-        "margin_used": round(assets_used, 2),
-        "exposure_cap": exposure_cap,
-        "exposure_cap_pct": max_gross_pct,
-        "single_position_cap": single_position_cap,
-        "unreconciled_positions_count": len(unresolved_positions),
-        "pnl": round(pnl, 2),
-        "realized_pnl": round(realized_pnl, 2),
-        "open_pnl": round(open_pnl, 2),
-        "active_positions_count": len(positions),
-    }
+    _dashboard_balance_snapshot = calculation["snapshot"]
+    assets_used = calculation["assets_used"]
+    exposure_cap = calculation["exposure_cap"]
+    max_gross_pct = calculation["max_gross_pct"]
 
     global _balance_guard_last_signature
-    over_cap = assets_used > exposure_cap
-    signature = (len(unresolved_positions), over_cap)
+    signature = calculation["guard_signature"]
     if signature != _balance_guard_last_signature:
         if unresolved_positions:
             logger.critical(
                 "🛑 [PAPER RECONCILIATION GUARD] %d старых PAPER-позиций на сверке; их себестоимость %.2f ₽ учтена в активах. Новые входы заблокированы.",
-                len(unresolved_positions), calculate_assets_used(unresolved_positions, lot_sizes=LOT_SIZES),
+                len(unresolved_positions), calculation["unresolved_assets_cost"],
             )
-        if over_cap:
+        if calculation["over_cap"]:
             logger.error(
                 "🚨 [BALANCE GUARD] Себестоимость активов %.2f ₽ превышает лимит задействования %.2f ₽ (%.0f%% депозита). Новые входы будут заблокированы.",
                 assets_used, exposure_cap, max_gross_pct * 100,
             )
         _balance_guard_last_signature = signature
     return dict(_dashboard_balance_snapshot)
-
 
 
 # Все 88 инструментов остаются подписанными для сбора сравнимой статистики.

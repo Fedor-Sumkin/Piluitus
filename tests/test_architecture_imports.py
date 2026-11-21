@@ -419,3 +419,18 @@ def test_main_delegates_paper_open_pnl_accounting_to_portfolio() -> None:
     }
     assert "return calculate_open_pnl(" in source
     assert "def _parse_finite_float" not in source
+
+
+def test_main_delegates_dashboard_balance_calculation_to_portfolio() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "portfolio.dashboard_accounting"
+        for alias in node.names
+    }
+    assert imported == {"build_dashboard_balance_snapshot"}
+    assert "calculation = build_dashboard_balance_snapshot(" in source
+    assert "calculate_assets_used(" not in source
