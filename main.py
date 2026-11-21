@@ -4166,7 +4166,6 @@ async def reconcile_paper_position(order_id: str, payload: dict[str, object] = B
 @app.post("/api/v1/paper/session/clear")
 async def clear_paper_session(payload: dict[str, object] = Body(...)):
     global _paper_session_generation, last_ai_verdicts_cache, _balance_guard_last_signature
-    global _trade_flow_last_log_at
     _require_paper_mode()
     if str(payload.get("confirmation", "")).strip() != PAPER_CLEAR_CONFIRMATION:
         raise HTTPException(status_code=400, detail=f"Для подтверждения введите точную фразу: {PAPER_CLEAR_CONFIRMATION}")
