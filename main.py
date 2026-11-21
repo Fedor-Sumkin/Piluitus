@@ -109,21 +109,10 @@ from monitoring.trading_event_logger import log_trading_event_to_file
 
 prefilter_block_logger = PrefilterBlockLogger(logger)
 
-def _parse_finite_float(value: object) -> float | None:
-    """Convert an untrusted JSON scalar to a finite float."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, str):
-        raw = value
-    elif isinstance(value, (int, float)):
-        raw = value
-    else:
-        return None
-    try:
-        number = float(raw)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return number if math.isfinite(number) else None
+from portfolio.paper_accounting import (
+    calculate_open_pnl,
+    parse_finite_float as _parse_finite_float,
+)
 
 
 
@@ -177,19 +166,10 @@ logger.info(
 
 def _current_paper_open_pnl() -> float:
     """PnL of in-memory PAPER positions, updated on every monitored market tick."""
-    if not getattr(execution_engine, "paper_mode", True):
-        return 0.0
-    total = 0.0
-    for position in getattr(execution_engine, "paper_positions", {}).values():
-        if not isinstance(position, dict) or str(position.get("status", "OPEN")).upper() != "OPEN":
-            continue
-        try:
-            value = _parse_finite_float(position.get("pnl", 0.0))
-            if value is not None:
-                total += value
-        except (TypeError, ValueError):
-            continue
-    return total
+    return calculate_open_pnl(
+        getattr(execution_engine, "paper_positions", {}).values(),
+        paper_mode=getattr(execution_engine, "paper_mode", True),
+    )
 
 
 def _current_paper_assets_cost() -> float:
