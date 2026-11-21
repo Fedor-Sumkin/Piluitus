@@ -66,17 +66,18 @@ class StrategyShadowDiagnostics:
             "queue_trade_flow_conflict": "shadow_block_queue_trade_flow_conflict",
             "trade_flow_unavailable_or_stale": "shadow_block_trade_flow_unavailable",
         }
-        observed_blocks = set(result.get("hard_blocks", []))
+        observed_blocks = result.get("hard_blocks", [])
         counted_blocks: set[str] = set()
+        unknown_block_count = 0
         for block in observed_blocks:
             counter = shadow_block_keys.get(block)
             if counter:
                 self._increment_counter(counter, 1)
                 counted_blocks.add(block)
-        if observed_blocks - counted_blocks:
-            self._increment_counter(
-                "shadow_block_other", len(observed_blocks - counted_blocks)
-            )
+            else:
+                unknown_block_count += 1
+        if unknown_block_count:
+            self._increment_counter("shadow_block_other", unknown_block_count)
         raw_components = result.get("components", {})
         if isinstance(raw_components, dict):
             component_text = ",".join(
