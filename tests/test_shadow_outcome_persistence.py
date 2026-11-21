@@ -103,7 +103,7 @@ class ShadowOutcomePersistenceTests(unittest.IsolatedAsyncioTestCase):
             [{"candidate_id": "a"}], session_id="s", source="QUOTES"
         )
 
-        self.assertEqual(self.labels, [{"old": True}])
+        self.assertEqual(self.labels, [{"older": True}, {"old": True}])
         self.logger.error.assert_called_once()
 
     async def test_paper_restore_clears_session_state_without_reading_history(self) -> None:
