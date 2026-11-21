@@ -746,3 +746,71 @@ def test_main_delegates_verdict_record_construction_and_enrichment_to_strategy()
     assert "llm_reason_code_raw" in module_source
     assert "market_regime" in module_source
     assert "scalping_shadow_tracker.attach_llm_verdict(" not in source
+
+
+
+def test_market_worker_delegates_llm_rule_context_and_response_contract() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    context_source = (ROOT / "strategy" / "llm_context.py").read_text(encoding="utf-8")
+    response_source = (ROOT / "strategy" / "llm_response.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module in {"strategy.llm_context", "strategy.llm_response"}
+        for alias in node.names
+    }
+    assert imported >= {
+        "attach_llm_rule_context",
+        "build_llm_error_response",
+        "process_llm_response",
+    }
+    worker = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "MarketWorker"
+    )
+    start_processing = next(
+        node for node in worker.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "start_processing"
+    )
+    worker_source = ast.get_source_segment(source, start_processing) or ""
+    assert "await attach_llm_rule_context(" in worker_source
+    assert "process_llm_response(" in worker_source
+    assert "TechnicalKnowledgeParser" not in worker_source
+    assert "contract_retry_attempted" not in worker_source
+    assert "model_contract_violation" not in worker_source
+    assert "select_prompt_rules" not in source
+    assert "select_prompt_rules" in context_source
+    assert "APPROVE/HOLD" in response_source
+
+
+def test_market_worker_delegates_post_llm_evidence_refresh_and_validation() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    module_source = (
+        ROOT / "strategy" / "post_llm_validation.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "strategy.post_llm_validation"
+        for alias in node.names
+    }
+    assert imported == {"validate_post_llm_entry"}
+    worker = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "MarketWorker"
+    )
+    start_processing = next(
+        node for node in worker.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "start_processing"
+    )
+    worker_source = ast.get_source_segment(source, start_processing) or ""
+    assert "validate_post_llm_entry(" in worker_source
+    assert "refresh_post_llm_evidence(" not in worker_source
+    assert "validate_entry_evidence(" not in worker_source
+    assert "classify_direction_evidence(" not in worker_source
+    assert "post_llm_bbo_refresh_valid" in module_source
+    assert "queue_flow_conflict_reason" in module_source

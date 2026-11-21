@@ -55,6 +55,9 @@ from runtime.market_event_router import (
     PaperBBOReplayAdapter,
 )
 from strategy.market_candidate_pipeline import MarketCandidatePipeline
+from strategy.llm_context import attach_llm_rule_context
+from strategy.llm_response import build_llm_error_response, process_llm_response
+from strategy.post_llm_validation import validate_post_llm_entry
 from strategy.verdict_records import (
     build_pre_llm_risk_block_verdict,
     build_default_signal_reason,
@@ -69,7 +72,6 @@ from strategy.signal_guard import (
     classify_direction_evidence,
 )
 from strategy.candidate_dedup import CandidateDeduplicator, candidate_is_expired
-from ai.rag_prompt_utils import select_prompt_rules
 from strategy.candidate_recovery import (
     refresh_candidate_bbo_metrics,
     refresh_post_llm_evidence,
@@ -1334,82 +1336,33 @@ class MarketWorker:
                     )
                     continue
 
-                try:
-                    from ai.knowledge_parser import TechnicalKnowledgeParser
-
-                    rag_context_str = await TechnicalKnowledgeParser.get_knowledge_context(
-                        db=self.db,
-                        category="ScalpingRules",
-                        market_evidence=metrics if isinstance(metrics, dict) else {},
-                    )
-                    event_payload["rag_context"] = [rag_context_str]
-                    retrieved_rule_ids = re.findall(
-                        r"\[(?:RISK|BUY|SELL)\s*/\s*([A-Z0-9_]+)\]",
-                        rag_context_str,
-                    )
-                    # The prompt receives always-on RISK rules plus only the
-                    # selected local candidate's directional rules. They remain
-                    # advisory context; deterministic guards own hard entry gates.
-                    prompt_rule_text = select_prompt_rules(
-                        candidate_direction_for_diag, rag_context_str, max_chars=900
-                    )
-                    prompt_rule_ids = re.findall(
-                        r"\[(?:RISK|BUY|SELL)\s*/\s*([A-Z0-9_]+)\]",
-                        prompt_rule_text,
-                    )
-                    logger.info(
-                        "[LLM CONTEXT] ticker=%s candidate=%s retrieved_rule_ids=%s prompt_rule_ids=%s",
-                        ticker, candidate_direction_for_diag,
-                        ",".join(retrieved_rule_ids) if retrieved_rule_ids else "NONE",
-                        ",".join(prompt_rule_ids) if prompt_rule_ids else "NONE",
-                    )
-                except Exception as exc:
-                    logger.error("⚠️ Ошибка сборки RAG-контекста в main.py: %s", exc, exc_info=True)
-                    event_payload["rag_context"] = [
-                        "Нет проверенного контекста правил; направленный вход должен быть HOLD."
-                    ]
+                await attach_llm_rule_context(
+                    event_payload,
+                    db=self.db,
+                    ticker=ticker,
+                    candidate_direction=candidate_direction_for_diag,
+                    logger=logger,
+                )
 
                 logger.info(
                     "🧭 [LLM INPUT] ticker=%s candidate=%s features=%s",
                     ticker, candidate_direction_for_diag,
                     json.dumps(llm_input_features, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
                 )
+                _trade_flow_inc("llm_calls")
                 try:
-                    _trade_flow_inc("llm_calls")
                     ai_response = await asyncio.wait_for(
                         self.ai.analyze_market_state(event_payload),
                         timeout=float(Settings.VLLM_TIMEOUT) * 2.0 + 1.0,
                     )
                 except asyncio.TimeoutError as exc:
-                    ai_response = {
-                        "final_decision": "HOLD",
-                        "model_decision": "HOLD",
-                        "model_raw_decision": "INVALID_RESPONSE",
-                        "model_contract_violation": False,
-                        "contract_error_type": None,
-                        "error_type": "worker_timeout",
-                        "request_error": True,
-                        "request_error_type": "worker_timeout",
-                        "confidence_score": 0.0,
-                        "confidence_valid": False,
-                        "tactic_opinion": "Превышено общее время ожидания ИИ; торговый вход заблокирован.",
-                        "critic_opinion": str(exc),
-                    }
+                    ai_response = build_llm_error_response(
+                        exc, error_type="worker_timeout"
+                    )
                 except Exception as exc:
-                    ai_response = {
-                        "final_decision": "HOLD",
-                        "model_decision": "HOLD",
-                        "model_raw_decision": "INVALID_RESPONSE",
-                        "model_contract_violation": False,
-                        "contract_error_type": None,
-                        "error_type": "worker_error",
-                        "request_error": True,
-                        "request_error_type": "worker_error",
-                        "confidence_score": 0.0,
-                        "confidence_valid": False,
-                        "tactic_opinion": "Ошибка обработки запроса ИИ; торговый вход заблокирован.",
-                        "critic_opinion": str(exc),
-                    }
+                    ai_response = build_llm_error_response(
+                        exc, error_type="worker_error"
+                    )
 
                 if (
                     getattr(execution_engine, "_maintenance_active", False)
@@ -1417,156 +1370,49 @@ class MarketWorker:
                 ):
                     continue
 
-                ai_analysis = {"final_decision": "HOLD", "confidence_score": 0.0, "confidence_valid": False, "tactic_opinion": "", "critic_opinion": ""}
-                if isinstance(ai_response, list) and len(ai_response) > 0:
-                    first_item = next(iter(ai_response), None)
-                    if isinstance(first_item, dict):
-                        ai_analysis = first_item
-                elif isinstance(ai_response, dict):
-                    ai_analysis = ai_response
+                ai_analysis, llm_state = process_llm_response(
+                    ai_response,
+                    candidate_direction=event_payload.get("candidate_direction", ""),
+                    ticker=ticker,
+                    increment_counter=_trade_flow_inc,
+                    logger=logger,
+                )
+                request_error = llm_state["request_error"]
+                request_error_type = llm_state["request_error_type"]
+                model_decision = llm_state["model_decision"]
+                candidate_direction = llm_state["candidate_direction"]
+                model_reason_code = llm_state["model_reason_code"]
+                candidate_decision = llm_state["candidate_decision"]
+                model_contract_violation = llm_state["model_contract_violation"]
+                decision = llm_state["decision"]
+                confidence_valid = llm_state["confidence_valid"]
+                confidence = llm_state["confidence"]
+                candidate_confidence = llm_state["candidate_confidence"]
 
-                if ai_analysis.get("contract_retry_attempted"):
-                    _trade_flow_inc("llm_contract_retry")
-                if ai_analysis.get("contract_retry_recovered"):
-                    _trade_flow_inc("llm_contract_retry_recovered")
-                if ai_analysis.get("contract_retry_failed"):
-                    _trade_flow_inc("llm_contract_retry_failed")
-
-                request_error = bool(ai_analysis.get("request_error", False))
-                request_error_type = str(ai_analysis.get("request_error_type") or "request_error")
-                if request_error:
-                    _trade_flow_inc("llm_request_error")
-                    if "timeout" in request_error_type:
-                        _trade_flow_inc("llm_timeout")
-
-                # LLM returns only APPROVE/HOLD. Trade direction comes exclusively
-                # from the deterministic local candidate and cannot be changed by the model.
-                model_decision = str(
-                    ai_analysis.get("model_decision", ai_analysis.get("final_decision", "HOLD"))
-                ).strip().upper()
-                candidate_direction = str(event_payload.get("candidate_direction", "")).strip().upper()
-                model_reason_code = str(
-                    ai_analysis.get("model_reason_code")
-                    or ("NO_LOCAL_CANDIDATE" if candidate_direction not in {"BUY", "SELL"} else "NOT_PROVIDED")
-                ).strip().upper()
-                if model_decision == "HOLD" and candidate_direction in {"BUY", "SELL"} and not request_error:
-                    hold_bucket = classify_hold_reason_bucket(model_reason_code)
-                    _trade_flow_inc(f"llm_hold_{candidate_direction.lower()}_{hold_bucket}")
-                candidate_decision = candidate_direction if candidate_direction in {"BUY", "SELL"} else "HOLD"
-                model_contract_violation = bool(ai_analysis.get("model_contract_violation", False))
-                if not request_error:
-                    if (
-                        model_decision == "APPROVE"
-                        and candidate_direction in {"BUY", "SELL"}
-                        and not model_contract_violation
-                    ):
-                        _trade_flow_inc("llm_model_approve")
-                    elif model_decision == "HOLD" and not model_contract_violation:
-                        _trade_flow_inc("llm_model_hold")
-                if (
-                    model_decision == "APPROVE"
-                    and candidate_direction in {"BUY", "SELL"}
-                    and not model_contract_violation
-                    and not request_error
-                ):
-                    decision = candidate_direction
-                else:
-                    decision = "HOLD"
-                    if request_error:
-                        logger.error(
-                            "🛑 [LLM REQUEST ERROR] %s: запрос к vLLM не завершён; "
-                            "type=%s candidate=%s; вход запрещён.",
-                            ticker, request_error_type, candidate_direction or "NONE",
-                        )
-                    elif model_decision != "HOLD" or model_contract_violation:
-                        model_contract_violation = True
-                        _trade_flow_inc("llm_contract_violation")
-                        logger.error(
-                            "🛑 [LLM CONTRACT] %s: ответ не прошёл контракт APPROVE/HOLD; "
-                            "raw=%s error_type=%s retry_attempted=%s retry_failed=%s candidate=%s; вход запрещён.",
-                            ticker, ai_analysis.get("model_raw_decision", model_decision),
-                            ai_analysis.get("contract_error_type", "unknown"),
-                            ai_analysis.get("contract_retry_attempted", False),
-                            ai_analysis.get("contract_retry_failed", False),
-                            candidate_direction or "NONE",
-                        )
-                ai_analysis["model_decision"] = model_decision
-                ai_analysis["final_decision"] = decision
-                confidence_valid = bool(ai_analysis.get("confidence_valid", "confidence_score" in ai_analysis))
-                try:
-                    confidence = float(ai_analysis.get("confidence_score", 0.0)) * 100.0
-                    if not math.isfinite(confidence) or not 0.0 <= confidence <= 100.0:
-                        confidence_valid = False
-                        confidence = 0.0
-                except (TypeError, ValueError):
-                    confidence_valid = False
-                    confidence = 0.0
-                latency_val = float(ai_analysis.get("latency", 0.0) or 0.0)
-                if decision not in {"BUY", "SELL", "HOLD"}:
-                    decision = "HOLD"
-                    confidence = 0.0
-                candidate_confidence = confidence if confidence_valid else None
-                if decision == "BUY":
-                    _trade_flow_inc("llm_approve_buy")
-                elif decision == "SELL":
-                    _trade_flow_inc("llm_approve_sell")
-                else:
-                    if not request_error:
-                        _trade_flow_inc("llm_hold")
-                        if candidate_direction == "BUY":
-                            _trade_flow_inc("llm_hold_buy")
-                        elif candidate_direction == "SELL":
-                            _trade_flow_inc("llm_hold_sell")
                 # Rebuild executable BBO and trade-flow evidence after LLM latency.
                 # Pre-LLM metrics remain available separately for attribution, but
                 # stale quote sides must never authorize a new entry.
-                evidence = metrics if isinstance(metrics, dict) else {}
-                post_llm_refresh: dict[str, Any] = {}
-                if candidate_direction in {"BUY", "SELL"}:
-                    evidence, post_llm_refresh = refresh_post_llm_evidence(
-                        screener, ticker, evidence
-                    )
-                    evidence["direction_evidence_state"] = classify_direction_evidence(
-                        candidate_direction, evidence
-                    )
-                    if (
-                        post_llm_refresh.get("trade_refresh_status") == "PASS"
-                        and post_llm_refresh.get("price_refreshed")
-                    ):
-                        refreshed_price = _parse_finite_float(evidence.get("current_price"))
-                        if refreshed_price is not None and refreshed_price > 0.0:
-                            price = refreshed_price
-                    if isinstance(metrics, dict):
-                        metrics.update(evidence)
+                post_llm_state = validate_post_llm_entry(
+                    screener=screener,
+                    ticker=ticker,
+                    metrics=metrics,
+                    decision=decision,
+                    candidate_direction=candidate_direction,
+                    paper_mode=bool(getattr(execution_engine, "paper_mode", False)),
+                    queue_flow_conflict_reason=_paper_queue_flow_conflict_reason,
+                    parse_finite_float=_parse_finite_float,
+                )
+                evidence = post_llm_state["evidence"]
+                post_llm_refresh = post_llm_state["post_llm_refresh"]
+                refreshed_price = post_llm_state["refreshed_price"]
+                if refreshed_price is not None:
+                    price = refreshed_price
+                valid_evidence = post_llm_state["valid_evidence"]
+                block_reason = post_llm_state["block_reason"]
+                post_llm_features = post_llm_state["post_llm_features"]
+                post_llm_evidence_validation = post_llm_state["post_llm_evidence_validation"]
+                post_llm_evidence_reason = post_llm_state["post_llm_evidence_reason"]
 
-                valid_evidence = True
-                block_reason = ""
-                if decision in {"BUY", "SELL"} and candidate_direction in {"BUY", "SELL"} and decision != candidate_direction:
-                    valid_evidence = False
-                    block_reason = (
-                        f"Противоположное направление запрещено: локально подтверждён {candidate_direction}, "
-                        f"модель предложила {decision}."
-                    )
-                elif decision in {"BUY", "SELL"}:
-                    queue_flow_reason = _paper_queue_flow_conflict_reason(decision, evidence)
-                    if queue_flow_reason:
-                        valid_evidence, block_reason = False, queue_flow_reason
-                    else:
-                        valid_evidence, block_reason = validate_entry_evidence(
-                            decision, evidence,
-                            paper_mode=bool(getattr(execution_engine, "paper_mode", False)),
-                        )
-                post_llm_features = build_llm_feature_snapshot(evidence)
-                post_llm_evidence_validation = (
-                    "NOT_APPLICABLE"
-                    if decision not in {"BUY", "SELL"}
-                    else "PASS" if valid_evidence else "BLOCKED"
-                )
-                post_llm_evidence_reason = (
-                    block_reason if block_reason
-                    else "PASS" if decision in {"BUY", "SELL"}
-                    else "NOT_APPLICABLE"
-                )
                 signal_reason = (
                     f"Ошибка запроса к vLLM ({request_error_type}); вход запрещён."
                     if request_error else
