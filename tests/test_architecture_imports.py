@@ -511,45 +511,98 @@ def test_main_delegates_paper_api_helpers_to_interface() -> None:
 
 def test_main_delegates_paper_research_and_reconciliation_apis_to_storage() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
+    router_source = (
+        ROOT / "interface" / "paper_research_routes.py"
+    ).read_text(encoding="utf-8")
+    main_tree = ast.parse(source, filename="main.py")
+    router_tree = ast.parse(router_source, filename="paper_research_routes.py")
 
-    imported = {
+    runtime_imports = {
         alias.name
-        for node in tree.body
+        for node in main_tree.body
         if isinstance(node, ast.ImportFrom)
         and node.module == "storage.paper_research_runtime"
         for alias in node.names
     }
-    assert imported == {"PaperResearchRuntime"}
+    assert runtime_imports == {"PaperResearchRuntime"}
     assert "paper_research_runtime = PaperResearchRuntime(" in source
 
+    router_imports = {
+        alias.name
+        for node in main_tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "interface.paper_research_routes"
+        for alias in node.names
+    }
+    assert router_imports == {"create_paper_research_router"}
+    assert (
+        "app.include_router(create_paper_research_router(paper_research_runtime))"
+        in source
+    )
+
     route_methods = {
-        "get_paper_performance": "get_performance",
-        "replay_paper_exit_batch": "replay_batch",
-        "get_paper_shadow_reconciliation": "get_shadow_reconciliation",
-        "get_paper_shadow_walk_forward": "get_shadow_walk_forward",
-        "get_paper_shadow_cost_sensitivity": "get_shadow_cost_sensitivity",
-        "get_paper_research_report": "get_research_report",
-        "replay_paper_exit_scenarios": "replay_trade",
-        "get_paper_reconciliation": "get_reconciliation",
-        "reconcile_paper_position": "reconcile_position",
+        "get_paper_performance": ("get", "/api/v1/paper/performance", "get_performance"),
+        "replay_paper_exit_batch": ("get", "/api/v1/paper/replay/batch", "replay_batch"),
+        "get_paper_shadow_reconciliation": (
+            "get", "/api/v1/paper/reconciliation/shadow", "get_shadow_reconciliation"
+        ),
+        "get_paper_shadow_walk_forward": (
+            "get", "/api/v1/paper/shadow/walk-forward", "get_shadow_walk_forward"
+        ),
+        "get_paper_shadow_cost_sensitivity": (
+            "get", "/api/v1/paper/shadow/cost-sensitivity", "get_shadow_cost_sensitivity"
+        ),
+        "get_paper_research_report": (
+            "get", "/api/v1/paper/research/report", "get_research_report"
+        ),
+        "replay_paper_exit_scenarios": (
+            "get", "/api/v1/paper/replay/{order_id}", "replay_trade"
+        ),
+        "get_paper_reconciliation": (
+            "get", "/api/v1/paper/reconciliation", "get_reconciliation"
+        ),
+        "reconcile_paper_position": (
+            "post", "/api/v1/paper/reconciliation/{order_id}", "reconcile_position"
+        ),
     }
     functions = {
         node.name: node
-        for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef)
+        for node in ast.walk(router_tree)
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
     }
-    for function_name, method_name in route_methods.items():
+    assert set(route_methods) <= set(functions)
+
+    observed_routes = set()
+    for function_name, (http_method, route_path, runtime_method) in route_methods.items():
         function = functions[function_name]
+        decorators = [
+            decorator
+            for decorator in function.decorator_list
+            if isinstance(decorator, ast.Call)
+            and isinstance(decorator.func, ast.Attribute)
+            and decorator.func.attr.lower() == http_method
+        ]
+        assert len(decorators) == 1, function_name
+        assert decorators[0].args and isinstance(decorators[0].args[0], ast.Constant)
+        assert decorators[0].args[0].value == route_path, function_name
+
         calls = [
             node for node in ast.walk(function)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == method_name
+            and node.func.attr == runtime_method
             and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "paper_research_runtime"
+            and node.func.value.id == "runtime"
         ]
         assert len(calls) == 1, function_name
+        observed_routes.add((http_method.upper(), route_path))
+
+    assert len(observed_routes) == 9
+    legacy_handlers = {
+        node.name for node in main_tree.body
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+    }
+    assert not set(route_methods) & legacy_handlers
 
 
 def test_main_uses_canonical_shadow_retention_limit() -> None:
