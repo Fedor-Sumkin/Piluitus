@@ -604,7 +604,8 @@ def test_main_delegates_market_event_normalization_to_runtime() -> None:
         "normalize_market_quote_event",
     } <= imported
     assert "quote_event = normalize_market_quote_event(event)" in source
-    assert source.count("build_market_candidate_payload(") == 2
+    assert "build_market_candidate_payload(" not in source
+    assert "market_candidate_pipeline.process_candidate(" in source
     assert "market_event_type" in router_source
     assert "normalize_market_ticker" in router_source
     assert "normalize_order_book_event" in router_source
@@ -624,3 +625,27 @@ def test_main_delegates_auxiliary_market_events_and_bbo_replay_to_runtime() -> N
     assert "if await market_auxiliary_event_router.process_if_handled(event):" in source
     assert "_record_paper_bbo_replay" not in source
 
+
+
+
+def test_main_delegates_candidate_admission_to_strategy_pipeline() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    pipeline_source = (
+        ROOT / "strategy" / "market_candidate_pipeline.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "strategy.market_candidate_pipeline"
+        for alias in node.names
+    }
+    assert imported == {"MarketCandidatePipeline"}
+    assert "market_candidate_pipeline.process_candidate(" in source
+    event_handler = source[source.index("async def process_market_event"):source.index("#  5️⃣  MARKET WORKER")]
+    assert "validate_atr_readiness" not in event_handler
+    assert "infer_candidate_direction" in pipeline_source
+    assert "validate_entry_evidence" in pipeline_source
+    assert "validate_atr_readiness" in pipeline_source
+    assert "anomaly_queue.put_nowait" in pipeline_source

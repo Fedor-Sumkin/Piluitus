@@ -51,6 +51,7 @@ from runtime.market_event_router import (
     MarketAuxiliaryEventRouter,
     PaperBBOReplayAdapter,
 )
+from strategy.market_candidate_pipeline import MarketCandidatePipeline
 from strategy.signal_guard import (
     validate_entry_evidence,
     infer_candidate_direction, validate_atr_readiness,
@@ -777,6 +778,33 @@ market_auxiliary_event_router = MarketAuxiliaryEventRouter(
 )
 
 
+
+market_candidate_pipeline = MarketCandidatePipeline(
+    execution_engine=execution_engine,
+    anomaly_queue=anomaly_queue,
+    queue_item_factory=priority_queue_item_factory,
+    trade_flow_increment=_trade_flow_inc,
+    infer_direction=infer_candidate_direction,
+    classify_direction=classify_direction_evidence,
+    log_shadow_candidate=_log_scalping_shadow,
+    queue_flow_conflict_reason=_paper_queue_flow_conflict_reason,
+    validate_entry_evidence=validate_entry_evidence,
+    paper_mode_provider=lambda: bool(getattr(execution_engine, "paper_mode", False)),
+    guard_reason_bucket=_guard_reason_bucket,
+    store_pending_bbo_candidate=_store_pending_bbo_candidate,
+    mark_shadow_llm_not_called=_mark_shadow_llm_not_called,
+    trade_flow_guard_block=_trade_flow_guard_block,
+    log_prefilter_blocked=_log_prefilter_blocked,
+    validate_atr_readiness=validate_atr_readiness,
+    reserve_ai_ticker=_reserve_ai_ticker,
+    build_candidate_payload=build_market_candidate_payload,
+    release_ai_ticker=_release_ai_ticker,
+    update_numpy_impulse_status=update_numpy_impulse_status,
+    logger=logger,
+    monotonic=time_module.monotonic,
+)
+
+
 async def process_market_event(event: Union[SimpleNamespace, dict]):
     """Обновляет локальную воронку по каждой котировке и направляет в LLM только top-N."""
     global tick_counter, _last_funnel_log_at, _last_funnel_log_key, _last_funnel_ready
@@ -899,110 +927,20 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
             analysis.get("metrics", {}).get("funnel_score", 0.0),
         )
 
-        # Аномалия сама по себе не запускает LLM. Сначала локально определяем
-        # направление, затем проверяем измеряемые условия входа. Модель вызывается
-        # только для кандидата, который не был заранее отклонён численным guard.
-        if analysis["is_anomaly"] and analysis.get("selection_ready") and analysis.get("selected"):
-            _trade_flow_inc("selected_anomalies")
-            metrics_payload = analysis.get("metrics", supplied_metrics if isinstance(supplied_metrics, dict) else {})
-            if not isinstance(metrics_payload, dict):
-                metrics_payload = {}
-
-            # Existing positions are monitored independently on every market event.
-            # Do not spend another LLM call proposing a second entry in the same ticker.
-            active_tickers = execution_engine.get_open_position_tickers()
-            ticker_opening = ticker in getattr(execution_engine, "_opening_tickers", set())
-            if ticker in active_tickers or ticker_opening:
-                _trade_flow_inc("active_position_skipped")
-            else:
-                candidate_direction = infer_candidate_direction(metrics_payload)
-                if candidate_direction is None:
-                    _trade_flow_inc("direction_prefilter_skipped")
-                    _log_prefilter_blocked(
-                        ticker,
-                        "Локальное направление не подтверждено: нет импульса цены либо VWAP показывает сильное встречное движение.",
-                    )
-                else:
-                    direction_state = classify_direction_evidence(candidate_direction, metrics_payload)
-                    metrics_payload["direction_evidence_state"] = direction_state
-                    _trade_flow_inc("local_candidate_buy" if candidate_direction == "BUY" else "local_candidate_sell")
-                    logger.debug(
-                        "[DIRECTION GATE] %s side=%s state=%s price_change=%.5f%% vs_vwap=%.5f%%",
-                        ticker, candidate_direction, direction_state,
-                        float(metrics_payload.get("price_change_pct", 0.0) or 0.0),
-                        float(metrics_payload.get("price_vs_vwap_pct", 0.0) or 0.0),
-                    )
-                    shadow_result = _log_scalping_shadow(ticker, candidate_direction, metrics_payload)
-                    shadow_candidate_id = shadow_result.get("candidate_id")
-                    queue_flow_reason = _paper_queue_flow_conflict_reason(candidate_direction, metrics_payload)
-                    if queue_flow_reason:
-                        evidence_ok, evidence_reason = False, queue_flow_reason
-                    else:
-                        evidence_ok, evidence_reason = validate_entry_evidence(
-                            candidate_direction, metrics_payload,
-                            paper_mode=bool(getattr(execution_engine, "paper_mode", False)),
-                        )
-                    if not evidence_ok:
-                        if _guard_reason_bucket(evidence_reason) == "quotes":
-                            pending_payload = build_market_candidate_payload(
-                                ticker=ticker,
-                                candidate_created_monotonic=time_module.monotonic(),
-                                price=price,
-                                volume=volume,
-                                bid=bid,
-                                ask=ask,
-                                bid_size=bid_size,
-                                ask_size=ask_size,
-                                day_volume=day_volume,
-                                candidate_direction=candidate_direction,
-                                shadow_candidate_id=shadow_candidate_id,
-                                paper_session_generation=event_session_generation,
-                                metrics=metrics_payload,
-                            )
-                            _store_pending_bbo_candidate(ticker, pending_payload, received_monotonic)
-                        else:
-                            _mark_shadow_llm_not_called(shadow_candidate_id, "SIGNAL_EVIDENCE_BLOCKED")
-                            _trade_flow_inc("prefilter_blocked")
-                            _trade_flow_guard_block(evidence_reason)
-                            _log_prefilter_blocked(ticker, evidence_reason)
-                    else:
-                        atr_ready, atr_reason = validate_atr_readiness(metrics_payload)
-                        if not atr_ready:
-                            _mark_shadow_llm_not_called(shadow_candidate_id, "ATR_NOT_READY")
-                            # ATR is a hard pre-LLM prerequisite. Re-evaluate on a
-                            # later fresh tick instead of spending inference only to
-                            # reject an APPROVE after the model has answered.
-                            _trade_flow_inc("atr_unready_candidates")
-                            _log_prefilter_blocked(ticker, atr_reason, interval_sec=60.0)
-                        elif not _reserve_ai_ticker(ticker, candidate_direction, metrics_payload):
-                            _mark_shadow_llm_not_called(shadow_candidate_id, "AI_DEDUPLICATED")
-                            _trade_flow_inc("candidate_deduplicated")
-                        else:
-                            event_payload = build_market_candidate_payload(
-                                ticker=ticker,
-                                candidate_created_monotonic=time_module.monotonic(),
-                                price=price,
-                                volume=volume,
-                                bid=bid,
-                                ask=ask,
-                                bid_size=bid_size,
-                                ask_size=ask_size,
-                                day_volume=day_volume,
-                                candidate_direction=candidate_direction,
-                                shadow_candidate_id=shadow_candidate_id,
-                                paper_session_generation=event_session_generation,
-                                metrics=metrics_payload,
-                            )
-                            try:
-                                anomaly_queue.put_nowait(priority_queue_item_factory.create(1, "MARKET_TICK", event_payload))
-                                _trade_flow_inc("anomalies_queued")
-                                _trade_flow_inc("prefilter_pass_buy" if candidate_direction == "BUY" else "prefilter_pass_sell")
-                                update_numpy_impulse_status(ticker)
-                            except asyncio.QueueFull:
-                                _mark_shadow_llm_not_called(shadow_candidate_id, "AI_QUEUE_FULL")
-                                _release_ai_ticker(ticker)
-                                _trade_flow_inc("queue_dropped")
-                                logger.error("Очередь AI-сигналов заполнена; аномалия %s отброшена.", ticker)
+        market_candidate_pipeline.process_candidate(
+            ticker=ticker,
+            price=price,
+            volume=volume,
+            bid=bid,
+            ask=ask,
+            bid_size=bid_size,
+            ask_size=ask_size,
+            day_volume=day_volume,
+            analysis=analysis,
+            supplied_metrics=supplied_metrics,
+            session_generation=event_session_generation,
+            received_monotonic=received_monotonic,
+        )
 
         # Обновление позиции продолжается по всем 88 котировкам, а не только по top-N.
         execution_engine.schedule_paper_position_monitor(
