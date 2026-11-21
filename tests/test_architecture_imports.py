@@ -18,6 +18,7 @@ PACKAGE_DIRS = (
     "monitoring",
     "portfolio",
     "risk",
+    "runtime",
     "storage",
     "strategy",
     "tools",
@@ -381,3 +382,21 @@ def test_main_delegates_strategy_shadow_events_to_monitoring() -> None:
     assert ast.unparse(body[0].value) == (
         "strategy_shadow_diagnostics.log_candidate(ticker, direction, metrics)"
     )
+
+
+
+def test_main_delegates_priority_queue_item_creation_to_runtime() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "runtime.priority_queue"
+        for alias in node.names
+    }
+    assert imported == {"PriorityItem", "PriorityQueueItemFactory"}
+    assert "priority_queue_item_factory = PriorityQueueItemFactory()" in source
+    assert "def _make_priority_item" not in source
+    assert "_priority_sequence" not in source
+    assert "from itertools import count" not in source
