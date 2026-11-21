@@ -12,9 +12,11 @@ def _main_source() -> tuple[str, ast.Module]:
 def test_critical_fire_and_forget_tasks_are_retained_and_drained():
     source, module = _main_source()
 
-    assert "_tracked_operation_tasks.add(task)" in source
-    assert "await _drain_tracked_operations()" in source
-    assert "task.add_done_callback(_on_done)" in source
+    assert "from monitoring.background_tasks import BackgroundOperationTracker" in source
+    assert "_background_operations = BackgroundOperationTracker(logger)" in source
+    assert "_background_operations.spawn(" in source
+    assert "_spawn_tracked_operation" not in source
+    assert "_drain_tracked_operations" not in source
 
     untracked_critical_calls = []
     for node in ast.walk(module):
@@ -62,14 +64,18 @@ def test_shutdown_drains_tracked_operations_after_producers_stop():
     calls = [
         node for node in ast.walk(lifespan)
         if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_drain_tracked_operations"
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "drain"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "_background_operations"
     ]
     assert len(calls) == 1
     assert any(
         isinstance(node, ast.Await)
         and isinstance(node.value, ast.Call)
-        and isinstance(node.value.func, ast.Name)
-        and node.value.func.id == "_drain_tracked_operations"
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "drain"
+        and isinstance(node.value.func.value, ast.Name)
+        and node.value.func.value.id == "_background_operations"
         for node in ast.walk(lifespan)
     )
