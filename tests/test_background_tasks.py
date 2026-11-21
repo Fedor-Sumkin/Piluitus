@@ -83,3 +83,80 @@ def test_drain_handles_cancelled_operations() -> None:
         assert tracker.pending_count == 0
 
     asyncio.run(scenario())
+
+
+def test_supervisor_cancels_and_awaits_running_workers() -> None:
+    from monitoring.background_tasks import BackgroundTaskSupervisor
+
+    async def scenario() -> None:
+        tracker = BackgroundTaskSupervisor(logging.getLogger("test.supervisor"))
+        started = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        async def worker() -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+        task = tracker.spawn(worker(), name="long-running-worker")
+        await started.wait()
+        assert tracker.pending_count == 1
+        await tracker.cancel_and_drain()
+        assert task.cancelled()
+        assert cancelled.is_set()
+        assert tracker.pending_count == 0
+
+    asyncio.run(scenario())
+
+
+def test_supervisor_observes_failures_of_early_completed_workers(caplog) -> None:
+    from monitoring.background_tasks import BackgroundTaskSupervisor
+
+    async def scenario() -> None:
+        test_logger = logging.getLogger("test.supervisor.failure")
+        supervisor = BackgroundTaskSupervisor(test_logger)
+
+        async def worker() -> None:
+            raise RuntimeError("worker crashed")
+
+        with caplog.at_level(logging.ERROR, logger=test_logger.name):
+            task = supervisor.spawn(worker(), name="failed-worker")
+            await asyncio.gather(task, return_exceptions=True)
+            await asyncio.sleep(0)
+            await supervisor.cancel_and_drain()
+
+        assert supervisor.pending_count == 0
+        assert "[BACKGROUND TASK FAILED]" in caplog.text
+        assert "failed-worker" in caplog.text
+        assert "worker crashed" in caplog.text
+
+    asyncio.run(scenario())
+
+
+def test_supervisor_drains_multiple_workers_and_is_idempotent() -> None:
+    from monitoring.background_tasks import BackgroundTaskSupervisor
+
+    async def scenario() -> None:
+        supervisor = BackgroundTaskSupervisor(logging.getLogger("test.supervisor.multiple"))
+        cancelled: list[str] = []
+
+        async def worker(name: str) -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.append(name)
+
+        first = supervisor.spawn(worker("first"), name="first")
+        second = supervisor.spawn(worker("second"), name="second")
+        await asyncio.sleep(0)
+        await supervisor.cancel_and_drain()
+        await supervisor.cancel_and_drain()
+
+        assert first.cancelled()
+        assert second.cancelled()
+        assert sorted(cancelled) == ["first", "second"]
+        assert supervisor.pending_count == 0
+
+    asyncio.run(scenario())

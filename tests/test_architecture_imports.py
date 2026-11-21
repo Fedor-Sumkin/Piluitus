@@ -504,3 +504,83 @@ def test_main_delegates_paper_api_helpers_to_interface() -> None:
     assert "paper_api_helpers.require_paper_mode()" in source
     assert "paper_api_helpers.paper_trade_rows(snapshot)" in source
     assert "paper_api_helpers.broadcast_paper_tables()" in source
+
+
+def test_main_delegates_paper_research_and_reconciliation_apis_to_storage() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "storage.paper_research_runtime"
+        for alias in node.names
+    }
+    assert imported == {"PaperResearchRuntime"}
+    assert "paper_research_runtime = PaperResearchRuntime(" in source
+
+    route_methods = {
+        "get_paper_performance": "get_performance",
+        "replay_paper_exit_batch": "replay_batch",
+        "get_paper_shadow_reconciliation": "get_shadow_reconciliation",
+        "get_paper_shadow_walk_forward": "get_shadow_walk_forward",
+        "get_paper_shadow_cost_sensitivity": "get_shadow_cost_sensitivity",
+        "get_paper_research_report": "get_research_report",
+        "replay_paper_exit_scenarios": "replay_trade",
+        "get_paper_reconciliation": "get_reconciliation",
+        "reconcile_paper_position": "reconcile_position",
+    }
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    for function_name, method_name in route_methods.items():
+        function = functions[function_name]
+        calls = [
+            node for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == method_name
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "paper_research_runtime"
+        ]
+        assert len(calls) == 1, function_name
+
+
+def test_main_uses_canonical_shadow_retention_limit() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "storage.shadow_outcomes"
+        for alias in node.names
+    }
+    assert {"ShadowOutcomePersistence", "SHADOW_OUTCOMES_STORAGE_LIMIT"} <= imported
+    assert "shadow_outcomes_storage_limit=SHADOW_OUTCOMES_STORAGE_LIMIT" in source
+
+
+def test_lifespan_delegates_long_running_task_ownership_to_supervisor() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imports = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "monitoring.background_tasks"
+        for alias in node.names
+    }
+    assert {"BackgroundOperationTracker", "BackgroundTaskSupervisor"} <= imports
+    lifespan = next(
+        node for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan"
+    )
+    lifespan_source = ast.get_source_segment(source, lifespan) or ""
+    assert "BackgroundTaskSupervisor(logger)" in lifespan_source
+    assert "background_task_supervisor.spawn(" in lifespan_source
+    assert "background_task_supervisor.cancel_and_drain()" in lifespan_source
+    assert "_spawn_background" not in lifespan_source
+    assert "background_tasks: set[asyncio.Task]" not in lifespan_source

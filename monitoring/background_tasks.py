@@ -60,3 +60,56 @@ class BackgroundOperationTracker:
             for task in pending:
                 self._tasks.discard(task)
         self._logger.info("[BACKGROUND OPERATIONS] shutdown drain complete.")
+
+
+class BackgroundTaskSupervisor:
+    """Own long-running application tasks and cancel/drain them on shutdown."""
+
+    def __init__(self, logger: logging.Logger) -> None:
+        self._logger = logger
+        self._tasks: set[asyncio.Task[Any]] = set()
+
+    @property
+    def pending_count(self) -> int:
+        return sum(1 for task in self._tasks if not task.done())
+
+    def spawn(
+        self,
+        coro: Coroutine[Any, Any, Any],
+        *,
+        name: str,
+    ) -> asyncio.Task[Any]:
+        """Start one supervised worker and observe its terminal exception."""
+        task = asyncio.create_task(coro, name=name)
+        self._tasks.add(task)
+
+        def _on_done(completed: asyncio.Task[Any]) -> None:
+            self._tasks.discard(completed)
+            if completed.cancelled():
+                return
+            try:
+                error = completed.exception()
+            except asyncio.CancelledError:
+                return
+            if error is not None:
+                self._logger.error(
+                    "[BACKGROUND TASK FAILED] task=%s error=%r",
+                    completed.get_name(),
+                    error,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+
+        task.add_done_callback(_on_done)
+        return task
+
+    async def cancel_and_drain(self) -> None:
+        """Cancel all active workers and await their cleanup handlers."""
+        while self._tasks:
+            pending = tuple(self._tasks)
+            for task in pending:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for task in pending:
+                self._tasks.discard(task)
+        self._logger.info("[BACKGROUND TASKS] shutdown cancellation and drain complete.")

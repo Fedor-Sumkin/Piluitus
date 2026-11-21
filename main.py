@@ -33,7 +33,11 @@ from risk.risk_limits import validate_daily_loss_limit
 # --- PILUITUS‑V3 modules ------------------------------------------------
 from ai.ai_engine import AIEngine
 from storage.db_manager import DBManager
-from storage.shadow_outcomes import ShadowOutcomePersistence
+from storage.shadow_outcomes import (
+    ShadowOutcomePersistence,
+    SHADOW_OUTCOMES_STORAGE_LIMIT,
+)
+from storage.paper_research_runtime import PaperResearchRuntime
 from exchange.finam_client import FinamBrokerClient
 from strategy.screener_funnel import HFTMemoryScreener
 from execution.execution_layer import BaseExecutionEngine
@@ -101,7 +105,10 @@ from monitoring.trade_flow_diagnostics import (
 # --------------------------------------------------------------
 load_dotenv()
 
-from monitoring.background_tasks import BackgroundOperationTracker
+from monitoring.background_tasks import (
+    BackgroundOperationTracker,
+    BackgroundTaskSupervisor,
+)
 from monitoring.position_order_book_diagnostics import PositionOrderBookDiagnostics
 from monitoring.shadow_scorecard_logger import StrategyShadowScorecardLogger
 from monitoring.trade_flow_report import TradeFlowReportLogger
@@ -2353,13 +2360,7 @@ async def _start_tables_sync_loop():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global bg_market_task, last_ai_verdicts_cache
-    background_tasks: set[asyncio.Task] = set()
-
-    def _spawn_background(coro, *, name: str) -> asyncio.Task:
-        task = asyncio.create_task(coro, name=name)
-        background_tasks.add(task)
-        task.add_done_callback(background_tasks.discard)
-        return task
+    background_task_supervisor = BackgroundTaskSupervisor(logger)
     gross_exposure_pct = execution_engine.max_gross_exposure_pct * 100.0
     single_position_pct = execution_engine.max_single_position_pct * 100.0
     logger.info(
@@ -2466,10 +2467,10 @@ async def lifespan(app: FastAPI):
             logger.critical(f"❌ КРИТИЧЕСКОЕ ПАДЕНИЕ MarketWorker В ЦИКЛЕ ТОРГОВЛИ: {e}", exc_info=True)
 
     # Запускаем строго по одной асинхронной задаче на каждый воркер (дублирование удалено)
-    _spawn_background(_run_worker_safely(), name="market-worker")
-    _spawn_background(_finam_metadata_refresh_loop(), name="finam-metadata-refresh")
-    _spawn_background(_start_news_updater(), name="news-updater")
-    _spawn_background(_start_tables_sync_loop(), name="tables-sync")
+    background_task_supervisor.spawn(_run_worker_safely(), name="market-worker")
+    background_task_supervisor.spawn(_finam_metadata_refresh_loop(), name="finam-metadata-refresh")
+    background_task_supervisor.spawn(_start_news_updater(), name="news-updater")
+    background_task_supervisor.spawn(_start_tables_sync_loop(), name="tables-sync")
 
     from interface import tg_bot as tb
     tb.global_broker_ref = broker
@@ -2488,27 +2489,20 @@ async def lifespan(app: FastAPI):
                 logger=logger,
             )
 
-        _spawn_background(_start_bot_safely(), name="telegram-polling")
+        background_task_supervisor.spawn(_start_bot_safely(), name="telegram-polling")
         logger.info(
             "🤖 Telegram polling запланирован; доступность API проверяется в фоновой задаче."
         )
     else:
         logger.warning("⚠️ Токен Telegram не найден – режим управления отключён.")
 
-    bg_market_task = _spawn_background(background_broker_init(), name="broker-init-and-streams")
+    bg_market_task = background_task_supervisor.spawn(background_broker_init(), name="broker-init-and-streams")
 
     try:
         yield
     finally:
         logger.info("🛑 Начинаем штатную остановку фоновых задач PILUITUS...")
-        for task in tuple(background_tasks):
-            if not task.done():
-                task.cancel()
-        if background_tasks:
-            results = await asyncio.gather(*tuple(background_tasks), return_exceptions=True)
-            for result in results:
-                if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
-                    logger.warning("Ошибка при завершении фоновой задачи: %r", result)
+        await background_task_supervisor.cancel_and_drain()
 
         # Producers are stopped; finish all retained verdict writes and order publications
         # before closing the replay writer or the event loop.
@@ -2584,15 +2578,34 @@ async def read_maintenance_page():
     return FileResponse(page_path)
 
 
+paper_research_runtime = PaperResearchRuntime(
+    db_manager=db_manager,
+    is_paper_trade=DBManager.is_paper_trade,
+    execution_engine=execution_engine,
+    screener=screener,
+    paper_performance_tracker=paper_performance_tracker,
+    paper_shadow_labels=paper_shadow_labels,
+    paper_session_lock=_paper_session_lock,
+    broadcast_paper_tables=_broadcast_paper_tables,
+    bbo_replay_storage_key=BBO_REPLAY_STORAGE_KEY,
+    bbo_replay_storage_limit=BBO_REPLAY_STORAGE_LIMIT,
+    paper_closed_trades_storage_limit=PAPER_CLOSED_TRADES_STORAGE_LIMIT,
+    shadow_outcomes_storage_limit=SHADOW_OUTCOMES_STORAGE_LIMIT,
+    lot_sizes=LOT_SIZES,
+    parse_finite_float=_parse_finite_float,
+    replay_exit_batch=replay_exit_batch,
+    replay_exit_scenarios=replay_exit_scenarios,
+    build_shadow_reconciliation=build_shadow_reconciliation,
+    build_actual_vs_replay_reconciliation=build_actual_vs_replay_reconciliation,
+    build_shadow_cost_sensitivity=build_shadow_cost_sensitivity,
+    build_shadow_walk_forward_validation=build_shadow_walk_forward_validation,
+)
+
+
 @app.get("/api/v1/paper/performance")
 async def get_paper_performance():
     """Return realized PAPER trade statistics and exact-ID Shadow comparisons."""
-    _require_paper_mode()
-    return {
-        "paper_mode": True,
-        "retained_trade_limit": PAPER_CLOSED_TRADES_STORAGE_LIMIT,
-        "scorecard": paper_performance_tracker.scorecard(paper_shadow_labels),
-    }
+    return paper_research_runtime.get_performance()
 
 
 @app.get("/api/v1/paper/replay/batch")
@@ -2603,143 +2616,18 @@ async def replay_paper_exit_batch(
     portfolio_capital_rub: float | None = None,
     max_allocation_pct: float = 15.0,
 ):
-    """Read-only batch replay of recent closed PAPER positions."""
-    _require_paper_mode()
-    if limit < 1 or limit > 100:
-        raise HTTPException(status_code=422, detail="limit должен быть от 1 до 100.")
-    if portfolio_capital_rub is not None and (
-        not math.isfinite(portfolio_capital_rub) or portfolio_capital_rub <= 0.0
-    ):
-        raise HTTPException(status_code=422, detail="portfolio_capital_rub должен быть положительным числом.")
-    if not math.isfinite(max_allocation_pct) or not 0.0 < max_allocation_pct <= 100.0:
-        raise HTTPException(status_code=422, detail="max_allocation_pct должен быть в диапазоне (0, 100].")
-
-    all_trades = await db_manager.get_all_daily_trades()
-    if not isinstance(all_trades, Mapping):
-        all_trades = {}
-    normalized_ticker = str(ticker or "").strip().upper().split("@")[0]
-    normalized_session = str(session_id or "").strip()
-    candidates: list[dict[str, Any]] = []
-    skipped = {"NOT_CLOSED_PAPER": 0, "NO_REPLAY_SESSION": 0, "TICKER_FILTERED": 0, "SESSION_FILTERED": 0}
-    for order_id, raw in all_trades.items():
-        if not isinstance(raw, Mapping) or not DBManager.is_paper_trade(raw, str(order_id)):
-            skipped["NOT_CLOSED_PAPER"] += 1
-            continue
-        if str(raw.get("status") or "").upper() != "CLOSED":
-            skipped["NOT_CLOSED_PAPER"] += 1
-            continue
-        trade_ticker = str(raw.get("ticker") or "").strip().upper().split("@")[0]
-        trade_session = str(raw.get("bbo_replay_session_id") or "").strip()
-        if normalized_ticker and trade_ticker != normalized_ticker:
-            skipped["TICKER_FILTERED"] += 1
-            continue
-        if normalized_session and trade_session != normalized_session:
-            skipped["SESSION_FILTERED"] += 1
-            continue
-        if not trade_session:
-            skipped["NO_REPLAY_SESSION"] += 1
-            continue
-        candidates.append(dict(raw, id=str(raw.get("id") or order_id)))
-
-    candidates.sort(
-        key=lambda row: str(row.get("exit_timestamp") or row.get("exit_time") or ""),
-        reverse=True,
+    return await paper_research_runtime.replay_batch(
+        limit=limit,
+        ticker=ticker,
+        session_id=session_id,
+        portfolio_capital_rub=portfolio_capital_rub,
+        max_allocation_pct=max_allocation_pct,
     )
-    selected = candidates[:limit]
-    if not selected:
-        return {
-            "paper_mode": True,
-            "selected_positions": 0,
-            "skipped": skipped,
-            "replay": {
-                "schema_version": 1,
-                "engine": "PAPER_EXIT_REPLAY_V1",
-                "positions": 0,
-                "trades": [],
-                "summary_by_scenario": {},
-                "matched_cohort_comparison": {
-                    "available": False,
-                    "reason": "NO_REPLAYED_POSITIONS",
-                    "comparisons_vs_baseline": {},
-                    "all_scenarios_common_cohort": None,
-                },
-            },
-            "execution_reconciliation": build_actual_vs_replay_reconciliation(
-                [], {"trades": []}, limit=limit
-            ),
-            "note": "Нет закрытых PAPER-сделок с bbo_replay_session_id, подходящих под фильтры.",
-        }
-
-    required_sessions = {str(row["bbo_replay_session_id"]) for row in selected}
-    stored_events = await db_manager.get_list(
-        BBO_REPLAY_STORAGE_KEY,
-        start=0,
-        stop=BBO_REPLAY_STORAGE_LIMIT - 1,
-    )
-    replay_events = [
-        row for row in stored_events
-        if isinstance(row, Mapping)
-        and str(row.get("session_id") or "") in required_sessions
-    ]
-    if not replay_events:
-        raise HTTPException(
-            status_code=409,
-            detail="В журнале BBO нет событий для выбранных replay-сессий.",
-        )
-
-    configured_age = getattr(screener, "bbo_max_age_sec", None)
-    if configured_age is None:
-        configured_age = os.getenv(
-            "PILUITUS_BBO_MAX_AGE_SEC",
-            os.getenv("PILUITUS_BBO_EXIT_MAX_AGE_SEC", "2.0"),
-        )
-    try:
-        max_age = float(configured_age)
-    except (TypeError, ValueError, OverflowError):
-        max_age = 2.0
-    if not math.isfinite(max_age) or max_age <= 0.0:
-        max_age = 2.0
-    max_age = min(5.0, max(0.25, max_age))
-
-    try:
-        replay = replay_exit_batch(
-            replay_events,
-            selected,
-            max_bbo_age_sec=max_age,
-            portfolio_capital_rub=portfolio_capital_rub,
-            max_allocation_pct=max_allocation_pct,
-        )
-    except ValueError as replay_error:
-        raise HTTPException(status_code=422, detail=str(replay_error)) from replay_error
-
-    return {
-        "paper_mode": True,
-        "selected_positions": len(selected),
-        "candidate_positions": len(candidates),
-        "limit": limit,
-        "skipped": skipped,
-        "journal_events_loaded": len(replay_events),
-        "retained_event_limit": BBO_REPLAY_STORAGE_LIMIT,
-        "replay": replay,
-        "execution_reconciliation": build_actual_vs_replay_reconciliation(
-            selected, replay, scenario_name="BASELINE_SL_TP", limit=limit
-        ),
-        "note": "Replay является исследовательской симуляцией; открытые в конце сценария позиции не включены в реализованный PnL.",
-    }
 
 
 @app.get("/api/v1/paper/reconciliation/shadow")
 async def get_paper_shadow_reconciliation(limit: int = 100):
-    """Reconcile realized closed PAPER trades to Shadow candidates by exact ID."""
-    _require_paper_mode()
-    if limit < 1 or limit > 500:
-        raise HTTPException(status_code=422, detail="limit должен быть от 1 до 500.")
-    result = build_shadow_reconciliation(
-        paper_performance_tracker.records,
-        paper_shadow_labels,
-        limit=limit,
-    )
-    return {"paper_mode": True, **result}
+    return paper_research_runtime.get_shadow_reconciliation(limit=limit)
 
 
 @app.get("/api/v1/paper/shadow/walk-forward")
@@ -2748,297 +2636,39 @@ async def get_paper_shadow_walk_forward(
     embargo_seconds: float = 30.0,
     limit: int = 20000,
 ):
-    """Read-only chronological, candidate-grouped Shadow validation."""
-    _require_paper_mode()
-    if folds < 3 or folds > 10:
-        raise HTTPException(status_code=422, detail="folds должен быть от 3 до 10.")
-    if not math.isfinite(embargo_seconds) or embargo_seconds < 0.0 or embargo_seconds > 3600.0:
-        raise HTTPException(status_code=422, detail="embargo_seconds должен быть от 0 до 3600.")
-    if limit < 1 or limit > SHADOW_OUTCOMES_STORAGE_LIMIT:
-        raise HTTPException(
-            status_code=422,
-            detail=f"limit должен быть от 1 до {SHADOW_OUTCOMES_STORAGE_LIMIT}.",
-        )
-    return {
-        "paper_mode": True,
-        **build_shadow_walk_forward_validation(
-            paper_shadow_labels,
-            folds=folds,
-            embargo_seconds=embargo_seconds,
-            max_horizon_seconds=600,
-            limit=limit,
-        ),
-    }
+    return paper_research_runtime.get_shadow_walk_forward(
+        folds=folds,
+        embargo_seconds=embargo_seconds,
+        limit=limit,
+    )
 
 
 @app.get("/api/v1/paper/shadow/cost-sensitivity")
 async def get_paper_shadow_cost_sensitivity(limit: int = 20000):
-    """Read-only Shadow net-return stress test for 0/1/2/5 bps extra slippage per side."""
-    _require_paper_mode()
-    if limit < 1 or limit > SHADOW_OUTCOMES_STORAGE_LIMIT:
-        raise HTTPException(
-            status_code=422,
-            detail=f"limit должен быть от 1 до {SHADOW_OUTCOMES_STORAGE_LIMIT}.",
-        )
-    return {
-        "paper_mode": True,
-        **build_shadow_cost_sensitivity(
-            paper_shadow_labels,
-            scenarios_bps=(0.0, 1.0, 2.0, 5.0),
-            limit=limit,
-        ),
-    }
+    return paper_research_runtime.get_shadow_cost_sensitivity(limit=limit)
 
 
 @app.get("/api/v1/paper/research/report")
 async def get_paper_research_report(limit: int = 30):
-    """Return a read-only consolidated PAPER research snapshot."""
-    _require_paper_mode()
-    if limit < 1 or limit > 100:
-        raise HTTPException(status_code=422, detail="limit должен быть от 1 до 100.")
-
-    scorecard = paper_performance_tracker.scorecard(paper_shadow_labels)
-    reconciliation = build_shadow_reconciliation(
-        paper_performance_tracker.records,
-        paper_shadow_labels,
-        limit=limit,
-    )
-    try:
-        exit_replay = await replay_paper_exit_batch(limit=limit)
-    except HTTPException as replay_exc:
-        if replay_exc.status_code != 409:
-            raise
-        exit_replay = {
-            "available": False,
-            "status_code": replay_exc.status_code,
-            "detail": replay_exc.detail,
-        }
-
-    return {
-        "paper_mode": True,
-        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "limit": limit,
-        "realized_scorecard": scorecard,
-        "shadow_reconciliation": reconciliation,
-        "shadow_walk_forward": build_shadow_walk_forward_validation(
-            paper_shadow_labels,
-            folds=5,
-            embargo_seconds=30.0,
-            max_horizon_seconds=600,
-            limit=SHADOW_OUTCOMES_STORAGE_LIMIT,
-        ),
-        "shadow_cost_sensitivity": build_shadow_cost_sensitivity(
-            paper_shadow_labels,
-            scenarios_bps=(0.0, 1.0, 2.0, 5.0),
-            limit=SHADOW_OUTCOMES_STORAGE_LIMIT,
-        ),
-        "exit_replay": exit_replay,
-        "interpretation": (
-            "Read-only research snapshot. Realized PAPER PnL, hypothetical Shadow "
-            "labels and replay scenarios are separate evidence sets; replay is not "
-            "portfolio-level and none of these diagnostics changes active trading rules."
-        ),
-    }
+    return await paper_research_runtime.get_research_report(limit=limit)
 
 
 @app.get("/api/v1/paper/replay/{order_id}")
 async def replay_paper_exit_scenarios(order_id: str):
-    """Read-only BBO replay for one persisted PAPER position."""
-    _require_paper_mode()
-    all_trades = await db_manager.get_all_daily_trades()
-    trade = all_trades.get(order_id) if isinstance(all_trades, Mapping) else None
-    if not isinstance(trade, Mapping) or not DBManager.is_paper_trade(trade, order_id):
-        raise HTTPException(status_code=404, detail="PAPER-сделка не найдена в постоянном журнале.")
-    replay_session_id = str(trade.get("bbo_replay_session_id") or "").strip()
-    if not replay_session_id:
-        raise HTTPException(
-            status_code=409,
-            detail="У сделки нет bbo_replay_session_id. Старые сделки до включения replay связать нельзя.",
-        )
-
-    stored_events = await db_manager.get_list(
-        BBO_REPLAY_STORAGE_KEY,
-        start=0,
-        stop=BBO_REPLAY_STORAGE_LIMIT - 1,
-    )
-    session_events = [
-        row for row in stored_events
-        if isinstance(row, Mapping)
-        and str(row.get("session_id") or "") == replay_session_id
-    ]
-    if not session_events:
-        raise HTTPException(
-            status_code=409,
-            detail="В журнале BBO нет событий для replay-сессии этой сделки.",
-        )
-
-    configured_age = getattr(screener, "bbo_max_age_sec", None)
-    if configured_age is None:
-        configured_age = os.getenv(
-            "PILUITUS_BBO_MAX_AGE_SEC",
-            os.getenv("PILUITUS_BBO_EXIT_MAX_AGE_SEC", "2.0"),
-        )
-    try:
-        max_age = float(configured_age)
-    except (TypeError, ValueError, OverflowError):
-        max_age = 2.0
-    if not math.isfinite(max_age) or max_age <= 0.0:
-        max_age = 2.0
-    max_age = min(5.0, max(0.25, max_age))
-
-    try:
-        replay = replay_exit_scenarios(
-            session_events,
-            trade,
-            max_bbo_age_sec=max_age,
-        )
-    except ValueError as replay_error:
-        raise HTTPException(status_code=422, detail=str(replay_error)) from replay_error
-
-    execution_reconciliation = build_actual_vs_replay_reconciliation(
-        [trade] if str(trade.get("status") or "").upper() == "CLOSED" else [],
-        {"trades": [replay]},
-        scenario_name="BASELINE_SL_TP",
-        limit=1,
-    )
-    return {
-        "paper_mode": True,
-        "trade_id": order_id,
-        "journal_events_for_session": len(session_events),
-        "retained_event_limit": BBO_REPLAY_STORAGE_LIMIT,
-        "replay": replay,
-        "execution_reconciliation": execution_reconciliation,
-    }
+    return await paper_research_runtime.replay_trade(order_id)
 
 
 @app.get("/api/v1/paper/reconciliation")
 async def get_paper_reconciliation():
-    _require_paper_mode()
-    snapshot = await db_manager.get_paper_session_snapshot()
-    paper_rows = _paper_trade_rows(snapshot)
-    stale_rows = [
-        row for row in paper_rows
-        if str(row.get("status", "")).upper() == "STALE_REVIEW"
-        and str(row.get("reconciliation_status", "")).upper() == "REVIEW_REQUIRED"
-    ]
-    stale_rows.sort(key=lambda row: str(row.get("entry_timestamp") or row.get("entry_time") or ""))
-    summary = {key: value for key, value in snapshot.items() if key != "paper_trades"}
-    return {
-        "paper_mode": True,
-        "maintenance_active": bool(getattr(execution_engine, "_maintenance_active", False)),
-        "summary": summary,
-        "stale_positions": stale_rows,
-        "memory_open_positions": [
-            dict(row) for row in getattr(execution_engine, "paper_positions", {}).values()
-            if isinstance(row, dict)
-        ],
-    }
+    return await paper_research_runtime.get_reconciliation()
 
 
 @app.post("/api/v1/paper/reconciliation/{order_id}")
-async def reconcile_paper_position(order_id: str, payload: dict[str, object] = Body(...)):
-    _require_paper_mode()
-    action = str(payload.get("action", "")).strip().lower()
-    if action not in {"restore_open", "close", "void"}:
-        raise HTTPException(status_code=400, detail="Неизвестное действие сверки.")
-
-    async with _paper_session_lock:
-        if execution_engine._opening_tickers or execution_engine._lock_closing:
-            raise HTTPException(status_code=409, detail="Есть незавершённая операция исполнения. Повторите сверку после её завершения.")
-
-        all_trades = await db_manager.get_all_daily_trades()
-        trade = all_trades.get(order_id)
-        if not isinstance(trade, dict) or not DBManager.is_paper_trade(trade, order_id):
-            raise HTTPException(status_code=404, detail="PAPER-запись не найдена в постоянном журнале.")
-        trade = dict(trade)
-        if str(trade.get("status", "")).upper() != "STALE_REVIEW" or str(trade.get("reconciliation_status", "")).upper() != "REVIEW_REQUIRED":
-            raise HTTPException(status_code=409, detail="Запись уже не находится в статусе STALE_REVIEW.")
-
-        ticker = str(trade.get("ticker", "")).strip().upper().split("@")[0]
-        side = str(trade.get("side", "")).strip().upper()
-        try:
-            entry_price = float(trade.get("entry_price", 0.0))
-            volume = int(float(trade.get("volume") or 0))
-            if volume <= 0:
-                lots = int(float(trade.get("lots") or 0))
-                lot_size = int(float(trade.get("lot_size") or LOT_SIZES.get(ticker, 1) or 1))
-                volume = lots * lot_size
-        except (TypeError, ValueError, OverflowError):
-            entry_price = 0.0
-            volume = 0
-        if not ticker or side not in {"BUY", "SELL"} or not math.isfinite(entry_price) or entry_price <= 0 or volume <= 0:
-            raise HTTPException(status_code=422, detail="В журнале недостаточно корректных данных для безопасной сверки.")
-
-        now = datetime.now().astimezone()
-        note = str(payload.get("note", "")).strip()
-        if action in {"close", "void"} and len(note) < 3:
-            raise HTTPException(status_code=422, detail="Добавьте короткое пояснение к ручной операции.")
-
-        if action == "restore_open":
-            if ticker in execution_engine.paper_positions:
-                raise HTTPException(status_code=409, detail=f"По {ticker} уже есть активная PAPER-позиция.")
-            trade.update({
-                "status": "OPEN",
-                "mode": "PAPER",
-                "current_price": float(trade.get("current_price") or entry_price),
-                "volume": volume,
-                "reconciliation_status": "CONFIRMED_OPEN",
-                "reconciled_at": now.isoformat(timespec="seconds"),
-                "reconciliation_note": note or "Оператор подтвердил, что PAPER-позиция остаётся открытой.",
-            })
-            await db_manager.set_json(f"piluitus:trade:{order_id}", trade)
-            execution_engine.paper_positions[ticker] = trade
-            execution_engine._unreconciled_paper_positions.pop(order_id, None)
-            message = f"Позиция {ticker} возвращена в активный PAPER-мониторинг. После следующего перезапуска потребуется повторная сверка."
-
-        elif action == "close":
-            raw_exit_price: object = payload.get("exit_price")
-            exit_price = _parse_finite_float(raw_exit_price)
-            if exit_price is None or exit_price <= 0.0:
-                raise HTTPException(
-                    status_code=422,
-                    detail="Укажите корректную положительную цену выхода.",
-                )
-            sign = 1 if side == "BUY" else -1
-            pnl = (exit_price - entry_price) * volume * sign
-            pnl_pct = ((exit_price - entry_price) / entry_price) * 100.0 * sign
-            trade.update({
-                "status": "CLOSED",
-                "mode": "PAPER",
-                "volume": volume,
-                "current_price": exit_price,
-                "exit_price": exit_price,
-                "exit_time": now.strftime("%H:%M:%S"),
-                "exit_timestamp": now.isoformat(timespec="milliseconds"),
-                "exit_reason": "MANUAL_RECONCILIATION",
-                "pnl": round(pnl, 2),
-                "pnl_percent": round(pnl_pct, 4),
-                "final_outcome": "MANUALLY_RECONCILED",
-                "reconciliation_status": "CLOSED_CONFIRMED",
-                "reconciled_at": now.isoformat(timespec="seconds"),
-                "reconciliation_note": note,
-            })
-            await db_manager.set_json(f"piluitus:trade:{order_id}", trade)
-            await db_manager.push_to_list("piluitus:trade_history", trade, max_len=100)
-            execution_engine._unreconciled_paper_positions.pop(order_id, None)
-            execution_engine.closed_trades.append(dict(trade))
-            message = f"Закрытие {ticker} зафиксировано по {exit_price:.4f} ₽; расчётный PnL {pnl:+.2f} ₽."
-
-        else:  # void
-            trade.update({
-                "status": "VOIDED",
-                "mode": "PAPER",
-                "final_outcome": "VOIDED",
-                "reconciliation_status": "VOIDED_CONFIRMED",
-                "reconciled_at": now.isoformat(timespec="seconds"),
-                "reconciliation_note": note,
-            })
-            await db_manager.set_json(f"piluitus:trade:{order_id}", trade)
-            execution_engine._unreconciled_paper_positions.pop(order_id, None)
-            message = f"Запись {order_id} помечена VOIDED. Она сохранена в журнале для аудита, но больше не блокирует торговлю и капитал."
-
-    await _broadcast_paper_tables()
-    return {"status": "ok", "message": message, "trade": trade}
+async def reconcile_paper_position(
+    order_id: str,
+    payload: dict[str, object] = Body(...),
+):
+    return await paper_research_runtime.reconcile_position(order_id, payload)
 
 
 @app.post("/api/v1/paper/session/clear")
