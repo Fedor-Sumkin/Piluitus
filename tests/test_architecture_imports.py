@@ -457,7 +457,10 @@ def test_main_delegates_shadow_outcome_persistence_to_storage() -> None:
         and node.module == "storage.shadow_outcomes"
         for alias in node.names
     }
-    assert imported == {"ShadowOutcomePersistence"}
+    assert imported == {
+        "ShadowOutcomePersistence",
+        "SHADOW_OUTCOMES_STORAGE_LIMIT",
+    }
     assert "shadow_outcome_persistence = ShadowOutcomePersistence(" in source
     assert "paper_session_runtime = PaperSessionRuntime(" in source
 
