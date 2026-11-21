@@ -255,3 +255,19 @@ def test_main_delegates_background_operation_tracking_to_monitoring() -> None:
     assert "_tracked_operation_tasks" not in source
     assert "def _spawn_tracked_operation" not in source
     assert "async def _drain_tracked_operations" not in source
+
+
+
+def test_main_delegates_trading_event_journal_to_monitoring() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imports = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "monitoring.trading_event_logger"
+        for alias in node.names
+    }
+    assert "log_trading_event_to_file" in imports
+    assert "async def log_trading_event_to_file" not in source
+    assert "_sync_write_trading_log" not in source
