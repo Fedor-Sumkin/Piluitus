@@ -650,3 +650,21 @@ def test_main_delegates_candidate_admission_to_strategy_pipeline() -> None:
     assert "validate_entry_evidence" in pipeline_source
     assert "validate_atr_readiness" in pipeline_source
     assert "anomaly_queue.put_nowait" in pipeline_source
+
+def test_main_delegates_execution_fill_normalization_to_execution_package() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    module_source = (ROOT / "execution" / "outcome_reporting.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "execution.outcome_reporting"
+        for alias in node.names
+    }
+    assert imported == {"normalize_execution_fill"}
+    assert "execution_fill = normalize_execution_fill(" in source
+    assert "actual_lots = nonnegative_int(raw_actual_lots)" not in source
+    assert "actual_shares = actual_lots *" not in source
+    assert "executor_requested_lots = nonnegative_int(result.get(\"requested_lots\"))" in module_source
+

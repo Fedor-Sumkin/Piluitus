@@ -41,6 +41,7 @@ from storage.paper_research_runtime import PaperResearchRuntime
 from exchange.finam_client import FinamBrokerClient
 from strategy.screener_funnel import HFTMemoryScreener
 from execution.execution_layer import BaseExecutionEngine
+from execution.outcome_reporting import normalize_execution_fill
 from risk.risk_manager import RiskManager
 from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory
 from runtime.market_event_normalizer import (
@@ -1093,14 +1094,18 @@ class MarketWorker:
             # Count actual executor outcomes, not merely queued AI decisions.
             _trade_flow_inc("orders_scheduled")
             _trade_flow_inc("orders_opened_buy" if side == "BUY" else "orders_opened_sell")
-        order_id = str(result.get("orderId") or result.get("order_id") or "")
-        raw_actual_lots = result.get("lots")
-        raw_actual_shares = result.get("shares")
-        raw_actual_notional = result.get("notional_entry_rub")
-        actual_lots = nonnegative_int(raw_actual_lots)
-        actual_shares = nonnegative_int(raw_actual_shares)
-        actual_notional = finite_float(raw_actual_notional)
-        requested_lots_from_executor = nonnegative_int(result.get("requested_lots"))
+        execution_fill = normalize_execution_fill(
+            result,
+            requested_lots=lots,
+            ticker=ticker,
+            price=price,
+            lot_sizes=FINAM_TRADE_LOT_SIZES,
+        )
+        order_id = execution_fill["order_id"]
+        actual_lots = execution_fill["actual_lots"]
+        actual_shares = execution_fill["actual_shares"]
+        actual_notional = execution_fill["actual_notional"]
+        requested_lots_from_executor = execution_fill["requested_lots"]
         if execution_status in {"SKIPPED", "BLOCKED", "FAILED"}:
             if "Лимиты портфеля:" in result_message:
                 _trade_flow_inc("portfolio_cap_blocked")
@@ -1115,8 +1120,6 @@ class MarketWorker:
             and actual_lots < requested_lots_from_executor
         ):
             _trade_flow_inc("portfolio_size_reduced")
-        if execution_status in {"OPENED", "ACCEPTED"} and raw_actual_lots is None:
-            actual_lots = int(lots)
         if execution_status in {"OPENED", "ACCEPTED"}:
             logger.info(
                 "📌 [EXECUTION RESULT] %s %s: requested=%s lots; actual=%s lots/%s shares; notional=%.2f ₽; status=%s",
@@ -1125,19 +1128,6 @@ class MarketWorker:
                 actual_shares if actual_shares is not None else 0,
                 actual_notional if actual_notional is not None else 0.0, execution_status,
             )
-        if (
-            execution_status in {"OPENED", "ACCEPTED"}
-            and raw_actual_shares is None
-            and actual_lots is not None
-        ):
-            actual_shares = actual_lots * max(int(FINAM_TRADE_LOT_SIZES.get(ticker, 0) or 0), 0)
-        if (
-            execution_status in {"OPENED", "ACCEPTED"}
-            and raw_actual_notional is None
-            and actual_shares is not None
-        ):
-            actual_notional = round(actual_shares * price, 2)
-
         update = {
             "verdict_id": verdict_id,
             "ticker": ticker,
