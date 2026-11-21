@@ -188,3 +188,22 @@ def test_main_delegates_trade_flow_state_to_monitoring() -> None:
     assert "_trade_flow_lock" not in source
     assert "_trade_flow_counts" not in source
     assert "_trade_flow_last_log_at" not in source
+
+
+
+def test_main_reuses_extracted_websocket_manager() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    local_classes = {
+        node.name for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    assert "ConnectionManager" not in local_classes
+
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "interface.websocket_manager"
+        for alias in node.names
+    }
+    assert "ConnectionManager" in imported
