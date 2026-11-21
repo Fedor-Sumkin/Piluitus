@@ -668,3 +668,20 @@ def test_main_delegates_execution_fill_normalization_to_execution_package() -> N
     assert "actual_shares = actual_lots *" not in source
     assert "executor_requested_lots = nonnegative_int(result.get(\"requested_lots\"))" in module_source
 
+
+
+
+def test_main_delegates_execution_outcome_publishing_to_execution_package() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "execution.outcome_publisher"
+        for alias in node.names
+    }
+    assert imported == {"publish_execution_outcome"}
+    assert "await publish_execution_outcome(" in source
+    worker = source[source.index("class MarketWorker"):source.index("#  6️⃣")]
+    assert "await manager.broadcast(json.dumps({\"type\": \"EXECUTION_UPDATE\"" not in worker

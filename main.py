@@ -42,6 +42,7 @@ from exchange.finam_client import FinamBrokerClient
 from strategy.screener_funnel import HFTMemoryScreener
 from execution.execution_layer import BaseExecutionEngine
 from execution.outcome_reporting import normalize_execution_fill
+from execution.outcome_publisher import publish_execution_outcome
 from risk.risk_manager import RiskManager
 from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory
 from runtime.market_event_normalizer import (
@@ -1145,50 +1146,22 @@ class MarketWorker:
             "execution_timestamp": datetime.now().astimezone().isoformat(timespec="milliseconds"),
         }
 
-        # Update in-memory history so a browser refresh shows the final outcome.
-        for cached in last_ai_verdicts_cache:
-            if isinstance(cached, dict) and cached.get("verdict_id") == verdict_id:
-                cached.update(update)
-                break
-
-        # Persist execution outcome separately. This avoids list-index races when
-        # several asynchronous orders finish while newer verdicts are LPUSH'ed.
-        try:
-            redis_inst = getattr(self.db, "redis", getattr(self.db, "_redis", None))
-            if redis_inst is not None:
-                await redis_inst.set(
-                    f"piluitus:verdict:execution:{verdict_id}",
-                    json.dumps(update, ensure_ascii=False),
-                    ex=7 * 24 * 60 * 60,
-                )
-        except Exception as persist_exc:
-            logger.warning("Не удалось сохранить статус исполнения вердикта %s: %s", verdict_id, persist_exc)
-
-        try:
-            positions = await _get_dashboard_open_positions()
-            balance = await _refresh_dashboard_balance_snapshot(positions)
-            update["active_positions"] = positions
-            update["balance"] = balance
-            await manager.broadcast(json.dumps({"type": "EXECUTION_UPDATE", **update}, ensure_ascii=False))
-            await manager.broadcast(json.dumps({
-                "type": "TABLES_UPDATE",
-                "active_positions": positions,
-                "closed_trades": getattr(execution_engine, "closed_trades", [])[-30:],
-                "balance": balance,
-            }, ensure_ascii=False))
-        except Exception as broadcast_exc:
-            logger.error("Не удалось отправить статус исполнения в веб-интерфейс: %s", broadcast_exc, exc_info=True)
-
-        if execution_status in {"OPENED", "ACCEPTED"}:
-            logger.info(
-                "📡 [DASHBOARD EXECUTION] %s %s %s: %s лот(а), %s ₽, order=%s",
-                side, ticker, execution_status, actual_lots, actual_notional, order_id or "N/A",
-            )
-        else:
-            logger.warning(
-                "📡 [DASHBOARD EXECUTION] %s %s: %s — %s",
-                side, ticker, execution_status, update["execution_message"],
-            )
+        await publish_execution_outcome(
+            update,
+            db=self.db,
+            verdict_cache=last_ai_verdicts_cache,
+            get_open_positions=_get_dashboard_open_positions,
+            refresh_balance_snapshot=_refresh_dashboard_balance_snapshot,
+            manager=manager,
+            execution_engine=execution_engine,
+            logger=logger,
+            side=side,
+            ticker=ticker,
+            status=execution_status,
+            actual_lots=actual_lots,
+            actual_notional=actual_notional,
+            order_id=order_id,
+        )
 
     async def _publish_pre_llm_risk_block(self, event_payload: dict, session_generation: int) -> None:
         """Publish a local candidate rejected by RiskManager if its PAPER session is still current."""
