@@ -299,3 +299,20 @@ def test_main_delegates_position_order_book_diagnostics_to_monitoring() -> None:
     assert "_position_order_book_diag_lock" not in source
     assert "_position_order_book_diag:" not in source
     assert "position_order_book_diagnostics.clear()" in source
+
+
+
+def test_main_delegates_prefilter_warning_rate_limiting_to_monitoring() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imports = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "monitoring.prefilter_diagnostics"
+        for alias in node.names
+    }
+    assert "PrefilterBlockLogger" in imports
+    assert "prefilter_block_logger = PrefilterBlockLogger(logger)" in source
+    assert "_prefilter_last_logged" not in source
+    assert "_prefilter_log_lock" not in source
