@@ -685,3 +685,24 @@ def test_main_delegates_execution_outcome_publishing_to_execution_package() -> N
     assert "await publish_execution_outcome(" in source
     worker = source[source.index("class MarketWorker"):source.index("#  6️⃣")]
     assert "await manager.broadcast(json.dumps({\"type\": \"EXECUTION_UPDATE\"" not in worker
+
+
+def test_main_delegates_market_verdict_publication_to_execution_package() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    module_source = (
+        ROOT / "execution" / "verdict_publisher.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "execution.verdict_publisher"
+        for alias in node.names
+    }
+    assert imported == {"publish_market_verdict"}
+    assert "await publish_market_verdict(" in source
+    worker = source[source.index("class MarketWorker"):source.index("#  6️⃣")]
+    assert "redis_inst.lpush(" not in worker
+    assert "manager.broadcast(json.dumps(payload" not in worker
+    assert "verdict_cache.append(verdict)" in module_source

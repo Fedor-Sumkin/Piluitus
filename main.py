@@ -43,6 +43,7 @@ from strategy.screener_funnel import HFTMemoryScreener
 from execution.execution_layer import BaseExecutionEngine
 from execution.outcome_reporting import normalize_execution_fill
 from execution.outcome_publisher import publish_execution_outcome
+from execution.verdict_publisher import publish_market_verdict
 from risk.risk_manager import RiskManager
 from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory
 from runtime.market_event_normalizer import (
@@ -1880,53 +1881,16 @@ class MarketWorker:
                         or event_payload.get("paper_session_generation") != _paper_session_generation
                     ):
                         continue
-                    last_ai_verdicts_cache.append(verdict_data)
-                    if len(last_ai_verdicts_cache) > MAX_CACHE_SIZE:
-                        last_ai_verdicts_cache.pop(0)
-
-                    redis_inst = getattr(self.db, "redis", None) or getattr(self.db, "_redis", None)
-                    if redis_inst is None:
-                        logger.error(
-                            "[LLM VERDICT PERSIST ERROR] verdict_id=%s candidate_id=%s ticker=%s: "
-                            "Redis/Memurai client unavailable; verdict remains only in memory.",
-                            verdict_id,
-                            str(event_payload.get("shadow_candidate_id") or "NONE"),
-                            ticker,
-                        )
-                    else:
-                        try:
-                            await redis_inst.lpush(
-                                "piluitus:verdicts:history",
-                                json.dumps(verdict_data, ensure_ascii=False),
-                            )
-                            await redis_inst.ltrim(
-                                "piluitus:verdicts:history", 0, MAX_CACHE_SIZE - 1
-                            )
-                        except Exception as redis_err:
-                            logger.error(
-                                "[LLM VERDICT PERSIST ERROR] verdict_id=%s candidate_id=%s ticker=%s error=%s",
-                                verdict_id,
-                                str(event_payload.get("shadow_candidate_id") or "NONE"),
-                                ticker,
-                                redis_err,
-                                exc_info=True,
-                            )
-
-                    current_balance = dict(_dashboard_balance_snapshot)
-                    payload_for_ws = {
-                        "type": "MARKET_UPDATE",
-                        **verdict_data,
-                        "balance": current_balance,
-                    }
-
-                    async def _safe_broadcast(payload: dict):
-                        try:
-                            json_str = json.dumps(payload, ensure_ascii=False)
-                            await manager.broadcast(json_str)
-                        except Exception as broadcast_err:
-                            logger.error(f"Ошибка WebSocket бродкаста: {broadcast_err}")
-
-                    await _safe_broadcast(payload_for_ws)
+                    await publish_market_verdict(
+                        verdict_data,
+                        db=self.db,
+                        verdict_cache=last_ai_verdicts_cache,
+                        max_cache_size=MAX_CACHE_SIZE,
+                        manager=manager,
+                        balance_snapshot=_dashboard_balance_snapshot,
+                        logger=logger,
+                        candidate_id=str(event_payload.get("shadow_candidate_id") or "NONE"),
+                    )
 
                     if execution_status == "PENDING":
                         _background_operations.spawn(
