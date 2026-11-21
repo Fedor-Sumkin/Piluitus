@@ -77,7 +77,15 @@ def _prepare(**overrides):
     }
     values.update(overrides)
     result = prepare_entry_execution_plan(**values)
-    return result, values, counters, guard_blocks, logger, execution, risk
+    return (
+        result,
+        values,
+        counters,
+        guard_blocks,
+        logger,
+        values["execution_engine"],
+        values["risk_manager"],
+    )
 
 
 def test_post_llm_evidence_gate_precedes_confidence_and_atr():

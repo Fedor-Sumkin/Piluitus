@@ -58,6 +58,7 @@ from strategy.market_candidate_pipeline import MarketCandidatePipeline
 from strategy.llm_context import attach_llm_rule_context
 from strategy.llm_response import build_llm_error_response, process_llm_response
 from strategy.post_llm_validation import validate_post_llm_entry
+from strategy.entry_decision_pipeline import prepare_entry_execution_plan
 from strategy.verdict_records import (
     build_pre_llm_risk_block_verdict,
     build_default_signal_reason,
