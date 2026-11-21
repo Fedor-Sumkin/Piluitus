@@ -170,3 +170,20 @@ def test_bbo_resume_reason_bucket_preserves_diagnostic_categories() -> None:
         "другая причина": "other_book_failure",
     }
     assert {reason: bbo_resume_reason_bucket(reason) for reason in cases} == cases
+
+
+def test_main_delegates_trade_flow_state_to_monitoring() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "monitoring.trade_flow_diagnostics"
+        for alias in node.names
+    }
+    assert "TradeFlowCounters" in imported
+    assert "_trade_flow_counters = TradeFlowCounters(time_module.monotonic())" in source
+    assert "_trade_flow_lock" not in source
+    assert "_trade_flow_counts" not in source
+    assert "_trade_flow_last_log_at" not in source
