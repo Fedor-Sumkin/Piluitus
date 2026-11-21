@@ -47,11 +47,18 @@ from strategy.signal_guard import (
 from strategy.candidate_dedup import CandidateDeduplicator, candidate_is_expired
 from ai.rag_prompt_utils import select_prompt_rules
 from strategy.candidate_recovery import (
-    coalesce_pending_bbo_entry,
     refresh_candidate_bbo_metrics,
     refresh_post_llm_evidence,
 )
 from strategy.scalping_strategy import evaluate_scalping_candidate, has_queue_trade_flow_conflict
+from strategy.market_data_runtime import (
+    M1HistoryWarmup,
+    PendingBBOCandidateStore,
+    paper_queue_flow_conflict_reason,
+)
+from portfolio.dashboard_runtime import DashboardRuntime
+from interface.paper_api_helpers import PaperAPIHelpers
+from storage.paper_session_runtime import PaperSessionRuntime
 from strategy.shadow_outcomes import ShadowForwardTracker
 from strategy.bbo_replay import (
     BBOReplayRecorder,
@@ -111,7 +118,6 @@ from monitoring.trading_event_logger import log_trading_event_to_file
 prefilter_block_logger = PrefilterBlockLogger(logger)
 
 from portfolio.paper_accounting import (
-    calculate_open_pnl,
     parse_finite_float as _parse_finite_float,
 )
 from portfolio.dashboard_accounting import build_dashboard_balance_snapshot
@@ -166,25 +172,21 @@ logger.info(
 )
 
 
+dashboard_runtime = DashboardRuntime(
+    execution_engine=execution_engine,
+    db_manager=db_manager,
+    screener=screener,
+    lot_sizes=LOT_SIZES,
+    logger=logger,
+)
+
+
 def _current_paper_open_pnl() -> float:
-    """PnL of in-memory PAPER positions, updated on every monitored market tick."""
-    return calculate_open_pnl(
-        getattr(execution_engine, "paper_positions", {}).values(),
-        paper_mode=getattr(execution_engine, "paper_mode", True),
-    )
+    return dashboard_runtime.current_paper_open_pnl()
 
 
 def _current_paper_assets_cost() -> float:
-    """Cost basis of active and quarantined PAPER positions, never mark-to-market."""
-    if not getattr(execution_engine, "paper_mode", True):
-        return 0.0
-    from portfolio.portfolio_metrics import calculate_assets_used
-
-    positions = list(getattr(execution_engine, "paper_positions", {}).values())
-    unresolved = getattr(execution_engine, "_unreconciled_paper_positions", {})
-    if isinstance(unresolved, dict):
-        positions.extend(unresolved.values())
-    return calculate_assets_used(positions, lot_sizes=LOT_SIZES)
+    return dashboard_runtime.current_paper_assets_cost()
 
 
 # In PAPER, in-memory positions are the live source of floating PnL and book cost.
@@ -226,151 +228,51 @@ shadow_outcome_persistence = ShadowOutcomePersistence(
 )
 
 
-async def _persist_shadow_outcomes(labels: list[dict[str, Any]], *, source: str) -> None:
-    """Persist completed labels through the dedicated storage adapter."""
-    await shadow_outcome_persistence.persist_completed_labels(
-        labels,
-        session_id=str(getattr(execution_engine, "session_id", "unknown")),
-        source=source,
-    )
+paper_session_runtime = PaperSessionRuntime(
+    db_manager=db_manager,
+    execution_engine=execution_engine,
+    shadow_outcome_persistence=shadow_outcome_persistence,
+    bbo_replay_recorder=paper_bbo_replay_recorder,
+    bbo_replay_recorder_factory=BBOReplayRecorder,
+    paper_performance_tracker=paper_performance_tracker,
+    paper_shadow_labels=paper_shadow_labels,
+    logger=logger,
+    closed_trades_storage_key=PAPER_CLOSED_TRADES_STORAGE_KEY,
+    closed_trades_storage_limit=PAPER_CLOSED_TRADES_STORAGE_LIMIT,
+)
 
 
-def _record_paper_bbo_replay(
-    ticker: str,
-    *,
-    source: str,
-    event_timestamp: object | None = None,
-    received_monotonic: object | None = None,
-    book_result: Mapping[str, Any] | None = None,
-    sides_present: bool = True,
+async def _persist_shadow_outcomes(
+    labels: list[dict[str, Any]], *, source: str
 ) -> None:
-    """Capture the same shared BBO state used by PAPER execution, without blocking it."""
-    if not execution_engine.paper_mode:
-        return
-    symbol = str(ticker or "").strip().upper().split("@")[0]
-    if not symbol:
-        return
-    selected = symbol in getattr(screener, "selected_tickers", [])
-    positioned = symbol in getattr(execution_engine, "paper_positions", {})
-    if not (selected or positioned):
-        return
-    quote = getattr(screener, "quotes", {}).get(symbol)
-    if not isinstance(quote, Mapping):
-        return
-    if book_result is not None:
-        if not bool(book_result.get("updated")):
-            return
-        valid = bool(book_result.get("valid", False))
-        reason = str(book_result.get("reason") or "")
-    else:
-        if not sides_present:
-            return
-        bid_number = finite_float(quote.get("bid"))
-        ask_number = finite_float(quote.get("ask"))
-        bid_value = bid_number if bid_number is not None else 0.0
-        ask_value = ask_number if ask_number is not None else 0.0
-        valid = (
-            (bid_value > 0.0 or ask_value > 0.0)
-            and not (bid_value > 0.0 and ask_value > 0.0 and ask_value < bid_value)
-        )
-        reason = str(quote.get("order_book_last_reason") or "")
-    snapshot = {
-        "updated": True,
-        "valid": valid,
-        "order_book_valid": bool(quote.get("order_book_valid", False)),
-        "reason": reason,
-        "bid": quote.get("bid", 0.0),
-        "ask": quote.get("ask", 0.0),
-        "bid_size": quote.get("bid_size", 0.0),
-        "ask_size": quote.get("ask_size", 0.0),
-    }
-    event = {
-        "source": str(source or "UNKNOWN").upper(),
-        "timestamp": event_timestamp,
-        "received_monotonic": received_monotonic,
-        "bid_confirmed_monotonic": quote.get("last_bid_confirmed_seen", 0.0),
-        "ask_confirmed_monotonic": quote.get("last_ask_confirmed_seen", 0.0),
-        "max_age_sec": getattr(screener, "bbo_max_age_sec", 2.0),
-    }
-    paper_bbo_replay_recorder.record(symbol, snapshot, event)
+    await paper_session_runtime.persist_shadow_outcomes(labels, source=source)
 
 
 async def _restore_shadow_outcomes() -> None:
-    """Restore historical research only outside PAPER; PAPER starts with empty aggregates."""
-    await shadow_outcome_persistence.restore_completed_labels(
-        paper_mode=bool(getattr(execution_engine, "paper_mode", True)),
-        session_id=getattr(execution_engine, "session_id", "unknown"),
-    )
+    await paper_session_runtime.restore_shadow_outcomes()
 
 
 async def _rotate_paper_bbo_replay_session() -> None:
-    """Drain the previous replay writer and start a clean recorder session."""
     global paper_bbo_replay_recorder
-    previous = paper_bbo_replay_recorder
-    await previous.close()
-    recorder = BBOReplayRecorder()
-    paper_bbo_replay_recorder = recorder
-    execution_engine.bbo_replay_session_id = recorder.session_id
-    execution_engine.paper_exit_event_recorder = recorder.record_exit_trigger
-    recorder.start(db_manager)
-    logger.info(
-        "[PAPER BBO REPLAY SESSION RESET] session_id=%s previous_session_id=%s",
-        recorder.session_id, previous.session_id,
+    paper_bbo_replay_recorder = (
+        await paper_session_runtime.rotate_bbo_replay_session()
     )
 
 
 async def _restore_paper_performance() -> None:
-    """Restore realized PAPER trades; migrate the old short history only if needed."""
-    try:
-        stored = await db_manager.get_list(
-            PAPER_CLOSED_TRADES_STORAGE_KEY,
-            start=0,
-            stop=PAPER_CLOSED_TRADES_STORAGE_LIMIT - 1,
-        )
-        source = "dedicated_journal"
-        if not stored:
-            stored = await db_manager.get_list("piluitus:trade_history", start=0, stop=99)
-            source = "legacy_trade_history"
-        restored = paper_performance_tracker.restore(stored)
-        if source == "legacy_trade_history" and paper_performance_tracker.records:
-            try:
-                await db_manager.push_many_to_list(
-                    PAPER_CLOSED_TRADES_STORAGE_KEY,
-                    paper_performance_tracker.records,
-                    max_len=PAPER_CLOSED_TRADES_STORAGE_LIMIT,
-                )
-                logger.info(
-                    "[PAPER PERFORMANCE MIGRATION] legacy_rows=%d copied_to_dedicated_journal=true",
-                    len(paper_performance_tracker.records),
-                )
-            except Exception as migration_exc:
-                logger.error(
-                    "[PAPER PERFORMANCE MIGRATION ERROR] legacy_rows=%d error=%s",
-                    len(paper_performance_tracker.records), migration_exc, exc_info=True,
-                )
-        summary = paper_performance_tracker.scorecard(paper_shadow_labels)
-        overall = summary["overall"]
-        logger.info(
-            "[PAPER PERFORMANCE RESTORE] source=%s loaded=%d restored=%d total=%d "
-            "net=%+.2f RUB win_rate=%s PF=%s max_DD=%.2f RUB",
-            source, len(stored), restored, overall["trades"],
-            overall["net_pnl_rub"],
-            f'{overall["win_rate_pct"]:.1f}%' if overall["win_rate_pct"] is not None else "N/A",
-            f'{overall["profit_factor"]:.3f}' if overall["profit_factor"] is not None else "N/A",
-            overall["max_drawdown_rub"],
-        )
-    except Exception as exc:
-        logger.error("[PAPER PERFORMANCE RESTORE ERROR] %s", exc, exc_info=True)
+    await paper_session_runtime.restore_paper_performance()
 
 
 # One outstanding AI event per ticker prevents repeated nearly identical
 # anomaly events from filling the queue while inference is still running.
-_m1_history_warmup_pending: set[str] = set()
-_m1_history_warmed: set[str] = set()
-_m1_history_last_attempt: dict[str, float] = {}
-_m1_history_warmup_lock = threading.Lock()
-_m1_history_warmup_task: asyncio.Task | None = None
-_M1_HISTORY_RETRY_SEC = 30.0
+m1_history_warmup = M1HistoryWarmup(
+    broker=broker,
+    screener=screener,
+    logger=logger,
+    retry_sec=30.0,
+    monotonic=time_module.monotonic,
+    sleep=asyncio.sleep,
+)
 try:
     _AI_CANDIDATE_COOLDOWN_SEC = max(
         0.5, float(os.getenv("PILUITUS_AI_CANDIDATE_COOLDOWN_SEC", "8.0"))
@@ -413,6 +315,16 @@ def _log_open_position_bbo_diagnostics() -> None:
 def _trade_flow_inc(key: str, amount: int = 1) -> None:
     _trade_flow_counters.increment(key, amount)
     _trade_flow_maybe_log()
+
+
+pending_bbo_candidate_store = PendingBBOCandidateStore(
+    ttl_sec=_PENDING_BBO_CANDIDATE_TTL_SEC,
+    trade_flow_increment=_trade_flow_inc,
+    logger=logger,
+    candidates=_pending_bbo_candidates,
+    lock=_pending_bbo_lock,
+    monotonic=time_module.monotonic,
+)
 
 
 def _trade_flow_maybe_log(force: bool = False) -> None:
@@ -471,22 +383,16 @@ def _log_prefilter_blocked(ticker: str, reason: str, *, interval_sec: float = 15
     prefilter_block_logger.log(ticker, reason, interval_sec=interval_sec)
 
 
-def _paper_queue_flow_conflict_reason(direction: str, metrics: dict[str, Any]) -> str:
-    """Block only fresh, persistent queue/flow contradictions in PAPER mode."""
-    if not bool(Settings.PAPER_TRADING):
-        return ""
-    enabled = str(os.getenv("PILUITUS_PAPER_QUEUE_FLOW_CONFLICT_GUARD", "1")).strip().lower()
-    if enabled in {"0", "false", "no", "off", "disabled"}:
-        return ""
-    if not has_queue_trade_flow_conflict(direction, metrics):
-        return ""
-    queue = finite_float(metrics.get("queue_imbalance_5s"))
-    flow = finite_float(metrics.get("trade_flow_imbalance_30s"))
-    return (
-        "Устойчивый дисбаланс очереди 5s противоречит агрессивному потоку сделок 30s "
-        f"(queue={queue:+.3f}, flow={flow:+.3f}); PAPER-вход заблокирован."
-        if queue is not None and flow is not None
-        else "Устойчивый дисбаланс очереди противоречит потоку сделок; PAPER-вход заблокирован."
+def _paper_queue_flow_conflict_reason(
+    direction: str, metrics: dict[str, Any]
+) -> str:
+    return paper_queue_flow_conflict_reason(
+        direction,
+        metrics,
+        paper_mode=bool(Settings.PAPER_TRADING),
+        enabled=os.getenv("PILUITUS_PAPER_QUEUE_FLOW_CONFLICT_GUARD", "1"),
+        conflict_detector=has_queue_trade_flow_conflict,
+        finite_float=finite_float,
     )
 
 
@@ -506,120 +412,32 @@ def _release_ai_ticker(ticker: str) -> None:
     _ai_candidate_deduplicator.release(ticker)
 
 
-async def _warmup_selected_m1_history(tickers: tuple[str, ...] | list[str]) -> None:
-    """Warm selected symbols from completed Finam M1 bars without blocking the quote loop."""
-    now = time_module.monotonic()
-    due: list[str] = []
-    with _m1_history_warmup_lock:
-        for raw in tickers:
-            ticker = str(raw or "").strip().upper().split("@")[0]
-            if not ticker or ticker in _m1_history_warmup_pending:
-                continue
-            if ticker in _m1_history_warmed:
-                engine = screener.minute_bar_patterns
-                snapshot = engine.get_atr_snapshot(ticker)
-                state = engine._states.get(ticker, {})
-                last_closed = float(state.get("last_closed_bar_monotonic", 0.0) or 0.0)
-                age = max(0.0, now - last_closed) if last_closed > 0.0 else -1.0
-                still_ready, _ = validate_atr_readiness({
-                    "bar_atr": snapshot.get("atr", 0.0),
-                    "bar_atr_periods": snapshot.get("periods", 0.0),
-                    "bar_atr_age_sec": age,
-                })
-                if still_ready:
-                    continue
-                _m1_history_warmed.discard(ticker)
-            if now - _m1_history_last_attempt.get(ticker, 0.0) < _M1_HISTORY_RETRY_SEC:
-                continue
-            _m1_history_warmup_pending.add(ticker)
-            _m1_history_last_attempt[ticker] = now
-            due.append(ticker)
-
-    for ticker in due:
-        try:
-            bars = await broker.get_historical_m1_bars(ticker, lookback_minutes=120)
-            imported = screener.minute_bar_patterns.load_closed_bars(ticker, bars)
-            if imported:
-                engine = screener.minute_bar_patterns
-                snapshot = engine.get_atr_snapshot(ticker)
-                state = engine._states.get(ticker, {})
-                last_closed = float(state.get("last_closed_bar_monotonic", 0.0) or 0.0)
-                atr_age = max(0.0, time_module.monotonic() - last_closed) if last_closed > 0.0 else -1.0
-                atr_ready, atr_reason = validate_atr_readiness({
-                    "bar_atr": snapshot.get("atr", 0.0),
-                    "bar_atr_periods": snapshot.get("periods", 0.0),
-                    "bar_atr_age_sec": atr_age,
-                })
-                if atr_ready:
-                    with _m1_history_warmup_lock:
-                        _m1_history_warmed.add(ticker)
-                logger.info(
-                    "[M1 HISTORY WARMUP] %s: получено=%d, загружено_закрытых=%d, "
-                    "ATR_ranges=%.0f, age=%.1fs, ready=%s; %s",
-                    ticker, len(bars), imported, float(snapshot.get("periods", 0.0)),
-                    atr_age, atr_ready, atr_reason,
-                )
-            else:
-                logger.warning(
-                    "[M1 HISTORY WARMUP] %s: закрытые исторические бары не получены; "
-                    "ATR будет прогреваться по live QUOTES.",
-                    ticker,
-                )
-        except Exception as exc:
-            logger.warning(
-                "[M1 HISTORY WARMUP] %s failed (%s); live-built ATR remains active.",
-                ticker, type(exc).__name__,
-            )
-        finally:
-            with _m1_history_warmup_lock:
-                _m1_history_warmup_pending.discard(ticker)
-        try:
-            request_interval = max(
-                0.1, float(os.getenv("FINAM_METADATA_REQUEST_INTERVAL_SEC", "0.36"))
-            )
-        except (TypeError, ValueError, OverflowError):
-            request_interval = 0.36
-        await asyncio.sleep(request_interval)
+async def _warmup_selected_m1_history(
+    tickers: tuple[str, ...] | list[str]
+) -> None:
+    await m1_history_warmup.warmup_selected_m1_history(tickers)
 
 
-def _schedule_m1_history_warmup(tickers: tuple[str, ...] | list[str]) -> None:
-    """Keep at most one warmup coroutine scheduled while quotes continue to arrive."""
-    global _m1_history_warmup_task
-    if _m1_history_warmup_task is None or _m1_history_warmup_task.done():
-        _m1_history_warmup_task = asyncio.create_task(
-            _warmup_selected_m1_history(tuple(tickers))
-        )
+def _schedule_m1_history_warmup(
+    tickers: tuple[str, ...] | list[str]
+) -> None:
+    m1_history_warmup.schedule(tickers)
 
 
-def _drop_pending_bbo_candidate(ticker: str, expected: dict[str, Any] | None = None) -> bool:
-    key = str(ticker or "").strip().upper()
-    with _pending_bbo_lock:
-        current = _pending_bbo_candidates.get(key)
-        if current is not None and (expected is None or current is expected):
-            _pending_bbo_candidates.pop(key, None)
-            return True
-    return False
+def _drop_pending_bbo_candidate(
+    ticker: str, expected: dict[str, Any] | None = None
+) -> bool:
+    return pending_bbo_candidate_store.drop(ticker, expected)
 
 
-def _cancel_pending_bbo_candidate(ticker: str, expected: dict[str, Any] | None = None) -> bool:
-    removed = _drop_pending_bbo_candidate(ticker, expected)
-    if removed:
-        _trade_flow_inc("bbo_cancelled")
-    return removed
+def _cancel_pending_bbo_candidate(
+    ticker: str, expected: dict[str, Any] | None = None
+) -> bool:
+    return pending_bbo_candidate_store.cancel(ticker, expected)
 
 
 def _expire_pending_bbo_candidates(now: float | None = None) -> None:
-    current_time = time_module.monotonic() if now is None else now
-    expired: list[str] = []
-    with _pending_bbo_lock:
-        for ticker, item in list(_pending_bbo_candidates.items()):
-            created_at = float(item.get("created_at", 0.0) or 0.0)
-            if created_at <= 0.0 or current_time - created_at > _PENDING_BBO_CANDIDATE_TTL_SEC:
-                _pending_bbo_candidates.pop(ticker, None)
-                expired.append(ticker)
-    for ticker in expired:
-        _trade_flow_inc("bbo_expired")
-        logger.debug("⌛ Отложенный кандидат %s истёк: свежий BBO не поступил за %.2f сек.", ticker, _PENDING_BBO_CANDIDATE_TTL_SEC)
+    pending_bbo_candidate_store.expire(now)
 
 
 def _store_pending_bbo_candidate(
@@ -627,33 +445,8 @@ def _store_pending_bbo_candidate(
     payload: dict[str, Any],
     received_monotonic: object | None = None,
 ) -> None:
-    # TTL starts when the candidate is actually stored. Repeated ticks for
-    # the same ticker/side refresh evidence but do not restart the TTL or replace
-    # the waiter object; this prevents the resume path from chasing a moving target.
-    now = time_module.monotonic()
-    key = str(ticker).strip().upper().split("@")[0]
-    with _pending_bbo_lock:
-        previous = _pending_bbo_candidates.get(key)
-        entry, status = coalesce_pending_bbo_entry(
-            previous, payload, now=now, ttl_sec=_PENDING_BBO_CANDIDATE_TTL_SEC
-        )
-        if status == "coalesced" and previous is not None:
-            previous["payload"] = entry["payload"]
-            _pending_bbo_candidates[key] = previous
-        else:
-            _pending_bbo_candidates[key] = entry
-    if status == "expired":
-        _trade_flow_inc("bbo_expired")
-    elif status == "coalesced":
-        _trade_flow_inc("bbo_coalesced")
-        logger.debug("♻️ [PRE-LLM COALESCE] %s: повторный сигнал обновил существующее ожидание.", key)
-        return
-    elif status == "superseded":
-        _trade_flow_inc("bbo_superseded")
-    _trade_flow_inc("bbo_deferred")
-    logger.info(
-        "⏳ [PRE-LLM WAIT] %s: кандидат ожидает целостный свежий ORDER_BOOK (TTL=%.2fs; status=%s).",
-        key, _PENDING_BBO_CANDIDATE_TTL_SEC, status,
+    pending_bbo_candidate_store.store(
+        ticker, payload, received_monotonic=received_monotonic
     )
 
 
@@ -842,35 +635,12 @@ _dashboard_balance_snapshot = {
 _balance_guard_last_signature: tuple[int, bool] | None = None
 
 def _latest_screener_prices() -> dict[str, float]:
-    """Последние известные цены по инструментам из локального рыночного скринера."""
-    prices: dict[str, float] = {}
-    for ticker, data in getattr(screener, "history", {}).items():
-        try:
-            count = int(data.get("count", 0))
-            values = data.get("prices")
-            if count > 0 and values is not None:
-                price = float(values[min(count, len(values)) - 1])
-                if price > 0 and price == price and price != float("inf"):
-                    prices[str(ticker).strip().upper().split("@")[0]] = price
-        except (TypeError, ValueError, IndexError, AttributeError):
-            continue
-    return prices
+    return dashboard_runtime.latest_screener_prices()
+
 
 async def _get_dashboard_open_positions() -> list[dict]:
-    """Read open positions from the authoritative source for the current execution mode."""
-    if getattr(execution_engine, "paper_mode", True):
-        raw = getattr(execution_engine, "paper_positions", getattr(execution_engine, "_paper_positions", {}))
-        values = list(raw.values()) if isinstance(raw, dict) else []
-    else:
-        # In LIVE mode, execute_order persists accepted orders in the trade journal.
-        # Read this low-frequency snapshot here (one-second sync), not for every market tick.
-        try:
-            active = await db_manager.get_active_positions()
-            values = list(active.values()) if isinstance(active, dict) else []
-        except Exception as exc:
-            logger.debug("Не удалось получить LIVE-позиции для расчёта капитала: %s", exc)
-            values = []
-    return [dict(item) for item in values if isinstance(item, dict) and str(item.get("status", "OPEN")).upper() == "OPEN"]
+    return await dashboard_runtime.get_dashboard_open_positions()
+
 
 async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = None) -> dict:
     """Build a non-mark-to-market dashboard snapshot.
@@ -964,6 +734,12 @@ _background_operations = BackgroundOperationTracker(logger)
 #  3️⃣  CONNECTION MANAGER (WebSocket)
 # --------------------------------------------------------------
 manager = ConnectionManager()
+paper_api_helpers = PaperAPIHelpers(
+    execution_engine=execution_engine,
+    connection_manager=manager,
+    get_open_positions=_get_dashboard_open_positions,
+    refresh_balance=_refresh_dashboard_balance_snapshot,
+)
 
 # --------------------------------------------------------------
 #  4️⃣  ПОЛИМОРФНЫЙ ТИКЕРНЫЙ ОБРАБОТЧИК С АВТО-ЗАВЕРШЕНИЕМ ПОЗИЦИЙ
@@ -2789,25 +2565,15 @@ PAPER_CLEAR_CONFIRMATION = "ОЧИСТИТЬ PAPER-СЕССИЮ"
 
 
 def _require_paper_mode() -> None:
-    if not getattr(execution_engine, "paper_mode", True):
-        raise HTTPException(status_code=403, detail="Операция доступна только в PAPER_TRADING=True.")
+    paper_api_helpers.require_paper_mode()
 
 
 def _paper_trade_rows(snapshot: dict) -> list[dict]:
-    rows = snapshot.get("paper_trades", [])
-    return [dict(row) for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    return paper_api_helpers.paper_trade_rows(snapshot)
 
 
 async def _broadcast_paper_tables() -> None:
-    positions = await _get_dashboard_open_positions()
-    balance = await _refresh_dashboard_balance_snapshot(positions)
-    raw_closed = getattr(execution_engine, "closed_trades", [])
-    await manager.broadcast(json.dumps({
-        "type": "TABLES_UPDATE",
-        "active_positions": positions,
-        "closed_trades": raw_closed[-30:] if isinstance(raw_closed, list) else [],
-        "balance": balance,
-    }, ensure_ascii=False))
+    await paper_api_helpers.broadcast_paper_tables()
 
 
 @app.get("/maintenance", response_class=HTMLResponse)

@@ -406,19 +406,24 @@ def test_main_delegates_priority_queue_item_creation_to_runtime() -> None:
 def test_main_delegates_paper_open_pnl_accounting_to_portfolio() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
-    imported = {
+    runtime_imports = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "portfolio.dashboard_runtime"
+        for alias in node.names
+    }
+    assert runtime_imports == {"DashboardRuntime"}
+    accounting_imports = {
         alias.name: alias.asname
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
         and node.module == "portfolio.paper_accounting"
         for alias in node.names
     }
-    assert imported == {
-        "calculate_open_pnl": None,
-        "parse_finite_float": "_parse_finite_float",
-    }
-    assert "return calculate_open_pnl(" in source
-    assert "def _parse_finite_float" not in source
+    assert accounting_imports == {"parse_finite_float": "_parse_finite_float"}
+    assert "dashboard_runtime.current_paper_open_pnl()" in source
+    assert "dashboard_runtime.current_paper_assets_cost()" in source
 
 
 def test_main_delegates_dashboard_balance_calculation_to_portfolio() -> None:
@@ -454,6 +459,7 @@ def test_main_delegates_shadow_outcome_persistence_to_storage() -> None:
     }
     assert imported == {"ShadowOutcomePersistence"}
     assert "shadow_outcome_persistence = ShadowOutcomePersistence(" in source
+    assert "paper_session_runtime = PaperSessionRuntime(" in source
 
     persist = next(
         node for node in tree.body
@@ -465,25 +471,36 @@ def test_main_delegates_shadow_outcome_persistence_to_storage() -> None:
         if isinstance(node, ast.AsyncFunctionDef)
         and node.name == "_restore_shadow_outcomes"
     )
-    persist_calls = [
-        node for node in ast.walk(persist)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-    ]
-    restore_calls = [
-        node for node in ast.walk(restore)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-    ]
-    assert any(
-        node.func.attr == "persist_completed_labels"
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "shadow_outcome_persistence"
-        for node in persist_calls
+    assert "paper_session_runtime.persist_shadow_outcomes(labels, source=source)" in (
+        ast.get_source_segment(source, persist) or ""
     )
-    assert any(
-        node.func.attr == "restore_completed_labels"
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "shadow_outcome_persistence"
-        for node in restore_calls
+    assert "paper_session_runtime.restore_shadow_outcomes()" in (
+        ast.get_source_segment(source, restore) or ""
     )
-    assert "push_many_to_list(" not in (ast.get_source_segment(source, persist) or "")
-    assert "get_list(" not in (ast.get_source_segment(source, restore) or "")
+    assert "persist_completed_labels(" not in (ast.get_source_segment(source, persist) or "")
+    assert "restore_completed_labels(" not in (ast.get_source_segment(source, restore) or "")
+
+
+def test_main_delegates_market_data_runtime_services() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "strategy.market_data_runtime"
+        for alias in node.names
+    }
+    assert {"M1HistoryWarmup", "PendingBBOCandidateStore", "paper_queue_flow_conflict_reason"} <= imported
+    assert "m1_history_warmup = M1HistoryWarmup(" in source
+    assert "pending_bbo_candidate_store = PendingBBOCandidateStore(" in source
+    assert "coalesce_pending_bbo_entry(" not in source
+    assert "bars = await broker.get_historical_m1_bars(" not in source
+
+
+def test_main_delegates_paper_api_helpers_to_interface() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    assert "paper_api_helpers = PaperAPIHelpers(" in source
+    assert "paper_api_helpers.require_paper_mode()" in source
+    assert "paper_api_helpers.paper_trade_rows(snapshot)" in source
+    assert "paper_api_helpers.broadcast_paper_tables()" in source
