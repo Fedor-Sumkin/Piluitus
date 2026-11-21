@@ -348,3 +348,20 @@ def test_main_delegates_trade_flow_report_formatting_to_monitoring() -> None:
     assert "TradeFlowReportLogger" in imports
     assert "trade_flow_report_logger = TradeFlowReportLogger(logger)" in source
     assert "trade_flow_report_logger.log(counts, pending_bbo=pending_bbo)" in source
+
+
+
+def test_main_delegates_strategy_shadow_events_to_monitoring() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "monitoring.strategy_shadow_diagnostics"
+        for alias in node.names
+    }
+    assert imported == {"StrategyShadowDiagnostics"}
+    assert "strategy_shadow_diagnostics.mark_llm_not_called(candidate_id, reason_code)" in source
+    assert "strategy_shadow_diagnostics.log_candidate(ticker, direction, metrics)" in source
+    assert "def _log_scalping_shadow(" in source
