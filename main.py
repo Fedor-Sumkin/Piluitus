@@ -93,6 +93,7 @@ from monitoring.trade_flow_diagnostics import (
 # --------------------------------------------------------------
 load_dotenv()
 
+from monitoring.background_tasks import BackgroundOperationTracker
 from monitoring.logging_setup import (
     RUN_ID,
     RUN_LOG_PATHS,
@@ -1368,43 +1369,8 @@ screener.set_universe(TICKERS_TO_TRADE)
 # --------------------------------------------------------------
 #  2️⃣  НЕБЛОКИРУЮЩИЙ ДИСКОВЫЙ БОРТОВОЙ ЖУРНАЛ ТЕСТОВ
 # --------------------------------------------------------------
-_tracked_operation_tasks: set[asyncio.Task] = set()
+_background_operations = BackgroundOperationTracker(logger)
 _trading_log_file_lock = threading.Lock()
-
-
-def _spawn_tracked_operation(coro, *, name: str) -> asyncio.Task:
-    """Keep a strong reference to critical fire-and-forget work until it completes."""
-    task = asyncio.create_task(coro, name=name)
-    _tracked_operation_tasks.add(task)
-
-    def _on_done(completed: asyncio.Task) -> None:
-        _tracked_operation_tasks.discard(completed)
-        if completed.cancelled():
-            return
-        try:
-            error = completed.exception()
-        except asyncio.CancelledError:
-            return
-        if error is not None:
-            logger.error(
-                "[BACKGROUND OPERATION FAILED] task=%s error=%r",
-                completed.get_name(),
-                error,
-                exc_info=(type(error), error, error.__traceback__),
-            )
-
-    task.add_done_callback(_on_done)
-    return task
-
-
-async def _drain_tracked_operations() -> None:
-    """Wait for queued verdict-file writes and in-flight order publications at shutdown."""
-    while _tracked_operation_tasks:
-        pending = tuple(_tracked_operation_tasks)
-        await asyncio.gather(*pending, return_exceptions=True)
-        for task in pending:
-            _tracked_operation_tasks.discard(task)
-    logger.info("[BACKGROUND OPERATIONS] shutdown drain complete.")
 
 
 def _sync_write_trading_log(filename: str, log_line: str):
@@ -2220,7 +2186,7 @@ class MarketWorker:
                 else:
                     volatility_text = "Волатильность: Н/Д — нет подтверждённой истории."
 
-                _spawn_tracked_operation(
+                _background_operations.spawn(
                     log_trading_event_to_file(
                         ticker=ticker,
                         price=price,
@@ -2241,7 +2207,7 @@ class MarketWorker:
                     continue
                 if not trading_allowed:
                     _trade_flow_inc("risk_blocked")
-                    _spawn_tracked_operation(
+                    _background_operations.spawn(
                         log_trading_event_to_file(
                             ticker,
                             price,
@@ -2771,7 +2737,7 @@ class MarketWorker:
                 ai_analysis["tactic_opinion"] = tactic_text
                 ai_analysis["critic_opinion"] = critic_text
 
-                _spawn_tracked_operation(
+                _background_operations.spawn(
                     log_trading_event_to_file(
                         ticker=ticker,
                         price=price,
@@ -2842,7 +2808,7 @@ class MarketWorker:
                     await _safe_broadcast(payload_for_ws)
 
                     if execution_status == "PENDING":
-                        _spawn_tracked_operation(
+                        _background_operations.spawn(
                             self._execute_and_publish(
                                 verdict_id=verdict_id,
                                 ticker=ticker,
@@ -3233,7 +3199,7 @@ async def lifespan(app: FastAPI):
         # Producers are stopped; finish all retained verdict writes and order publications
         # before closing the replay writer or the event loop.
         try:
-            await _drain_tracked_operations()
+            await _background_operations.drain()
         except Exception as operation_drain_err:
             logger.error(
                 "[BACKGROUND OPERATIONS] shutdown drain failed: %s",
