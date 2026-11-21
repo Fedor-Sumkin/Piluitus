@@ -55,6 +55,14 @@ from runtime.market_event_router import (
     PaperBBOReplayAdapter,
 )
 from strategy.market_candidate_pipeline import MarketCandidatePipeline
+from strategy.verdict_records import (
+    build_pre_llm_risk_block_verdict,
+    build_default_signal_reason,
+    classify_local_evidence_diagnostic,
+    build_llm_verdict_record,
+    link_shadow_candidate_verdict,
+    enrich_ai_analysis_with_verdict,
+)
 from strategy.signal_guard import (
     validate_entry_evidence,
     infer_candidate_direction, validate_atr_readiness,
@@ -1182,33 +1190,13 @@ class MarketWorker:
         if now_mono - self._last_risk_block_verdict_at < 10.0:
             return
         self._last_risk_block_verdict_at = now_mono
-        ticker = str(event_payload.get("ticker", "UNKNOWN")).strip().upper()
-        price = event_payload.get("price", 0.0)
-        metrics = event_payload.get("metrics", {})
-        if not isinstance(metrics, dict):
-            metrics = {}
-        candidate = str(event_payload.get("candidate_direction", "HOLD")).upper()
-        reason = "RiskManager остановил торговлю до запроса к ИИ; исполнитель не вызывался."
-        tactic, critic = build_verdict_explanation("HOLD", candidate, metrics, reason)
-        now_local = datetime.now().astimezone()
-        verdict_id = uuid4().hex
-        verdict = {
-            "verdict_id": verdict_id,
-            "timestamp": now_local.strftime("%H:%M:%S"),
-            "timestamp_iso": now_local.isoformat(timespec="milliseconds"),
-            "ticker": ticker,
-            "price": price,
-            "decision": "HOLD",
-            "candidate_decision": candidate,
-            "confidence": None,
-            "decision_source": "RISK_MANAGER",
-            "signal_status": "BLOCKED" if candidate in {"BUY", "SELL"} else "NO_ENTRY",
-            "signal_reason": reason,
-            "execution_status": "NOT_REQUESTED",
-            "execution_message": "Не запрашивалось: торговля остановлена RiskManager.",
-            "tactic_opinion": tactic,
-            "critic_opinion": critic,
-        }
+        verdict = build_pre_llm_risk_block_verdict(
+            event_payload,
+            now_local=datetime.now().astimezone(),
+            verdict_id=uuid4().hex,
+            explanation_builder=build_verdict_explanation,
+        )
+        ticker = verdict["ticker"]
         last_ai_verdicts_cache.append(verdict)
         if len(last_ai_verdicts_cache) > MAX_CACHE_SIZE:
             last_ai_verdicts_cache.pop(0)
@@ -1697,36 +1685,28 @@ class MarketWorker:
 
                 # Do not expose free-form LLM reasoning as evidence. User-facing text
                 # is generated only from locally measured values and guard outcomes.
-                if decision == "HOLD" and not signal_reason:
-                    if not confidence_valid:
-                        signal_reason = "Ответ модели не содержит корректной числовой оценки; вход запрещён."
-                    elif model_decision == "HOLD" and candidate_decision in {"BUY", "SELL"}:
-                        signal_reason = "Модель отклонила локальный кандидат: вердикт HOLD."
-                    elif candidate_decision in {"BUY", "SELL"}:
-                        signal_reason = "Кандидат ИИ не прошёл локальные проверки входа."
-                    else:
-                        signal_reason = "Модель не предложила направленный вход."
+                signal_reason = build_default_signal_reason(
+                    decision=decision,
+                    candidate_decision=candidate_decision,
+                    confidence_valid=confidence_valid,
+                    signal_reason=signal_reason,
+                    model_decision=model_decision,
+                )
                 tactic_text, critic_text = build_verdict_explanation(
                     decision, candidate_decision, evidence, signal_reason
                 )
-                if block_reason:
-                    local_evidence_diagnostic = block_reason
-                elif candidate_direction not in {"BUY", "SELL"}:
-                    local_evidence_diagnostic = "NO_DIRECTIONAL_CANDIDATE"
-                elif request_error:
-                    local_evidence_diagnostic = f"LLM_REQUEST_ERROR:{request_error_type}"
-                elif model_contract_violation:
-                    local_evidence_diagnostic = "LLM_CONTRACT_VIOLATION"
-                elif model_decision == "HOLD":
-                    local_evidence_diagnostic = f"MODEL_HOLD:{model_reason_code}"
-                elif not confidence_valid:
-                    local_evidence_diagnostic = "CONFIDENCE_INVALID"
-                elif decision == "HOLD" and confidence < 75.0:
-                    local_evidence_diagnostic = f"CONFIDENCE_BELOW_THRESHOLD:{confidence:.1f}"
-                elif decision == "HOLD":
-                    local_evidence_diagnostic = "POST_LLM_GUARD_BLOCK"
-                else:
-                    local_evidence_diagnostic = "PRE_LLM_VALIDATED"
+                local_evidence_diagnostic = classify_local_evidence_diagnostic(
+                    block_reason=block_reason,
+                    candidate_direction=candidate_direction,
+                    request_error=request_error,
+                    request_error_type=request_error_type,
+                    model_contract_violation=model_contract_violation,
+                    model_decision=model_decision,
+                    model_reason_code=model_reason_code,
+                    confidence_valid=confidence_valid,
+                    decision=decision,
+                    confidence=confidence,
+                )
                 logger.info(
                     "[LLM DECISION] %s candidate=%s candidate_id=%s verdict_id=%s model=%s final=%s "
                     "model_confidence=%s final_confidence=%s confidence_valid=%s "
@@ -1760,104 +1740,73 @@ class MarketWorker:
                     json.dumps(post_llm_refresh, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
                 )
 
-                signal_status = (
-                    "APPROVED" if decision in {"BUY", "SELL"}
-                    else "BLOCKED" if candidate_decision in {"BUY", "SELL"}
-                    else "NO_ENTRY"
+                verdict_data = build_llm_verdict_record(
+                    verdict_id=verdict_id,
+                    event_payload=event_payload,
+                    now_local=datetime.now().astimezone(),
+                    ticker=ticker,
+                    price=price,
+                    decision=decision,
+                    candidate_decision=candidate_decision,
+                    model_decision=model_decision,
+                    candidate_confidence=candidate_confidence,
+                    confidence=confidence,
+                    confidence_valid=confidence_valid,
+                    signal_reason=signal_reason,
+                    execution_status=execution_status,
+                    execution_message=execution_message,
+                    requested_lots=requested_lots,
+                    requested_notional=requested_notional,
+                    tactic_text=tactic_text,
+                    critic_text=critic_text,
+                    local_evidence_diagnostic=local_evidence_diagnostic,
+                    llm_input_features=llm_input_features,
+                    post_llm_features=post_llm_features,
+                    post_llm_evidence_validation=post_llm_evidence_validation,
+                    post_llm_evidence_reason=post_llm_evidence_reason,
+                    post_llm_refresh=post_llm_refresh,
+                    ai_analysis=ai_analysis,
                 )
-                now_local = datetime.now().astimezone()
-                verdict_data = {
-                    "verdict_id": verdict_id,
-                    "shadow_candidate_id": event_payload.get("shadow_candidate_id"),
-                    "timestamp": now_local.strftime("%H:%M:%S"),
-                    "timestamp_iso": now_local.isoformat(timespec="milliseconds"),
-                    "ticker": ticker,
-                    "price": price,
-                    "decision": decision,
-                    "candidate_decision": candidate_decision,
-                    "model_decision": model_decision,
-                    # Keep model confidence separate from the post-LLM final gate.
-                    "confidence": round(candidate_confidence, 1) if candidate_confidence is not None else None,
-                    "model_confidence": round(candidate_confidence, 1) if candidate_confidence is not None else None,
-                    "final_confidence": round(confidence, 1) if confidence_valid else None,
-                    "signal_status": signal_status,
-                    "signal_reason": signal_reason,
-                    "execution_status": execution_status,
-                    "execution_message": execution_message,
-                    "requested_lots": requested_lots or None,
-                    "requested_notional_rub": round(requested_notional, 2) if requested_notional else None,
-                    "executed_lots": None,
-                    "executed_shares": None,
-                    "actual_notional_rub": None,
-                    "order_id": None,
-                    "tactic_opinion": tactic_text,
-                    "critic_opinion": critic_text,
-                    "local_evidence_reason": local_evidence_diagnostic,
-                    "llm_input_features": llm_input_features,
-                    "pre_llm_features": llm_input_features,
-                    "post_llm_features": post_llm_features,
-                    "post_llm_evidence_validation": post_llm_evidence_validation,
-                    "post_llm_evidence_reason": post_llm_evidence_reason,
-                    "post_llm_refresh": post_llm_refresh,
-                    "llm_candidate_direction": candidate_decision,
-                    "llm_model_decision": model_decision,
-                    "llm_reason_code": model_reason_code,
-                    "llm_reason_code_raw": ai_analysis.get("model_reason_code_raw", "NOT_PROVIDED"),
-                    "llm_reason_validation": ai_analysis.get("model_reason_validation", "UNKNOWN"),
-                    "llm_m1_evidence_state": ai_analysis.get("m1_evidence_state", "UNAVAILABLE"),
-                    "llm_prompt_chars": ai_analysis.get("prompt_chars"),
-                    "llm_prompt_fingerprint": ai_analysis.get("prompt_fingerprint"),
-                }
+                signal_status = verdict_data["signal_status"]
                 shadow_candidate_id = str(event_payload.get("shadow_candidate_id") or "")
-                if shadow_candidate_id:
-                    linked = scalping_shadow_tracker.attach_llm_verdict(
-                        shadow_candidate_id,
-                        verdict_id=verdict_id,
-                        model_decision=model_decision,
-                        final_decision=decision,
-                        signal_status=signal_status,
-                        confidence=candidate_confidence,
-                        reason_code=model_reason_code,
-                        local_guard=local_evidence_diagnostic,
-                        execution_status=execution_status,
-                    )
-                    verdict_data["shadow_linked"] = bool(linked)
-                    if not linked:
-                        logger.warning(
-                            "[STRATEGY SHADOW LINK MISS] candidate_id=%s verdict_id=%s ticker=%s",
-                            shadow_candidate_id, verdict_id, ticker,
-                        )
-                else:
-                    verdict_data["shadow_linked"] = False
-
-                ai_analysis["final_decision"] = decision
-                ai_analysis["confidence_score"] = (confidence / 100.0) if confidence_valid else 0.0
-                ai_analysis.update({
-                    "shadow_candidate_id": shadow_candidate_id or None,
-                    "llm_verdict_id": verdict_id,
-                    "llm_model_decision": model_decision,
-                    "llm_final_decision": decision,
-                    "llm_confidence_pct": candidate_confidence,
-                    "llm_final_confidence_pct": round(confidence, 1) if confidence_valid else None,
-                    "llm_signal_status": signal_status,
-                    "llm_reason_code": model_reason_code,
-                    "llm_local_guard": local_evidence_diagnostic,
-                    "candidate_direction": candidate_decision,
-                    "llm_shadow_linked": bool(verdict_data.get("shadow_linked", False)),
-                    "pre_llm_features": llm_input_features,
-                    "post_llm_features": post_llm_features,
-                    "post_llm_evidence_validation": post_llm_evidence_validation,
-                    "post_llm_evidence_reason": post_llm_evidence_reason,
-                    "post_llm_refresh": post_llm_refresh,
-                    # Persist point-in-time regime labels with the trade. Missing
-                    # source fields remain UNKNOWN rather than being inferred later.
-                    "market_regime": metrics.get("market_regime", metrics.get("regime", "UNKNOWN")),
-                    "volatility_regime": metrics.get("volatility_regime", "UNKNOWN"),
-                    "liquidity_regime": metrics.get("liquidity_regime", "UNKNOWN"),
-                    "directional_regime": metrics.get("directional_regime", "UNKNOWN"),
-                })
-                ai_analysis["tactic_opinion"] = tactic_text
-                ai_analysis["critic_opinion"] = critic_text
+                link_shadow_candidate_verdict(
+                    verdict_data,
+                    shadow_candidate_id=shadow_candidate_id,
+                    shadow_tracker=scalping_shadow_tracker,
+                    logger=logger,
+                    verdict_id=verdict_id,
+                    model_decision=model_decision,
+                    final_decision=decision,
+                    signal_status=signal_status,
+                    confidence=candidate_confidence,
+                    reason_code=model_reason_code,
+                    local_guard=local_evidence_diagnostic,
+                    execution_status=execution_status,
+                    ticker=ticker,
+                )
+                enrich_ai_analysis_with_verdict(
+                    ai_analysis,
+                    verdict_data=verdict_data,
+                    shadow_candidate_id=shadow_candidate_id,
+                    verdict_id=verdict_id,
+                    decision=decision,
+                    confidence=confidence,
+                    confidence_valid=confidence_valid,
+                    candidate_confidence=candidate_confidence,
+                    signal_status=signal_status,
+                    model_decision=model_decision,
+                    model_reason_code=model_reason_code,
+                    local_evidence_diagnostic=local_evidence_diagnostic,
+                    candidate_decision=candidate_decision,
+                    llm_input_features=llm_input_features,
+                    post_llm_features=post_llm_features,
+                    post_llm_evidence_validation=post_llm_evidence_validation,
+                    post_llm_evidence_reason=post_llm_evidence_reason,
+                    post_llm_refresh=post_llm_refresh,
+                    metrics=metrics,
+                    tactic_text=tactic_text,
+                    critic_text=critic_text,
+                )
 
                 _background_operations.spawn(
                     log_trading_event_to_file(

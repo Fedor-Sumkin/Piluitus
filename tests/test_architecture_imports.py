@@ -715,3 +715,34 @@ def test_main_delegates_market_verdict_publication_to_execution_package() -> Non
     assert "redis_inst.lpush(" not in start_processing_source
     assert "manager.broadcast(json.dumps(payload" not in start_processing_source
     assert "verdict_cache.append(verdict)" in module_source
+
+
+def test_main_delegates_verdict_record_construction_and_enrichment_to_strategy() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    module_source = (
+        ROOT / "strategy" / "verdict_records.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "strategy.verdict_records"
+        for alias in node.names
+    }
+    assert imported == {
+        "build_pre_llm_risk_block_verdict",
+        "build_default_signal_reason",
+        "classify_local_evidence_diagnostic",
+        "build_llm_verdict_record",
+        "link_shadow_candidate_verdict",
+        "enrich_ai_analysis_with_verdict",
+    }
+    assert "verdict = build_pre_llm_risk_block_verdict(" in source
+    assert "verdict_data = build_llm_verdict_record(" in source
+    assert "link_shadow_candidate_verdict(" in source
+    assert "enrich_ai_analysis_with_verdict(" in source
+    assert "decision_source" in module_source
+    assert "llm_reason_code_raw" in module_source
+    assert "market_regime" in module_source
+    assert "scalping_shadow_tracker.attach_llm_verdict(" not in source
