@@ -281,3 +281,21 @@ def test_main_delegates_trading_event_journal_to_monitoring() -> None:
     assert "log_trading_event_to_file" in imports
     assert "async def log_trading_event_to_file" not in source
     assert "_sync_write_trading_log" not in source
+
+
+
+def test_main_delegates_position_order_book_diagnostics_to_monitoring() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imports = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "monitoring.position_order_book_diagnostics"
+        for alias in node.names
+    }
+    assert "PositionOrderBookDiagnostics" in imports
+    assert "position_order_book_diagnostics = PositionOrderBookDiagnostics(logger)" in source
+    assert "_position_order_book_diag_lock" not in source
+    assert "_position_order_book_diag:" not in source
+    assert "position_order_book_diagnostics.clear()" in source
