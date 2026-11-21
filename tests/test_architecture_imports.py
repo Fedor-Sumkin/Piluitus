@@ -707,6 +707,66 @@ def test_main_delegates_candidate_admission_to_strategy_pipeline() -> None:
     assert "validate_atr_readiness" in pipeline_source
     assert "anomaly_queue.put_nowait" in pipeline_source
 
+def test_main_delegates_pending_bbo_candidate_lifecycle_to_strategy_runtime() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    runtime_source = (
+        ROOT / "strategy" / "market_data_runtime.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "strategy.market_data_runtime"
+        for alias in node.names
+    }
+    assert "PendingBBOCandidateRuntime" in imported
+    assert "pending_bbo_runtime = PendingBBOCandidateRuntime(" in source
+    assert "pending_bbo_runtime.has_pending(ticker)" in source
+    assert "pending_bbo_candidate_store.count()" in source
+
+    wrapper = next(
+        node for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_resume_pending_bbo_candidate"
+    )
+    wrapper_source = ast.get_source_segment(source, wrapper) or ""
+    assert "await pending_bbo_runtime.resume(ticker, trigger=trigger)" in wrapper_source
+    assert "refresh_candidate_bbo_metrics" not in wrapper_source
+    assert "validate_entry_evidence" not in wrapper_source
+    assert "validate_atr_readiness" not in wrapper_source
+
+    runtime_tree = ast.parse(
+        runtime_source, filename="strategy/market_data_runtime.py"
+    )
+    runtime_class = next(
+        node for node in runtime_tree.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "PendingBBOCandidateRuntime"
+    )
+    methods = {
+        node.name for node in runtime_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert {
+        "drop", "cancel", "expire", "store_candidate", "has_pending", "resume"
+    } <= methods
+    for guard in (
+        "PAPER_SESSION_CHANGED",
+        "FUNNEL_NOT_READY",
+        "TOP15_DESELECTED",
+        "POSITION_ALREADY_OPEN",
+        "DIRECTION_CHANGED",
+        "QUEUE_TRADE_FLOW_CONFLICT",
+        "SIGNAL_EVIDENCE_BLOCKED",
+        "ATR_NOT_READY",
+        "PAYLOAD_SUPERSEDED",
+        "AI_DEDUPLICATED",
+        "AI_QUEUE_FULL",
+    ):
+        assert guard in runtime_source
+
+
 def test_main_delegates_execution_fill_normalization_to_execution_package() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
     module_source = (ROOT / "execution" / "outcome_reporting.py").read_text(encoding="utf-8")

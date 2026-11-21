@@ -154,6 +154,12 @@ class PendingBBOCandidateStore:
         self.lock = lock if lock is not None else threading.Lock()
         self.monotonic = monotonic
 
+
+    def get(self, ticker: str) -> dict[str, Any] | None:
+        key = str(ticker or "").strip().upper().split("@")[0]
+        with self.lock:
+            return self.candidates.get(key)
+
     def drop(
         self, ticker: str, expected: dict[str, Any] | None = None
     ) -> bool:
@@ -250,6 +256,293 @@ class PendingBBOCandidateStore:
     def count(self) -> int:
         with self.lock:
             return len(self.candidates)
+
+
+
+class PendingBBOCandidateRuntime:
+    """Coordinate deferred-candidate storage, revalidation, and AI queue admission."""
+
+    def __init__(
+        self,
+        *,
+        store: PendingBBOCandidateStore,
+        screener: Any,
+        execution_engine: Any,
+        anomaly_queue: Any,
+        queue_item_factory: Any,
+        refresh_bbo_metrics: Callable[..., tuple[bool, str]],
+        infer_candidate_direction: Callable[[dict[str, Any]], str | None],
+        paper_mode_provider: Callable[[], bool],
+        validate_entry_evidence: Callable[..., tuple[bool, str]],
+        validate_atr_readiness: Callable[[dict[str, Any]], tuple[bool, str]],
+        queue_flow_conflict_reason: Callable[[str, dict[str, Any]], str],
+        reserve_ai_ticker: Callable[[str, str, dict[str, Any]], bool],
+        release_ai_ticker: Callable[[str], None],
+        mark_shadow_llm_not_called: Callable[[object, str], None],
+        log_shadow_candidate: Callable[[str, str, dict[str, Any]], dict[str, Any]],
+        trade_flow_increment: Callable[[str], None],
+        guard_reason_bucket: Callable[[str], str],
+        trade_flow_guard_block: Callable[[str], None],
+        log_prefilter_blocked: Callable[..., None],
+        update_numpy_impulse_status: Callable[[str], None],
+        session_generation_provider: Callable[[], int],
+        logger: Any,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.store = store
+        self.screener = screener
+        self.execution_engine = execution_engine
+        self.anomaly_queue = anomaly_queue
+        self.queue_item_factory = queue_item_factory
+        self.refresh_bbo_metrics = refresh_bbo_metrics
+        self.infer_candidate_direction = infer_candidate_direction
+        self.paper_mode_provider = paper_mode_provider
+        self.validate_entry_evidence = validate_entry_evidence
+        self.validate_atr_readiness = validate_atr_readiness
+        self.queue_flow_conflict_reason = queue_flow_conflict_reason
+        self.reserve_ai_ticker = reserve_ai_ticker
+        self.release_ai_ticker = release_ai_ticker
+        self.mark_shadow_llm_not_called = mark_shadow_llm_not_called
+        self.log_shadow_candidate = log_shadow_candidate
+        self.trade_flow_increment = trade_flow_increment
+        self.guard_reason_bucket = guard_reason_bucket
+        self.trade_flow_guard_block = trade_flow_guard_block
+        self.log_prefilter_blocked = log_prefilter_blocked
+        self.update_numpy_impulse_status = update_numpy_impulse_status
+        self.session_generation_provider = session_generation_provider
+        self.logger = logger
+        self.monotonic = monotonic
+
+    def drop(
+        self, ticker: str, expected: dict[str, Any] | None = None
+    ) -> bool:
+        return self.store.drop(ticker, expected)
+
+    def cancel(
+        self, ticker: str, expected: dict[str, Any] | None = None
+    ) -> bool:
+        return self.store.cancel(ticker, expected)
+
+    def expire(self, now: float | None = None) -> None:
+        self.store.expire(now)
+
+    def store_candidate(
+        self,
+        ticker: str,
+        payload: dict[str, Any],
+        received_monotonic: object | None = None,
+    ) -> None:
+        self.store.store(ticker, payload, received_monotonic)
+
+    def has_pending(self, ticker: str) -> bool:
+        return self.store.get(ticker) is not None
+
+    async def resume(
+        self,
+        ticker: str,
+        *,
+        trigger: str = "ORDER_BOOK",
+    ) -> None:
+        """Revalidate a short-lived candidate after a coherent book or fresh quote."""
+        key = str(ticker or "").strip().upper().split("@")[0]
+        pending = self.store.get(key)
+        if pending is None:
+            return
+
+        normalized_trigger = str(trigger or "ORDER_BOOK").strip().upper()
+        self.trade_flow_increment("bbo_resume_attempted")
+        self.trade_flow_increment(
+            "bbo_resume_from_quotes"
+            if normalized_trigger == "QUOTES"
+            else "bbo_resume_from_book"
+        )
+
+        now = self.monotonic()
+        created_at = float(pending.get("created_at", 0.0) or 0.0)
+        if created_at <= 0.0 or now - created_at > self.store.ttl_sec:
+            self.drop(key, pending)
+            self.trade_flow_increment("bbo_expired")
+            self.trade_flow_increment("bbo_resume_expired")
+            return
+
+        payload = pending.get("payload")
+        if not isinstance(payload, dict):
+            self.trade_flow_increment("bbo_resume_invalid_payload")
+            self.cancel(key, pending)
+            return
+        if (
+            getattr(self.execution_engine, "_maintenance_active", False)
+            or payload.get("paper_session_generation")
+            != self.session_generation_provider()
+        ):
+            self.mark_shadow_llm_not_called(
+                payload.get("shadow_candidate_id"), "PAPER_SESSION_CHANGED"
+            )
+            self.trade_flow_increment("bbo_resume_session_cancelled")
+            self.cancel(key, pending)
+            return
+
+        funnel_status = self.screener.get_status()
+        if not funnel_status.get("ready"):
+            self.mark_shadow_llm_not_called(
+                payload.get("shadow_candidate_id"), "FUNNEL_NOT_READY"
+            )
+            self.trade_flow_increment("bbo_resume_funnel_not_ready")
+            self.cancel(key, pending)
+            return
+        if key not in set(funnel_status.get("selected_tickers", [])):
+            self.mark_shadow_llm_not_called(
+                payload.get("shadow_candidate_id"), "TOP15_DESELECTED"
+            )
+            self.trade_flow_increment("bbo_resume_not_selected")
+            self.cancel(key, pending)
+            return
+
+        active_tickers = self.execution_engine.get_open_position_tickers()
+        if key in active_tickers or key in getattr(
+            self.execution_engine, "_opening_tickers", set()
+        ):
+            self.mark_shadow_llm_not_called(
+                payload.get("shadow_candidate_id"), "POSITION_ALREADY_OPEN"
+            )
+            self.trade_flow_increment("bbo_resume_active_position")
+            self.cancel(key, pending)
+            self.trade_flow_increment("active_position_skipped")
+            return
+
+        metrics = payload.get("metrics")
+        if not isinstance(metrics, dict):
+            self.mark_shadow_llm_not_called(
+                payload.get("shadow_candidate_id"), "INVALID_METRICS_PAYLOAD"
+            )
+            self.trade_flow_increment("bbo_resume_invalid_payload")
+            self.cancel(key, pending)
+            return
+
+        book_ready, book_reason = self.refresh_bbo_metrics(
+            self.screener, key, metrics, now=now
+        )
+        if not book_ready:
+            self.trade_flow_increment(
+                "bbo_resume_" + self.guard_reason_bucket(book_reason)
+            )
+            self.logger.debug(
+                "[PRE-LLM BBO RESUME WAIT] %s trigger=%s: %s",
+                key,
+                normalized_trigger,
+                book_reason,
+            )
+            return
+
+        direction = self.infer_candidate_direction(metrics)
+        original_direction = str(payload.get("candidate_direction", "")).upper()
+        if direction not in {"BUY", "SELL"} or direction != original_direction:
+            self.mark_shadow_llm_not_called(
+                payload.get("shadow_candidate_id"), "DIRECTION_CHANGED"
+            )
+            self.trade_flow_increment("bbo_resume_direction_changed")
+            self.cancel(key, pending)
+            self.trade_flow_increment("direction_prefilter_skipped")
+            return
+
+        if not payload.get("shadow_candidate_id"):
+            shadow_result = self.log_shadow_candidate(key, direction, metrics)
+            payload["shadow_candidate_id"] = shadow_result.get("candidate_id")
+
+        queue_flow_reason = self.queue_flow_conflict_reason(direction, metrics)
+        if queue_flow_reason:
+            self.mark_shadow_llm_not_called(
+                payload.get("shadow_candidate_id"), "QUEUE_TRADE_FLOW_CONFLICT"
+            )
+            self.trade_flow_increment("bbo_resume_evidence_blocked")
+            self.trade_flow_guard_block(queue_flow_reason)
+            self.log_prefilter_blocked(key, queue_flow_reason)
+            self.cancel(key, pending)
+            return
+
+        evidence_ok, evidence_reason = self.validate_entry_evidence(
+            direction,
+            metrics,
+            paper_mode=self.paper_mode_provider(),
+        )
+        if not evidence_ok:
+            if self.guard_reason_bucket(evidence_reason) == "quotes":
+                self.trade_flow_increment("bbo_resume_evidence_quotes")
+                return
+            self.mark_shadow_llm_not_called(
+                payload.get("shadow_candidate_id"), "SIGNAL_EVIDENCE_BLOCKED"
+            )
+            self.trade_flow_increment("bbo_resume_evidence_blocked")
+            self.cancel(key, pending)
+            self.trade_flow_increment("prefilter_blocked")
+            self.trade_flow_guard_block(evidence_reason)
+            self.log_prefilter_blocked(key, evidence_reason)
+            return
+
+        atr_ready, atr_reason = self.validate_atr_readiness(metrics)
+        if not atr_ready:
+            self.mark_shadow_llm_not_called(
+                payload.get("shadow_candidate_id"), "ATR_NOT_READY"
+            )
+            self.trade_flow_increment("bbo_resume_atr_blocked")
+            self.trade_flow_increment("atr_unready_candidates")
+            self.cancel(key, pending)
+            self.log_prefilter_blocked(key, atr_reason, interval_sec=60.0)
+            return
+
+        # Never enqueue stale evidence or remove a newer same-ticker candidate.
+        if not self.store.is_current(key, pending, payload):
+            self.mark_shadow_llm_not_called(
+                payload.get("shadow_candidate_id"), "PAYLOAD_SUPERSEDED"
+            )
+            self.trade_flow_increment("bbo_resume_payload_changed")
+            return
+
+        if not self.reserve_ai_ticker(
+            key, payload.get("candidate_direction"), metrics
+        ):
+            self.mark_shadow_llm_not_called(
+                payload.get("shadow_candidate_id"), "AI_DEDUPLICATED"
+            )
+            self.trade_flow_increment("bbo_resume_deduplicated")
+            self.cancel(key, pending)
+            self.trade_flow_increment("candidate_deduplicated")
+            return
+
+        payload["bid"] = metrics.get("bid", 0.0)
+        payload["ask"] = metrics.get("ask", 0.0)
+        payload["bid_size"] = metrics.get("bid_size", 0.0)
+        payload["ask_size"] = metrics.get("ask_size", 0.0)
+        try:
+            self.anomaly_queue.put_nowait(
+                self.queue_item_factory.create(1, "MARKET_TICK", payload)
+            )
+            self.drop(key, pending)
+            self.trade_flow_increment("bbo_resumed")
+            self.trade_flow_increment("anomalies_queued")
+            self.trade_flow_increment(
+                "prefilter_pass_buy" if direction == "BUY" else "prefilter_pass_sell"
+            )
+            self.logger.info(
+                "✅ [PRE-LLM RESUME] %s: свежий BBO и ORDER_BOOK подтверждены; "
+                "кандидат %s передан в LLM-очередь (trigger=%s).",
+                key,
+                direction,
+                normalized_trigger,
+            )
+            self.update_numpy_impulse_status(key)
+        except asyncio.QueueFull:
+            self.mark_shadow_llm_not_called(
+                payload.get("shadow_candidate_id"), "AI_QUEUE_FULL"
+            )
+            self.release_ai_ticker(key)
+            self.drop(key, pending)
+            self.trade_flow_increment("bbo_resume_queue_full")
+            self.trade_flow_increment("queue_dropped")
+            self.logger.error(
+                "Очередь AI-сигналов заполнена; восстановленный кандидат %s отброшен.",
+                key,
+            )
 
 
 def paper_queue_flow_conflict_reason(
