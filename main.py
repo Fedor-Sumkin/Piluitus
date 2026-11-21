@@ -85,6 +85,10 @@ from strategy.decision_diagnostics import (
 from interface import tg_bot
 from ai.news_parser import MarketNewsParser
 from monitoring.terminal_status import TerminalStatusLine, StatusAwareStreamHandler
+from monitoring.trade_flow_diagnostics import (
+    bbo_resume_reason_bucket as _bbo_resume_reason_bucket,
+    guard_reason_bucket as _guard_reason_bucket,
+)
 
 # --------------------------------------------------------------
 #  ENVIRONMENT & INITIALIZATION
@@ -1145,23 +1149,6 @@ def _trade_flow_guard_block(reason: str) -> None:
     _trade_flow_inc(bucket)
 
 
-def _guard_reason_bucket(reason: str) -> str:
-    lowered = str(reason or "").lower()
-    if "bid/ask" in lowered or "котировк" in lowered or "актуальн" in lowered:
-        return "quotes"
-    if "спред" in lowered:
-        return "spread"
-    if "atr" in lowered or "m1-диапазон" in lowered or "m1-истори" in lowered:
-        return "atr"
-    if "размер лучшей заявки" in lowered or "сокращение" in lowered or "истории размера" in lowered:
-        return "size"
-    if "всплеск" in lowered or "объём" in lowered or "объем" in lowered:
-        return "volume"
-    if "импульс" in lowered or "vwap" in lowered or "цена не" in lowered:
-        return "direction"
-    return "other"
-
-
 def _mark_shadow_llm_not_called(candidate_id: object, reason_code: str) -> None:
     """Keep known pre-LLM rejects distinct from missing candidate/verdict links."""
     identifier = str(candidate_id or "").strip()
@@ -1426,22 +1413,6 @@ def _store_pending_bbo_candidate(
         "⏳ [PRE-LLM WAIT] %s: кандидат ожидает целостный свежий ORDER_BOOK (TTL=%.2fs; status=%s).",
         key, _PENDING_BBO_CANDIDATE_TTL_SEC, status,
     )
-
-
-def _bbo_resume_reason_bucket(reason: object) -> str:
-    """Map a human-readable BBO recovery failure to a stable diagnostic counter."""
-    lowered = str(reason or "").strip().lower()
-    if "состояние котировок" in lowered or "состояния стакана" in lowered:
-        return "quote_missing"
-    if "не подтверждён" in lowered or "не подтвержден" in lowered or "целостный" in lowered:
-        return "book_unconfirmed"
-    if "непротиворечив" in lowered or "двухсторон" in lowered:
-        return "invalid_bbo"
-    if "order_book устарело" in lowered:
-        return "book_stale"
-    if "свежего подтверждения" in lowered:
-        return "confirmation_stale"
-    return "other_book_failure"
 
 
 async def _resume_pending_bbo_candidate(
