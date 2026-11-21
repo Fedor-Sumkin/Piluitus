@@ -50,7 +50,7 @@ from strategy.candidate_recovery import (
     refresh_candidate_bbo_metrics,
     refresh_post_llm_evidence,
 )
-from strategy.scalping_strategy import has_queue_trade_flow_conflict
+from strategy.scalping_strategy import evaluate_scalping_candidate, has_queue_trade_flow_conflict
 from strategy.shadow_outcomes import ShadowForwardTracker
 from strategy.bbo_replay import (
     BBOReplayRecorder,
@@ -514,7 +514,7 @@ strategy_shadow_diagnostics = StrategyShadowDiagnostics(
     scalping_shadow_tracker,
     _trade_flow_inc,
     _guard_reason_bucket,
-    __import__("strategy.scalping_strategy", fromlist=["evaluate_scalping_candidate"]).evaluate_scalping_candidate,
+    evaluate_scalping_candidate,
 )
 
 
