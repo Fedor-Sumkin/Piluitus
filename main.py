@@ -43,6 +43,13 @@ from strategy.screener_funnel import HFTMemoryScreener
 from execution.execution_layer import BaseExecutionEngine
 from risk.risk_manager import RiskManager
 from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory
+from runtime.market_event_normalizer import (
+    build_market_candidate_payload,
+    market_event_type,
+    normalize_market_quote_event,
+    normalize_market_ticker,
+    normalize_order_book_event,
+)
 from strategy.signal_guard import (
     validate_entry_evidence,
     infer_candidate_direction, validate_atr_readiness,
@@ -758,8 +765,8 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
     _expire_pending_bbo_candidates()
     try:
         # Instrument trades update the trade-flow accumulator independently of QUOTES.
-        if isinstance(event, dict) and str(event.get("event_type", "")).upper() == "INSTRUMENT_TRADE":
-            trade_ticker = str(event.get("ticker") or "").strip().upper().split("@")[0]
+        if market_event_type(event) == "INSTRUMENT_TRADE":
+            trade_ticker = normalize_market_ticker(event.get("ticker"))
             if not trade_ticker:
                 _trade_flow_inc("instrument_trades_invalid")
                 return
@@ -779,33 +786,14 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
 
         # ORDER_BOOK events have no last-trade price. Route them before the QUOTES
         # normalizer, otherwise price<=0 would silently discard every book update.
-        if isinstance(event, dict) and str(event.get("event_type", "")).upper() == "ORDER_BOOK":
-            book_ticker = str(event.get("ticker") or event.get("security_code") or "").strip().upper().split("@")[0]
-            if not book_ticker:
-                _trade_flow_inc("orderbook_unusable")
-                return
+        if market_event_type(event) == "ORDER_BOOK":
             try:
-                book_result = await screener.push_order_book(
-                    ticker=book_ticker,
-                    bid=float(event.get("bid", 0.0) or 0.0),
-                    ask=float(event.get("ask", 0.0) or 0.0),
-                    bid_size=float(event.get("bid_size", 0.0) or 0.0),
-                    ask_size=float(event.get("ask_size", 0.0) or 0.0),
-                    bid_present=bool(event.get("bid_present", True)),
-                    ask_present=bool(event.get("ask_present", True)),
-                    bid_size_present=bool(event.get("bid_size_present", True)),
-                    ask_size_present=bool(event.get("ask_size_present", True)),
-                    bid_timestamp=event.get("bid_timestamp") or event.get("order_book_timestamp"),
-                    ask_timestamp=event.get("ask_timestamp") or event.get("order_book_timestamp"),
-                    order_book_timestamp=event.get("order_book_timestamp"),
-                    received_monotonic=event.get("received_monotonic"),
-                    book_valid=bool(event.get("book_valid", True)),
-                    book_reason=str(event.get("book_reason") or ""),
-                    bid_levels=event.get("bid_levels") if isinstance(event.get("bid_levels"), list) else None,
-                    ask_levels=event.get("ask_levels") if isinstance(event.get("ask_levels"), list) else None,
-                    bid_levels_present=bool(event.get("bid_levels_present", False)),
-                    ask_levels_present=bool(event.get("ask_levels_present", False)),
-                )
+                book_event = normalize_order_book_event(event)
+                book_ticker = book_event["ticker"]
+                if not book_ticker:
+                    _trade_flow_inc("orderbook_unusable")
+                    return
+                book_result = await screener.push_order_book(**book_event)
             except (TypeError, ValueError, KeyError):
                 _trade_flow_inc("orderbook_unusable")
                 return
@@ -813,8 +801,8 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
             _record_paper_bbo_replay(
                 book_ticker,
                 source="FINAM_ORDER_BOOK",
-                event_timestamp=event.get("order_book_timestamp"),
-                received_monotonic=event.get("received_monotonic"),
+                event_timestamp=book_event.get("order_book_timestamp"),
+                received_monotonic=book_event.get("received_monotonic"),
                 book_result=book_result,
             )
             if book_result.get("updated") and book_result.get("valid", True):
@@ -842,7 +830,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                         last_trade_price if last_trade_price > 0.0 else None,
                         db_manager,
                         event_source="ORDER_BOOK",
-                        event_timestamp=event.get("order_book_timestamp"),
+                        event_timestamp=book_event.get("order_book_timestamp"),
                     )
             elif book_result.get("updated"):
                 _trade_flow_inc("orderbook_invalid")
@@ -858,44 +846,22 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                     logger.debug("ORDER_BOOK %s не принят: %s", book_ticker, book_result["reason"])
             return
 
-        if isinstance(event, dict):
-            ticker = event.get("security_code") or event.get("ticker", "SBER")
-            price = float(event.get("price", 0.0) or 0.0)
-            volume = float(event.get("volume", 0.0) or 0.0)
-            bid = float(event.get("bid", 0.0) or 0.0)
-            ask = float(event.get("ask", 0.0) or 0.0)
-            bid_size = float(event.get("bid_size", event.get("bidSize", 0.0)) or 0.0)
-            ask_size = float(event.get("ask_size", event.get("askSize", 0.0)) or 0.0)
-            bid_present = bool(event.get("bid_present", bid > 0.0))
-            ask_present = bool(event.get("ask_present", ask > 0.0))
-            bid_size_present = bool(event.get("bid_size_present", bid_size > 0.0))
-            ask_size_present = bool(event.get("ask_size_present", ask_size > 0.0))
-            day_volume = float(event.get("day_volume", 0.0) or 0.0)
-            supplied_metrics = event.get("metrics", {})
-            event_timestamp = event.get("timestamp") or event.get("datetime") or event.get("time")
-            received_monotonic = event.get("received_monotonic")
-        else:
-            ticker = getattr(event, "security_code", getattr(event, "ticker", "SBER"))
-            price = float(getattr(event, "price", 0.0) or 0.0)
-            volume = float(getattr(event, "volume", 0.0) or 0.0)
-            bid = float(getattr(event, "bid", 0.0) or 0.0)
-            ask = float(getattr(event, "ask", 0.0) or 0.0)
-            bid_size = float(getattr(event, "bid_size", getattr(event, "bidSize", 0.0)) or 0.0)
-            ask_size = float(getattr(event, "ask_size", getattr(event, "askSize", 0.0)) or 0.0)
-            bid_present = bool(getattr(event, "bid_present", bid > 0.0))
-            ask_present = bool(getattr(event, "ask_present", ask > 0.0))
-            bid_size_present = bool(getattr(event, "bid_size_present", bid_size > 0.0))
-            ask_size_present = bool(getattr(event, "ask_size_present", ask_size > 0.0))
-            day_volume = float(getattr(event, "day_volume", 0.0) or 0.0)
-            supplied_metrics = getattr(event, "metrics", {})
-            event_timestamp = (
-                getattr(event, "timestamp", None)
-                or getattr(event, "datetime", None)
-                or getattr(event, "time", None)
-            )
-            received_monotonic = getattr(event, "received_monotonic", None)
-
-        ticker = str(ticker or "").strip().upper().split("@")[0]
+        quote_event = normalize_market_quote_event(event)
+        ticker = quote_event.ticker
+        price = quote_event.price
+        volume = quote_event.volume
+        bid = quote_event.bid
+        ask = quote_event.ask
+        bid_size = quote_event.bid_size
+        ask_size = quote_event.ask_size
+        bid_present = quote_event.bid_present
+        ask_present = quote_event.ask_present
+        bid_size_present = quote_event.bid_size_present
+        ask_size_present = quote_event.ask_size_present
+        day_volume = quote_event.day_volume
+        supplied_metrics = quote_event.metrics
+        event_timestamp = quote_event.timestamp
+        received_monotonic = quote_event.received_monotonic
         if price <= 0.0 or not ticker or volume < 0.0:
             return
         # Quote ticks do not cancel deferred candidates. They may refresh the
@@ -1036,25 +1002,21 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                         )
                     if not evidence_ok:
                         if _guard_reason_bucket(evidence_reason) == "quotes":
-                            pending_payload = {
-                                "ticker": ticker,
-                                "candidate_created_monotonic": time_module.monotonic(),
-                                "price": price,
-                                "volume": volume,
-                                "bid": bid,
-                                "ask": ask,
-                                "bid_size": bid_size,
-                                "ask_size": ask_size,
-                                "day_volume": day_volume,
-                                "candidate_direction": candidate_direction,
-                                "shadow_candidate_id": shadow_candidate_id,
-                                "paper_session_generation": event_session_generation,
-                                "metrics": {
-                                    key: value
-                                    for key, value in metrics_payload.items()
-                                    if key not in {"selected_for_ai", "funnel_ready"}
-                                },
-                            }
+                            pending_payload = build_market_candidate_payload(
+                                ticker=ticker,
+                                candidate_created_monotonic=time_module.monotonic(),
+                                price=price,
+                                volume=volume,
+                                bid=bid,
+                                ask=ask,
+                                bid_size=bid_size,
+                                ask_size=ask_size,
+                                day_volume=day_volume,
+                                candidate_direction=candidate_direction,
+                                shadow_candidate_id=shadow_candidate_id,
+                                paper_session_generation=event_session_generation,
+                                metrics=metrics_payload,
+                            )
                             _store_pending_bbo_candidate(ticker, pending_payload, received_monotonic)
                         else:
                             _mark_shadow_llm_not_called(shadow_candidate_id, "SIGNAL_EVIDENCE_BLOCKED")
@@ -1074,25 +1036,21 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                             _mark_shadow_llm_not_called(shadow_candidate_id, "AI_DEDUPLICATED")
                             _trade_flow_inc("candidate_deduplicated")
                         else:
-                            event_payload = {
-                                "ticker": ticker,
-                                "candidate_created_monotonic": time_module.monotonic(),
-                                "price": price,
-                                "volume": volume,
-                                "bid": bid,
-                                "ask": ask,
-                                "bid_size": bid_size,
-                                "ask_size": ask_size,
-                                "day_volume": day_volume,
-                                "candidate_direction": candidate_direction,
-                                "shadow_candidate_id": shadow_candidate_id,
-                                "paper_session_generation": event_session_generation,
-                                "metrics": {
-                                    key: value
-                                    for key, value in metrics_payload.items()
-                                    if key not in {"selected_for_ai", "funnel_ready"}
-                                },
-                            }
+                            event_payload = build_market_candidate_payload(
+                                ticker=ticker,
+                                candidate_created_monotonic=time_module.monotonic(),
+                                price=price,
+                                volume=volume,
+                                bid=bid,
+                                ask=ask,
+                                bid_size=bid_size,
+                                ask_size=ask_size,
+                                day_volume=day_volume,
+                                candidate_direction=candidate_direction,
+                                shadow_candidate_id=shadow_candidate_id,
+                                paper_session_generation=event_session_generation,
+                                metrics=metrics_payload,
+                            )
                             try:
                                 anomaly_queue.put_nowait(priority_queue_item_factory.create(1, "MARKET_TICK", event_payload))
                                 _trade_flow_inc("anomalies_queued")
