@@ -46,7 +46,7 @@ class ShadowOutcomePersistenceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.storage = FakeStorage()
         self.tracker = FakeTracker()
-        self.labels = [{"old": True}]
+        self.labels = [{"older": True}, {"old": True}]
         self.logger = Mock()
         self.adapter = ShadowOutcomePersistence(
             self.storage,
@@ -77,6 +77,7 @@ class ShadowOutcomePersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.labels,
             [
+                {"old": True},
                 {"candidate_id": "a", "paper_session_id": "paper-42"},
                 {"candidate_id": "b", "paper_session_id": "paper-42"},
             ],
@@ -93,7 +94,7 @@ class ShadowOutcomePersistenceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(self.storage.write_calls, [])
-        self.assertEqual(self.labels, [{"old": True}])
+        self.assertEqual(self.labels, [{"older": True}, {"old": True}])
 
     async def test_persist_storage_failure_does_not_update_memory(self) -> None:
         self.storage.error = RuntimeError("storage unavailable")
