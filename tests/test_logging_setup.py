@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from monitoring import logging_setup
 
@@ -41,7 +42,7 @@ def test_privacy_formatter_redacts_project_root(monkeypatch, tmp_path) -> None:
 
     rendered = formatter.format(_record(f"failed at {tmp_path / 'data.json'}"))
 
-    assert rendered == "failed at <PROJECT_ROOT>/data.json"
+    assert rendered == f"failed at <PROJECT_ROOT>{os.sep}data.json"
 
 
 def test_log_filters_route_diagnostics_session_events_and_errors() -> None:
