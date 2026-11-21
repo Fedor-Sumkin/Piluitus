@@ -36,11 +36,7 @@ async def test_llm_context_attaches_retrieved_and_directional_rule_ids(monkeypat
         assert kwargs["market_evidence"] == {"price_change_pct": 0.2}
         return "[RISK / R1] always\n[BUY / B1] buy-only\n[SELL / S1] sell-only"
 
-    monkeypatch.setattr(
-        llm_context.TechnicalKnowledgeParser,
-        "get_knowledge_context",
-        staticmethod(get_context),
-    )
+    monkeypatch.setattr(llm_context, "_get_knowledge_context", get_context)
     monkeypatch.setattr(
         llm_context,
         "select_prompt_rules",
@@ -73,11 +69,7 @@ async def test_llm_context_fails_closed_when_knowledge_retrieval_raises(monkeypa
     async def fail(**kwargs):
         raise RuntimeError("knowledge store unavailable")
 
-    monkeypatch.setattr(
-        llm_context.TechnicalKnowledgeParser,
-        "get_knowledge_context",
-        staticmethod(fail),
-    )
+    monkeypatch.setattr(llm_context, "_get_knowledge_context", fail)
     event = {"metrics": {}}
     logger = _Logger()
 

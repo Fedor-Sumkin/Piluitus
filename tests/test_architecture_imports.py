@@ -779,7 +779,9 @@ def test_market_worker_delegates_llm_rule_context_and_response_contract() -> Non
     assert "process_llm_response(" in worker_source
     assert "TechnicalKnowledgeParser" not in worker_source
     assert "contract_retry_attempted" not in worker_source
-    assert "model_contract_violation" not in worker_source
+    # The normalized flag is intentionally still consumed by later diagnostics;
+    # its parsing and mutation now live in the response-pipeline module.
+    assert "model_contract_violation = bool(" not in worker_source
     assert "select_prompt_rules" not in source
     assert "select_prompt_rules" in context_source
     assert "APPROVE/HOLD" in response_source
@@ -812,5 +814,6 @@ def test_market_worker_delegates_post_llm_evidence_refresh_and_validation() -> N
     assert "refresh_post_llm_evidence(" not in worker_source
     assert "validate_entry_evidence(" not in worker_source
     assert "classify_direction_evidence(" not in worker_source
-    assert "post_llm_bbo_refresh_valid" in module_source
+    assert "refresh_post_llm_evidence(" in module_source
+    assert "validate_entry_evidence(" in module_source
     assert "queue_flow_conflict_reason" in module_source

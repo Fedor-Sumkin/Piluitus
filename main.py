@@ -74,7 +74,6 @@ from strategy.signal_guard import (
 from strategy.candidate_dedup import CandidateDeduplicator, candidate_is_expired
 from strategy.candidate_recovery import (
     refresh_candidate_bbo_metrics,
-    refresh_post_llm_evidence,
 )
 from strategy.scalping_strategy import evaluate_scalping_candidate, has_queue_trade_flow_conflict
 from strategy.market_data_runtime import (
@@ -111,7 +110,6 @@ from ai.dashboard_verdicts import (
 )
 from strategy.decision_diagnostics import (
     build_llm_feature_snapshot,
-    classify_hold_reason_bucket,
 )
 from interface import tg_bot
 from interface.websocket_manager import ConnectionManager

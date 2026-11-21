@@ -4,8 +4,14 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from ai.knowledge_parser import TechnicalKnowledgeParser
 from ai.rag_prompt_utils import select_prompt_rules
+
+
+async def _get_knowledge_context(**kwargs: Any) -> str:
+    # Keep the heavyweight PDF-backed parser lazy, as it was in main.py.
+    from ai.knowledge_parser import TechnicalKnowledgeParser
+
+    return await TechnicalKnowledgeParser.get_knowledge_context(**kwargs)
 
 
 async def attach_llm_rule_context(
@@ -22,7 +28,7 @@ async def attach_llm_rule_context(
     entries, matching the previous MarketWorker fallback.
     """
     try:
-        rag_context_str = await TechnicalKnowledgeParser.get_knowledge_context(
+        rag_context_str = await _get_knowledge_context(
             db=db,
             category="ScalpingRules",
             market_evidence=event_payload.get("metrics", {})
