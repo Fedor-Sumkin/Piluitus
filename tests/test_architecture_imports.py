@@ -231,12 +231,22 @@ def test_main_delegates_runtime_logging_to_monitoring() -> None:
         for alias in node.names
     }
     assert {
-        "RUN_ID",
         "RUN_LOG_PATHS",
         "logger",
         "terminal_status",
         "update_numpy_impulse_status",
     } <= imported
+
+    event_logger_source = (ROOT / "monitoring/trading_event_logger.py").read_text(encoding="utf-8")
+    event_logger_tree = ast.parse(event_logger_source, filename="monitoring/trading_event_logger.py")
+    event_logger_imports = {
+        alias.name
+        for node in event_logger_tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "monitoring.logging_setup"
+        for alias in node.names
+    }
+    assert {"RUN_ID", "logger"} <= event_logger_imports
 
 
 
