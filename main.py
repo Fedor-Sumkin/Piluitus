@@ -531,58 +531,6 @@ def _log_prefilter_blocked(ticker: str, reason: str, *, interval_sec: float = 15
     prefilter_block_logger.log(ticker, reason, interval_sec=interval_sec)
 
 
-def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -> dict[str, Any]:
-    """Log a research-only strategy score; it never changes the baseline order path."""
-    result = evaluate_scalping_candidate(direction, metrics)
-    observation_id = scalping_shadow_tracker.record_candidate(ticker, direction, metrics, result)
-    result["candidate_id"] = observation_id
-    _trade_flow_inc("strategy_shadow_evaluated")
-    _trade_flow_inc("strategy_shadow_pass" if result.get("eligible") else "strategy_shadow_reject")
-    shadow_block_keys = {
-        "bbo_unavailable": "shadow_block_bbo_unavailable",
-        "bbo_stale": "shadow_block_bbo_stale",
-        "order_book_not_confirmed": "shadow_block_order_book_not_confirmed",
-        "atr_not_ready": "shadow_block_atr_not_ready",
-        "spread_above_0.50_pct": "shadow_block_spread",
-        "spread_unavailable_or_invalid": "shadow_block_spread_unavailable",
-        "spread_atr_unavailable": "shadow_block_spread_atr_unavailable",
-        "spread_to_atr_above_limit": "shadow_block_spread_atr_too_wide",
-        "bbo_prices_invalid": "shadow_block_bbo_prices_invalid",
-        "queue_trade_flow_conflict": "shadow_block_queue_trade_flow_conflict",
-        "trade_flow_unavailable_or_stale": "shadow_block_trade_flow_unavailable",
-    }
-    observed_blocks = set(result.get("hard_blocks", []))
-    counted_blocks = set()
-    for block in observed_blocks:
-        counter = shadow_block_keys.get(block)
-        if counter:
-            _trade_flow_inc(counter)
-            counted_blocks.add(block)
-    if observed_blocks - counted_blocks:
-        _trade_flow_inc("shadow_block_other", len(observed_blocks - counted_blocks))
-    raw_components = result.get("components", {})
-    if isinstance(raw_components, dict):
-        component_text = ",".join(
-            f"{key}={float(value):.1f}"
-            for key, value in sorted(raw_components.items())
-            if isinstance(value, (int, float)) and math.isfinite(float(value))
-        ) or "-"
-    else:
-        component_text = "-"
-    logger.info(
-        "🧪 [STRATEGY SHADOW] %s id=%s side=%s eligible=%s score=%.1f/%.0f regime=%s "
-        "queue_now=%s queue_5s=%s trade_flow_30s=%s OFI_5s=%s/%s spread_ATR=%s components=%s hard_blocks=%s reasons=%s",
-        ticker, observation_id or "-", direction, bool(result.get("eligible")), float(result.get("score", 0.0)),
-        float(result.get("threshold", 70.0)), result.get("regime", "UNKNOWN"),
-        result.get("queue_imbalance"), result.get("queue_imbalance_5s"),
-        result.get("trade_flow_imbalance_30s"), result.get("ofi_5s"),
-        result.get("ofi_directional_alignment"), result.get("spread_atr_ratio"), component_text,
-        ",".join(result.get("hard_blocks", [])) or "-",
-        ",".join(result.get("reasons", [])) or "-",
-    )
-    return result
-
-
 def _paper_queue_flow_conflict_reason(direction: str, metrics: dict[str, Any]) -> str:
     """Block only fresh, persistent queue/flow contradictions in PAPER mode."""
     if not bool(Settings.PAPER_TRADING):
