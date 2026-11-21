@@ -107,15 +107,9 @@ def test_main_uses_canonical_package_imports() -> None:
         "must resolve through packages:\\n" + "\\n".join(violations)
     )
 
-def test_main_reuses_extracted_terminal_status_implementations() -> None:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    local_classes = {
-        node.name for node in tree.body if isinstance(node, ast.ClassDef)
-    }
-    assert "TerminalStatusLine" not in local_classes
-    assert "StatusAwareStreamHandler" not in local_classes
-
+def test_logging_setup_owns_terminal_status_implementations() -> None:
+    source = (ROOT / "monitoring/logging_setup.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="monitoring/logging_setup.py")
     imported = {
         alias.name
         for node in tree.body
@@ -125,7 +119,13 @@ def test_main_reuses_extracted_terminal_status_implementations() -> None:
     }
     assert {"TerminalStatusLine", "StatusAwareStreamHandler"} <= imported
 
-
+    main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+    main_tree = ast.parse(main_source, filename="main.py")
+    local_classes = {
+        node.name for node in main_tree.body if isinstance(node, ast.ClassDef)
+    }
+    assert "TerminalStatusLine" not in local_classes
+    assert "StatusAwareStreamHandler" not in local_classes
 
 def test_main_imports_reason_classifiers_from_monitoring() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
