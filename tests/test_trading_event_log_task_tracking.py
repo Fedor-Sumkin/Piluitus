@@ -39,20 +39,22 @@ def test_critical_fire_and_forget_tasks_are_retained_and_drained():
 
 
 def test_trading_event_log_is_scoped_and_correlated_to_run_candidate_and_verdict():
-    source, module = _main_source()
+    logger_path = Path(__file__).resolve().parents[1] / "monitoring" / "trading_event_logger.py"
+    logger_source = logger_path.read_text(encoding="utf-8")
+    module = ast.parse(logger_source, filename=str(logger_path))
     logger_function = next(
         node for node in module.body
         if isinstance(node, ast.AsyncFunctionDef)
         and node.name == "log_trading_event_to_file"
     )
-    logger_source = ast.get_source_segment(source, logger_function)
+    function_source = ast.get_source_segment(logger_source, logger_function)
 
-    assert "str(RUN_ID or \"unknown\")" in logger_source
-    assert "piluitus_session_{date_str}_{run_id}.txt" in logger_source
-    assert "candidate_id={candidate_id or 'NONE'}" in logger_source
-    assert "verdict_id={verdict_id or 'NONE'}" in logger_source
-    assert "model_confidence" in logger_source
-    assert "final_confidence" in logger_source
+    assert "str(RUN_ID or \"unknown\")" in function_source
+    assert "piluitus_session_{date_str}_{run_id}.txt" in function_source
+    assert "candidate_id={candidate_id or 'NONE'}" in function_source
+    assert "verdict_id={verdict_id or 'NONE'}" in function_source
+    assert "model_confidence" in function_source
+    assert "final_confidence" in function_source
 
 
 def test_shutdown_drains_tracked_operations_after_producers_stop():
