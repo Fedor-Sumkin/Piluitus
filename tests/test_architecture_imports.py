@@ -645,7 +645,8 @@ def test_main_delegates_candidate_admission_to_strategy_pipeline() -> None:
     assert "market_candidate_pipeline.process_candidate(" in source
     event_handler = source[source.index("async def process_market_event"):source.index("#  5️⃣  MARKET WORKER")]
     assert "validate_atr_readiness" not in event_handler
-    assert "infer_candidate_direction" in pipeline_source
+    assert "infer_direction(direction_metrics)" in pipeline_source or "self.infer_direction(metrics)" in pipeline_source
+    assert "infer_direction=infer_candidate_direction" in source
     assert "validate_entry_evidence" in pipeline_source
     assert "validate_atr_readiness" in pipeline_source
     assert "anomaly_queue.put_nowait" in pipeline_source
