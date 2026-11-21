@@ -27,8 +27,8 @@ def test_trade_flow_counter_force_snapshot_drains_early() -> None:
     assert counters.snapshot_if_due(now=101.0, force=True) == {
         "orders_opened_buy": 2,
     }
-    assert counters.snapshot_if_due(now=159.0) is None
-    assert counters.snapshot_if_due(now=160.0) == {}
+    assert counters.snapshot_if_due(now=160.999) is None
+    assert counters.snapshot_if_due(now=161.0) == {}
 
 
 def test_trade_flow_counter_reset_clears_counts_and_restarts_window() -> None:
