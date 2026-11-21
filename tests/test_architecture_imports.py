@@ -237,3 +237,21 @@ def test_main_delegates_runtime_logging_to_monitoring() -> None:
         "terminal_status",
         "update_numpy_impulse_status",
     } <= imported
+
+
+
+def test_main_delegates_background_operation_tracking_to_monitoring() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imports = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "monitoring.background_tasks"
+        for alias in node.names
+    }
+    assert "BackgroundOperationTracker" in imports
+    assert "_background_operations = BackgroundOperationTracker(logger)" in source
+    assert "_tracked_operation_tasks" not in source
+    assert "def _spawn_tracked_operation" not in source
+    assert "async def _drain_tracked_operations" not in source
