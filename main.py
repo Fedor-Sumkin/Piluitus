@@ -1753,6 +1753,7 @@ class MarketWorker:
                     confidence=confidence,
                     confidence_valid=confidence_valid,
                     signal_reason=signal_reason,
+                    model_reason_code=model_reason_code,
                     execution_status=execution_status,
                     execution_message=execution_message,
                     requested_lots=requested_lots,

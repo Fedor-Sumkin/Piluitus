@@ -137,6 +137,7 @@ def _llm_record(**overrides):
         confidence=83.456,
         confidence_valid=True,
         signal_reason="",
+        model_reason_code="MOMENTUM",
         execution_status="PENDING",
         execution_message="queued",
         requested_lots=3,
@@ -178,7 +179,7 @@ def test_llm_verdict_record_handles_missing_confidence_and_no_entry():
     record = build_llm_verdict_record(**_llm_record(
         decision="HOLD", candidate_decision="HOLD",
         candidate_confidence=None, confidence_valid=False, confidence=0.0,
-        requested_lots=0, requested_notional=0.0, ai_analysis={},
+        requested_lots=0, requested_notional=0.0, ai_analysis={}, model_reason_code="UNKNOWN",
     ))
     assert record["signal_status"] == "NO_ENTRY"
     assert record["confidence"] is None and record["final_confidence"] is None
