@@ -84,6 +84,7 @@ from strategy.decision_diagnostics import (
 )
 from interface import tg_bot
 from ai.news_parser import MarketNewsParser
+from monitoring.terminal_status import TerminalStatusLine, StatusAwareStreamHandler
 
 # --------------------------------------------------------------
 #  ENVIRONMENT & INITIALIZATION
