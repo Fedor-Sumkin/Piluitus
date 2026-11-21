@@ -95,7 +95,7 @@ def test_application_packages_do_not_import_legacy_root_shims() -> None:
 
     assert not violations, (
         "Application packages must use canonical package imports; found legacy "
-        "root-shim dependencies:\n" + "\n".join(violations)
+        "root-shim dependencies:\\n" + "\\n".join(violations)
     )
 
 
@@ -104,7 +104,7 @@ def test_main_uses_canonical_package_imports() -> None:
     violations = _legacy_imports(main_path.read_text(encoding="utf-8"), "main.py")
     assert not violations, (
         "main.py is the supported root entry point, but its internal imports "
-        "must resolve through packages:\n" + "\n".join(violations)
+        "must resolve through packages:\\n" + "\\n".join(violations)
     )
 
 def test_main_reuses_extracted_terminal_status_implementations() -> None:
@@ -138,6 +138,7 @@ def test_main_imports_reason_classifiers_from_monitoring() -> None:
         for alias in node.names
     }
     assert imports == {
+        "TradeFlowCounters": None,
         "bbo_resume_reason_bucket": "_bbo_resume_reason_bucket",
         "guard_reason_bucket": "_guard_reason_bucket",
     }
