@@ -590,6 +590,7 @@ def test_lifespan_delegates_long_running_task_ownership_to_supervisor() -> None:
 
 def test_main_delegates_market_event_normalization_to_runtime() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
+    router_source = (ROOT / "runtime" / "market_event_router.py").read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
     imported = {
         alias.name
@@ -600,14 +601,14 @@ def test_main_delegates_market_event_normalization_to_runtime() -> None:
     }
     assert {
         "build_market_candidate_payload",
-        "market_event_type",
         "normalize_market_quote_event",
-        "normalize_market_ticker",
-        "normalize_order_book_event",
     } <= imported
-    assert "book_result = await screener.push_order_book(**book_event)" in source
     assert "quote_event = normalize_market_quote_event(event)" in source
     assert source.count("build_market_candidate_payload(") == 2
+    assert "market_event_type" in router_source
+    assert "normalize_market_ticker" in router_source
+    assert "normalize_order_book_event" in router_source
+    assert "await self.screener.push_order_book(**normalized)" in router_source
 
 def test_main_delegates_auxiliary_market_events_and_bbo_replay_to_runtime() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
