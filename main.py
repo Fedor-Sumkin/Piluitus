@@ -95,6 +95,7 @@ load_dotenv()
 
 from monitoring.background_tasks import BackgroundOperationTracker
 from monitoring.position_order_book_diagnostics import PositionOrderBookDiagnostics
+from monitoring.prefilter_diagnostics import PrefilterBlockLogger
 from monitoring.logging_setup import (
     RUN_LOG_PATHS,
     logger,
@@ -102,6 +103,8 @@ from monitoring.logging_setup import (
     update_numpy_impulse_status,
 )
 from monitoring.trading_event_logger import log_trading_event_to_file
+
+prefilter_block_logger = PrefilterBlockLogger(logger)
 
 def _parse_finite_float(value: object) -> float | None:
     """Convert an untrusted JSON scalar to a finite float."""
@@ -436,8 +439,6 @@ try:
     _AI_CANDIDATE_TTL_SEC = max(1.0, float(os.getenv("PILUITUS_AI_CANDIDATE_TTL_SEC", "5.0")))
 except (TypeError, ValueError, OverflowError):
     _AI_CANDIDATE_TTL_SEC = 5.0
-_prefilter_last_logged: dict[tuple[str, str], float] = {}
-_prefilter_log_lock = threading.Lock()
 _pending_bbo_candidates: dict[str, dict[str, Any]] = {}
 _pending_bbo_lock = threading.Lock()
 try:
@@ -682,18 +683,7 @@ def _mark_shadow_llm_not_called(candidate_id: object, reason_code: str) -> None:
 
 def _log_prefilter_blocked(ticker: str, reason: str, *, interval_sec: float = 15.0) -> None:
     """Rate-limit identical prefilter warnings per ticker and reason category."""
-    bucket = _guard_reason_bucket(reason)
-    key = (str(ticker).upper(), bucket)
-    now = time_module.monotonic()
-    with _prefilter_log_lock:
-        last = _prefilter_last_logged.get(key, 0.0)
-        if now - last < interval_sec:
-            return
-        _prefilter_last_logged[key] = now
-    logger.warning(
-        "⏭️ [PRE-LLM FILTER] %s пропущен до запроса LLM (%s): %s",
-        ticker, bucket, reason,
-    )
+    prefilter_block_logger.log(ticker, reason, interval_sec=interval_sec)
 
 
 def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -> dict[str, Any]:
