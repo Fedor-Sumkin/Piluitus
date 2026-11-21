@@ -609,3 +609,17 @@ def test_main_delegates_market_event_normalization_to_runtime() -> None:
     assert "quote_event = normalize_market_quote_event(event)" in source
     assert source.count("build_market_candidate_payload(") == 2
 
+def test_main_delegates_auxiliary_market_events_and_bbo_replay_to_runtime() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "runtime.market_event_router"
+        for alias in node.names
+    }
+    assert {"MarketAuxiliaryEventRouter", "PaperBBOReplayAdapter"} <= imported
+    assert "if await market_auxiliary_event_router.process_if_handled(event):" in source
+    assert "_record_paper_bbo_replay" not in source
+

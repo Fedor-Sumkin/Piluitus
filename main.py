@@ -45,10 +45,11 @@ from risk.risk_manager import RiskManager
 from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory
 from runtime.market_event_normalizer import (
     build_market_candidate_payload,
-    market_event_type,
     normalize_market_quote_event,
-    normalize_market_ticker,
-    normalize_order_book_event,
+)
+from runtime.market_event_router import (
+    MarketAuxiliaryEventRouter,
+    PaperBBOReplayAdapter,
 )
 from strategy.signal_guard import (
     validate_entry_evidence,
@@ -756,6 +757,26 @@ paper_api_helpers = PaperAPIHelpers(
 # --------------------------------------------------------------
 #  4️⃣  ПОЛИМОРФНЫЙ ТИКЕРНЫЙ ОБРАБОТЧИК С АВТО-ЗАВЕРШЕНИЕМ ПОЗИЦИЙ
 # --------------------------------------------------------------
+market_auxiliary_event_router = MarketAuxiliaryEventRouter(
+    screener=screener,
+    execution_engine=execution_engine,
+    db_manager=db_manager,
+    logger=logger,
+    trade_flow_increment=_trade_flow_inc,
+    record_position_order_book_event=_record_position_order_book_event,
+    bbo_replay=PaperBBOReplayAdapter(
+        recorder_provider=lambda: paper_bbo_replay_recorder,
+        screener=screener,
+        monotonic=time_module.monotonic,
+    ),
+    refresh_bbo_metrics=refresh_candidate_bbo_metrics,
+    shadow_tracker=scalping_shadow_tracker,
+    persist_shadow_outcomes=_persist_shadow_outcomes,
+    resume_pending_bbo_candidate=_resume_pending_bbo_candidate,
+    monotonic=time_module.monotonic,
+)
+
+
 async def process_market_event(event: Union[SimpleNamespace, dict]):
     """Обновляет локальную воронку по каждой котировке и направляет в LLM только top-N."""
     global tick_counter, _last_funnel_log_at, _last_funnel_log_key, _last_funnel_ready
@@ -764,86 +785,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
         return
     _expire_pending_bbo_candidates()
     try:
-        # Instrument trades update the trade-flow accumulator independently of QUOTES.
-        if market_event_type(event) == "INSTRUMENT_TRADE":
-            trade_ticker = normalize_market_ticker(event.get("ticker"))
-            if not trade_ticker:
-                _trade_flow_inc("instrument_trades_invalid")
-                return
-            trade_result = screener.push_trade(
-                ticker=trade_ticker, price=event.get("price", 0.0),
-                size=event.get("size", 0.0), trade_id=event.get("trade_id"),
-                side=event.get("side"), event_timestamp=event.get("timestamp"),
-                received_monotonic=event.get("received_monotonic"),
-            )
-            if trade_result.get("accepted"):
-                _trade_flow_inc("instrument_trades_received")
-            else:
-                trade_reason = str(trade_result.get("reason") or "rejected")
-                _trade_flow_inc("instrument_trades_" + trade_reason)
-                # Rejected trade events never invalidate the independent QUOTES-driven M1 history.
-            return
-
-        # ORDER_BOOK events have no last-trade price. Route them before the QUOTES
-        # normalizer, otherwise price<=0 would silently discard every book update.
-        if market_event_type(event) == "ORDER_BOOK":
-            try:
-                book_event = normalize_order_book_event(event)
-                book_ticker = book_event["ticker"]
-                if not book_ticker:
-                    _trade_flow_inc("orderbook_unusable")
-                    return
-                book_result = await screener.push_order_book(**book_event)
-            except (TypeError, ValueError, KeyError):
-                _trade_flow_inc("orderbook_unusable")
-                return
-            _record_position_order_book_event(book_ticker, book_result)
-            _record_paper_bbo_replay(
-                book_ticker,
-                source="FINAM_ORDER_BOOK",
-                event_timestamp=book_event.get("order_book_timestamp"),
-                received_monotonic=book_event.get("received_monotonic"),
-                book_result=book_result,
-            )
-            if book_result.get("updated") and book_result.get("valid", True):
-                _trade_flow_inc("orderbook_updates")
-                _trade_flow_inc("orderbook_side_touches", int(book_result.get("bbo_side_touch_count", 0) or 0))
-                if book_result.get("heartbeat_only"):
-                    _trade_flow_inc("orderbook_heartbeats")
-                shadow_metrics: dict[str, Any] = {}
-                shadow_bbo_ready, _shadow_bbo_reason = refresh_candidate_bbo_metrics(
-                    screener, book_ticker, shadow_metrics, now=time_module.monotonic()
-                )
-                if shadow_bbo_ready:
-                    shadow_labels = scalping_shadow_tracker.observe_market_tick(book_ticker, shadow_metrics)
-                    if shadow_labels:
-                        await _persist_shadow_outcomes(shadow_labels, source="ORDER_BOOK")
-                await _resume_pending_bbo_candidate(book_ticker, trigger="ORDER_BOOK")
-                # ORDER_BOOK can refresh BBO independently of QUOTES. Re-run the
-                # PAPER exit monitor only after a coherent book confirmation.
-                if execution_engine.paper_mode and book_ticker in execution_engine.paper_positions:
-                    last_trade_price = execution_engine._latest_price(
-                        book_ticker, execution_engine.paper_positions.get(book_ticker)
-                    )
-                    execution_engine.schedule_paper_position_monitor(
-                        book_ticker,
-                        last_trade_price if last_trade_price > 0.0 else None,
-                        db_manager,
-                        event_source="ORDER_BOOK",
-                        event_timestamp=book_event.get("order_book_timestamp"),
-                    )
-            elif book_result.get("updated"):
-                _trade_flow_inc("orderbook_invalid")
-                logger.debug(
-                    "ORDER_BOOK %s заблокирован: %s",
-                    book_ticker, book_result.get("reason", book_result.get("book_reason", "invalid")),
-                )
-            elif book_result.get("out_of_order"):
-                _trade_flow_inc("orderbook_out_of_order")
-            else:
-                _trade_flow_inc("orderbook_unusable")
-                if book_result.get("reason"):
-                    logger.debug("ORDER_BOOK %s не принят: %s", book_ticker, book_result["reason"])
+        if await market_auxiliary_event_router.process_if_handled(event):
             return
 
         quote_event = normalize_market_quote_event(event)
@@ -895,7 +837,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
 
         _trade_flow_inc("quotes_received")
         accepted_quote_sides = analysis.get("quote_side_updates", {})
-        _record_paper_bbo_replay(
+        market_auxiliary_event_router.bbo_replay.record(
             ticker,
             source="FINAM_QUOTES",
             event_timestamp=event_timestamp,
