@@ -8,7 +8,6 @@ import time as time_module
 import threading
 import shutil
 import unicodedata
-from itertools import count
 from contextlib import asynccontextmanager
 from typing import Any, List, Mapping, Union, cast
 from aiogram import Bot 
@@ -38,6 +37,7 @@ from exchange.finam_client import FinamBrokerClient
 from strategy.screener_funnel import HFTMemoryScreener
 from execution.execution_layer import BaseExecutionEngine
 from risk.risk_manager import RiskManager
+from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory
 from strategy.signal_guard import (
     validate_entry_evidence,
     infer_candidate_direction, validate_atr_readiness,
@@ -221,9 +221,8 @@ spinner_frames = ["|", "/", "-", "\\"]
 # PriorityQueue сравнивает tuple поэлементно; без уникального ID при совпадении
 # priority/timestamp/event_type Python пытался сравнивать payload-словари и падал
 # с TypeError: '<' not supported between instances of 'dict' and 'dict'.
-PriorityItem = tuple[int, int, float, str, dict[str, Any]]
 anomaly_queue: asyncio.PriorityQueue[PriorityItem] = asyncio.PriorityQueue(maxsize=1000)
-_priority_sequence = count()
+priority_queue_item_factory = PriorityQueueItemFactory()
 # Serializes order publication with PAPER maintenance; generation invalidates old queued/in-flight AI events.
 _paper_session_lock = asyncio.Lock()
 _paper_session_generation = 0
@@ -864,7 +863,7 @@ async def _resume_pending_bbo_candidate(
     payload["bid_size"] = metrics.get("bid_size", 0.0)
     payload["ask_size"] = metrics.get("ask_size", 0.0)
     try:
-        anomaly_queue.put_nowait(_make_priority_item(1, "MARKET_TICK", payload))
+        anomaly_queue.put_nowait(priority_queue_item_factory.create(1, "MARKET_TICK", payload))
         _drop_pending_bbo_candidate(key, pending)
         _trade_flow_inc("bbo_resumed")
         _trade_flow_inc("anomalies_queued")
@@ -1031,12 +1030,6 @@ async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = Non
             )
         _balance_guard_last_signature = signature
     return dict(_dashboard_balance_snapshot)
-
-
-def _make_priority_item(priority: int, event_type: str, payload: dict[str, Any]) -> PriorityItem:
-    """Создаёт единый формат элемента PriorityQueue со стабильным tie-breaker."""
-    loop = asyncio.get_running_loop()
-    return (int(priority), next(_priority_sequence), loop.time(), event_type, payload)
 
 
 
@@ -1401,7 +1394,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                                 },
                             }
                             try:
-                                anomaly_queue.put_nowait(_make_priority_item(1, "MARKET_TICK", event_payload))
+                                anomaly_queue.put_nowait(priority_queue_item_factory.create(1, "MARKET_TICK", event_payload))
                                 _trade_flow_inc("anomalies_queued")
                                 _trade_flow_inc("prefilter_pass_buy" if candidate_direction == "BUY" else "prefilter_pass_sell")
                                 update_numpy_impulse_status(ticker)
@@ -2854,7 +2847,7 @@ app = FastAPI(title="PILUITUS v35.2 — AI Trading Core", lifespan=lifespan)
 @app.post("/api/v1/control/close_all")
 async def http_emergency_close_all():
     """Экстренное принудительное закрытие всех открытых позиций фронтендом с обходом HFT-очереди."""
-    await anomaly_queue.put(_make_priority_item(0, "CMD_CLOSE_ALL", {}))
+    await anomaly_queue.put(priority_queue_item_factory.create(0, "CMD_CLOSE_ALL", {}))
     return {"status": "queued", "priority": "high_emergency"}
 
 @app.post("/api/v1/control/risk_limit")
@@ -2864,7 +2857,7 @@ async def http_update_risk_limit(payload: dict = Body(...)):
         new_limit = validate_daily_loss_limit(payload.get("value", Settings.DAILY_LOSS_LIMIT_PCT))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    await anomaly_queue.put(_make_priority_item(0, "CMD_SET_RISK_LIMIT", {"value": new_limit}))
+    await anomaly_queue.put(priority_queue_item_factory.create(0, "CMD_SET_RISK_LIMIT", {"value": new_limit}))
     return {"status": "queued", "priority": "high_emergency", "new_target_limit": new_limit}
 
 # --------------------------------------------------------------
@@ -3730,10 +3723,10 @@ async def websocket_frontend_endpoint(websocket: WebSocket):
                 # ПЕРЕХВАТ ИНТЕРАКТИВНЫХ WS-КОМАНД ИЗ ИНТЕРФЕЙСА (Мгновенный перевод на Priority 0)
                 msg_type = message.get("type")
                 if msg_type == "USER_COMMAND_CLOSE_ALL":
-                    await anomaly_queue.put(_make_priority_item(0, "CMD_CLOSE_ALL", {}))
+                    await anomaly_queue.put(priority_queue_item_factory.create(0, "CMD_CLOSE_ALL", {}))
                     continue
                 elif msg_type == "USER_COMMAND_SET_RISK":
-                    await anomaly_queue.put(_make_priority_item(0, "CMD_SET_RISK_LIMIT", {"value": message.get("value", 0.10)}))
+                    await anomaly_queue.put(priority_queue_item_factory.create(0, "CMD_SET_RISK_LIMIT", {"value": message.get("value", 0.10)}))
                     continue
 
                 target_ticker = message.get("security_code") or message.get("ticker")
