@@ -5,6 +5,8 @@ size, schedule, or execute trading candidates.
 """
 from __future__ import annotations
 
+import threading
+
 
 def guard_reason_bucket(reason: object) -> str:
     """Map a pre-LLM guard explanation to a bounded diagnostic category."""
@@ -38,3 +40,40 @@ def bbo_resume_reason_bucket(reason: object) -> str:
     if "свежего подтверждения" in lowered:
         return "confirmation_stale"
     return "other_book_failure"
+
+
+class TradeFlowCounters:
+    """Thread-safe rolling-window counter storage for TRADE FLOW telemetry.
+
+    Snapshotting atomically drains the current window. This class deliberately
+    knows nothing about logging, trading decisions, or report formatting.
+    """
+
+    def __init__(self, started_at: float) -> None:
+        self._lock = threading.Lock()
+        self._counts: dict[str, int] = {}
+        self._last_snapshot_at = float(started_at)
+
+    def increment(self, key: str, amount: int = 1) -> None:
+        normalized_key = str(key)
+        increment = int(amount)
+        with self._lock:
+            self._counts[normalized_key] = self._counts.get(normalized_key, 0) + increment
+
+    def snapshot_if_due(
+        self, *, now: float, interval_sec: float = 60.0, force: bool = False
+    ) -> dict[str, int] | None:
+        timestamp = float(now)
+        interval = max(0.0, float(interval_sec))
+        with self._lock:
+            if not force and timestamp - self._last_snapshot_at < interval:
+                return None
+            snapshot = dict(self._counts)
+            self._counts.clear()
+            self._last_snapshot_at = timestamp
+            return snapshot
+
+    def reset(self, now: float) -> None:
+        with self._lock:
+            self._counts.clear()
+            self._last_snapshot_at = float(now)
