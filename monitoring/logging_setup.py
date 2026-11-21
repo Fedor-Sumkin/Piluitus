@@ -70,21 +70,6 @@ logging.getLogger("websockets").setLevel(logging.WARNING)
 logger = logging.getLogger("Piluitus.Main")
 
 
-def _parse_finite_float(value: object) -> float | None:
-    """Convert an untrusted JSON scalar to a finite float."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, str):
-        raw = value
-    elif isinstance(value, (int, float)):
-        raw = value
-    else:
-        return None
-    try:
-        number = float(raw)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return number if math.isfinite(number) else None
 logger.setLevel(logging.INFO)
 
 
