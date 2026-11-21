@@ -726,7 +726,11 @@ def test_main_delegates_pending_bbo_candidate_lifecycle_to_strategy_runtime() ->
     }
     assert "PendingBBOCandidateRuntime" in imported
     assert "pending_bbo_runtime = PendingBBOCandidateRuntime(" in source
-    assert "pending_bbo_runtime.has_pending(ticker)" in source
+    event_runtime_source = (
+        ROOT / "runtime" / "market_data_event_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "self.pending_bbo_runtime.has_pending(ticker)" in event_runtime_source
+    assert 'await self.pending_bbo_runtime.resume(ticker, trigger="QUOTES")' in event_runtime_source
     assert "pending_bbo_candidate_store.count()" in source
 
     wrapper = next(

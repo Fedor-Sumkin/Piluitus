@@ -94,6 +94,9 @@ def make_runtime(
         ShadowTracker(shadow_labels), CandidatePipeline(), Terminal(), Logger()
     )
     clock = [10.0]
+    async def persist_shadow_outcomes(labels, *, source):
+        persisted.append((labels, source))
+
     runtime = MarketDataEventRuntime(
         execution_engine=engine,
         db_manager="db",
@@ -102,7 +105,7 @@ def make_runtime(
         candidate_pipeline=candidates,
         pending_bbo_runtime=pending_bbo,
         shadow_tracker=shadow,
-        persist_shadow_outcomes=lambda labels, *, source: persisted.append((labels, source)),
+        persist_shadow_outcomes=persist_shadow_outcomes,
         schedule_m1_history_warmup=lambda tickers: warmups.append(tuple(tickers)),
         trade_flow_increment=lambda key: counters.append(key),
         terminal_status=terminal,
