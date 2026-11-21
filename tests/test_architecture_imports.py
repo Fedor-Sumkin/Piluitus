@@ -333,3 +333,18 @@ def test_main_delegates_strategy_shadow_scorecard_logging_to_monitoring() -> Non
     assert "shadow_scorecard_logger = StrategyShadowScorecardLogger(logger)" in source
     assert "shadow_scorecard_logger.log(scalping_shadow_tracker)" in source
     assert "scalping_shadow_tracker.statistics_snapshot()" not in source
+
+
+def test_main_delegates_trade_flow_report_formatting_to_monitoring() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imports = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "monitoring.trade_flow_report"
+        for alias in node.names
+    }
+    assert "TradeFlowReportLogger" in imports
+    assert "trade_flow_report_logger = TradeFlowReportLogger(logger)" in source
+    assert "trade_flow_report_logger.log(counts, pending_bbo=pending_bbo)" in source
