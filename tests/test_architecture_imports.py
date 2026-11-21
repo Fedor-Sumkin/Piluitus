@@ -400,3 +400,22 @@ def test_main_delegates_priority_queue_item_creation_to_runtime() -> None:
     assert "def _make_priority_item" not in source
     assert "_priority_sequence" not in source
     assert "from itertools import count" not in source
+
+
+
+def test_main_delegates_paper_open_pnl_accounting_to_portfolio() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name: alias.asname
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "portfolio.paper_accounting"
+        for alias in node.names
+    }
+    assert imported == {
+        "calculate_open_pnl": None,
+        "parse_finite_float": "_parse_finite_float",
+    }
+    assert "return calculate_open_pnl(" in source
+    assert "def _parse_finite_float" not in source
