@@ -1,7 +1,7 @@
 """Operator-controlled PAPER session maintenance operations.
 
 This runtime coordinates the stateful reset/cleanup/resume workflow. HTTP route
-registration lives in :mod:\`interface.paper_session_routes\`.
+registration lives in interface.paper_session_routes.
 """
 from __future__ import annotations
 

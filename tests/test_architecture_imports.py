@@ -287,6 +287,9 @@ def test_main_delegates_trading_event_journal_to_monitoring() -> None:
 
 def test_main_delegates_position_order_book_diagnostics_to_monitoring() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
+    runtime_source = (
+        ROOT / "storage" / "paper_session_maintenance_runtime.py"
+    ).read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
     imports = {
         alias.name
@@ -299,7 +302,7 @@ def test_main_delegates_position_order_book_diagnostics_to_monitoring() -> None:
     assert "position_order_book_diagnostics = PositionOrderBookDiagnostics(logger)" in source
     assert "_position_order_book_diag_lock" not in source
     assert "_position_order_book_diag:" not in source
-    assert "position_order_book_diagnostics.clear()" in source
+    assert "position_order_book_diagnostics.clear()" in runtime_source
 
 
 
@@ -968,10 +971,11 @@ def test_main_delegates_paper_session_maintenance_to_storage_and_interface() -> 
     }
     assert route_imports == {"create_paper_session_router"}
     assert "paper_session_maintenance_runtime = PaperSessionMaintenanceRuntime(" in main_source
+    compact_main_source = "".join(main_source.split())
     assert (
         "app.include_router("
         "create_paper_session_router(paper_session_maintenance_runtime)"
-        ")" in main_source
+        ")" in compact_main_source
     )
 
     legacy_handlers = {
