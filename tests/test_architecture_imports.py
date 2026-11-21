@@ -364,4 +364,20 @@ def test_main_delegates_strategy_shadow_events_to_monitoring() -> None:
     assert imported == {"StrategyShadowDiagnostics"}
     assert "strategy_shadow_diagnostics.mark_llm_not_called(candidate_id, reason_code)" in source
     assert "strategy_shadow_diagnostics.log_candidate(ticker, direction, metrics)" in source
-    assert "def _log_scalping_shadow(" in source
+    shadow_wrappers = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_log_scalping_shadow"
+    ]
+    assert len(shadow_wrappers) == 1
+    body = [
+        node for node in shadow_wrappers[0].body
+        if not (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        )
+    ]
+    assert len(body) == 1 and isinstance(body[0], ast.Return)
+    assert ast.unparse(body[0].value) == (
+        "strategy_shadow_diagnostics.log_candidate(ticker, direction, metrics)"
+    )
