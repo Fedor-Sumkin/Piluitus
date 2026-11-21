@@ -775,40 +775,44 @@ def test_main_delegates_pending_bbo_candidate_lifecycle_to_strategy_runtime() ->
         assert guard in runtime_source
 
 
-def test_main_delegates_execution_fill_normalization_to_execution_package() -> None:
+def test_market_worker_delegates_order_execution_lifecycle_to_execution_package() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
-    module_source = (ROOT / "execution" / "outcome_reporting.py").read_text(encoding="utf-8")
+    runtime_source = (
+        ROOT / "execution" / "market_worker_execution_runtime.py"
+    ).read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
     imported = {
         alias.name
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
-        and node.module == "execution.outcome_reporting"
+        and node.module == "execution.market_worker_execution_runtime"
         for alias in node.names
     }
-    assert imported == {"normalize_execution_fill"}
-    assert "execution_fill = normalize_execution_fill(" in source
-    assert "actual_lots = nonnegative_int(raw_actual_lots)" not in source
-    assert "actual_shares = actual_lots *" not in source
-    assert "executor_requested_lots = nonnegative_int(result.get(\"requested_lots\"))" in module_source
+    assert imported == {"MarketWorkerExecutionRuntime"}
+    assert "self.execution_runtime = MarketWorkerExecutionRuntime(" in source
+    assert "normalize_execution_fill=normalize_execution_fill" in source
+    assert "publish_execution_outcome=publish_execution_outcome" in source
 
-
-
-
-def test_main_delegates_execution_outcome_publishing_to_execution_package() -> None:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imported = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "execution.outcome_publisher"
-        for alias in node.names
+    worker = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "MarketWorker"
+    )
+    execution_methods = {
+        node.name: ast.get_source_segment(source, node) or ""
+        for node in worker.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name in {"_execute_and_publish", "_execute_and_publish_locked"}
     }
-    assert imported == {"publish_execution_outcome"}
-    assert "await publish_execution_outcome(" in source
-    worker = source[source.index("class MarketWorker"):source.index("#  6️⃣")]
-    assert "await manager.broadcast(json.dumps({\"type\": \"EXECUTION_UPDATE\"" not in worker
+    assert "self.execution_runtime.execute_and_publish(" in execution_methods["_execute_and_publish"]
+    assert "self.execution_runtime.execute_and_publish_locked(" in execution_methods["_execute_and_publish_locked"]
+    worker_source = source[source.index("class MarketWorker"):source.index("#  6️⃣")]
+    assert "await execution_engine.execute_order(" not in worker_source
+    assert "await publish_execution_outcome(" not in worker_source
+    assert "await self.execution_engine.execute_order(" in runtime_source
+    assert "force_refresh=True" in runtime_source
+    assert "candidate_is_expired(" in runtime_source
+    assert "self.normalize_execution_fill(" in runtime_source
+    assert "await self.publish_execution_outcome(" in runtime_source
 
 
 def test_main_delegates_market_verdict_publication_to_execution_package() -> None:

@@ -41,6 +41,7 @@ from storage.paper_research_runtime import PaperResearchRuntime
 from exchange.finam_client import FinamBrokerClient
 from strategy.screener_funnel import HFTMemoryScreener
 from execution.execution_layer import BaseExecutionEngine
+from execution.market_worker_execution_runtime import MarketWorkerExecutionRuntime
 from execution.outcome_reporting import normalize_execution_fill
 from execution.outcome_publisher import publish_execution_outcome
 from execution.verdict_publisher import publish_market_verdict
@@ -716,6 +717,28 @@ class MarketWorker:
         self.broker = broker_client
         self.client_id = CLIENT_ID
         self._last_risk_block_verdict_at = 0.0
+        self.execution_runtime = MarketWorkerExecutionRuntime(
+            db=self.db,
+            client_id=self.client_id,
+            execution_engine=execution_engine,
+            risk_manager=risk_manager,
+            session_lock=_paper_session_lock,
+            session_generation_provider=lambda: _paper_session_generation,
+            candidate_is_expired=candidate_is_expired,
+            candidate_ttl_sec=_AI_CANDIDATE_TTL_SEC,
+            trade_flow_increment=_trade_flow_inc,
+            logger=logger,
+            shadow_tracker=scalping_shadow_tracker,
+            normalise_execution_status=normalise_execution_status,
+            nonnegative_int=nonnegative_int,
+            normalize_execution_fill=normalize_execution_fill,
+            lot_sizes=FINAM_TRADE_LOT_SIZES,
+            publish_execution_outcome=publish_execution_outcome,
+            verdict_cache=last_ai_verdicts_cache,
+            get_open_positions=_get_dashboard_open_positions,
+            refresh_balance_snapshot=_refresh_dashboard_balance_snapshot,
+            manager=manager,
+        )
 
     async def _execute_and_publish(
         self,
@@ -730,20 +753,17 @@ class MarketWorker:
         candidate_created_monotonic: object | None = None,
         shadow_candidate_id: str | None = None,
     ) -> None:
-        """Serialize order execution with PAPER reset and reject stale/pre-reset signals."""
-        async with _paper_session_lock:
-            if (
-                getattr(execution_engine, "_maintenance_active", False)
-                or session_generation != _paper_session_generation
-            ):
-                logger.info("⏭️ Старый сигнал %s по %s отброшен: PAPER-сессия изменилась/на обслуживании.", verdict_id, ticker)
-                return
-            await self._execute_and_publish_locked(
-                verdict_id=verdict_id, ticker=ticker, lots=lots, side=side,
-                price=price, ai_analysis=ai_analysis,
-                candidate_created_monotonic=candidate_created_monotonic,
-                shadow_candidate_id=shadow_candidate_id,
-            )
+        await self.execution_runtime.execute_and_publish(
+            verdict_id=verdict_id,
+            ticker=ticker,
+            lots=lots,
+            side=side,
+            price=price,
+            ai_analysis=ai_analysis,
+            session_generation=session_generation,
+            candidate_created_monotonic=candidate_created_monotonic,
+            shadow_candidate_id=shadow_candidate_id,
+        )
 
     async def _execute_and_publish_locked(
         self,
@@ -757,161 +777,15 @@ class MarketWorker:
         candidate_created_monotonic: object | None = None,
         shadow_candidate_id: str | None = None,
     ) -> None:
-        """Execute only a fresh, risk-approved candidate and publish its final result."""
-        try:
-            # The pre-LLM TTL check cannot protect against a slow inference call.
-            # Recheck the original market-evidence age immediately before execution.
-            if candidate_is_expired(
-                candidate_created_monotonic,
-                ttl_sec=_AI_CANDIDATE_TTL_SEC,
-            ):
-                try:
-                    candidate_age_sec = max(
-                        0.0,
-                        time_module.monotonic() - float(candidate_created_monotonic),
-                    )
-                except (TypeError, ValueError, OverflowError):
-                    candidate_age_sec = -1.0
-                result = {
-                    "status": "BLOCKED",
-                    "message": (
-                        "SIGNAL_EXPIRED: рыночные данные кандидата устарели во время LLM/очереди; "
-                        "вход отменён без исполнения."
-                    ),
-                }
-                _trade_flow_inc("execution_stale_signal_blocked")
-                logger.warning(
-                    "[EXECUTION STALE SIGNAL BLOCK] %s %s: age=%.3fs ttl=%.3fs; "
-                    "устаревший сигнал не передан исполнителю.",
-                    side, ticker, candidate_age_sec, _AI_CANDIDATE_TTL_SEC,
-                )
-            # Re-read the complete risk state immediately before execution.
-            # A candidate may have waited in an async task while another trade
-            # closed and activated the session hard stop.
-            elif not await risk_manager.is_trading_allowed(self.db, force_refresh=True):
-                result = {
-                    "status": "BLOCKED",
-                    "message": (
-                        "RISK_FINAL_GATE: RiskManager запретил исполнение после "
-                        "повторной проверки; ранее одобренный сигнал отброшен."
-                    ),
-                }
-                _trade_flow_inc("risk_final_gate_blocked")
-                logger.warning(
-                    "🛑 [RISK FINAL GATE] %s %s: отложенный сигнал %s заблокирован перед исполнением.",
-                    side, ticker, verdict_id,
-                )
-            else:
-                result = await execution_engine.execute_order(
-                    ticker=ticker,
-                    lots=lots,
-                    side=side,
-                    price=price,
-                    client_id=self.client_id,
-                    db=self.db,
-                    ai_analysis=ai_analysis,
-                )
-            if not isinstance(result, dict):
-                result = {"status": "FAILED", "message": "Исполнитель вернул некорректный ответ."}
-        except Exception as exc:
-            logger.error("Ошибка исполнения %s %s: %s", side, ticker, exc, exc_info=True)
-            result = {"status": "FAILED", "message": str(exc)}
-
-        raw_status = str(result.get("status", "FAILED")).upper()
-        result_mode = str(result.get("mode") or ("PAPER" if getattr(execution_engine, "paper_mode", True) else "LIVE")).upper()
-        execution_status = normalise_execution_status(raw_status, result_mode)
-        if shadow_candidate_id:
-            scalping_shadow_tracker.update_execution_result(
-                shadow_candidate_id, execution_status=execution_status
-            )
-        result_message = str(result.get("message", ""))
-        outcome_requested_lots = nonnegative_int(result.get("requested_lots"))
-        if outcome_requested_lots is None or outcome_requested_lots <= 0:
-            outcome_requested_lots = max(0, int(lots))
-        outcome_filled_lots = nonnegative_int(result.get("lots"))
-        if outcome_filled_lots is None:
-            outcome_filled_lots = (
-                outcome_requested_lots if execution_status in {"OPENED", "ACCEPTED"} else 0
-            )
-        logger.info(
-            "[EXECUTION OUTCOME] %s %s: status=%s mode=%s requested_lots=%d filled_lots=%d message=%s",
-            side, ticker, execution_status, result_mode, outcome_requested_lots, outcome_filled_lots,
-            result_message.replace(chr(10), " ").replace(chr(13), " ")[:240] or "-",
-        )
-        if "BBO_ENTRY_BLOCK" in result_message:
-            _trade_flow_inc("execution_bbo_blocked")
-        if "SPREAD_ATR_ENTRY_BLOCK" in result_message:
-            _trade_flow_inc("execution_spread_atr_blocked")
-        if execution_status in {"OPENED", "ACCEPTED"}:
-            # Count actual executor outcomes, not merely queued AI decisions.
-            _trade_flow_inc("orders_scheduled")
-            _trade_flow_inc("orders_opened_buy" if side == "BUY" else "orders_opened_sell")
-        execution_fill = normalize_execution_fill(
-            result,
-            requested_lots=lots,
+        await self.execution_runtime.execute_and_publish_locked(
+            verdict_id=verdict_id,
             ticker=ticker,
-            price=price,
-            lot_sizes=FINAM_TRADE_LOT_SIZES,
-            allow_fallback=execution_status in {"OPENED", "ACCEPTED"},
-        )
-        order_id = execution_fill["order_id"]
-        actual_lots = execution_fill["actual_lots"]
-        actual_shares = execution_fill["actual_shares"]
-        actual_notional = execution_fill["actual_notional"]
-        requested_lots_from_executor = execution_fill["requested_lots"]
-        if execution_status in {"SKIPPED", "BLOCKED", "FAILED"}:
-            if "Лимиты портфеля:" in result_message:
-                _trade_flow_inc("portfolio_cap_blocked")
-            elif "ENTRY_SESSION_BLOCK" in result_message:
-                _trade_flow_inc("entry_session_blocked")
-            elif "BBO_ENTRY_BLOCK" not in result_message and "SPREAD_ATR_ENTRY_BLOCK" not in result_message and "AI Decision is HOLD" not in result_message:
-                _trade_flow_inc("execution_other_blocked")
-        if (
-            execution_status in {"OPENED", "ACCEPTED"}
-            and requested_lots_from_executor is not None
-            and actual_lots is not None
-            and actual_lots < requested_lots_from_executor
-        ):
-            _trade_flow_inc("portfolio_size_reduced")
-        if execution_status in {"OPENED", "ACCEPTED"}:
-            logger.info(
-                "📌 [EXECUTION RESULT] %s %s: requested=%s lots; actual=%s lots/%s shares; notional=%.2f ₽; status=%s",
-                side, ticker, requested_lots_from_executor if requested_lots_from_executor is not None else lots,
-                actual_lots if actual_lots is not None else lots,
-                actual_shares if actual_shares is not None else 0,
-                actual_notional if actual_notional is not None else 0.0, execution_status,
-            )
-        update = {
-            "verdict_id": verdict_id,
-            "ticker": ticker,
-            "execution_status": execution_status,
-            "execution_message": str(result.get("message") or (
-                "PAPER-позиция зарегистрирована." if execution_status == "OPENED"
-                else "Брокер принял заявку; факт исполнения должен быть подтверждён отдельно." if execution_status == "ACCEPTED"
-                else "Заявка не открыта."
-            )),
-            "order_id": order_id or None,
-            "executed_lots": actual_lots,
-            "executed_shares": actual_shares,
-            "actual_notional_rub": actual_notional,
-            "execution_timestamp": datetime.now().astimezone().isoformat(timespec="milliseconds"),
-        }
-
-        await publish_execution_outcome(
-            update,
-            db=self.db,
-            verdict_cache=last_ai_verdicts_cache,
-            get_open_positions=_get_dashboard_open_positions,
-            refresh_balance_snapshot=_refresh_dashboard_balance_snapshot,
-            manager=manager,
-            execution_engine=execution_engine,
-            logger=logger,
+            lots=lots,
             side=side,
-            ticker=ticker,
-            status=execution_status,
-            actual_lots=actual_lots,
-            actual_notional=actual_notional,
-            order_id=order_id,
+            price=price,
+            ai_analysis=ai_analysis,
+            candidate_created_monotonic=candidate_created_monotonic,
+            shadow_candidate_id=shadow_candidate_id,
         )
 
     async def _publish_pre_llm_risk_block(self, event_payload: dict, session_generation: int) -> None:
