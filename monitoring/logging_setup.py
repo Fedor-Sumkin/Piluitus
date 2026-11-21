@@ -10,7 +10,7 @@ import math
 import os
 import re
 import sys
-import time as time_module
+from time import monotonic as _monotonic
 from datetime import datetime
 from pathlib import Path
 from typing import cast
@@ -110,7 +110,7 @@ class _DurableFileHandler(logging.FileHandler):
         if stream is None:
             return
 
-        now = time_module.monotonic()
+        now = _monotonic()
         if (
             not self._closing
             and self.sync_interval_seconds > 0
@@ -362,7 +362,7 @@ def update_numpy_impulse_status(ticker: str) -> None:
 
     # Preserve visibility in redirected/non-interactive logs without flooding them.
     if not terminal_status.enabled:
-        now = time_module.monotonic()
+        now = _monotonic()
         if now - _last_numpy_impulse_fallback_log_at >= 5.0:
             logger.warning("%s (повторные сообщения подавляются на 5 сек.)", message)
             _last_numpy_impulse_fallback_log_at = now
