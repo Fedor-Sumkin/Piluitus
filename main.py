@@ -84,8 +84,13 @@ from strategy.market_data_runtime import (
 )
 from portfolio.dashboard_runtime import DashboardRuntime
 from interface.paper_api_helpers import PaperAPIHelpers
+from interface.paper_session_routes import create_paper_session_router
 from interface.paper_research_routes import create_paper_research_router
 from storage.paper_session_runtime import PaperSessionRuntime
+from storage.paper_session_maintenance_runtime import (
+    PAPER_CLEAR_CONFIRMATION,
+    PaperSessionMaintenanceRuntime,
+)
 from strategy.shadow_outcomes import ShadowForwardTracker
 from strategy.bbo_replay import (
     BBOReplayRecorder,
@@ -2037,7 +2042,6 @@ async def http_update_risk_limit(payload: dict = Body(...)):
 BASE_DIR = PROJECT_ROOT
 TEMPLATE_DIR = BASE_DIR / "interface" / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
-PAPER_CLEAR_CONFIRMATION = "ОЧИСТИТЬ PAPER-СЕССИЮ"
 
 
 def _require_paper_mode() -> None:
@@ -2087,287 +2091,51 @@ paper_research_runtime = PaperResearchRuntime(
 app.include_router(create_paper_research_router(paper_research_runtime))
 
 
-@app.post("/api/v1/paper/session/clear")
-async def clear_paper_session(payload: dict[str, object] = Body(...)):
-    global _paper_session_generation, last_ai_verdicts_cache, _balance_guard_last_signature
-    _require_paper_mode()
-    if str(payload.get("confirmation", "")).strip() != PAPER_CLEAR_CONFIRMATION:
-        raise HTTPException(status_code=400, detail=f"Для подтверждения введите точную фразу: {PAPER_CLEAR_CONFIRMATION}")
-
-    async with _paper_session_lock:
-        execution_engine._maintenance_active = True
-        execution_engine._maintenance_reason = "PAPER-сессия приостановлена для полной очистки. Проверьте результат и вручную возобновите PAPER."
-        _paper_session_generation += 1
-        # Persist the pause first. Any later failure must leave the bot paused
-        # across process restarts rather than silently resuming a partial reset.
-        await db_manager.set_json("piluitus:paper:maintenance", {
-            "active": True,
-            "reason": execution_engine._maintenance_reason,
-            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        })
-
-        # Purge queued market events but retain emergency priority-zero commands.
-        emergency_items = []
-        while True:
-            try:
-                queued_item = anomaly_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            try:
-                if isinstance(queued_item, tuple) and queued_item and queued_item[0] == 0:
-                    emergency_items.append(queued_item)
-            finally:
-                anomaly_queue.task_done()
-        for item in emergency_items:
-            anomaly_queue.put_nowait(item)
-
-        _ai_candidate_deduplicator.clear()
-
-        if execution_engine._opening_tickers or execution_engine._lock_closing:
-            raise HTTPException(
-                status_code=409,
-                detail="PAPER-операция ещё выполняется. Торговля оставлена на паузе; обновите страницу и повторите очистку.",
-            )
-
-        monitor_task = execution_engine._monitor_worker_task
-        if monitor_task is not None and not monitor_task.done():
-            monitor_task.cancel()
-            await asyncio.gather(monitor_task, return_exceptions=True)
-        execution_engine._monitor_worker_task = None
-        execution_engine._pending_monitor_prices.clear()
-
-        try:
-            storage_result = await db_manager.clear_paper_session()
-        except RuntimeError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-        removed_memory_positions = len(execution_engine.paper_positions)
-        removed_memory_closed = len(execution_engine.closed_trades)
-        removed_memory_performance = paper_performance_tracker.clear()
-        removed_memory_shadow_pending = scalping_shadow_tracker.clear()
-        removed_memory_shadow_labels = len(paper_shadow_labels)
-        paper_shadow_labels.clear()
-        removed_memory_stale = len(execution_engine._unreconciled_paper_positions)
-        execution_engine.paper_positions.clear()
-        execution_engine.closed_trades.clear()
-        execution_engine._unreconciled_paper_positions.clear()
-        execution_engine._ticker_cooldowns.clear()
-        execution_engine._recent_stop_losses.clear()
-        execution_engine._hydrated_stop_loss_keys.clear()
-        execution_engine._reserved_notional.clear()
-        execution_engine._reserved_stop_risk.clear()
-
-        risk_manager._balance_initialized = False
-        risk_manager.block_trading = False
-        risk_manager._blocked_date = None
-        risk_manager.total_session_pnl = 0.0
-        risk_manager.realized_pnl = 0.0
-        risk_manager.open_pnl = 0.0
-        risk_manager.current_equity = DEPOSIT
-        risk_manager.free_margin = DEPOSIT
-        risk_manager.high_water_mark = DEPOSIT
-        risk_manager.current_drawdown_pct = 0.0
-        risk_manager._drawdown_warning_active = False
-        risk_manager._loss_streak_count = 0
-        risk_manager._loss_pause_signature = None
-        risk_manager._cached_trading_allowed = None
-        risk_manager._last_risk_snapshot_monotonic = 0.0
-
-        last_ai_verdicts_cache.clear()
-        _trade_flow_counters.reset(time_module.monotonic())
-        with _pending_bbo_lock:
-            _pending_bbo_candidates.clear()
-        position_order_book_diagnostics.clear()
-        try:
-            await _rotate_paper_bbo_replay_session()
-        except Exception as replay_exc:
-            execution_engine._maintenance_active = True
-            execution_engine._maintenance_reason = (
-                "PAPER-сессия очищена, но новый BBO replay-сеанс не запустился; торговля оставлена на паузе."
-            )
-            logger.critical(
-                "[PAPER BBO REPLAY SESSION RESET ERROR] trading remains paused: %s",
-                replay_exc, exc_info=True,
-            )
-            raise HTTPException(status_code=500, detail=execution_engine._maintenance_reason) from replay_exc
-        _balance_guard_last_signature = None
-        balance = await _refresh_dashboard_balance_snapshot([])
-
-        await manager.broadcast(json.dumps({
-            "type": "PAPER_SESSION_RESET",
-            "balance": balance,
-            "active_positions": [],
-            "closed_trades": [],
-        }, ensure_ascii=False))
-
-        result = {
-            "status": "ok",
-            "maintenance_active": True,
-            "message": "PAPER-сессия очищена. Для защиты от старых сигналов торговый конвейер оставлен на паузе.",
-            "shadow_pending_discarded": removed_memory_shadow_pending,
-            "shadow_labels_discarded": removed_memory_shadow_labels,
-            "bbo_replay_session_id": paper_bbo_replay_recorder.session_id,
-            "storage": storage_result,
-            "memory": {
-                "removed_open_positions": removed_memory_positions,
-                "removed_closed_trades": removed_memory_closed,
-                "removed_performance_records": removed_memory_performance,
-                "removed_stale_positions": removed_memory_stale,
-            },
-            "balance": balance,
-        }
-        logger.warning("🧹 Полная очистка PAPER-сессии завершена; торговля приостановлена до ручного возобновления.")
-        return result
+def _advance_paper_session_generation() -> None:
+    global _paper_session_generation
+    _paper_session_generation += 1
 
 
-@app.post("/api/v1/paper/session/cleanup-stale-and-resume")
-async def cleanup_stale_and_resume_paper_session():
-    """Remove only quarantined STALE_REVIEW PAPER rows, then resume PAPER atomically."""
-    global _paper_session_generation, _balance_guard_last_signature
-    _require_paper_mode()
-
-    async with _paper_session_lock:
-        if execution_engine._opening_tickers or execution_engine._lock_closing:
-            raise HTTPException(
-                status_code=409,
-                detail="Есть незавершённая операция исполнения. Очистка и запуск отменены.",
-            )
-
-        snapshot_before = await db_manager.get_paper_session_snapshot()
-        if (
-            snapshot_before.get("live_trade_count", 0)
-            or snapshot_before.get("live_history_count", 0)
-            or snapshot_before.get("live_active_order_count", 0)
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail="В хранилище обнаружены LIVE-записи. Автоматический запуск PAPER заблокирован; данные не изменены.",
-            )
-
-        execution_engine._maintenance_active = True
-        execution_engine._maintenance_reason = (
-            "PAPER приостановлен на время удаления только STALE_REVIEW-записей."
-        )
-        _paper_session_generation += 1
-        await db_manager.set_json("piluitus:paper:maintenance", {
-            "active": True,
-            "reason": execution_engine._maintenance_reason,
-            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        })
-
-        # Drop queued market events so old candidates cannot run immediately after resume.
-        # Priority-zero emergency commands are retained.
-        emergency_items = []
-        while True:
-            try:
-                queued_item = anomaly_queue.get_nowait()
-            except asyncio.QueueEmpty:
-                break
-            try:
-                if isinstance(queued_item, tuple) and queued_item and queued_item[0] == 0:
-                    emergency_items.append(queued_item)
-            finally:
-                anomaly_queue.task_done()
-        for item in emergency_items:
-            anomaly_queue.put_nowait(item)
-
-        _ai_candidate_deduplicator.clear()
-
-        try:
-            storage_result = await db_manager.clear_unreconciled_paper_positions()
-        except RuntimeError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-        removed_ids = {
-            str(order_id) for order_id in storage_result.get("position_ids", [])
-        }
-        removed_memory_stale = sum(
-            1 for order_id in removed_ids
-            if order_id in execution_engine._unreconciled_paper_positions
-        )
-        for order_id in removed_ids:
-            execution_engine._unreconciled_paper_positions.pop(order_id, None)
-
-        snapshot_after = await db_manager.get_paper_session_snapshot()
-        if snapshot_after.get("paper_stale_count", 0) > 0:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"Осталось STALE_REVIEW-позиций: {snapshot_after['paper_stale_count']}. "
-                    "PAPER оставлен на паузе; проверьте журнал."
-                ),
-            )
-        if (
-            snapshot_after.get("live_trade_count", 0)
-            or snapshot_after.get("live_history_count", 0)
-            or snapshot_after.get("live_active_order_count", 0)
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail="После очистки обнаружены LIVE-записи. PAPER оставлен на паузе.",
-            )
-
-        # No unresolved PAPER records remain in persistent storage. Clear any
-        # matching in-memory quarantine remnants but preserve current open positions,
-        # closed history, verdicts and risk state.
-        removed_memory_stale += len(execution_engine._unreconciled_paper_positions)
-        execution_engine._unreconciled_paper_positions.clear()
-        # Persist the resume before lifting the in-memory maintenance lock.
-        # If storage fails, this process must remain paused.
-        await db_manager.set_json("piluitus:paper:maintenance", {
-            "active": False,
-            "reason": "",
-            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        })
-        execution_engine._maintenance_active = False
-        execution_engine._maintenance_reason = ""
-
-        _balance_guard_last_signature = None
-        await _broadcast_paper_tables()
-        result = {
-            "status": "ok",
-            "maintenance_active": False,
-            "message": (
-                "STALE_REVIEW-записи удалены. PAPER-конвейер автоматически возобновлён; "
-                "закрытая история, вердикты, риск-состояние и текущие позиции в памяти сохранены."
-            ),
-            "storage": storage_result,
-            "memory": {"removed_stale_positions": removed_memory_stale},
-            "preserved": {
-                "paper_history_rows": snapshot_after.get("paper_history_count", 0),
-                "verdict_history_rows": snapshot_after.get("verdict_history_count", 0),
-                "verdict_execution_keys": snapshot_after.get("verdict_execution_count", 0),
-                "active_memory_positions": len(execution_engine.paper_positions),
-            },
-        }
-        logger.warning(
-            "🧹 [PAPER STALE CLEANUP + RESUME] deleted=%d; memory_stale=%d; PAPER resumed.",
-            storage_result.get("deleted_stale_positions", 0), removed_memory_stale,
-        )
-        return result
+def _reset_balance_guard_signature() -> None:
+    global _balance_guard_last_signature
+    _balance_guard_last_signature = None
 
 
-@app.post("/api/v1/paper/session/resume")
-async def resume_paper_session():
-    _require_paper_mode()
-    async with _paper_session_lock:
-        if execution_engine._opening_tickers or execution_engine._lock_closing:
-            raise HTTPException(status_code=409, detail="Выполняется операция исполнения; PAPER пока нельзя возобновить.")
-        snapshot = await db_manager.get_paper_session_snapshot()
-        if snapshot.get("paper_stale_count", 0) > 0:
-            raise HTTPException(status_code=409, detail="Сначала завершите сверку всех STALE_REVIEW-позиций.")
-        if snapshot.get("live_trade_count", 0) or snapshot.get("live_history_count", 0) or snapshot.get("live_active_order_count", 0):
-            raise HTTPException(status_code=409, detail="В хранилище есть LIVE-записи. Возобновление PAPER заблокировано до проверки хранилища.")
-        execution_engine._maintenance_active = False
-        execution_engine._maintenance_reason = ""
-        await db_manager.set_json("piluitus:paper:maintenance", {
-            "active": False,
-            "reason": "",
-            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        })
-        logger.warning("▶️ PAPER-сессия вручную возобновлена оператором.")
-        await _broadcast_paper_tables()
-        return {"status": "ok", "maintenance_active": False, "message": "PAPER-торговля возобновлена. Новые сигналы будут приниматься."}
+async def _broadcast_paper_session_reset(payload: dict[str, Any]) -> None:
+    await manager.broadcast(json.dumps(payload, ensure_ascii=False))
+
+
+paper_session_maintenance_runtime = PaperSessionMaintenanceRuntime(
+    db_manager=db_manager,
+    execution_engine=execution_engine,
+    risk_manager=risk_manager,
+    paper_session_lock=_paper_session_lock,
+    anomaly_queue=anomaly_queue,
+    ai_candidate_deduplicator=_ai_candidate_deduplicator,
+    paper_performance_tracker=paper_performance_tracker,
+    shadow_tracker=scalping_shadow_tracker,
+    paper_shadow_labels=paper_shadow_labels,
+    last_ai_verdicts_cache=last_ai_verdicts_cache,
+    trade_flow_counters=_trade_flow_counters,
+    pending_bbo_candidates=_pending_bbo_candidates,
+    pending_bbo_lock=_pending_bbo_lock,
+    position_order_book_diagnostics=position_order_book_diagnostics,
+    require_paper_mode=_require_paper_mode,
+    advance_session_generation=_advance_paper_session_generation,
+    reset_balance_guard_signature=_reset_balance_guard_signature,
+    rotate_bbo_replay_session=_rotate_paper_bbo_replay_session,
+    refresh_dashboard_balance_snapshot=_refresh_dashboard_balance_snapshot,
+    broadcast_paper_tables=_broadcast_paper_tables,
+    broadcast_paper_session_reset=_broadcast_paper_session_reset,
+    get_bbo_replay_session_id=lambda: paper_bbo_replay_recorder.session_id,
+    deposit=DEPOSIT,
+    logger=logger,
+    paper_clear_confirmation=PAPER_CLEAR_CONFIRMATION,
+    monotonic=time_module.monotonic,
+)
+app.include_router(
+    create_paper_session_router(paper_session_maintenance_runtime)
+)
 
 
 @app.get("/", response_class=HTMLResponse)

@@ -936,3 +936,92 @@ def test_main_delegates_paper_research_routes_to_interface() -> None:
         "get_paper_reconciliation",
         "reconcile_paper_position",
     } & legacy_handlers
+
+
+def test_main_delegates_paper_session_maintenance_to_storage_and_interface() -> None:
+    main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+    runtime_source = (
+        ROOT / "storage" / "paper_session_maintenance_runtime.py"
+    ).read_text(encoding="utf-8")
+    routes_source = (
+        ROOT / "interface" / "paper_session_routes.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(main_source, filename="main.py")
+
+    runtime_imports = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "storage.paper_session_maintenance_runtime"
+        for alias in node.names
+    }
+    route_imports = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "interface.paper_session_routes"
+        for alias in node.names
+    }
+    assert runtime_imports == {
+        "PAPER_CLEAR_CONFIRMATION",
+        "PaperSessionMaintenanceRuntime",
+    }
+    assert route_imports == {"create_paper_session_router"}
+    assert "paper_session_maintenance_runtime = PaperSessionMaintenanceRuntime(" in main_source
+    assert (
+        "app.include_router("
+        "create_paper_session_router(paper_session_maintenance_runtime)"
+        ")" in main_source
+    )
+
+    legacy_handlers = {
+        node.name for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    assert not {
+        "clear_paper_session",
+        "cleanup_stale_and_resume_paper_session",
+        "resume_paper_session",
+    } & legacy_handlers
+
+    runtime_tree = ast.parse(runtime_source, filename="storage/paper_session_maintenance_runtime.py")
+    runtime_class = next(
+        node for node in runtime_tree.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "PaperSessionMaintenanceRuntime"
+    )
+    methods = {
+        node.name: node
+        for node in runtime_class.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    assert {
+        "clear_paper_session",
+        "cleanup_stale_and_resume",
+        "resume_paper_session",
+    } <= methods.keys()
+    assert "clear_unreconciled_paper_positions" in runtime_source
+    assert "clear_paper_session()" in runtime_source
+    assert "Priority-zero emergency commands are retained" in runtime_source
+    assert 'await self._persist_maintenance(active=False, reason="")' in runtime_source
+
+    route_tree = ast.parse(routes_source, filename="interface/paper_session_routes.py")
+    route_paths = {
+        decorator.args[0].value
+        for node in ast.walk(route_tree)
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+        for decorator in node.decorator_list
+        if isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Attribute)
+        and decorator.func.attr == "post"
+        and decorator.args
+        and isinstance(decorator.args[0], ast.Constant)
+    }
+    assert route_paths == {
+        "/api/v1/paper/session/clear",
+        "/api/v1/paper/session/cleanup-stale-and-resume",
+        "/api/v1/paper/session/resume",
+    }
+    assert "await runtime.clear_paper_session(payload)" in routes_source
+    assert "await runtime.cleanup_stale_and_resume()" in routes_source
+    assert "await runtime.resume_paper_session()" in routes_source
