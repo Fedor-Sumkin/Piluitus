@@ -86,6 +86,7 @@ from interface import tg_bot
 from ai.news_parser import MarketNewsParser
 from monitoring.terminal_status import TerminalStatusLine, StatusAwareStreamHandler
 from monitoring.trade_flow_diagnostics import (
+    TradeFlowCounters,
     bbo_resume_reason_bucket as _bbo_resume_reason_bucket,
     guard_reason_bucket as _guard_reason_bucket,
 )
@@ -595,10 +596,8 @@ _last_funnel_log_at = 0.0
 _last_funnel_log_key: tuple[str, ...] | None = None
 _last_funnel_ready = False
 
-# Счётчики диагностируют, на каком этапе останавливаются сигналы. Окно — 60 секунд.
-_trade_flow_lock = threading.Lock()
-_trade_flow_counts: dict[str, int] = {}
-_trade_flow_last_log_at = time_module.monotonic()
+# Диагностический накопитель; окно отчёта остаётся 60 секунд.
+_trade_flow_counters = TradeFlowCounters(time_module.monotonic())
 # Forward labels are research-only and bounded in memory; all observations are logged.
 scalping_shadow_tracker = ShadowForwardTracker()
 paper_bbo_replay_recorder = BBOReplayRecorder()
@@ -942,20 +941,16 @@ def _log_open_position_bbo_diagnostics() -> None:
 
 
 def _trade_flow_inc(key: str, amount: int = 1) -> None:
-    with _trade_flow_lock:
-        _trade_flow_counts[key] = _trade_flow_counts.get(key, 0) + amount
+    _trade_flow_counters.increment(key, amount)
     _trade_flow_maybe_log()
 
 
 def _trade_flow_maybe_log(force: bool = False) -> None:
-    global _trade_flow_last_log_at, _trade_flow_counts
-    now = time_module.monotonic()
-    with _trade_flow_lock:
-        if not force and now - _trade_flow_last_log_at < 60.0:
-            return
-        counts = dict(_trade_flow_counts)
-        _trade_flow_counts = {}
-        _trade_flow_last_log_at = now
+    counts = _trade_flow_counters.snapshot_if_due(
+        now=time_module.monotonic(), interval_sec=60.0, force=force
+    )
+    if counts is None:
+        return
 
     names = (
         "quotes_received", "selected_quotes", "selected_anomalies", "anomalies_queued",
@@ -4256,9 +4251,7 @@ async def clear_paper_session(payload: dict[str, object] = Body(...)):
         risk_manager._last_risk_snapshot_monotonic = 0.0
 
         last_ai_verdicts_cache.clear()
-        with _trade_flow_lock:
-            _trade_flow_counts.clear()
-            _trade_flow_last_log_at = time_module.monotonic()
+        _trade_flow_counters.reset(time_module.monotonic())
         with _pending_bbo_lock:
             _pending_bbo_candidates.clear()
         with _position_order_book_diag_lock:
