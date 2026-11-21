@@ -125,3 +125,67 @@ def test_main_reuses_extracted_terminal_status_implementations() -> None:
     }
     assert {"TerminalStatusLine", "StatusAwareStreamHandler"} <= imported
 
+
+
+def test_main_does_not_define_extracted_terminal_status_classes() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    local_classes = {
+        node.name for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    assert "TerminalStatusLine" not in local_classes
+    assert "StatusAwareStreamHandler" not in local_classes
+
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "monitoring.terminal_status"
+        for alias in node.names
+    }
+    assert {"TerminalStatusLine", "StatusAwareStreamHandler"} <= imported
+
+
+def test_main_imports_reason_classifiers_from_monitoring() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imports = {
+        alias.name: alias.asname
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "monitoring.trade_flow_diagnostics"
+        for alias in node.names
+    }
+    assert imports == {
+        "bbo_resume_reason_bucket": "_bbo_resume_reason_bucket",
+        "guard_reason_bucket": "_guard_reason_bucket",
+    }
+
+
+def test_guard_reason_bucket_preserves_diagnostic_categories() -> None:
+    from monitoring.trade_flow_diagnostics import guard_reason_bucket
+
+    cases = {
+        "Bid/Ask котировки неактуальны": "quotes",
+        "Спред выше лимита": "spread",
+        "ATR M1-история недостаточна": "atr",
+        "Сокращение размера лучшей заявки": "size",
+        "Всплеск объёма": "volume",
+        "Импульс против VWAP": "direction",
+        "неизвестная причина": "other",
+    }
+    assert {reason: guard_reason_bucket(reason) for reason in cases} == cases
+
+
+def test_bbo_resume_reason_bucket_preserves_diagnostic_categories() -> None:
+    from monitoring.trade_flow_diagnostics import bbo_resume_reason_bucket
+
+    cases = {
+        "нет состояния котировок": "quote_missing",
+        "стакан не подтверждён": "book_unconfirmed",
+        "непротиворечивый двусторонний BBO отсутствует": "invalid_bbo",
+        "ORDER_BOOK устарело": "book_stale",
+        "нет свежего подтверждения": "confirmation_stale",
+        "другая причина": "other_book_failure",
+    }
+    assert {reason: bbo_resume_reason_bucket(reason) for reason in cases} == cases
