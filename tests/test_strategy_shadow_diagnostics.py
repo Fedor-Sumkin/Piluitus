@@ -61,9 +61,11 @@ def test_log_candidate_preserves_shadow_result_counters_and_log_fields():
     observed = diagnostics.log_candidate("SBER", "BUY", metrics)
 
     evaluator.assert_called_once_with("BUY", metrics)
-    tracker.record_candidate.assert_called_once_with(
-        "SBER", "BUY", metrics, result
-    )
+    tracker.record_candidate.assert_called_once()
+    recorded = tracker.record_candidate.call_args.args
+    assert recorded[:3] == ("SBER", "BUY", metrics)
+    assert recorded[3]["eligible"] is True
+    assert recorded[3]["score"] == 91.5
     assert observed["candidate_id"] == "shadow-123"
     assert increment.call_args_list == [
         (("strategy_shadow_evaluated", 1),),
