@@ -817,3 +817,38 @@ def test_market_worker_delegates_post_llm_evidence_refresh_and_validation() -> N
     assert "refresh_post_llm_evidence(" in module_source
     assert "validate_entry_evidence(" in module_source
     assert "queue_flow_conflict_reason" in module_source
+
+
+def test_main_delegates_post_llm_entry_and_execution_readiness_gates() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    module_source = (
+        ROOT / "strategy" / "entry_decision_pipeline.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "strategy.entry_decision_pipeline"
+        for alias in node.names
+    }
+    assert imported == {"prepare_entry_execution_plan"}
+
+    worker = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "MarketWorker"
+    )
+    start_processing = next(
+        node for node in worker.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "start_processing"
+    )
+    worker_source = ast.get_source_segment(source, start_processing) or ""
+    assert "entry_plan = prepare_entry_execution_plan(" in worker_source
+    assert "calculate_atr_stop(" not in worker_source
+    assert "calculate_lot_size(" not in worker_source
+    assert "confidence < 75.0" not in worker_source
+    assert "confidence >= 75.0" not in worker_source
+    assert "_apply_post_llm_evidence_gate" in module_source
+    assert "_apply_confidence_gate" in module_source
+    assert "_prepare_atr_protected_size" in module_source
+    assert "confidence >= 75.0" in module_source

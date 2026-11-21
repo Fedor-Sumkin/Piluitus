@@ -1411,121 +1411,43 @@ class MarketWorker:
                 post_llm_evidence_validation = post_llm_state["post_llm_evidence_validation"]
                 post_llm_evidence_reason = post_llm_state["post_llm_evidence_reason"]
 
-                signal_reason = (
-                    f"Ошибка запроса к vLLM ({request_error_type}); вход запрещён."
-                    if request_error else
-                    "LLM нарушила контракт APPROVE/HOLD; вход запрещён."
-                    if model_contract_violation else ""
-                )
-                if decision in {"BUY", "SELL"} and not valid_evidence:
-                    requested_decision = decision
-                    signal_reason = block_reason or "Измеряемые условия входа не пройдены."
-                    _trade_flow_inc("post_llm_evidence_blocked")
-                    _trade_flow_guard_block(signal_reason)
-                    logger.warning(
-                        "🛑 [SIGNAL GUARD] Заблокирован кандидат %s по %s: %s",
-                        requested_decision, ticker, signal_reason,
-                    )
-                    decision = "HOLD"
-                    confidence = 0.0
-                    ai_analysis["final_decision"] = decision
-                    ai_analysis["confidence_score"] = 0.0
-
-                if decision in {"BUY", "SELL"} and (not confidence_valid or confidence < 75.0):
-                    _trade_flow_inc("confidence_blocked")
-                    _trade_flow_inc("post_llm_confidence_blocked")
-                    requested_decision = decision
-                    if not confidence_valid:
-                        reason = "Модель не вернула корректную числовую confidence_score; вход заблокирован."
-                    else:
-                        reason = f"Оценка модели {confidence:.0f}% ниже порога входа 75%; новая позиция не открыта."
-                    signal_reason = reason
-                    decision = "HOLD"
-                    # Keep the model's original candidate score visible; the critic
-                    # text explains that the candidate fell below the entry threshold.
-                    ai_analysis["final_decision"] = decision
-                    ai_analysis["confidence_score"] = confidence / 100.0
-
-                execution_status = "NOT_REQUESTED"
-                execution_message = "Новая позиция не запрашивалась."
-                requested_lots = 0
-                requested_notional = 0.0
-                lot_multiplier = max(int(FINAM_TRADE_LOT_SIZES.get(ticker, 0) or 0), 0)
                 verdict_id = uuid4().hex
-
-                if decision in ("BUY", "SELL") and confidence >= 75.0:
-                    logger.warning(f"🎯 СИГНАЛ УТВЕРЖДЁН ИИ: {ticker} → {decision} ({confidence:.1f}%)")
-                    atr_value = finite_float(metrics.get("bar_atr")) or 0.0
-                    atr_periods = nonnegative_int(metrics.get("bar_atr_periods")) or 0
-                    entry_bbo_available = (finite_float(metrics.get("spread_available")) or 0.0) >= 0.5
-                    entry_bid = (finite_float(metrics.get("bid")) or 0.0) if entry_bbo_available else 0.0
-                    entry_ask = (finite_float(metrics.get("ask")) or 0.0) if entry_bbo_available else 0.0
-                    entry_spread_pct = (finite_float(metrics.get("spread_pct")) or 0.0) if entry_bbo_available else 0.0
-                    entry_bbo_age_sec = (finite_float(metrics.get("bbo_age_sec")) or 0.0) if entry_bbo_available else 0.0
-                    stop_loss, take_profit = execution_engine.calculate_atr_stop(
-                        ticker,
-                        price,
-                        decision,
-                        atr_value=atr_value,
-                        atr_periods=atr_periods,
-                        bid=entry_bid,
-                        ask=entry_ask,
-                    )
-                    if stop_loss <= 0.0 or take_profit <= 0.0:
-                        try:
-                            min_atr_periods = min(14, max(2, int(os.getenv("PILUITUS_ATR_MIN_PERIODS", "5"))))
-                        except (TypeError, ValueError):
-                            min_atr_periods = 5
-                        execution_status = "BLOCKED"
-                        execution_message = (
-                            f"Недостаточно закрытых M1-диапазонов для ATR: {atr_periods}/{min_atr_periods}; "
-                            "новая позиция не открыта."
-                        )
-                        _trade_flow_inc("atr_history_blocked")
-                        ai_analysis["atr_entry_ready"] = False
-                        logger.warning("Сигнал %s по %s заблокирован после LLM: %s", decision, ticker, execution_message)
-                    else:
-                        ai_analysis["atr_entry_ready"] = True
-                        ai_analysis["stop_loss"] = stop_loss
-                        ai_analysis["take_profit"] = take_profit
-                        ai_analysis["atr_at_entry"] = atr_value
-                        ai_analysis["atr_periods_at_entry"] = atr_periods
-                        ai_analysis["atr_age_sec_at_entry"] = finite_float(metrics.get("bar_atr_age_sec")) if isinstance(metrics, dict) else None
-                        ai_analysis["atr_multiplier"] = finite_float(os.getenv("ATR_MULTIPLIER", "1.5")) or 1.5
-                        ai_analysis["entry_bid"] = entry_bid
-                        ai_analysis["entry_ask"] = entry_ask
-                        ai_analysis["entry_spread_pct"] = entry_spread_pct
-                        ai_analysis["entry_bbo_age_sec"] = entry_bbo_age_sec
-                        requested_lots = risk_manager.calculate_lot_size(ticker, price, stop_loss)
-                        if requested_lots <= 0:
-                            _trade_flow_inc("zero_lot")
-                            execution_status = "BLOCKED"
-                            if lot_multiplier <= 0:
-                                _trade_flow_inc("finam_lot_unavailable")
-                                execution_message = (
-                                    f"{'биржевой lot_size' if Settings.PAPER_TRADING else 'Finam account trade_lot_size'} для {ticker} не подтверждён; "
-                                    "новая позиция не открыта."
-                                )
-                                logger.warning(
-                                    "Сигнал %s по %s заблокирован: lot_size не подтверждён.",
-                                    decision, ticker,
-                                )
-                            else:
-                                execution_message = "Риск на минимальный лот превышает установленный лимит."
-                                logger.warning(
-                                    "Сигнал %s по %s пропущен: риск на минимальный лот превышает лимит.",
-                                    decision, ticker,
-                                )
-                        else:
-                            requested_notional = requested_lots * lot_multiplier * price
-                            logger.info(
-                                "🧮 [POSITION SIZE] %s %s: lots=%d shares=%d price=%.4f notional=%.2f ₽ planned_risk=%.2f ₽ ATR=%.6f (%d M1 ranges) stop=%.4f%%",
-                                decision, ticker, requested_lots, requested_lots * lot_multiplier, price, requested_notional,
-                                abs(price - stop_loss) * requested_lots * lot_multiplier,
-                                atr_value, atr_periods, abs(price - stop_loss) / price * 100.0,
-                            )
-                            execution_status = "PENDING"
-                            execution_message = "Заявка передана в контур исполнения; ожидается результат."
+                entry_plan = prepare_entry_execution_plan(
+                    ticker=ticker,
+                    price=price,
+                    decision=decision,
+                    confidence=confidence,
+                    confidence_valid=confidence_valid,
+                    valid_evidence=valid_evidence,
+                    block_reason=block_reason,
+                    signal_reason=(
+                        f"Ошибка запроса к vLLM ({request_error_type}); вход запрещён."
+                        if request_error else
+                        "LLM нарушила контракт APPROVE/HOLD; вход запрещён."
+                        if model_contract_violation else ""
+                    ),
+                    metrics=metrics,
+                    ai_analysis=ai_analysis,
+                    lot_multiplier=FINAM_TRADE_LOT_SIZES.get(ticker, 0),
+                    execution_engine=execution_engine,
+                    risk_manager=risk_manager,
+                    paper_trading=bool(Settings.PAPER_TRADING),
+                    increment_counter=_trade_flow_inc,
+                    guard_block=_trade_flow_guard_block,
+                    finite_float=finite_float,
+                    nonnegative_int=nonnegative_int,
+                    logger=logger,
+                    min_atr_periods_raw=os.getenv("PILUITUS_ATR_MIN_PERIODS", "5"),
+                    atr_multiplier_raw=os.getenv("ATR_MULTIPLIER", "1.5"),
+                )
+                decision = entry_plan["decision"]
+                confidence = entry_plan["confidence"]
+                signal_reason = entry_plan["signal_reason"]
+                execution_status = entry_plan["execution_status"]
+                execution_message = entry_plan["execution_message"]
+                requested_lots = entry_plan["requested_lots"]
+                requested_notional = entry_plan["requested_notional"]
+                lot_multiplier = entry_plan["lot_multiplier"]
 
                 # Do not expose free-form LLM reasoning as evidence. User-facing text
                 # is generated only from locally measured values and guard outcomes.
