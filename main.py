@@ -95,12 +95,12 @@ load_dotenv()
 
 from monitoring.background_tasks import BackgroundOperationTracker
 from monitoring.logging_setup import (
-    RUN_ID,
     RUN_LOG_PATHS,
     logger,
     terminal_status,
     update_numpy_impulse_status,
 )
+from monitoring.trading_event_logger import log_trading_event_to_file
 
 def _parse_finite_float(value: object) -> float | None:
     """Convert an untrusted JSON scalar to a finite float."""
@@ -1370,58 +1370,6 @@ screener.set_universe(TICKERS_TO_TRADE)
 #  2️⃣  НЕБЛОКИРУЮЩИЙ ДИСКОВЫЙ БОРТОВОЙ ЖУРНАЛ ТЕСТОВ
 # --------------------------------------------------------------
 _background_operations = BackgroundOperationTracker(logger)
-_trading_log_file_lock = threading.Lock()
-
-
-def _sync_write_trading_log(filename: str, log_line: str):
-    """Синхронная сериализованная запись блока торгового лога на диск."""
-    try:
-        with _trading_log_file_lock:
-            with open(filename, "a", encoding="utf-8") as file:
-                file.write(log_line + "\n")
-    except Exception as e:
-        logger.error(f"❌ Ошибка записи в текстовый лог: {e}", exc_info=True)
-
-
-async def log_trading_event_to_file(
-    ticker: str,
-    price: float,
-    decision: str,
-    confidence: float,
-    tactic: str,
-    critic: str,
-    *,
-    candidate_id: str | None = None,
-    verdict_id: str | None = None,
-    model_confidence: float | None = None,
-    final_confidence: float | None = None,
-):
-    """Асинхронный неблокирующий регистратор торговых событий текущего запуска."""
-    os.makedirs("trading_logs", exist_ok=True)
-
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    run_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(RUN_ID or "unknown"))
-    filename = f"trading_logs/piluitus_session_{date_str}_{run_id}.txt"
-
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    model_confidence_value = confidence if model_confidence is None else model_confidence
-    final_confidence_text = (
-        f"{final_confidence:.1f}%" if final_confidence is not None else "N/A"
-    )
-    log_line = (
-        f"========================================================================\n"
-        f"⏰ ВРЕМЯ: {timestamp} | АКТИВ: {ticker} | ЦЕНА: {price} ₽\n"
-        f"🧩 ЗАПУСК: {run_id} | candidate_id={candidate_id or 'NONE'} | verdict_id={verdict_id or 'NONE'}\n"
-        f"🎯 РЕШЕНИЕ ИИ: {decision} (Модель: {model_confidence_value:.1f}% | "
-        f"Финальный фильтр: {final_confidence_text})\n"
-        f"------------------------------------------------------------------------\n"
-        f"📝 ТАКТИКА: {tactic}\n"
-        f"🧐 КРИТИКА: {critic}\n"
-        f"========================================================================\n"
-    )
-
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, _sync_write_trading_log, filename, log_line)
 # --------------------------------------------------------------
 #  3️⃣  CONNECTION MANAGER (WebSocket)
 # --------------------------------------------------------------
