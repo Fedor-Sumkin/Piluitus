@@ -207,3 +207,33 @@ def test_main_reuses_extracted_websocket_manager() -> None:
         for alias in node.names
     }
     assert "ConnectionManager" in imported
+
+def test_main_delegates_runtime_logging_to_monitoring() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    local_classes = {
+        node.name for node in tree.body if isinstance(node, ast.ClassDef)
+    }
+    assert not {
+        "_PrivacyFormatter",
+        "_DurableFileHandler",
+        "_RunIdFilter",
+        "_DiagnosticLogFilter",
+        "_SessionLogFilter",
+        "_ErrorLogFilter",
+    } & local_classes
+
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "monitoring.logging_setup"
+        for alias in node.names
+    }
+    assert {
+        "RUN_ID",
+        "RUN_LOG_PATHS",
+        "logger",
+        "terminal_status",
+        "update_numpy_impulse_status",
+    } <= imported
