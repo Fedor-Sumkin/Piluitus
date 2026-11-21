@@ -101,6 +101,7 @@ def test_publisher_isolates_websocket_failure():
 
     _, cache, _, logger = _publish(
         {"verdict_id": "v-3", "ticker": "SBER"},
+        db=SimpleNamespace(redis=FakeRedis()),
         manager=BrokenManager(),
     )
 

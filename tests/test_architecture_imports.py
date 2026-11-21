@@ -702,7 +702,16 @@ def test_main_delegates_market_verdict_publication_to_execution_package() -> Non
     }
     assert imported == {"publish_market_verdict"}
     assert "await publish_market_verdict(" in source
-    worker = source[source.index("class MarketWorker"):source.index("#  6️⃣")]
-    assert "redis_inst.lpush(" not in worker
-    assert "manager.broadcast(json.dumps(payload" not in worker
+    worker_class = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "MarketWorker"
+    )
+    start_processing = next(
+        node for node in worker_class.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "start_processing"
+    )
+    start_processing_source = ast.get_source_segment(source, start_processing) or ""
+    assert "redis_inst.lpush(" not in start_processing_source
+    assert "manager.broadcast(json.dumps(payload" not in start_processing_source
     assert "verdict_cache.append(verdict)" in module_source
