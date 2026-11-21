@@ -1100,6 +1100,7 @@ class MarketWorker:
             ticker=ticker,
             price=price,
             lot_sizes=FINAM_TRADE_LOT_SIZES,
+            allow_fallback=execution_status in {"OPENED", "ACCEPTED"},
         )
         order_id = execution_fill["order_id"]
         actual_lots = execution_fill["actual_lots"]

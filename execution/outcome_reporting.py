@@ -14,6 +14,7 @@ def normalize_execution_fill(
     ticker: str,
     price: float,
     lot_sizes: Mapping[str, int],
+    allow_fallback: bool = False,
 ) -> dict[str, Any]:
     """Return stable order/fill fields, preserving executor values when supplied."""
     order_id = str(result.get("orderId") or result.get("order_id") or "")
@@ -26,14 +27,14 @@ def normalize_execution_fill(
     actual_notional = finite_float(raw_notional)
     executor_requested_lots = nonnegative_int(result.get("requested_lots"))
 
-    if raw_lots is None:
+    if allow_fallback and raw_lots is None:
         actual_lots = max(0, int(requested_lots))
 
-    if raw_shares is None and actual_lots is not None:
+    if allow_fallback and raw_shares is None and actual_lots is not None:
         lot_multiplier = max(int(lot_sizes.get(ticker, 0) or 0), 0)
         actual_shares = actual_lots * lot_multiplier
 
-    if raw_notional is None and actual_shares is not None:
+    if allow_fallback and raw_notional is None and actual_shares is not None:
         actual_notional = round(actual_shares * float(price), 2)
 
     return {

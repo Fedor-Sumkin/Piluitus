@@ -31,7 +31,7 @@ def test_normalize_execution_fill_supports_snake_case_order_id():
 
 def test_normalize_execution_fill_falls_back_to_requested_lots():
     result = normalize_execution_fill(
-        {}, requested_lots=3, ticker="SBER", price=31.25, lot_sizes=LOT_SIZES,
+        {}, requested_lots=3, ticker="SBER", price=31.25, lot_sizes=LOT_SIZES, allow_fallback=True,
     )
     assert result["actual_lots"] == 3
     assert result["actual_shares"] == 30
@@ -50,7 +50,7 @@ def test_normalize_execution_fill_uses_zero_lot_multiplier_when_unknown():
 
 def test_normalize_execution_fill_does_not_invent_shares_for_invalid_lots():
     result = normalize_execution_fill(
-        {"lots": "invalid"}, requested_lots=4, ticker="SBER", price=10.0, lot_sizes=LOT_SIZES,
+        {"lots": "invalid"}, requested_lots=4, ticker="SBER", price=10.0, lot_sizes=LOT_SIZES, allow_fallback=True,
     )
     assert result["actual_lots"] is None
     assert result["actual_shares"] is None
@@ -64,3 +64,13 @@ def test_normalize_execution_fill_uses_executor_requested_lots_when_valid():
     assert result["requested_lots"] == 8
     assert result["actual_lots"] == 4
     assert result["actual_shares"] == 40
+
+
+def test_normalize_execution_fill_does_not_apply_fallback_to_rejected_execution():
+    result = normalize_execution_fill(
+        {}, requested_lots=3, ticker="SBER", price=31.25, lot_sizes=LOT_SIZES,
+        allow_fallback=False,
+    )
+    assert result["actual_lots"] is None
+    assert result["actual_shares"] is None
+    assert result["actual_notional"] is None
