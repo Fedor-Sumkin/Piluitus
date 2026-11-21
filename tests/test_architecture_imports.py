@@ -433,4 +433,10 @@ def test_main_delegates_dashboard_balance_calculation_to_portfolio() -> None:
     }
     assert imported == {"build_dashboard_balance_snapshot"}
     assert "calculation = build_dashboard_balance_snapshot(" in source
-    assert "calculate_assets_used(" not in source
+    refresh = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "_refresh_dashboard_balance_snapshot"
+    )
+    refresh_source = ast.get_source_segment(source, refresh) or ""
+    assert "calculate_assets_used(" not in refresh_source
