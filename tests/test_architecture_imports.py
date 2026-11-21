@@ -440,3 +440,50 @@ def test_main_delegates_dashboard_balance_calculation_to_portfolio() -> None:
     )
     refresh_source = ast.get_source_segment(source, refresh) or ""
     assert "calculate_assets_used(" not in refresh_source
+
+
+def test_main_delegates_shadow_outcome_persistence_to_storage() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "storage.shadow_outcomes"
+        for alias in node.names
+    }
+    assert imported == {"ShadowOutcomePersistence"}
+    assert "shadow_outcome_persistence = ShadowOutcomePersistence(" in source
+
+    persist = next(
+        node for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_persist_shadow_outcomes"
+    )
+    restore = next(
+        node for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_restore_shadow_outcomes"
+    )
+    persist_calls = [
+        node for node in ast.walk(persist)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    ]
+    restore_calls = [
+        node for node in ast.walk(restore)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    ]
+    assert any(
+        node.func.attr == "persist_completed_labels"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "shadow_outcome_persistence"
+        for node in persist_calls
+    )
+    assert any(
+        node.func.attr == "restore_completed_labels"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "shadow_outcome_persistence"
+        for node in restore_calls
+    )
+    assert "push_many_to_list(" not in (ast.get_source_segment(source, persist) or "")
+    assert "get_list(" not in (ast.get_source_segment(source, restore) or "")

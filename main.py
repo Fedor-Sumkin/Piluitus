@@ -33,6 +33,7 @@ from risk.risk_limits import validate_daily_loss_limit
 # --- PILUITUS‑V3 modules ------------------------------------------------
 from ai.ai_engine import AIEngine
 from storage.db_manager import DBManager
+from storage.shadow_outcomes import ShadowOutcomePersistence
 from exchange.finam_client import FinamBrokerClient
 from strategy.screener_funnel import HFTMemoryScreener
 from execution.execution_layer import BaseExecutionEngine
@@ -219,40 +220,19 @@ scalping_shadow_tracker = ShadowForwardTracker()
 paper_bbo_replay_recorder = BBOReplayRecorder()
 execution_engine.bbo_replay_session_id = paper_bbo_replay_recorder.session_id
 execution_engine.paper_exit_event_recorder = paper_bbo_replay_recorder.record_exit_trigger
-SHADOW_OUTCOMES_STORAGE_KEY = "piluitus:strategy:shadow:outcomes"
-SHADOW_OUTCOMES_STORAGE_LIMIT = 20000
 paper_shadow_labels: list[dict[str, Any]] = []
+shadow_outcome_persistence = ShadowOutcomePersistence(
+    db_manager, scalping_shadow_tracker, paper_shadow_labels, logger
+)
 
 
 async def _persist_shadow_outcomes(labels: list[dict[str, Any]], *, source: str) -> None:
-    """Persist completed labels with a session marker; storage stays a research archive."""
-    if not labels:
-        return
-    session_id = str(getattr(execution_engine, "session_id", "unknown"))
-    session_labels = [
-        {**dict(label), "paper_session_id": session_id}
-        for label in labels if isinstance(label, dict)
-    ]
-    if not session_labels:
-        return
-    try:
-        await db_manager.push_many_to_list(
-            SHADOW_OUTCOMES_STORAGE_KEY,
-            session_labels,
-            max_len=SHADOW_OUTCOMES_STORAGE_LIMIT,
-        )
-        paper_shadow_labels.extend(session_labels)
-        if len(paper_shadow_labels) > SHADOW_OUTCOMES_STORAGE_LIMIT:
-            del paper_shadow_labels[:-SHADOW_OUTCOMES_STORAGE_LIMIT]
-        logger.info(
-            "[STRATEGY SHADOW PERSIST] source=%s saved=%d retained_limit=%d session_id=%s",
-            source, len(session_labels), SHADOW_OUTCOMES_STORAGE_LIMIT, session_id,
-        )
-    except Exception as exc:
-        logger.error(
-            "[STRATEGY SHADOW PERSIST ERROR] source=%s batch_size=%d error=%s",
-            source, len(session_labels), exc, exc_info=True,
-        )
+    """Persist completed labels through the dedicated storage adapter."""
+    await shadow_outcome_persistence.persist_completed_labels(
+        labels,
+        session_id=str(getattr(execution_engine, "session_id", "unknown")),
+        source=source,
+    )
 
 
 def _record_paper_bbo_replay(
@@ -317,30 +297,10 @@ def _record_paper_bbo_replay(
 
 async def _restore_shadow_outcomes() -> None:
     """Restore historical research only outside PAPER; PAPER starts with empty aggregates."""
-    paper_shadow_labels.clear()
-    if getattr(execution_engine, "paper_mode", True):
-        discarded_pending = scalping_shadow_tracker.clear()
-        logger.info(
-            "[STRATEGY SHADOW SESSION RESET] active_session=%s labels=0 pending_discarded=%d "
-            "historical_journal_retained=true historical_labels_loaded=false",
-            getattr(execution_engine, "session_id", "unknown"),
-            discarded_pending,
-        )
-        return
-    try:
-        stored = await db_manager.get_list(
-            SHADOW_OUTCOMES_STORAGE_KEY, start=0, stop=SHADOW_OUTCOMES_STORAGE_LIMIT - 1
-        )
-        restored = scalping_shadow_tracker.restore_completed_labels(stored)
-        paper_shadow_labels.extend(
-            dict(label) for label in stored if isinstance(label, dict)
-        )
-        logger.info(
-            "[STRATEGY SHADOW RESTORE] loaded=%d restored=%d pending=0 storage_limit=%d",
-            len(stored), restored, SHADOW_OUTCOMES_STORAGE_LIMIT,
-        )
-    except Exception as exc:
-        logger.error("[STRATEGY SHADOW RESTORE ERROR] %s", exc, exc_info=True)
+    await shadow_outcome_persistence.restore_completed_labels(
+        paper_mode=bool(getattr(execution_engine, "paper_mode", True)),
+        session_id=getattr(execution_engine, "session_id", "unknown"),
+    )
 
 
 async def _rotate_paper_bbo_replay_session() -> None:
