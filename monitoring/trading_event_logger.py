@@ -6,7 +6,6 @@ keeping file I/O off the market-processing event loop.
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import re
 import threading
