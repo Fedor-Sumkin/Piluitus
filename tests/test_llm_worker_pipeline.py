@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 import strategy.llm_context as llm_context
@@ -29,8 +31,7 @@ class _Logger:
         self.warnings.append((args, kwargs))
 
 
-@pytest.mark.asyncio
-async def test_llm_context_attaches_retrieved_and_directional_rule_ids(monkeypatch):
+def test_llm_context_attaches_retrieved_and_directional_rule_ids(monkeypatch):
     async def get_context(**kwargs):
         assert kwargs["category"] == "ScalpingRules"
         assert kwargs["market_evidence"] == {"price_change_pct": 0.2}
@@ -45,13 +46,13 @@ async def test_llm_context_attaches_retrieved_and_directional_rule_ids(monkeypat
     event = {"metrics": {"price_change_pct": 0.2}}
     logger = _Logger()
 
-    result = await attach_llm_rule_context(
+    result = asyncio.run(attach_llm_rule_context(
         event,
         db=object(),
         ticker="SBER",
         candidate_direction="BUY",
         logger=logger,
-    )
+    ))
 
     assert result == {
         "retrieved_rule_ids": ["R1", "B1", "S1"],
@@ -64,8 +65,7 @@ async def test_llm_context_attaches_retrieved_and_directional_rule_ids(monkeypat
     assert not logger.errors
 
 
-@pytest.mark.asyncio
-async def test_llm_context_fails_closed_when_knowledge_retrieval_raises(monkeypatch):
+def test_llm_context_fails_closed_when_knowledge_retrieval_raises(monkeypatch):
     async def fail(**kwargs):
         raise RuntimeError("knowledge store unavailable")
 
@@ -73,13 +73,13 @@ async def test_llm_context_fails_closed_when_knowledge_retrieval_raises(monkeypa
     event = {"metrics": {}}
     logger = _Logger()
 
-    result = await attach_llm_rule_context(
+    result = asyncio.run(attach_llm_rule_context(
         event,
         db=object(),
         ticker="VTBR",
         candidate_direction="SELL",
         logger=logger,
-    )
+    ))
 
     assert result == {"retrieved_rule_ids": [], "prompt_rule_ids": []}
     assert event["rag_context"] == [
