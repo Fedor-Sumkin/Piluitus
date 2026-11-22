@@ -633,6 +633,9 @@ def test_lifespan_delegates_long_running_task_ownership_to_supervisor() -> None:
 
 def test_main_delegates_market_event_normalization_to_runtime() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
+    composition_source = (
+        ROOT / "runtime" / "market_application_runtime.py"
+    ).read_text(encoding="utf-8")
     runtime_source = (
         ROOT / "runtime" / "market_data_event_runtime.py"
     ).read_text(encoding="utf-8")
@@ -644,11 +647,14 @@ def test_main_delegates_market_event_normalization_to_runtime() -> None:
         alias.name
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
-        and node.module == "runtime.market_ingestion_runtime"
+        and node.module == "runtime.market_application_runtime"
         for alias in node.names
     }
-    assert imported == {"MarketIngestionRuntimeFactory"}
-    assert "market_ingestion_components = MarketIngestionRuntimeFactory(" in source
+    assert imported == {"MarketApplicationRuntime"}
+    assert "market_application_runtime = MarketApplicationRuntime(" in source
+    assert "market_ingestion_components = market_application_runtime.ingestion_components" in source
+    assert "from runtime.market_ingestion_runtime import MarketIngestionRuntimeFactory" in composition_source
+    assert "self.ingestion_components = MarketIngestionRuntimeFactory(" in composition_source
     assert "market_data_event_runtime = market_ingestion_components.market_data_event_runtime" in source
     assert "await market_data_event_runtime.process_event(event)" in source
     assert "quote_event = normalize_market_quote_event(event)" in runtime_source
