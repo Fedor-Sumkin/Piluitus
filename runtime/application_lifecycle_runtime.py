@@ -42,6 +42,7 @@ class ApplicationLifecycleRuntime:
             single_position_pct, deposit * single_position_pct / 100.0,
         )
 
+        # Startup restoration starts the recorder via self.paper_bbo_replay_recorder_provider().
         await self._restore_startup_state(
             logger=logger,
             execution_engine=execution_engine,
