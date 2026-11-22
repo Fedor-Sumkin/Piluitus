@@ -877,23 +877,22 @@ def test_main_delegates_verdict_record_construction_and_enrichment_to_strategy()
 
 
 
-def test_market_worker_delegates_llm_rule_context_and_response_contract() -> None:
+
+def test_market_worker_delegates_queue_and_llm_processing_to_runtime() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
-    context_source = (ROOT / "strategy" / "llm_context.py").read_text(encoding="utf-8")
-    response_source = (ROOT / "strategy" / "llm_response.py").read_text(encoding="utf-8")
+    runtime_source = (
+        ROOT / "runtime" / "market_worker_processing_runtime.py"
+    ).read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
     imported = {
         alias.name
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
-        and node.module in {"strategy.llm_context", "strategy.llm_response"}
+        and node.module == "runtime.market_worker_processing_runtime"
         for alias in node.names
     }
-    assert imported >= {
-        "attach_llm_rule_context",
-        "build_llm_error_response",
-        "process_llm_response",
-    }
+    assert imported == {"MarketWorkerProcessingRuntime"}
+
     worker = next(
         node for node in tree.body
         if isinstance(node, ast.ClassDef) and node.name == "MarketWorker"
@@ -903,84 +902,57 @@ def test_market_worker_delegates_llm_rule_context_and_response_contract() -> Non
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "start_processing"
     )
     worker_source = ast.get_source_segment(source, start_processing) or ""
-    assert "await attach_llm_rule_context(" in worker_source
-    assert "process_llm_response(" in worker_source
-    assert "TechnicalKnowledgeParser" not in worker_source
-    assert "contract_retry_attempted" not in worker_source
-    # The normalized flag is intentionally still consumed by later diagnostics;
-    # its parsing and mutation now live in the response-pipeline module.
-    assert "model_contract_violation = bool(" not in worker_source
+    assert "await self.processing_runtime.start_processing()" in worker_source
+    assert "async def process_next_item(" in runtime_source
+    assert "anomaly_queue.task_done()" in runtime_source
+    assert "_release_ai_ticker(pending_ticker)" in runtime_source
+    assert "async def publish_pre_llm_risk_block(" in runtime_source
+    assert "async def publish_pre_llm_risk_block_locked(" in runtime_source
+
+
+def test_processing_runtime_preserves_llm_context_and_response_contract_delegation() -> None:
+    source = (ROOT / "runtime" / "market_worker_processing_runtime.py").read_text(encoding="utf-8")
+    context_source = (ROOT / "strategy" / "llm_context.py").read_text(encoding="utf-8")
+    response_source = (ROOT / "strategy" / "llm_response.py").read_text(encoding="utf-8")
+    assert "await attach_llm_rule_context(" in source
+    assert "process_llm_response(" in source
+    assert "TechnicalKnowledgeParser" not in source
+    assert "contract_retry_attempted" not in source
+    assert "model_contract_violation = bool(" not in source
     assert "select_prompt_rules" not in source
     assert "select_prompt_rules" in context_source
     assert "APPROVE/HOLD" in response_source
 
 
-def test_market_worker_delegates_post_llm_evidence_refresh_and_validation() -> None:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
+
+def test_processing_runtime_delegates_post_llm_evidence_refresh_and_validation() -> None:
+    source = (ROOT / "runtime" / "market_worker_processing_runtime.py").read_text(encoding="utf-8")
     module_source = (
         ROOT / "strategy" / "post_llm_validation.py"
     ).read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imported = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "strategy.post_llm_validation"
-        for alias in node.names
-    }
-    assert imported == {"validate_post_llm_entry"}
-    worker = next(
-        node for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "MarketWorker"
-    )
-    start_processing = next(
-        node for node in worker.body
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "start_processing"
-    )
-    worker_source = ast.get_source_segment(source, start_processing) or ""
-    assert "validate_post_llm_entry(" in worker_source
-    assert "refresh_post_llm_evidence(" not in worker_source
-    assert "validate_entry_evidence(" not in worker_source
-    assert "classify_direction_evidence(" not in worker_source
+    assert "validate_post_llm_entry(" in source
+    assert "refresh_post_llm_evidence(" not in source
+    assert "validate_entry_evidence(" not in source
+    assert "classify_direction_evidence(" not in source
     assert "refresh_post_llm_evidence(" in module_source
     assert "validate_entry_evidence(" in module_source
     assert "queue_flow_conflict_reason" in module_source
 
 
-def test_main_delegates_post_llm_entry_and_execution_readiness_gates() -> None:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
+def test_processing_runtime_delegates_final_entry_readiness_gates() -> None:
+    source = (ROOT / "runtime" / "market_worker_processing_runtime.py").read_text(encoding="utf-8")
     module_source = (
         ROOT / "strategy" / "entry_decision_pipeline.py"
     ).read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imported = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "strategy.entry_decision_pipeline"
-        for alias in node.names
-    }
-    assert imported == {"prepare_entry_execution_plan"}
-
-    worker = next(
-        node for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "MarketWorker"
-    )
-    start_processing = next(
-        node for node in worker.body
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "start_processing"
-    )
-    worker_source = ast.get_source_segment(source, start_processing) or ""
-    assert "entry_plan = prepare_entry_execution_plan(" in worker_source
-    assert "calculate_atr_stop(" not in worker_source
-    assert "calculate_lot_size(" not in worker_source
-    assert "confidence < 75.0" not in worker_source
-    assert "confidence >= 75.0" not in worker_source
+    assert "entry_plan = prepare_entry_execution_plan(" in source
+    assert "calculate_atr_stop(" not in source
+    assert "calculate_lot_size(" not in source
+    assert "confidence < 75.0" not in source
+    assert "confidence >= 75.0" not in source
     assert "_apply_post_llm_evidence_gate" in module_source
     assert "_apply_confidence_gate" in module_source
     assert "_prepare_atr_protected_size" in module_source
     assert "confidence >= 75.0" in module_source
-
 
 
 def test_main_delegates_paper_research_routes_to_interface() -> None:
