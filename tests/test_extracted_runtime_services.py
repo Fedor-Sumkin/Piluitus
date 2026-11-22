@@ -160,6 +160,7 @@ def test_dashboard_runtime_builds_cost_basis_snapshot_and_resets_guard():
         paper_mode=True, max_gross_exposure_pct=0.15, max_single_position_pct=0.05,
         _unreconciled_paper_positions={"legacy": {
             "id": "legacy", "ticker": "GAZP", "status": "STALE_REVIEW",
+            "reconciliation_status": "REVIEW_REQUIRED",
             "volume": 5, "entry_price": 200.0,
         }},
     )
