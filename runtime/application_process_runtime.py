@@ -158,7 +158,7 @@ class ApplicationProcessRuntime:
 
         try:
             runner(
-                self.module_namespace["app"],
+                self._exports["app"],
                 log_config=None,
                 host="127.0.0.1",
                 port=8080,

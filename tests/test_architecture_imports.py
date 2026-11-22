@@ -466,7 +466,8 @@ def test_main_delegates_core_service_and_capital_composition_to_runtime() -> Non
     bootstrap_source = (
         ROOT / "runtime" / "application_runtime_bootstrap.py"
     ).read_text(encoding="utf-8")
-    assert "ApplicationRuntimeBootstrap(" in _application_process_runtime_source()
+    assert "bootstrap_factory: Callable[..., Any] = ApplicationRuntimeBootstrap" in _application_process_runtime_source()
+    assert "self.bootstrap_factory(" in _application_process_runtime_source()
     assert "ApplicationCoreRuntime(" in bootstrap_source
     for direct_constructor in (
         "DBManager()",
@@ -690,7 +691,8 @@ def test_main_delegates_fastapi_application_assembly_to_composition_runtimes() -
     bootstrap_source = (
         ROOT / "runtime" / "application_runtime_bootstrap.py"
     ).read_text(encoding="utf-8")
-    assert "ApplicationRuntimeBootstrap(" in _application_process_runtime_source()
+    assert "bootstrap_factory: Callable[..., Any] = ApplicationRuntimeBootstrap" in _application_process_runtime_source()
+    assert "self.bootstrap_factory(" in _application_process_runtime_source()
     assert "ApplicationCompositionRootRuntime(" in bootstrap_source
     assert "ApplicationCompositionRuntime(" not in main_source
     assert "ApplicationLifecycleRuntime(" not in main_source
