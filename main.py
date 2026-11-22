@@ -5,7 +5,6 @@ import re
 import os
 import sys
 import time as time_module
-import threading
 import shutil
 import unicodedata
 from contextlib import asynccontextmanager
@@ -45,15 +44,10 @@ from execution.verdict_publisher import publish_market_verdict
 from risk.risk_manager import RiskManager
 from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory
 from runtime.market_event_normalizer import build_market_candidate_payload
-from runtime.market_data_event_runtime import MarketDataEventRuntime
 from runtime.market_background_services import MarketBackgroundServicesRuntime
 from runtime.application_lifecycle_runtime import ApplicationLifecycleRuntime
 from runtime.market_worker import MarketWorkerFactory
-from runtime.market_event_router import (
-    MarketAuxiliaryEventRouter,
-    PaperBBOReplayAdapter,
-)
-from strategy.market_candidate_pipeline import MarketCandidatePipeline
+from runtime.market_ingestion_runtime import MarketIngestionRuntimeFactory
 from strategy.llm_context import attach_llm_rule_context
 from strategy.llm_response import build_llm_error_response, process_llm_response
 from strategy.post_llm_validation import validate_post_llm_entry
@@ -71,17 +65,12 @@ from strategy.signal_guard import (
     infer_candidate_direction, validate_atr_readiness,
     classify_direction_evidence,
 )
-from strategy.candidate_dedup import CandidateDeduplicator, candidate_is_expired
+from strategy.candidate_dedup import candidate_is_expired
 from strategy.candidate_recovery import (
     refresh_candidate_bbo_metrics,
 )
 from strategy.scalping_strategy import evaluate_scalping_candidate, has_queue_trade_flow_conflict
-from strategy.market_data_runtime import (
-    M1HistoryWarmup,
-    PendingBBOCandidateStore,
-    PendingBBOCandidateRuntime,
-    paper_queue_flow_conflict_reason,
-)
+from strategy.market_data_runtime import paper_queue_flow_conflict_reason
 from portfolio.dashboard_runtime import DashboardRuntime
 from interface.paper_api_helpers import PaperAPIHelpers
 from interface.dashboard_routes import create_dashboard_router
@@ -292,33 +281,6 @@ async def _restore_paper_performance() -> None:
 
 # One outstanding AI event per ticker prevents repeated nearly identical
 # anomaly events from filling the queue while inference is still running.
-m1_history_warmup = M1HistoryWarmup(
-    broker=broker,
-    screener=screener,
-    logger=logger,
-    retry_sec=30.0,
-    monotonic=time_module.monotonic,
-    sleep=asyncio.sleep,
-)
-try:
-    _AI_CANDIDATE_COOLDOWN_SEC = max(
-        0.5, float(os.getenv("PILUITUS_AI_CANDIDATE_COOLDOWN_SEC", "8.0"))
-    )
-except (TypeError, ValueError, OverflowError):
-    _AI_CANDIDATE_COOLDOWN_SEC = 8.0
-_ai_candidate_deduplicator = CandidateDeduplicator(_AI_CANDIDATE_COOLDOWN_SEC)
-try:
-    _AI_CANDIDATE_TTL_SEC = max(1.0, float(os.getenv("PILUITUS_AI_CANDIDATE_TTL_SEC", "5.0")))
-except (TypeError, ValueError, OverflowError):
-    _AI_CANDIDATE_TTL_SEC = 5.0
-_pending_bbo_candidates: dict[str, dict[str, Any]] = {}
-_pending_bbo_lock = threading.Lock()
-try:
-    _PENDING_BBO_CANDIDATE_TTL_SEC = min(5.0, max(0.25, float(os.getenv("PILUITUS_PENDING_BBO_TTL_SEC", "1.5"))))
-except (TypeError, ValueError):
-    _PENDING_BBO_CANDIDATE_TTL_SEC = 1.5
-
-
 # Per-position ORDER_BOOK diagnostics are observational and owned by monitoring.
 position_order_book_diagnostics = PositionOrderBookDiagnostics(logger)
 shadow_scorecard_logger = StrategyShadowScorecardLogger(logger)
@@ -342,16 +304,6 @@ def _log_open_position_bbo_diagnostics() -> None:
 def _trade_flow_inc(key: str, amount: int = 1) -> None:
     _trade_flow_counters.increment(key, amount)
     _trade_flow_maybe_log()
-
-
-pending_bbo_candidate_store = PendingBBOCandidateStore(
-    ttl_sec=_PENDING_BBO_CANDIDATE_TTL_SEC,
-    trade_flow_increment=_trade_flow_inc,
-    logger=logger,
-    candidates=_pending_bbo_candidates,
-    lock=_pending_bbo_lock,
-    monotonic=time_module.monotonic,
-)
 
 
 def _trade_flow_maybe_log(force: bool = False) -> None:
@@ -438,33 +390,6 @@ def _release_ai_ticker(ticker: str) -> None:
     _ai_candidate_deduplicator.release(ticker)
 
 
-pending_bbo_runtime = PendingBBOCandidateRuntime(
-    store=pending_bbo_candidate_store,
-    screener=screener,
-    execution_engine=execution_engine,
-    anomaly_queue=anomaly_queue,
-    queue_item_factory=priority_queue_item_factory,
-    refresh_bbo_metrics=refresh_candidate_bbo_metrics,
-    infer_candidate_direction=infer_candidate_direction,
-    paper_mode_provider=lambda: bool(getattr(execution_engine, "paper_mode", False)),
-    validate_entry_evidence=validate_entry_evidence,
-    validate_atr_readiness=validate_atr_readiness,
-    queue_flow_conflict_reason=_paper_queue_flow_conflict_reason,
-    reserve_ai_ticker=_reserve_ai_ticker,
-    release_ai_ticker=_release_ai_ticker,
-    mark_shadow_llm_not_called=_mark_shadow_llm_not_called,
-    log_shadow_candidate=_log_scalping_shadow,
-    trade_flow_increment=_trade_flow_inc,
-    guard_reason_bucket=_guard_reason_bucket,
-    trade_flow_guard_block=_trade_flow_guard_block,
-    log_prefilter_blocked=_log_prefilter_blocked,
-    update_numpy_impulse_status=update_numpy_impulse_status,
-    session_generation_provider=lambda: _paper_session_generation,
-    logger=logger,
-    monotonic=time_module.monotonic,
-)
-
-
 async def _warmup_selected_m1_history(
     tickers: tuple[str, ...] | list[str]
 ) -> None:
@@ -509,6 +434,63 @@ async def _resume_pending_bbo_candidate(
     trigger: str = "ORDER_BOOK",
 ) -> None:
     await pending_bbo_runtime.resume(ticker, trigger=trigger)
+
+
+
+# Market-ingestion state and its collaborating runtimes are composed as one unit.
+market_ingestion_components = MarketIngestionRuntimeFactory(
+    dependencies={
+        "broker": broker,
+        "screener": screener,
+        "execution_engine": execution_engine,
+        "db_manager": db_manager,
+        "anomaly_queue": anomaly_queue,
+        "queue_item_factory": priority_queue_item_factory,
+        "shadow_tracker": scalping_shadow_tracker,
+        "logger": logger,
+        "terminal_status": terminal_status,
+        "recorder_provider": lambda: paper_bbo_replay_recorder,
+        "session_generation_provider": lambda: _paper_session_generation,
+        "monotonic": time_module.monotonic,
+        "sleep": asyncio.sleep,
+        "environment": os.environ,
+    },
+    callbacks={
+        "trade_flow_increment": _trade_flow_inc,
+        "guard_reason_bucket": _guard_reason_bucket,
+        "record_position_order_book_event": _record_position_order_book_event,
+        "refresh_bbo_metrics": refresh_candidate_bbo_metrics,
+        "persist_shadow_outcomes": _persist_shadow_outcomes,
+        "resume_pending_bbo_candidate": _resume_pending_bbo_candidate,
+        "infer_candidate_direction": infer_candidate_direction,
+        "paper_mode_provider": lambda: bool(getattr(execution_engine, "paper_mode", False)),
+        "validate_entry_evidence": validate_entry_evidence,
+        "validate_atr_readiness": validate_atr_readiness,
+        "queue_flow_conflict_reason": _paper_queue_flow_conflict_reason,
+        "reserve_ai_ticker": _reserve_ai_ticker,
+        "release_ai_ticker": _release_ai_ticker,
+        "mark_shadow_llm_not_called": _mark_shadow_llm_not_called,
+        "log_shadow_candidate": _log_scalping_shadow,
+        "trade_flow_guard_block": _trade_flow_guard_block,
+        "log_prefilter_blocked": _log_prefilter_blocked,
+        "update_numpy_impulse_status": update_numpy_impulse_status,
+        "store_pending_bbo_candidate": _store_pending_bbo_candidate,
+        "build_candidate_payload": build_market_candidate_payload,
+        "classify_direction": classify_direction_evidence,
+        "schedule_m1_history_warmup": _schedule_m1_history_warmup,
+    },
+).create()
+
+_ai_candidate_deduplicator = market_ingestion_components.ai_candidate_deduplicator
+_AI_CANDIDATE_TTL_SEC = market_ingestion_components.ai_candidate_ttl_sec
+_pending_bbo_candidates = market_ingestion_components.pending_bbo_candidates
+_pending_bbo_lock = market_ingestion_components.pending_bbo_lock
+m1_history_warmup = market_ingestion_components.m1_history_warmup
+pending_bbo_candidate_store = market_ingestion_components.pending_bbo_candidate_store
+pending_bbo_runtime = market_ingestion_components.pending_bbo_runtime
+market_auxiliary_event_router = market_ingestion_components.market_auxiliary_event_router
+market_candidate_pipeline = market_ingestion_components.market_candidate_pipeline
+market_data_event_runtime = market_ingestion_components.market_data_event_runtime
 
 
 # Последний рассчитанный срез баланса для UI. Не изменяет внутреннюю риск-модель.
@@ -567,71 +549,6 @@ paper_api_helpers = PaperAPIHelpers(
 # --------------------------------------------------------------
 #  4️⃣  ПОЛИМОРФНЫЙ ТИКЕРНЫЙ ОБРАБОТЧИК С АВТО-ЗАВЕРШЕНИЕМ ПОЗИЦИЙ
 # --------------------------------------------------------------
-market_auxiliary_event_router = MarketAuxiliaryEventRouter(
-    screener=screener,
-    execution_engine=execution_engine,
-    db_manager=db_manager,
-    logger=logger,
-    trade_flow_increment=_trade_flow_inc,
-    record_position_order_book_event=_record_position_order_book_event,
-    bbo_replay=PaperBBOReplayAdapter(
-        recorder_provider=lambda: paper_bbo_replay_recorder,
-        screener=screener,
-        monotonic=time_module.monotonic,
-    ),
-    refresh_bbo_metrics=refresh_candidate_bbo_metrics,
-    shadow_tracker=scalping_shadow_tracker,
-    persist_shadow_outcomes=_persist_shadow_outcomes,
-    resume_pending_bbo_candidate=_resume_pending_bbo_candidate,
-    monotonic=time_module.monotonic,
-)
-
-
-
-market_candidate_pipeline = MarketCandidatePipeline(
-    execution_engine=execution_engine,
-    anomaly_queue=anomaly_queue,
-    queue_item_factory=priority_queue_item_factory,
-    trade_flow_increment=_trade_flow_inc,
-    infer_direction=infer_candidate_direction,
-    classify_direction=classify_direction_evidence,
-    log_shadow_candidate=_log_scalping_shadow,
-    queue_flow_conflict_reason=_paper_queue_flow_conflict_reason,
-    validate_entry_evidence=validate_entry_evidence,
-    paper_mode_provider=lambda: bool(getattr(execution_engine, "paper_mode", False)),
-    guard_reason_bucket=_guard_reason_bucket,
-    store_pending_bbo_candidate=_store_pending_bbo_candidate,
-    mark_shadow_llm_not_called=_mark_shadow_llm_not_called,
-    trade_flow_guard_block=_trade_flow_guard_block,
-    log_prefilter_blocked=_log_prefilter_blocked,
-    validate_atr_readiness=validate_atr_readiness,
-    reserve_ai_ticker=_reserve_ai_ticker,
-    build_candidate_payload=build_market_candidate_payload,
-    release_ai_ticker=_release_ai_ticker,
-    update_numpy_impulse_status=update_numpy_impulse_status,
-    logger=logger,
-    monotonic=time_module.monotonic,
-)
-
-
-market_data_event_runtime = MarketDataEventRuntime(
-    execution_engine=execution_engine,
-    db_manager=db_manager,
-    screener=screener,
-    auxiliary_event_router=market_auxiliary_event_router,
-    candidate_pipeline=market_candidate_pipeline,
-    pending_bbo_runtime=pending_bbo_runtime,
-    shadow_tracker=scalping_shadow_tracker,
-    persist_shadow_outcomes=_persist_shadow_outcomes,
-    schedule_m1_history_warmup=_schedule_m1_history_warmup,
-    trade_flow_increment=_trade_flow_inc,
-    terminal_status=terminal_status,
-    logger=logger,
-    session_generation_provider=lambda: _paper_session_generation,
-    monotonic=time_module.monotonic,
-)
-
-
 async def process_market_event(event: Union[SimpleNamespace, dict]):
     await market_data_event_runtime.process_event(event)
 

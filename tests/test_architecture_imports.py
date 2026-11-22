@@ -501,9 +501,15 @@ def test_main_delegates_market_data_runtime_services() -> None:
         and node.module == "strategy.market_data_runtime"
         for alias in node.names
     }
-    assert {"M1HistoryWarmup", "PendingBBOCandidateStore", "paper_queue_flow_conflict_reason"} <= imported
-    assert "m1_history_warmup = M1HistoryWarmup(" in source
-    assert "pending_bbo_candidate_store = PendingBBOCandidateStore(" in source
+    assert imported == {"paper_queue_flow_conflict_reason"}
+    factory_source = (
+        ROOT / "runtime" / "market_ingestion_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "class MarketIngestionRuntimeFactory" in factory_source
+    assert "M1HistoryWarmup(" in factory_source
+    assert "PendingBBOCandidateStore(" in factory_source
+    assert "m1_history_warmup = market_ingestion_components.m1_history_warmup" in source
+    assert "pending_bbo_candidate_store = market_ingestion_components.pending_bbo_candidate_store" in source
     assert "coalesce_pending_bbo_entry(" not in source
     assert "bars = await broker.get_historical_m1_bars(" not in source
 
@@ -675,11 +681,12 @@ def test_main_delegates_market_event_normalization_to_runtime() -> None:
         alias.name
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
-        and node.module == "runtime.market_data_event_runtime"
+        and node.module == "runtime.market_ingestion_runtime"
         for alias in node.names
     }
-    assert imported == {"MarketDataEventRuntime"}
-    assert "market_data_event_runtime = MarketDataEventRuntime(" in source
+    assert imported == {"MarketIngestionRuntimeFactory"}
+    assert "market_ingestion_components = MarketIngestionRuntimeFactory(" in source
+    assert "market_data_event_runtime = market_ingestion_components.market_data_event_runtime" in source
     assert "await market_data_event_runtime.process_event(event)" in source
     assert "quote_event = normalize_market_quote_event(event)" in runtime_source
     assert "def normalize_market_quote_event(" in normalizer_source
@@ -695,7 +702,11 @@ def test_main_delegates_auxiliary_market_events_and_bbo_replay_to_runtime() -> N
     router_source = (
         ROOT / "runtime" / "market_event_router.py"
     ).read_text(encoding="utf-8")
-    assert "MarketAuxiliaryEventRouter(" in source
+    factory_source = (
+        ROOT / "runtime" / "market_ingestion_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "MarketAuxiliaryEventRouter(" in factory_source
+    assert "PaperBBOReplayAdapter(" in factory_source
     assert "if await self.auxiliary_event_router.process_if_handled(event):" in runtime_source
     assert "self.auxiliary_event_router.bbo_replay.record(" in runtime_source
     assert "await self.screener.push_order_book(**normalized)" in router_source
@@ -710,16 +721,11 @@ def test_main_delegates_candidate_admission_to_strategy_pipeline() -> None:
     pipeline_source = (
         ROOT / "strategy" / "market_candidate_pipeline.py"
     ).read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imported = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "strategy.market_candidate_pipeline"
-        for alias in node.names
-    }
-    assert imported == {"MarketCandidatePipeline"}
-    assert "market_candidate_pipeline = MarketCandidatePipeline(" in source
+    factory_source = (
+        ROOT / "runtime" / "market_ingestion_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "MarketCandidatePipeline(" in factory_source
+    assert "market_candidate_pipeline = market_ingestion_components.market_candidate_pipeline" in source
     assert "self.candidate_pipeline.process_candidate(" in runtime_source
     assert "validate_atr_readiness" not in runtime_source
     assert "infer_candidate_direction" not in runtime_source
@@ -734,16 +740,11 @@ def test_main_delegates_pending_bbo_candidate_lifecycle_to_strategy_runtime() ->
     runtime_source = (
         ROOT / "strategy" / "market_data_runtime.py"
     ).read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imported = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "strategy.market_data_runtime"
-        for alias in node.names
-    }
-    assert "PendingBBOCandidateRuntime" in imported
-    assert "pending_bbo_runtime = PendingBBOCandidateRuntime(" in source
+    factory_source = (
+        ROOT / "runtime" / "market_ingestion_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "PendingBBOCandidateRuntime(" in factory_source
+    assert "pending_bbo_runtime = market_ingestion_components.pending_bbo_runtime" in source
     event_runtime_source = (
         ROOT / "runtime" / "market_data_event_runtime.py"
     ).read_text(encoding="utf-8")
