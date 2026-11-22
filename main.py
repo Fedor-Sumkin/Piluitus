@@ -11,8 +11,6 @@ from contextlib import asynccontextmanager
 from typing import Any, List, Mapping, Union, cast
 from aiogram import Bot 
 
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from dotenv import load_dotenv
 from datetime import datetime, time
@@ -32,7 +30,7 @@ from ai.ai_engine import AIEngine
 from storage.db_manager import DBManager
 from runtime.paper_session_composition_runtime import PaperSessionCompositionRuntime
 from storage.shadow_outcomes import SHADOW_OUTCOMES_STORAGE_LIMIT
-from runtime.paper_operations_runtime import PaperOperationsRuntime, PAPER_CLEAR_CONFIRMATION
+from runtime.paper_operations_runtime import PAPER_CLEAR_CONFIRMATION
 from exchange.finam_client import FinamBrokerClient
 from strategy.screener_funnel import HFTMemoryScreener
 from execution.execution_layer import BaseExecutionEngine
@@ -42,7 +40,7 @@ from execution.verdict_publisher import publish_market_verdict
 from risk.risk_manager import RiskManager
 from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory
 from runtime.market_event_normalizer import build_market_candidate_payload
-from runtime.application_lifecycle_runtime import ApplicationLifecycleRuntime
+from runtime.application_composition_runtime import ApplicationCompositionRuntime
 from runtime.market_application_runtime import MarketApplicationRuntime
 from strategy.llm_context import attach_llm_rule_context
 from strategy.llm_response import build_llm_error_response, process_llm_response
@@ -425,57 +423,11 @@ async def _start_tables_sync_loop():
 
 
 # --------------------------------------------------------------
-#  7️⃣  FastAPI LIFESPAN
+#  7️⃣  FASTAPI APPLICATION: ЕДИНЫЙ COMPOSITION ROOT
 # --------------------------------------------------------------
-application_lifecycle_runtime = ApplicationLifecycleRuntime(
-    logger=logger,
-    execution_engine=execution_engine,
-    deposit=DEPOSIT,
-    db_manager=db_manager,
-    paper_performance_tracker=paper_performance_tracker,
-    shadow_tracker=scalping_shadow_tracker,
-    paper_shadow_labels=paper_shadow_labels,
-    risk_manager=risk_manager,
-    paper_bbo_replay_recorder_provider=lambda: paper_bbo_replay_recorder,
-    restore_shadow_outcomes=_restore_shadow_outcomes,
-    restore_paper_performance=_restore_paper_performance,
-    ai_engine=ai_engine,
-    quarantine_unreconciled_paper_positions=lambda: execution_engine.quarantine_unreconciled_paper_positions(db_manager),
-    max_cache_size=MAX_CACHE_SIZE,
-    set_verdict_cache=lambda values: globals().__setitem__("last_ai_verdicts_cache", values),
-    worker_factory=lambda: market_worker_factory.create(db_manager, ai_engine, broker),
-    finam_metadata_refresh_loop=_finam_metadata_refresh_loop,
-    start_news_updater=_start_news_updater,
-    start_tables_sync_loop=_start_tables_sync_loop,
-    telegram_bot_module=tg_bot,
-    broker=broker,
-    market_broker_init=background_broker_init,
-    set_market_task=lambda task: globals().__setitem__("bg_market_task", task),
-    background_operations=_background_operations,
-    trade_flow_maybe_log=_trade_flow_maybe_log,
-    task_supervisor_factory=BackgroundTaskSupervisor,
-)
-lifespan = application_lifecycle_runtime.lifespan
-
-app = FastAPI(title="PILUITUS v35.2 — AI Trading Core", lifespan=lifespan)
-
 BASE_DIR = PROJECT_ROOT
 TEMPLATE_DIR = BASE_DIR / "interface" / "templates"
-
-dashboard_application_runtime.register_routes(
-    app,
-    anomaly_queue=anomaly_queue,
-    priority_queue_item_factory=priority_queue_item_factory,
-    validate_daily_loss_limit=validate_daily_loss_limit,
-    default_daily_loss_limit=Settings.DAILY_LOSS_LIMIT_PCT,
-    template_dir=TEMPLATE_DIR,
-    manager=manager,
-    last_ai_verdicts_cache=last_ai_verdicts_cache,
-    process_market_event=process_market_event,
-)
-
-# Dashboard HTTP/WebSocket endpoints are owned by the interface package.
-
+STATIC_DIR = BASE_DIR / "static"
 
 
 def _advance_paper_session_generation() -> None:
@@ -485,9 +437,48 @@ def _advance_paper_session_generation() -> None:
 
 _reset_balance_guard_signature = dashboard_application_runtime.reset_balance_guard_signature
 
-
-paper_operations_runtime = PaperOperationsRuntime(
-    dependencies={
+application_composition_runtime = ApplicationCompositionRuntime(
+    lifecycle_dependencies={
+        "logger": logger,
+        "execution_engine": execution_engine,
+        "deposit": DEPOSIT,
+        "db_manager": db_manager,
+        "paper_performance_tracker": paper_performance_tracker,
+        "shadow_tracker": scalping_shadow_tracker,
+        "paper_shadow_labels": paper_shadow_labels,
+        "risk_manager": risk_manager,
+        "paper_bbo_replay_recorder_provider": lambda: paper_bbo_replay_recorder,
+        "restore_shadow_outcomes": _restore_shadow_outcomes,
+        "restore_paper_performance": _restore_paper_performance,
+        "ai_engine": ai_engine,
+        "quarantine_unreconciled_paper_positions": lambda: execution_engine.quarantine_unreconciled_paper_positions(db_manager),
+        "max_cache_size": MAX_CACHE_SIZE,
+        "set_verdict_cache": lambda values: globals().__setitem__("last_ai_verdicts_cache", values),
+        "worker_factory": lambda: market_worker_factory.create(db_manager, ai_engine, broker),
+        "finam_metadata_refresh_loop": _finam_metadata_refresh_loop,
+        "start_news_updater": _start_news_updater,
+        "start_tables_sync_loop": _start_tables_sync_loop,
+        "telegram_bot_module": tg_bot,
+        "broker": broker,
+        "market_broker_init": background_broker_init,
+        "set_market_task": lambda task: globals().__setitem__("bg_market_task", task),
+        "background_operations": _background_operations,
+        "trade_flow_maybe_log": _trade_flow_maybe_log,
+        "task_supervisor_factory": BackgroundTaskSupervisor,
+    },
+    app_title="PILUITUS v35.2 — AI Trading Core",
+    dashboard_application_runtime=dashboard_application_runtime,
+    dashboard_route_dependencies={
+        "anomaly_queue": anomaly_queue,
+        "priority_queue_item_factory": priority_queue_item_factory,
+        "validate_daily_loss_limit": validate_daily_loss_limit,
+        "default_daily_loss_limit": Settings.DAILY_LOSS_LIMIT_PCT,
+        "template_dir": TEMPLATE_DIR,
+        "manager": manager,
+        "last_ai_verdicts_cache": last_ai_verdicts_cache,
+        "process_market_event": process_market_event,
+    },
+    paper_operations_dependencies={
         "db_manager": db_manager,
         "is_paper_trade": DBManager.is_paper_trade,
         "execution_engine": execution_engine,
@@ -524,13 +515,19 @@ paper_operations_runtime = PaperOperationsRuntime(
         "paper_clear_confirmation": PAPER_CLEAR_CONFIRMATION,
         "monotonic": time_module.monotonic,
     },
-    callbacks={
+    paper_operations_callbacks={
         "advance_session_generation": _advance_paper_session_generation,
         "reset_balance_guard_signature": _reset_balance_guard_signature,
         "rotate_bbo_replay_session": _rotate_paper_bbo_replay_session,
         "get_bbo_replay_session_id": lambda: paper_bbo_replay_recorder.session_id,
     },
-).create(app)
+    static_dir=STATIC_DIR,
+).create()
+
+application_lifecycle_runtime = application_composition_runtime.application_lifecycle_runtime
+lifespan = application_composition_runtime.lifespan
+app = application_composition_runtime.app
+paper_operations_runtime = application_composition_runtime.paper_operations_runtime
 
 paper_api_helpers = paper_operations_runtime.paper_api_helpers
 paper_research_runtime = paper_operations_runtime.paper_research_runtime
@@ -539,9 +536,6 @@ _require_paper_mode = paper_operations_runtime.require_paper_mode
 _paper_trade_rows = paper_operations_runtime.paper_trade_rows
 _broadcast_paper_tables = paper_operations_runtime.broadcast_paper_tables
 _broadcast_paper_session_reset = paper_operations_runtime.broadcast_paper_session_reset
-STATIC_DIR = BASE_DIR / "static"
-if STATIC_DIR.is_dir():
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 if __name__ == "__main__":

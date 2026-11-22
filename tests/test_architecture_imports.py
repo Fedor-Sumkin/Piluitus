@@ -476,7 +476,8 @@ def test_main_delegates_paper_api_helpers_to_interface() -> None:
     runtime_source = (
         ROOT / "runtime" / "paper_operations_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "paper_operations_runtime = PaperOperationsRuntime(" in source
+    assert "paper_operations_runtime = application_composition_runtime.paper_operations_runtime" in source
+    assert "PaperOperationsRuntime(" in (ROOT / "runtime" / "application_composition_runtime.py").read_text(encoding="utf-8")
     assert "PaperAPIHelpers(" in runtime_source
     assert "self.paper_api_helpers.require_paper_mode()" in runtime_source
     assert "self.paper_api_helpers.paper_trade_rows(snapshot)" in runtime_source
@@ -581,6 +582,25 @@ def test_main_uses_canonical_shadow_retention_limit() -> None:
     assert '"shadow_outcomes_storage_limit": SHADOW_OUTCOMES_STORAGE_LIMIT' in source
     assert 'shadow_outcomes_storage_limit=deps["shadow_outcomes_storage_limit"]' in composition_source
 
+
+
+def test_main_delegates_fastapi_application_assembly_to_composition_runtime() -> None:
+    main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+    composition_source = (
+        ROOT / "runtime" / "application_composition_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "ApplicationCompositionRuntime(" in main_source
+    assert "ApplicationLifecycleRuntime(" not in main_source
+    assert "FastAPI(" not in main_source
+    assert "StaticFiles(" not in main_source
+    assert "PaperOperationsRuntime(" not in main_source
+    assert "ApplicationLifecycleRuntime(" in composition_source
+    assert "FastAPI(title=self.app_title, lifespan=lifecycle_runtime.lifespan)" in composition_source
+    assert "dashboard_application_runtime.register_routes(" in composition_source
+    assert ").create(app)" in composition_source
+    assert '"/static"' in composition_source
+    assert "application_lifecycle_runtime = application_composition_runtime.application_lifecycle_runtime" in main_source
+    assert "paper_operations_runtime = application_composition_runtime.paper_operations_runtime" in main_source
 
 def test_lifespan_delegates_long_running_task_ownership_to_supervisor() -> None:
     main_source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -934,7 +954,8 @@ def test_main_delegates_paper_research_routes_to_interface() -> None:
     runtime_source = (
         ROOT / "runtime" / "paper_operations_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "paper_operations_runtime = PaperOperationsRuntime(" in source
+    assert "paper_operations_runtime = application_composition_runtime.paper_operations_runtime" in source
+    assert "PaperOperationsRuntime(" in (ROOT / "runtime" / "application_composition_runtime.py").read_text(encoding="utf-8")
     assert "from interface.paper_research_routes import create_paper_research_router" in runtime_source
     assert "create_paper_research_router(self.paper_research_runtime)" in runtime_source
 
@@ -1050,7 +1071,9 @@ def test_main_delegates_dashboard_http_and_websocket_routes_to_interface() -> No
         for alias in node.names
     }
     assert imports == {"DashboardApplicationRuntime"}
-    assert "dashboard_application_runtime.register_routes(" in source
+    application_source = (ROOT / "runtime" / "application_composition_runtime.py").read_text(encoding="utf-8")
+    assert "dashboard_application_runtime.register_routes(" in application_source
+    assert "ApplicationCompositionRuntime(" in source
     assert "create_dashboard_router(" in composition_source
     assert "app.include_router(router)" in composition_source
     assert "@app.websocket(\"/ws/frontend\")" not in source
