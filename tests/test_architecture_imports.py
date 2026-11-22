@@ -842,7 +842,11 @@ def test_main_delegates_candidate_admission_to_strategy_pipeline() -> None:
         ROOT / "runtime" / "market_runtime_composition_runtime.py"
     ).read_text(encoding="utf-8")
     assert '"market_candidate_pipeline": ingestion.market_candidate_pipeline' in _compatibility_exports_source()
-    assert "MarketIngestionRuntimeFactory(" in composition_source
+    assert "create_market_ingestion_components(self, MarketIngestionRuntimeFactory)" in composition_source
+    ingestion_composition_source = (
+        ROOT / "runtime" / "market_application_ingestion_composition.py"
+    ).read_text(encoding="utf-8")
+    assert "return factory_cls(" in ingestion_composition_source
     assert "self.candidate_pipeline.process_candidate(" in runtime_source
     assert "validate_atr_readiness" not in runtime_source
     assert "infer_candidate_direction" not in runtime_source
@@ -922,10 +926,14 @@ def test_market_worker_delegates_order_execution_lifecycle_to_execution_package(
         for alias in node.names
     }
     assert worker_imports == {"MarketWorkerExecutionRuntime"}
-    assert "MarketWorkerFactory(" in composition_source
+    assert "create_market_worker_factory(self, MarketWorkerFactory)" in composition_source
+    worker_composition_source = (
+        ROOT / "runtime" / "market_application_worker_composition.py"
+    ).read_text(encoding="utf-8")
+    assert "factory_cls(" in worker_composition_source
     assert "self.execution_runtime = MarketWorkerExecutionRuntime(**execution_dependencies)" in worker_source
-    assert '"normalize_execution_fill": callbacks["normalize_execution_fill"]' in composition_source
-    assert '"publish_execution_outcome": callbacks["publish_execution_outcome"]' in composition_source
+    assert '"normalize_execution_fill": callbacks["normalize_execution_fill"]' in worker_composition_source
+    assert '"publish_execution_outcome": callbacks["publish_execution_outcome"]' in worker_composition_source
 
     worker = next(
         node for node in worker_tree.body
