@@ -9,14 +9,18 @@ facade for existing imports and the application singleton.
 """
 from __future__ import annotations
 
-from .paper_performance_metrics import (
+from strategy.shadow_label_quality import deduplicate_shadow_labels
+
+from .paper_performance_diagnostics import (
     _entry_diagnostics,
     _exit_diagnostics,
     _loss_diagnostics,
-    _metrics,
     _reentry_diagnostics,
-    _shadow_segment_metrics,
     _session_stability,
+)
+from .paper_performance_metrics import (
+    _metrics,
+    _shadow_segment_metrics,
     _wilson_interval_pct,
 )
 from .paper_performance_primitives import (

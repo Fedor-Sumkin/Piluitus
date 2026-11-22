@@ -5,14 +5,14 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
-from .paper_performance_metrics import (
+from .paper_performance_diagnostics import (
     _entry_diagnostics,
     _exit_diagnostics,
     _loss_diagnostics,
-    _metrics,
     _reentry_diagnostics,
     _session_stability,
 )
+from .paper_performance_metrics import _metrics
 from .paper_performance_primitives import (
     _confidence_bucket,
     _entry_bbo_age_bucket,
