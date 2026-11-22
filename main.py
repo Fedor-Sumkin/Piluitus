@@ -39,8 +39,6 @@ from storage.paper_research_runtime import PaperResearchRuntime
 from exchange.finam_client import FinamBrokerClient
 from strategy.screener_funnel import HFTMemoryScreener
 from execution.execution_layer import BaseExecutionEngine
-from execution.market_worker_execution_runtime import MarketWorkerExecutionRuntime
-from runtime.market_worker_processing_runtime import MarketWorkerProcessingRuntime
 from execution.outcome_reporting import normalize_execution_fill
 from execution.outcome_publisher import publish_execution_outcome
 from execution.verdict_publisher import publish_market_verdict
@@ -50,6 +48,7 @@ from runtime.market_event_normalizer import build_market_candidate_payload
 from runtime.market_data_event_runtime import MarketDataEventRuntime
 from runtime.market_background_services import MarketBackgroundServicesRuntime
 from runtime.application_lifecycle_runtime import ApplicationLifecycleRuntime
+from runtime.market_worker import MarketWorkerFactory
 from runtime.market_event_router import (
     MarketAuxiliaryEventRouter,
     PaperBBOReplayAdapter,
@@ -640,143 +639,72 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
 # --------------------------------------------------------------
 #  5️⃣  MARKET WORKER С ПРИОРИТЕТНЫМ ПЕРЕХВАТОМ И КОНТУРОМ RAG
 # --------------------------------------------------------------
-class MarketWorker:
-    def __init__(self, db: DBManager, ai: AIEngine, broker_client):
-        self.db = db
-        self.ai = ai
-        self.broker = broker_client
-        self.client_id = CLIENT_ID
-        self.execution_runtime = MarketWorkerExecutionRuntime(
-            db=self.db,
-            client_id=self.client_id,
-            execution_engine=execution_engine,
-            risk_manager=risk_manager,
-            session_lock=_paper_session_lock,
-            session_generation_provider=lambda: _paper_session_generation,
-            candidate_is_expired=candidate_is_expired,
-            candidate_ttl_sec=_AI_CANDIDATE_TTL_SEC,
-            trade_flow_increment=_trade_flow_inc,
-            logger=logger,
-            shadow_tracker=scalping_shadow_tracker,
-            normalise_execution_status=normalise_execution_status,
-            nonnegative_int=nonnegative_int,
-            normalize_execution_fill=normalize_execution_fill,
-            lot_sizes=FINAM_TRADE_LOT_SIZES,
-            publish_execution_outcome=publish_execution_outcome,
-            verdict_cache=last_ai_verdicts_cache,
-            get_open_positions=_get_dashboard_open_positions,
-            refresh_balance_snapshot=_refresh_dashboard_balance_snapshot,
-
-            manager=manager,
-        )
-        self.processing_runtime = MarketWorkerProcessingRuntime(
-            db=self.db,
-            ai=self.ai,
-            anomaly_queue=anomaly_queue,
-            execution_engine=execution_engine,
-            risk_manager=risk_manager,
-            session_lock=_paper_session_lock,
-            session_generation_provider=lambda: _paper_session_generation,
-            candidate_is_expired=candidate_is_expired,
-            candidate_ttl_sec=_AI_CANDIDATE_TTL_SEC,
-            trade_flow_increment=_trade_flow_inc,
-            logger=logger,
-            settings=Settings,
-            validate_daily_loss_limit=validate_daily_loss_limit,
-            parse_finite_float=_parse_finite_float,
-            background_operations=_background_operations,
-            log_trading_event=log_trading_event_to_file,
-            attach_llm_rule_context=attach_llm_rule_context,
-            build_llm_feature_snapshot=build_llm_feature_snapshot,
-            build_llm_error_response=build_llm_error_response,
-            process_llm_response=process_llm_response,
-            validate_post_llm_entry=validate_post_llm_entry,
-            screener=screener,
-            queue_flow_conflict_reason=_paper_queue_flow_conflict_reason,
-            prepare_entry_execution_plan=prepare_entry_execution_plan,
-            lot_sizes=FINAM_TRADE_LOT_SIZES,
-            trade_flow_guard_block=_trade_flow_guard_block,
-            finite_float=finite_float,
-            nonnegative_int=nonnegative_int,
-            build_default_signal_reason=build_default_signal_reason,
-            build_verdict_explanation=build_verdict_explanation,
-            classify_local_evidence_diagnostic=classify_local_evidence_diagnostic,
-            build_pre_llm_risk_block_verdict=build_pre_llm_risk_block_verdict,
-            build_llm_verdict_record=build_llm_verdict_record,
-            link_shadow_candidate_verdict=link_shadow_candidate_verdict,
-            shadow_tracker=scalping_shadow_tracker,
-            enrich_ai_analysis_with_verdict=enrich_ai_analysis_with_verdict,
-            verdict_cache=last_ai_verdicts_cache,
-            max_cache_size=MAX_CACHE_SIZE,
-            manager=manager,
-            balance_snapshot=_dashboard_balance_snapshot,
-            publish_market_verdict=publish_market_verdict,
-            execute_and_publish=self._execute_and_publish,
-            release_ai_ticker=_release_ai_ticker,
-            paper_session_generation_lock=_paper_session_lock,
-        )
-
-    async def _execute_and_publish(
-        self,
-        *,
-        verdict_id: str,
-        ticker: str,
-        lots: int,
-        side: str,
-        price: float,
-        ai_analysis: dict,
-        session_generation: int,
-        candidate_created_monotonic: object | None = None,
-        shadow_candidate_id: str | None = None,
-    ) -> None:
-        await self.execution_runtime.execute_and_publish(
-            verdict_id=verdict_id,
-            ticker=ticker,
-            lots=lots,
-            side=side,
-            price=price,
-            ai_analysis=ai_analysis,
-            session_generation=session_generation,
-            candidate_created_monotonic=candidate_created_monotonic,
-            shadow_candidate_id=shadow_candidate_id,
-        )
-
-    async def _execute_and_publish_locked(
-        self,
-        *,
-        verdict_id: str,
-        ticker: str,
-        lots: int,
-        side: str,
-        price: float,
-        ai_analysis: dict,
-        candidate_created_monotonic: object | None = None,
-        shadow_candidate_id: str | None = None,
-    ) -> None:
-        await self.execution_runtime.execute_and_publish_locked(
-            verdict_id=verdict_id,
-            ticker=ticker,
-            lots=lots,
-            side=side,
-            price=price,
-            ai_analysis=ai_analysis,
-            candidate_created_monotonic=candidate_created_monotonic,
-            shadow_candidate_id=shadow_candidate_id,
-        )
-
-
-    async def _publish_pre_llm_risk_block(
-        self, event_payload: dict, session_generation: int
-    ) -> None:
-        await self.processing_runtime.publish_pre_llm_risk_block(
-            event_payload, session_generation
-        )
-
-    async def _publish_pre_llm_risk_block_locked(self, event_payload: dict) -> None:
-        await self.processing_runtime.publish_pre_llm_risk_block_locked(event_payload)
-
-    async def start_processing(self):
-        await self.processing_runtime.start_processing()
+market_worker_factory = MarketWorkerFactory(
+    client_id=CLIENT_ID,
+    execution_runtime_dependencies={
+        "execution_engine": execution_engine,
+        "risk_manager": risk_manager,
+        "session_lock": _paper_session_lock,
+        "session_generation_provider": lambda: _paper_session_generation,
+        "candidate_is_expired": candidate_is_expired,
+        "candidate_ttl_sec": _AI_CANDIDATE_TTL_SEC,
+        "trade_flow_increment": _trade_flow_inc,
+        "logger": logger,
+        "shadow_tracker": scalping_shadow_tracker,
+        "normalise_execution_status": normalise_execution_status,
+        "nonnegative_int": nonnegative_int,
+        "normalize_execution_fill": normalize_execution_fill,
+        "lot_sizes": FINAM_TRADE_LOT_SIZES,
+        "publish_execution_outcome": publish_execution_outcome,
+        "verdict_cache": last_ai_verdicts_cache,
+        "get_open_positions": _get_dashboard_open_positions,
+        "refresh_balance_snapshot": _refresh_dashboard_balance_snapshot,
+        "manager": manager,
+    },
+    processing_runtime_dependencies={
+        "anomaly_queue": anomaly_queue,
+        "execution_engine": execution_engine,
+        "risk_manager": risk_manager,
+        "session_lock": _paper_session_lock,
+        "session_generation_provider": lambda: _paper_session_generation,
+        "candidate_is_expired": candidate_is_expired,
+        "candidate_ttl_sec": _AI_CANDIDATE_TTL_SEC,
+        "trade_flow_increment": _trade_flow_inc,
+        "logger": logger,
+        "settings": Settings,
+        "validate_daily_loss_limit": validate_daily_loss_limit,
+        "parse_finite_float": _parse_finite_float,
+        "background_operations": _background_operations,
+        "log_trading_event": log_trading_event_to_file,
+        "attach_llm_rule_context": attach_llm_rule_context,
+        "build_llm_feature_snapshot": build_llm_feature_snapshot,
+        "build_llm_error_response": build_llm_error_response,
+        "process_llm_response": process_llm_response,
+        "validate_post_llm_entry": validate_post_llm_entry,
+        "screener": screener,
+        "queue_flow_conflict_reason": _paper_queue_flow_conflict_reason,
+        "prepare_entry_execution_plan": prepare_entry_execution_plan,
+        "lot_sizes": FINAM_TRADE_LOT_SIZES,
+        "trade_flow_guard_block": _trade_flow_guard_block,
+        "finite_float": finite_float,
+        "nonnegative_int": nonnegative_int,
+        "build_default_signal_reason": build_default_signal_reason,
+        "build_verdict_explanation": build_verdict_explanation,
+        "classify_local_evidence_diagnostic": classify_local_evidence_diagnostic,
+        "build_pre_llm_risk_block_verdict": build_pre_llm_risk_block_verdict,
+        "build_llm_verdict_record": build_llm_verdict_record,
+        "link_shadow_candidate_verdict": link_shadow_candidate_verdict,
+        "shadow_tracker": scalping_shadow_tracker,
+        "enrich_ai_analysis_with_verdict": enrich_ai_analysis_with_verdict,
+        "verdict_cache": last_ai_verdicts_cache,
+        "max_cache_size": MAX_CACHE_SIZE,
+        "manager": manager,
+        "balance_snapshot": _dashboard_balance_snapshot,
+        "publish_market_verdict": publish_market_verdict,
+        "release_ai_ticker": _release_ai_ticker,
+        "paper_session_generation_lock": _paper_session_lock,
+    },
+)
 
 # --------------------------------------------------------------
 #  6️⃣  ФОНОВЫЕ ЦИКЛЫ ОБНОВЛЕНИЯ И СИНХРОНИЗАЦИИ ТАБЛИЦ
@@ -831,7 +759,7 @@ application_lifecycle_runtime = ApplicationLifecycleRuntime(
     quarantine_unreconciled_paper_positions=lambda: execution_engine.quarantine_unreconciled_paper_positions(db_manager),
     max_cache_size=MAX_CACHE_SIZE,
     set_verdict_cache=lambda values: globals().__setitem__("last_ai_verdicts_cache", values),
-    worker_factory=lambda: MarketWorker(db=db_manager, ai=ai_engine, broker_client=broker),
+    worker_factory=lambda: market_worker_factory.create(db_manager, ai_engine, broker),
     finam_metadata_refresh_loop=_finam_metadata_refresh_loop,
     start_news_updater=_start_news_updater,
     start_tables_sync_loop=_start_tables_sync_loop,

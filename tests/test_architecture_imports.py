@@ -799,31 +799,33 @@ def test_market_worker_delegates_order_execution_lifecycle_to_execution_package(
         ROOT / "execution" / "market_worker_execution_runtime.py"
     ).read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
-    imported = {
+    worker_source = (ROOT / "runtime" / "market_worker.py").read_text(encoding="utf-8")
+    worker_tree = ast.parse(worker_source, filename="runtime/market_worker.py")
+    worker_imports = {
         alias.name
-        for node in tree.body
+        for node in worker_tree.body
         if isinstance(node, ast.ImportFrom)
         and node.module == "execution.market_worker_execution_runtime"
         for alias in node.names
     }
-    assert imported == {"MarketWorkerExecutionRuntime"}
-    assert "self.execution_runtime = MarketWorkerExecutionRuntime(" in source
-    assert "normalize_execution_fill=normalize_execution_fill" in source
-    assert "publish_execution_outcome=publish_execution_outcome" in source
+    assert worker_imports == {"MarketWorkerExecutionRuntime"}
+    assert "MarketWorkerFactory" in source
+    assert "self.execution_runtime = MarketWorkerExecutionRuntime(**execution_dependencies)" in worker_source
+    assert '"normalize_execution_fill": normalize_execution_fill' in source
+    assert '"publish_execution_outcome": publish_execution_outcome' in source
 
     worker = next(
-        node for node in tree.body
+        node for node in worker_tree.body
         if isinstance(node, ast.ClassDef) and node.name == "MarketWorker"
     )
     execution_methods = {
-        node.name: ast.get_source_segment(source, node) or ""
+        node.name: ast.get_source_segment(worker_source, node) or ""
         for node in worker.body
         if isinstance(node, ast.AsyncFunctionDef)
         and node.name in {"_execute_and_publish", "_execute_and_publish_locked"}
     }
     assert "self.execution_runtime.execute_and_publish(" in execution_methods["_execute_and_publish"]
     assert "self.execution_runtime.execute_and_publish_locked(" in execution_methods["_execute_and_publish_locked"]
-    worker_source = source[source.index("class MarketWorker"):source.index("#  6️⃣")]
     assert "await execution_engine.execute_order(" not in worker_source
     assert "await publish_execution_outcome(" not in worker_source
     assert "await self.execution_engine.execute_order(" in runtime_source
@@ -898,9 +900,11 @@ def test_market_worker_delegates_queue_and_llm_processing_to_runtime() -> None:
         ROOT / "runtime" / "market_worker_processing_runtime.py"
     ).read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
+    worker_source = (ROOT / "runtime" / "market_worker.py").read_text(encoding="utf-8")
+    worker_tree = ast.parse(worker_source, filename="runtime/market_worker.py")
     imported = {
         alias.name
-        for node in tree.body
+        for node in worker_tree.body
         if isinstance(node, ast.ImportFrom)
         and node.module == "runtime.market_worker_processing_runtime"
         for alias in node.names
@@ -908,15 +912,15 @@ def test_market_worker_delegates_queue_and_llm_processing_to_runtime() -> None:
     assert imported == {"MarketWorkerProcessingRuntime"}
 
     worker = next(
-        node for node in tree.body
+        node for node in worker_tree.body
         if isinstance(node, ast.ClassDef) and node.name == "MarketWorker"
     )
     start_processing = next(
         node for node in worker.body
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "start_processing"
     )
-    worker_source = ast.get_source_segment(source, start_processing) or ""
-    assert "await self.processing_runtime.start_processing()" in worker_source
+    worker_method_source = ast.get_source_segment(worker_source, start_processing) or ""
+    assert "await self.processing_runtime.start_processing()" in worker_method_source
     assert "async def process_next_item(" in runtime_source
     assert "anomaly_queue.task_done()" in runtime_source
     assert "_release_ai_ticker(pending_ticker)" in runtime_source
