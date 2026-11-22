@@ -1,6 +1,5 @@
 import asyncio
 import json
-import math
 import re
 import os
 import sys
@@ -26,19 +25,14 @@ from config import (
 from risk.risk_limits import validate_daily_loss_limit
 
 # --- PILUITUS‑V3 modules ------------------------------------------------
-from ai.ai_engine import AIEngine
 from storage.db_manager import DBManager
+from runtime.application_core_runtime import ApplicationCoreRuntime
 from runtime.paper_session_composition_runtime import PaperSessionCompositionRuntime
 from storage.shadow_outcomes import SHADOW_OUTCOMES_STORAGE_LIMIT
 from runtime.paper_operations_runtime import PAPER_CLEAR_CONFIRMATION
-from exchange.finam_client import FinamBrokerClient
-from strategy.screener_funnel import HFTMemoryScreener
-from execution.execution_layer import BaseExecutionEngine
-from risk.risk_manager import RiskManager
 from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory
 from runtime.application_composition_runtime import ApplicationCompositionRuntime
 from runtime.market_runtime_composition_runtime import MarketRuntimeCompositionRuntime
-from runtime.dashboard_application_runtime import DashboardApplicationRuntime
 from strategy.shadow_outcomes import ShadowForwardTracker
 from strategy.bbo_replay import (
     BBOReplayRecorder,
@@ -81,71 +75,31 @@ DEPOSIT = float(Settings.TRADE_DEPOSIT)
 # --------------------------------------------------------------
 #  1️⃣  GLOBAL OBJECTS & PRIORITIZED CONTOUR
 # --------------------------------------------------------------
-db_manager = DBManager()
-ai_engine = AIEngine()
-broker = FinamBrokerClient(token=FINAM_TOKEN, is_demo=Settings.FINAM_DEMO)
-screener = HFTMemoryScreener(window_size=30)
-execution_engine = BaseExecutionEngine(
-    finam_broker_client=broker,
-    screener=screener,
-    initial_capital=DEPOSIT,
-    max_open_stop_risk_pct=Settings.MAX_OPEN_STOP_RISK_PCT,
-)
-# Keep Finam ORDER_BOOK subscriptions for every active PAPER position, even
-# when its ticker rotates out of the screener's Top-N list.
-broker.open_positions_provider = execution_engine.get_open_position_tickers
-risk_manager = RiskManager(
-    max_risk_per_trade=Settings.MAX_RISK_PCT,
-    daily_loss_limit=Settings.DAILY_LOSS_LIMIT_PCT,
-    initial_deposit=DEPOSIT,
-    drawdown_warning_pct=Settings.DRAWDOWN_WARNING_PCT,
-    max_drawdown_pct=Settings.MAX_DRAWDOWN_PCT,
-    loss_streak_3_pause_sec=Settings.LOSS_STREAK_3_PAUSE_SEC,
-    loss_streak_5_pause_sec=Settings.LOSS_STREAK_5_PAUSE_SEC,
-    loss_streak_hard_stop=Settings.LOSS_STREAK_HARD_STOP,
-)
-
-if not math.isclose(
-    float(execution_engine.initial_capital),
-    float(risk_manager.initial_deposit),
-    rel_tol=0.0,
-    abs_tol=0.01,
-):
-    raise RuntimeError(
-        "Несогласованный стартовый капитал: ExecutionLayer и RiskManager должны использовать единый Settings.TRADE_DEPOSIT."
-    )
-logger.info(
-    "💰 [CAPITAL SYNC] source=%s; TRADE_DEPOSIT=%.2f ₽; ExecutionLayer=%.2f ₽; RiskManager=%.2f ₽.",
-    Settings.TRADE_DEPOSIT_SOURCE,
-    DEPOSIT, execution_engine.initial_capital, risk_manager.initial_deposit,
-)
-
-
-dashboard_application_runtime = DashboardApplicationRuntime(
-    execution_engine=execution_engine,
-    db_manager=db_manager,
-    screener=screener,
+application_core_runtime = ApplicationCoreRuntime(
+    settings=Settings,
+    finam_token=FINAM_TOKEN,
+    deposit=DEPOSIT,
     lot_sizes=LOT_SIZES,
     logger=logger,
-    risk_manager=risk_manager,
-    initial_deposit=DEPOSIT,
     set_balance_snapshot=lambda snapshot: globals().__setitem__(
         "_dashboard_balance_snapshot", snapshot
     ),
 ).create()
+
+db_manager = application_core_runtime.db_manager
+ai_engine = application_core_runtime.ai_engine
+broker = application_core_runtime.broker
+screener = application_core_runtime.screener
+execution_engine = application_core_runtime.execution_engine
+risk_manager = application_core_runtime.risk_manager
+dashboard_application_runtime = application_core_runtime.dashboard_application_runtime
+
 dashboard_runtime = dashboard_application_runtime.dashboard_runtime
 _dashboard_balance_snapshot = dashboard_application_runtime.balance_snapshot
 
 # Preserve stable providers used by risk, market, PAPER APIs and the dashboard.
 _current_paper_open_pnl = dashboard_application_runtime.current_paper_open_pnl
 _current_paper_assets_cost = dashboard_application_runtime.current_paper_assets_cost
-
-
-# In PAPER, in-memory positions are the live source of floating PnL and book cost.
-# Avoid adding the same OPEN journal rows a second time from Redis.
-if execution_engine.paper_mode:
-    risk_manager.open_pnl_provider = _current_paper_open_pnl
-    risk_manager.open_assets_cost_provider = _current_paper_assets_cost
 
 # Глобальные кэши и лимиты ОЗУ под High-Load тики
 last_ai_verdicts_cache: list[dict[str, Any]] = []

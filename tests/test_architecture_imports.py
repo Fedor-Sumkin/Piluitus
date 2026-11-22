@@ -402,10 +402,25 @@ def test_main_delegates_paper_open_pnl_accounting_to_portfolio() -> None:
         alias.name
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
+        and node.module == "runtime.application_core_runtime"
+        for alias in node.names
+    }
+    assert composition_imports == {"ApplicationCoreRuntime"}
+    core_source = (
+        ROOT / "runtime" / "application_core_runtime.py"
+    ).read_text(encoding="utf-8")
+    core_tree = ast.parse(
+        core_source, filename="runtime/application_core_runtime.py"
+    )
+    dashboard_imports = {
+        alias.name
+        for node in core_tree.body
+        if isinstance(node, ast.ImportFrom)
         and node.module == "runtime.dashboard_application_runtime"
         for alias in node.names
     }
-    assert composition_imports == {"DashboardApplicationRuntime"}
+    assert dashboard_imports == {"DashboardApplicationRuntime"}
+    assert "DashboardApplicationRuntime(" in core_source
     composition_source = (
         ROOT / "runtime" / "market_runtime_composition_runtime.py"
     ).read_text(encoding="utf-8")
@@ -430,7 +445,11 @@ def test_main_delegates_dashboard_balance_runtime_to_portfolio() -> None:
     composition_source = (
         ROOT / "runtime" / "dashboard_application_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "DashboardApplicationRuntime(" in source
+    core_source = (
+        ROOT / "runtime" / "application_core_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "DashboardApplicationRuntime(" in core_source
+    assert "dashboard_application_runtime = application_core_runtime.dashboard_application_runtime" in source
     assert "_refresh_dashboard_balance_snapshot = dashboard_application_runtime.refresh_balance_snapshot" in source
     assert "self.dashboard_runtime.refresh_balance_snapshot(" in composition_source
     assert "self.dashboard_runtime.reset_balance_guard_signature()" in composition_source
@@ -439,6 +458,42 @@ def test_main_delegates_dashboard_balance_runtime_to_portfolio() -> None:
     ).read_text(encoding="utf-8")
     assert "build_dashboard_balance_snapshot(" in runtime_source
     assert "reset_balance_guard_signature" in runtime_source
+
+
+def test_main_delegates_core_service_and_capital_composition_to_runtime() -> None:
+    main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+    core_source = (
+        ROOT / "runtime" / "application_core_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "ApplicationCoreRuntime(" in main_source
+    for direct_constructor in (
+        "DBManager()",
+        "AIEngine()",
+        "FinamBrokerClient(",
+        "HFTMemoryScreener(",
+        "BaseExecutionEngine(",
+        "RiskManager(",
+        "DashboardApplicationRuntime(",
+        "math.isclose(",
+    ):
+        assert direct_constructor not in main_source
+    for delegated_constructor in (
+        "DBManager()",
+        "AIEngine()",
+        "FinamBrokerClient(",
+        "HFTMemoryScreener(window_size=30)",
+        "BaseExecutionEngine(",
+        "RiskManager(",
+        "DashboardApplicationRuntime(",
+    ):
+        assert delegated_constructor in core_source
+    assert "self.broker.open_positions_provider" in core_source
+    assert "float(self.execution_engine.initial_capital)" in core_source
+    assert "float(self.risk_manager.initial_deposit)" in core_source
+    assert 'abs_tol=0.01' in core_source
+    assert "self.risk_manager.open_pnl_provider" in core_source
+    assert "self.risk_manager.open_assets_cost_provider" in core_source
+    assert "dashboard_application_runtime = application_core_runtime.dashboard_application_runtime" in main_source
 
 def test_main_delegates_shadow_outcome_persistence_to_storage() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -1131,10 +1186,12 @@ def test_main_delegates_dashboard_http_and_websocket_routes_to_interface() -> No
         alias.name
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
-        and node.module == "runtime.dashboard_application_runtime"
+        and node.module == "runtime.application_core_runtime"
         for alias in node.names
     }
-    assert imports == {"DashboardApplicationRuntime"}
+    assert imports == {"ApplicationCoreRuntime"}
+    core_source = (ROOT / "runtime" / "application_core_runtime.py").read_text(encoding="utf-8")
+    assert "DashboardApplicationRuntime(" in core_source
     application_source = (ROOT / "runtime" / "application_composition_runtime.py").read_text(encoding="utf-8")
     assert "dashboard_application_runtime.register_routes(" in application_source
     assert "ApplicationCompositionRuntime(" in source
