@@ -780,10 +780,16 @@ def test_main_delegates_market_event_normalization_to_runtime() -> None:
     assert '"market_ingestion_components": ingestion' in _compatibility_exports_source()
     assert "from runtime.market_ingestion_runtime import MarketIngestionRuntimeFactory" in application_source
     assert "create_market_ingestion_components(self, MarketIngestionRuntimeFactory)" in application_source
+    assert "create_market_worker_factory(self, MarketWorkerFactory)" in application_source
+    worker_composition_source = (
+        ROOT / "runtime" / "market_application_worker_composition.py"
+    ).read_text(encoding="utf-8")
+    assert "factory_cls(" in worker_composition_source
     ingestion_composition_source = (
         ROOT / "runtime" / "market_application_ingestion_composition.py"
     ).read_text(encoding="utf-8")
     assert "return factory_cls(" in ingestion_composition_source
+    assert "create_market_background_services(self, MarketBackgroundServicesRuntime)" in application_source
     assert '"queue_flow_conflict_reason": runtime.paper_queue_flow_conflict_reason' in ingestion_composition_source
     assert '"market_data_event_runtime": ingestion.market_data_event_runtime' in _compatibility_exports_source()
     assert '"process_market_event": market_app.process_market_event' in _compatibility_exports_source()
@@ -1198,13 +1204,17 @@ def test_main_delegates_background_market_services_to_runtime() -> None:
     runtime_source = (root / "runtime" / "market_background_services.py").read_text(encoding="utf-8")
     finam_source = (root / "runtime" / "market_background_finam_runtime.py").read_text(encoding="utf-8")
     dashboard_source = (root / "runtime" / "market_background_dashboard_runtime.py").read_text(encoding="utf-8")
-    assert "MarketBackgroundServicesRuntime(" in composition_source
+    assert "create_market_background_services(self, MarketBackgroundServicesRuntime)" in composition_source
+    background_composition_source = (
+        root / "runtime" / "market_application_background_composition.py"
+    ).read_text(encoding="utf-8")
+    assert "services_cls(" in background_composition_source
     assert '"market_background_services": background' in _compatibility_exports_source()
     assert '"background_broker_init": background.background_broker_init' in _compatibility_exports_source()
     assert '"_start_news_updater": background._start_news_updater' in _compatibility_exports_source()
     assert '"_finam_metadata_refresh_loop": background._finam_metadata_refresh_loop' in _compatibility_exports_source()
     assert '"_start_tables_sync_loop": background._start_tables_sync_loop' in _compatibility_exports_source()
-    assert "process_market_event=self.process_market_event" in composition_source
+    assert "process_market_event=runtime.process_market_event" in background_composition_source
     assert "MarketBackgroundFinamMixin" in runtime_source
     assert "MarketBackgroundDashboardMixin" in runtime_source
     for method in ("background_broker_init", "_finam_metadata_refresh_loop"):
