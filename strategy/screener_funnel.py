@@ -29,7 +29,13 @@ from strategy.screener_funnel_primitives import (
 
 
 
-class HFTMemoryScreener(\n    ScreenerFunnelSelectionMixin,\n    ScreenerFunnelOrderBookMixin,\n    ScreenerFunnelTickMixin,\n    ScreenerFunnelTradeFlowMixin,\n    ScreenerFunnelStateMixin,\n):
+class HFTMemoryScreener(
+    ScreenerFunnelSelectionMixin,
+    ScreenerFunnelOrderBookMixin,
+    ScreenerFunnelTickMixin,
+    ScreenerFunnelTradeFlowMixin,
+    ScreenerFunnelStateMixin,
+):
     """Короткая тик-история + локальный cross-sectional рейтинг top-N."""
 
     def __init__(
