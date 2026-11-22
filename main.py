@@ -1,69 +1,67 @@
-import json
-import re
+"""PILUITUS process entry point: configuration and application startup only."""
+from __future__ import annotations
+
 import os
-import sys
-import time as time_module
-import shutil
-import unicodedata
-from contextlib import asynccontextmanager
-from typing import Any, List, Mapping, Union, cast
-from aiogram import Bot 
 
-from pathlib import Path
 from dotenv import load_dotenv
-from datetime import datetime, time
-from uuid import uuid4
-from types import SimpleNamespace
-from config import (
-    Settings,
-    TICKERS_TO_TRADE,
-    FINAM_TRADE_LOT_SIZES,
-    LOT_SIZES,
-)
-# --- PILUITUS‑V3 modules ------------------------------------------------
-from runtime.application_core_runtime import ApplicationCoreRuntime
-from runtime.application_shared_state_runtime import ApplicationSharedStateRuntime
-from runtime.application_composition_root_runtime import ApplicationCompositionRootRuntime
-from runtime.paper_session_composition_runtime import PaperSessionCompositionRuntime
-from storage.shadow_outcomes import SHADOW_OUTCOMES_STORAGE_LIMIT
-from runtime.market_runtime_composition_runtime import MarketRuntimeCompositionRuntime
-from strategy.bbo_replay import BBOReplayRecorder
-from strategy.paper_performance import (
-    PAPER_CLOSED_TRADES_STORAGE_KEY,
-    PAPER_CLOSED_TRADES_STORAGE_LIMIT,
-    paper_performance_tracker,
-)
-from ai.news_parser import MarketNewsParser
 
-# --------------------------------------------------------------
-#  ENVIRONMENT & INITIALIZATION
-# --------------------------------------------------------------
+from config import Settings
+from monitoring.logging_setup import logger, terminal_status
+from runtime.application_runtime_bootstrap import ApplicationRuntimeBootstrap
+
+
 load_dotenv()
 
-from monitoring.logging_setup import logger, terminal_status
-
-
-
-
 FINAM_TOKEN = os.getenv("FINAM_TOKEN", "")
-# PAPER orders are recorded against an internal simulator identity, never a Finam client/account ID.
-CLIENT_ID = "PILUITUS_PAPER" if Settings.PAPER_TRADING else os.getenv("FINAM_CLIENT_ID", "UNKNOWN_ACCOUNT")
+CLIENT_ID = "PILUITUS_PAPER" if Settings.PAPER_TRADING else os.getenv(
+    "FINAM_CLIENT_ID", "UNKNOWN_ACCOUNT"
+)
 DEPOSIT = float(Settings.TRADE_DEPOSIT)
 
-# --------------------------------------------------------------
-#  1️⃣  GLOBAL OBJECTS & PRIORITIZED CONTOUR
-# --------------------------------------------------------------
-application_core_runtime = ApplicationCoreRuntime(
+last_ai_verdicts_cache: list[dict] = []
+MAX_CACHE_SIZE = 100
+
+
+def _set_dashboard_balance_snapshot(snapshot: dict) -> None:
+    globals().__setitem__("_dashboard_balance_snapshot", snapshot)
+
+
+def _set_paper_bbo_replay_recorder(recorder) -> None:
+    globals().__setitem__("paper_bbo_replay_recorder", recorder)
+
+
+def _set_verdict_cache(values: list[dict]) -> None:
+    globals().__setitem__("last_ai_verdicts_cache", values)
+
+
+def _set_market_task(task) -> None:
+    globals().__setitem__("bg_market_task", task)
+
+
+def _set_paper_session_generation(generation: int) -> None:
+    globals().__setitem__("_paper_session_generation", generation)
+
+
+application_runtime_bootstrap = ApplicationRuntimeBootstrap(
     settings=Settings,
     finam_token=FINAM_TOKEN,
+    client_id=CLIENT_ID,
     deposit=DEPOSIT,
-    lot_sizes=LOT_SIZES,
     logger=logger,
-    set_balance_snapshot=lambda snapshot: globals().__setitem__(
-        "_dashboard_balance_snapshot", snapshot
-    ),
+    terminal_status=terminal_status,
+    verdict_cache=last_ai_verdicts_cache,
+    max_cache_size=MAX_CACHE_SIZE,
+    set_balance_snapshot=_set_dashboard_balance_snapshot,
+    set_bbo_replay_recorder=_set_paper_bbo_replay_recorder,
+    set_verdict_cache=_set_verdict_cache,
+    set_market_task=_set_market_task,
+    set_session_generation=_set_paper_session_generation,
 ).create()
 
+globals().update(application_runtime_bootstrap.compatibility_exports())
+
+# Stable aliases retained for existing module consumers and diagnostics.
+application_core_runtime = application_runtime_bootstrap.application_core_runtime
 db_manager = application_core_runtime.db_manager
 ai_engine = application_core_runtime.ai_engine
 broker = application_core_runtime.broker
@@ -71,20 +69,11 @@ screener = application_core_runtime.screener
 execution_engine = application_core_runtime.execution_engine
 risk_manager = application_core_runtime.risk_manager
 dashboard_application_runtime = application_core_runtime.dashboard_application_runtime
-
 dashboard_runtime = dashboard_application_runtime.dashboard_runtime
-_dashboard_balance_snapshot = dashboard_application_runtime.balance_snapshot
-
-# Preserve stable providers used by risk, market, PAPER APIs and the dashboard.
 _current_paper_open_pnl = dashboard_application_runtime.current_paper_open_pnl
 _current_paper_assets_cost = dashboard_application_runtime.current_paper_assets_cost
 
-# Application-wide shared queues, locks, trackers and infrastructure services.
-application_shared_state_runtime = ApplicationSharedStateRuntime(
-    logger=logger,
-    execution_engine=execution_engine,
-).create()
-
+application_shared_state_runtime = application_runtime_bootstrap.application_shared_state_runtime
 anomaly_queue = application_shared_state_runtime.anomaly_queue
 priority_queue_item_factory = application_shared_state_runtime.priority_queue_item_factory
 _paper_session_lock = application_shared_state_runtime.paper_session_lock
@@ -96,96 +85,23 @@ paper_shadow_labels = application_shared_state_runtime.paper_shadow_labels
 _background_operations = application_shared_state_runtime.background_operations
 manager = application_shared_state_runtime.connection_manager
 
-# Глобальные кэши и лимиты ОЗУ под High-Load тики.
-last_ai_verdicts_cache: list[dict[str, Any]] = []
-MAX_CACHE_SIZE = 100  # Защита ОЗУ от утечек памяти
-
-
-def _set_paper_bbo_replay_recorder(recorder: Any) -> None:
-    application_shared_state_runtime.set_bbo_replay_recorder(recorder)
-    globals().__setitem__("paper_bbo_replay_recorder", recorder)
-
-
-def _set_market_task(task: Any) -> None:
-    application_shared_state_runtime.set_market_task(task)
-    globals().__setitem__("bg_market_task", task)
-
-paper_session_composition_runtime = PaperSessionCompositionRuntime(
-    db_manager=db_manager,
-    execution_engine=execution_engine,
-    shadow_tracker=scalping_shadow_tracker,
-    bbo_replay_recorder=paper_bbo_replay_recorder,
-    bbo_replay_recorder_factory=BBOReplayRecorder,
-    paper_performance_tracker=paper_performance_tracker,
-    paper_shadow_labels=paper_shadow_labels,
-    logger=logger,
-    closed_trades_storage_key=PAPER_CLOSED_TRADES_STORAGE_KEY,
-    closed_trades_storage_limit=PAPER_CLOSED_TRADES_STORAGE_LIMIT,
-    shadow_outcomes_storage_limit=SHADOW_OUTCOMES_STORAGE_LIMIT,
-    set_bbo_replay_recorder=_set_paper_bbo_replay_recorder,
-).create()
+paper_session_composition_runtime = application_runtime_bootstrap.paper_session_composition_runtime
 shadow_outcome_persistence = paper_session_composition_runtime.shadow_outcome_persistence
 paper_session_runtime = paper_session_composition_runtime.paper_session_runtime
-
-# Keep the established callback names consumed by market and lifecycle runtimes.
 _persist_shadow_outcomes = paper_session_composition_runtime.persist_shadow_outcomes
 _restore_shadow_outcomes = paper_session_composition_runtime.restore_shadow_outcomes
 _rotate_paper_bbo_replay_session = paper_session_composition_runtime.rotate_bbo_replay_session
 _restore_paper_performance = paper_session_composition_runtime.restore_paper_performance
 
-
-# Dashboard callbacks are owned by the application composition runtime.
 _latest_screener_prices = dashboard_application_runtime.latest_screener_prices
 _get_dashboard_open_positions = dashboard_application_runtime.get_dashboard_open_positions
 _refresh_dashboard_balance_snapshot = dashboard_application_runtime.refresh_balance_snapshot
+_reset_balance_guard_signature = dashboard_application_runtime.reset_balance_guard_signature
 
-
-# Все 88 инструментов остаются подписанными для сбора сравнимой статистики.
-# В LLM разрешается передавать только события от выбранного локальным рейтингом top-N.
-screener.set_universe(TICKERS_TO_TRADE)
-
-# --------------------------------------------------------------
-#  2️⃣–4️⃣  MARKET WORKER И ОБЩАЯ ИНФРАСТРУКТУРА
-# --------------------------------------------------------------
-#  5️⃣  MARKET WORKER И ФОНОВЫЕ СЕРВИСЫ: ЕДИНЫЙ COMPOSITION ROOT
-market_runtime_composition = MarketRuntimeCompositionRuntime(
-    dependencies={
-        "broker": broker,
-        "screener": screener,
-        "execution_engine": execution_engine,
-        "db_manager": db_manager,
-        "anomaly_queue": anomaly_queue,
-        "queue_item_factory": priority_queue_item_factory,
-        "shadow_tracker": scalping_shadow_tracker,
-        "logger": logger,
-        "terminal_status": terminal_status,
-        "recorder_provider": lambda: paper_bbo_replay_recorder,
-        "session_generation_provider": lambda: _paper_session_generation,
-        "environment": os.environ,
-        "client_id": CLIENT_ID,
-        "ai_engine": ai_engine,
-        "risk_manager": risk_manager,
-        "session_lock": _paper_session_lock,
-        "settings": Settings,
-        "background_operations": _background_operations,
-        "manager": manager,
-        "get_open_positions": _get_dashboard_open_positions,
-        "refresh_balance_snapshot": _refresh_dashboard_balance_snapshot,
-        "refresh_dashboard_balance_snapshot": _refresh_dashboard_balance_snapshot,
-        "verdict_cache": last_ai_verdicts_cache,
-        "max_cache_size": MAX_CACHE_SIZE,
-        "balance_snapshot": _dashboard_balance_snapshot,
-        "tickers": TICKERS_TO_TRADE,
-        "finam_trade_lot_sizes": FINAM_TRADE_LOT_SIZES,
-    },
-    paper_session_composition_runtime=paper_session_composition_runtime,
-    monotonic=time_module.monotonic,
-).create()
-
+market_runtime_composition = application_runtime_bootstrap.market_runtime_composition
 market_observability_runtime = market_runtime_composition.market_observability_runtime
 market_application_runtime = market_runtime_composition.market_application_runtime
 _parse_finite_float = market_runtime_composition.parse_finite_float
-
 _trade_flow_counters = market_observability_runtime.trade_flow_counters
 position_order_book_diagnostics = market_observability_runtime.position_order_book_diagnostics
 shadow_scorecard_logger = market_observability_runtime.shadow_scorecard_logger
@@ -216,7 +132,6 @@ market_candidate_pipeline = market_ingestion_components.market_candidate_pipelin
 market_data_event_runtime = market_ingestion_components.market_data_event_runtime
 process_market_event = market_application_runtime.process_market_event
 
-# Keep stable main-module helper names for callers and operator diagnostics.
 _paper_queue_flow_conflict_reason = market_application_runtime.paper_queue_flow_conflict_reason
 _reserve_ai_ticker = market_application_runtime.reserve_ai_ticker
 _release_ai_ticker = market_application_runtime.release_ai_ticker
@@ -228,55 +143,17 @@ _expire_pending_bbo_candidates = market_application_runtime.expire_pending_bbo_c
 _store_pending_bbo_candidate = market_application_runtime.store_pending_bbo_candidate
 _resume_pending_bbo_candidate = market_application_runtime.resume_pending_bbo_candidate
 
-#  6️⃣  ФОНОВЫЕ ЦИКЛЫ ОБНОВЛЕНИЯ И СИНХРОНИЗАЦИИ ТАБЛИЦ
-market_background_services = market_application_runtime.market_background_services
-
-
 background_broker_init = market_background_services.background_broker_init
 _start_news_updater = market_background_services._start_news_updater
 _finam_metadata_refresh_loop = market_background_services._finam_metadata_refresh_loop
 _start_tables_sync_loop = market_background_services._start_tables_sync_loop
 
-
-# --------------------------------------------------------------
-#  7️⃣  FASTAPI APPLICATION: ЕДИНЫЙ COMPOSITION ROOT
-# --------------------------------------------------------------
-def _advance_paper_session_generation() -> None:
-    global _paper_session_generation
-    _paper_session_generation = (
-        application_shared_state_runtime.advance_paper_session_generation()
-    )
-
-
-def _set_verdict_cache(values: list[dict[str, Any]]) -> None:
-    globals().__setitem__("last_ai_verdicts_cache", values)
-
-
-_reset_balance_guard_signature = dashboard_application_runtime.reset_balance_guard_signature
-
-application_composition_root_runtime = ApplicationCompositionRootRuntime(
-    application_core_runtime=application_core_runtime,
-    application_shared_state_runtime=application_shared_state_runtime,
-    paper_session_composition_runtime=paper_session_composition_runtime,
-    market_runtime_composition=market_runtime_composition,
-    settings=Settings,
-    deposit=DEPOSIT,
-    logger=logger,
-    verdict_cache=last_ai_verdicts_cache,
-    max_cache_size=MAX_CACHE_SIZE,
-    set_verdict_cache=_set_verdict_cache,
-    set_market_task=_set_market_task,
-    advance_session_generation=_advance_paper_session_generation,
-).create()
-application_composition_runtime = (
-    application_composition_root_runtime.application_composition_runtime
-)
-
+application_composition_root_runtime = application_runtime_bootstrap.application_composition_root_runtime
+application_composition_runtime = application_composition_root_runtime.application_composition_runtime
 application_lifecycle_runtime = application_composition_runtime.application_lifecycle_runtime
 lifespan = application_composition_runtime.lifespan
 app = application_composition_runtime.app
 paper_operations_runtime = application_composition_runtime.paper_operations_runtime
-
 paper_api_helpers = paper_operations_runtime.paper_api_helpers
 paper_research_runtime = paper_operations_runtime.paper_research_runtime
 paper_session_maintenance_runtime = paper_operations_runtime.paper_session_maintenance_runtime
@@ -288,16 +165,8 @@ _broadcast_paper_session_reset = paper_operations_runtime.broadcast_paper_sessio
 
 if __name__ == "__main__":
     import uvicorn
+
     try:
-        uvicorn.run(
-            app,
-            # Keep Uvicorn from reconfiguring/closing PILUITUS' durable file handlers.
-            log_config=None,
-            host="127.0.0.1",
-            port=8080,
-            reload=False,
-            workers=1,
-        )
+        uvicorn.run(app, log_config=None, host="127.0.0.1", port=8080, reload=False, workers=1)
     except KeyboardInterrupt:
-        # Ctrl+C is an expected operator shutdown, not an application failure.
         logger.info("🛑 PILUITUS остановлен оператором (Ctrl+C).")
