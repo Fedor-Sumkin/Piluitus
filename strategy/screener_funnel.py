@@ -121,6 +121,13 @@ class HFTMemoryScreener(
         self.minute_bar_patterns = MinuteBarPatternEngine()
         self.trade_data_mode = False
 
+    @staticmethod
+    def _event_timestamp_to_monotonic(
+        value: object, receive_monotonic: float
+    ) -> float:
+        """Preserve the historical monkeypatch seam while keeping mixins acyclic."""
+        return _event_timestamp_to_monotonic(value, receive_monotonic)
+
     def get_status(self) -> dict[str, Any]:
         with self._lock:
             return {
