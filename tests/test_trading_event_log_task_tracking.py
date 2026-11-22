@@ -63,26 +63,40 @@ def test_trading_event_log_is_scoped_and_correlated_to_run_candidate_and_verdict
 
 
 def test_shutdown_drains_tracked_operations_after_producers_stop():
-    _, module = _main_source()
+    root = Path(__file__).resolve().parents[1]
+    main_source, main_module = _main_source()
+    runtime_path = root / "runtime" / "application_lifecycle_runtime.py"
+    runtime_source = runtime_path.read_text(encoding="utf-8")
+    runtime_module = ast.parse(runtime_source, filename=str(runtime_path))
+
+    assert "from monitoring.background_tasks import BackgroundOperationTracker" in main_source
+    assert "_background_operations = BackgroundOperationTracker(logger)" in main_source
+    assert "_background_operations.spawn(" in (
+        root / "runtime" / "market_worker_processing_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "_spawn_tracked_operation" not in main_source
+    assert "_drain_tracked_operations" not in main_source
+
+    lifecycle_class = next(
+        node for node in runtime_module.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "ApplicationLifecycleRuntime"
+    )
     lifespan = next(
-        node for node in module.body
+        node for node in lifecycle_class.body
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan"
     )
     calls = [
         node for node in ast.walk(lifespan)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "drain"
-        and isinstance(node.func.value, ast.Name)
-        and node.func.value.id == "_background_operations"
-    ]
-    assert len(calls) == 1
-    assert any(
-        isinstance(node, ast.Await)
+        if isinstance(node, ast.Await)
         and isinstance(node.value, ast.Call)
         and isinstance(node.value.func, ast.Attribute)
         and node.value.func.attr == "drain"
-        and isinstance(node.value.func.value, ast.Name)
-        and node.value.func.value.id == "_background_operations"
-        for node in ast.walk(lifespan)
-    )
+        and isinstance(node.value.func.value, ast.Attribute)
+        and node.value.func.value.attr == "background_operations"
+    ]
+    assert len(calls) == 1
+    shutdown_source = ast.get_source_segment(runtime_source, lifespan) or ""
+    assert shutdown_source.index(
+        "await background_task_supervisor.cancel_and_drain()"
+    ) < shutdown_source.index("await self.background_operations.drain()")

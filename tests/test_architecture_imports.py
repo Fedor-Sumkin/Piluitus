@@ -623,26 +623,40 @@ def test_main_uses_canonical_shadow_retention_limit() -> None:
 
 
 def test_lifespan_delegates_long_running_task_ownership_to_supervisor() -> None:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
+    main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+    runtime_source = (
+        ROOT / "runtime" / "application_lifecycle_runtime.py"
+    ).read_text(encoding="utf-8")
+    main_tree = ast.parse(main_source, filename="main.py")
+    runtime_tree = ast.parse(
+        runtime_source, filename="runtime/application_lifecycle_runtime.py"
+    )
+
     imports = {
         alias.name
-        for node in tree.body
+        for node in main_tree.body
         if isinstance(node, ast.ImportFrom)
         and node.module == "monitoring.background_tasks"
         for alias in node.names
     }
     assert {"BackgroundOperationTracker", "BackgroundTaskSupervisor"} <= imports
+
+    lifecycle_class = next(
+        node for node in runtime_tree.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "ApplicationLifecycleRuntime"
+    )
     lifespan = next(
-        node for node in tree.body
+        node for node in lifecycle_class.body
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "lifespan"
     )
-    lifespan_source = ast.get_source_segment(source, lifespan) or ""
-    assert "BackgroundTaskSupervisor(logger)" in lifespan_source
+    lifespan_source = ast.get_source_segment(runtime_source, lifespan) or ""
+    assert "self.task_supervisor_factory(logger)" in lifespan_source
     assert "background_task_supervisor.spawn(" in lifespan_source
     assert "background_task_supervisor.cancel_and_drain()" in lifespan_source
     assert "_spawn_background" not in lifespan_source
     assert "background_tasks: set[asyncio.Task]" not in lifespan_source
+
 
 def test_main_delegates_market_event_normalization_to_runtime() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")

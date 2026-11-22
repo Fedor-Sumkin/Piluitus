@@ -113,5 +113,7 @@ def test_fastapi_lifespan_is_delegated_to_runtime_package() -> None:
     assert "class ApplicationLifecycleRuntime:" in lifecycle_source
     assert "background_task_supervisor.cancel_and_drain()" in lifecycle_source
     assert "self.background_operations.drain()" in lifecycle_source
-    assert "self.paper_bbo_replay_recorder.close()" in lifecycle_source
+    assert "self.paper_bbo_replay_recorder_provider()" in lifecycle_source
+    assert "await paper_bbo_replay_recorder.close()" in lifecycle_source
+    assert lifecycle_source.count("self.paper_bbo_replay_recorder_provider()") == 2
     assert "await self.ai_engine.close()" in lifecycle_source
