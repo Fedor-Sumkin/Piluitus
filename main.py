@@ -1061,6 +1061,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="PILUITUS v35.2 — AI Trading Core", lifespan=lifespan)
 
+BASE_DIR = PROJECT_ROOT
+TEMPLATE_DIR = BASE_DIR / "interface" / "templates"
+
 app.include_router(
     create_dashboard_router(
         anomaly_queue=anomaly_queue,
@@ -1080,8 +1083,6 @@ app.include_router(
 )
 
 # Dashboard HTTP/WebSocket endpoints are owned by the interface package.
-BASE_DIR = PROJECT_ROOT
-TEMPLATE_DIR = BASE_DIR / "interface" / "templates"
 
 
 def _require_paper_mode() -> None:
