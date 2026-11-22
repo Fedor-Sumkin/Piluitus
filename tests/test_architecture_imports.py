@@ -1069,3 +1069,32 @@ def test_main_delegates_paper_session_maintenance_to_storage_and_interface() -> 
     assert "await runtime.clear_paper_session(payload)" in routes_source
     assert "await runtime.cleanup_stale_and_resume()" in routes_source
     assert "await runtime.resume_paper_session()" in routes_source
+
+
+
+def test_main_delegates_background_market_services_to_runtime() -> None:
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "main.py").read_text(encoding="utf-8")
+    runtime_source = (root / "runtime" / "market_background_services.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imported = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "runtime.market_background_services"
+        for alias in node.names
+    }
+    assert imported == {"MarketBackgroundServicesRuntime"}
+    assert "market_background_services = MarketBackgroundServicesRuntime(" in source
+    assert "await market_background_services.background_broker_init()" in source
+    assert "await market_background_services._finam_metadata_refresh_loop()" in source
+    assert "await market_background_services._start_news_updater()" in source
+    assert "await market_background_services._start_tables_sync_loop()" in source
+    for method in ("background_broker_init", "_finam_metadata_refresh_loop", "_start_news_updater", "_start_tables_sync_loop"):
+        assert f"async def {method}(self" in runtime_source
+    assert "asyncio.TaskGroup()" in runtime_source
+    assert "bridge_queue.task_done()" in runtime_source
+    assert "await self.process_market_event(raw_event)" in runtime_source
+    assert "RiskManager.update_finam_lot_sizes(" in runtime_source
+    assert "await self.manager.broadcast(" in runtime_source
+    assert "await self.refresh_dashboard_balance_snapshot(active_positions)" in runtime_source

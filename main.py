@@ -50,6 +50,7 @@ from risk.risk_manager import RiskManager
 from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory
 from runtime.market_event_normalizer import build_market_candidate_payload
 from runtime.market_data_event_runtime import MarketDataEventRuntime
+from runtime.market_background_services import MarketBackgroundServicesRuntime
 from runtime.market_event_router import (
     MarketAuxiliaryEventRouter,
     PaperBBOReplayAdapter,
@@ -852,202 +853,37 @@ class MarketWorker:
 # --------------------------------------------------------------
 #  6️⃣  ФОНОВЫЕ ЦИКЛЫ ОБНОВЛЕНИЯ И СИНХРОНИЗАЦИИ ТАБЛИЦ
 # --------------------------------------------------------------
+market_background_services = MarketBackgroundServicesRuntime(
+    broker=broker,
+    execution_engine=execution_engine,
+    logger=logger,
+    tickers=TICKERS_TO_TRADE,
+    finam_trade_lot_sizes=FINAM_TRADE_LOT_SIZES,
+    screener=screener,
+    process_market_event=process_market_event,
+    db_manager=db_manager,
+    manager=manager,
+    get_dashboard_open_positions=_get_dashboard_open_positions,
+    refresh_dashboard_balance_snapshot=_refresh_dashboard_balance_snapshot,
+)
+
+
 async def background_broker_init():
-    """
-    Поддерживает Finam market-data stream независимо от дня недели.
-    Торговые интервалы каждого инструмента проверяются отдельно через Finam schedule API;
-    это также позволяет получать данные в предусмотренные MOEX сессии выходного дня.
-    """
-    logger.info("🔌 Проверка брокерского соединения Finam; календарь сессий будет проверяться по каждому инструменту...")
-    try:
-        await broker.connect()
-        if bool(getattr(execution_engine, "paper_mode", True)):
-            logger.info(
-                "🧪 [FINAM ACCOUNT] PAPER работает на внутреннем псевдосчёте; "
-                "Finam используется только для авторизации и рыночных данных. Account discovery не требуется."
-            )
-        else:
-            selected_account_id = await broker.discover_accounts()
-            if selected_account_id:
-                logger.info(
-                    "🏦 [FINAM ACCOUNT] account_id успешно определён из текущей сессии; "
-                    "source=%s; account_id=%s.",
-                    getattr(broker, "account_id_source", "session"),
-                    broker._mask_account_id(selected_account_id),
-                )
-            else:
-                logger.error(
-                    "⛔ [FINAM ACCOUNT] LIVE-счёт не определён; LIVE-входы заблокированы."
-                )
+    await market_background_services.background_broker_init()
 
-        # Verify both the authenticated endpoint and the schedule parser before
-        # the first candidate reaches the executor. SBER is used only as a probe;
-        # every actual order is checked against its own instrument schedule.
-        try:
-            schedule_probe = await execution_engine._market_session_status("SBER")
-            logger.info(
-                "📅 [SESSION CALENDAR PROBE] SBER@MISX: known=%s, open=%s, entry_allowed=%s, "
-                "reason=%s, next_session=%s; actual entries are checked per instrument.",
-                schedule_probe.get("known"),
-                schedule_probe.get("is_open"),
-                schedule_probe.get("entry_allowed"),
-                schedule_probe.get("reason"),
-                schedule_probe.get("next_session_start", "-"),
-            )
-            if not schedule_probe.get("known"):
-                logger.warning(
-                    "⛔ [SESSION CALENDAR] расписание Finam не подтверждено; "
-                    "новые входы останутся заблокированы до успешной проверки."
-                )
-        except Exception as schedule_probe_exc:
-            logger.error(
-                "❌ [SESSION CALENDAR PROBE] ошибка проверки расписания Finam: %s",
-                type(schedule_probe_exc).__name__,
-                exc_info=True,
-            )
 
-        bridge_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=50000)
-        async def _run_market_stream():
-            await broker.start_market_data_stream(
-                tickers=TICKERS_TO_TRADE,
-                queue=bridge_queue,
-                screener=screener,
-            )
-
-        async def _bridge_worker():
-            while True:
-                try:
-                    raw_event = await bridge_queue.get()
-                    try:
-                        await process_market_event(raw_event)
-                    finally:
-                        bridge_queue.task_done()
-                except Exception as bridge_err:
-                    logger.error("❌ Ошибка моста WebSocket-котировок: %s", bridge_err, exc_info=True)
-                    await asyncio.sleep(0.1)
-
-        # TaskGroup ties both stream tasks to this parent task.
-        async with asyncio.TaskGroup() as task_group:
-            task_group.create_task(_run_market_stream(), name="finam-market-stream")
-            task_group.create_task(_bridge_worker(), name="finam-bridge-worker")
-            logger.info("⏳ Задача Finam WebSocket запущена; ожидаем HANDSHAKE_SUCCESS.")
-    except Exception as exc:
-        logger.error("❌ Ошибка инициализации API Finam: %s", exc, exc_info=True)
-
-    while True:
-        await asyncio.sleep(3600)
-
-# --------------------------------------------------------------
-#  6️⃣.5️⃣ ВСПОМОГАТЕЛЬНЫЕ ФОНОВЫЕ ИНИЦИАЛИЗАТОРЫ (Перемещены вверх для линтера)
-# --------------------------------------------------------------
 async def _start_news_updater() -> None:
-    async def _broadcast(message: str) -> None:
-        await manager.broadcast(message)
-    await MarketNewsParser.update_news_cycle(db_manager, broadcast_callback=_broadcast)
+    await market_background_services._start_news_updater()
+
 
 async def _finam_metadata_refresh_loop() -> None:
-    """Refresh exchange lots for PAPER or account-specific lots for LIVE."""
-    from risk.risk_manager import RiskManager
-
-    try:
-        refresh_sec = max(300.0, float(os.getenv("FINAM_METADATA_REFRESH_SEC", "900")))
-    except (TypeError, ValueError, OverflowError):
-        refresh_sec = 900.0
-    try:
-        account_retry_sec = min(
-            300.0,
-            max(15.0, float(os.getenv("FINAM_ACCOUNT_DISCOVERY_RETRY_SEC", "60"))),
-        )
-    except (TypeError, ValueError, OverflowError):
-        account_retry_sec = 60.0
-    while True:
-        # background_broker_init owns authentication. Do not send REST requests
-        # until a JWT has been obtained successfully.
-        if not str(getattr(broker, "jwt_token", "") or "").strip():
-            await asyncio.sleep(1.0)
-            continue
-        paper_mode = bool(getattr(execution_engine, "paper_mode", True))
-        account_id = str(getattr(broker, "account_id", "") or "").strip()
-        if paper_mode:
-            # PAPER lot sizing uses the public MOEX ISS TQBR specification.
-            # It does not require a Finam account or read-only account context.
-            # Keep account discovery exclusive to LIVE brokerage execution.
-            if callable(getattr(broker, "get_moex_asset", None)):
-                logger.info(
-                    "[FINAM METADATA WORKER] PAPER lot refresh uses public MOEX ISS TQBR; "
-                    "Finam account context is not required."
-                )
-            else:
-                logger.warning(
-                    "[FINAM METADATA WORKER] public MOEX ISS provider unavailable; "
-                    "unconfirmed PAPER lots will remain blocked."
-                )
-        elif not account_id:
-            discover = getattr(broker, "discover_accounts", None)
-            if callable(discover):
-                try:
-                    account_id = str(
-                        await discover() or getattr(broker, "account_id", "") or ""
-                    ).strip()
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    logger.warning(
-                        "[FINAM METADATA WORKER] account discovery failed: %s",
-                        type(exc).__name__,
-                    )
-        if not paper_mode and (not account_id or account_id.upper() == "UNKNOWN_ACCOUNT"):
-            logger.warning(
-                "⛔ [FINAM METADATA WORKER] LIVE account_id не получен; LIVE-входы остаются заблокированы."
-            )
-            await asyncio.sleep(account_retry_sec)
-            continue
-        try:
-            await RiskManager.update_finam_lot_sizes(
-                finam_broker_client=broker, paper_mode=paper_mode
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.error(
-                "❌ [FINAM METADATA WORKER] refresh failed: %s",
-                type(exc).__name__, exc_info=True,
-            )
-        confirmed = sum(
-            1 for ticker in TICKERS_TO_TRADE
-            if int(FINAM_TRADE_LOT_SIZES.get(str(ticker).strip().upper(), 0) or 0) > 0
-        )
-        # Avoid repeating 88 requests every 180 seconds after persistent provider-side HTTP 400.
-        retry_delay = refresh_sec
-        if confirmed:
-            logger.info(
-                "📦 [FINAM METADATA WORKER] confirmed %s lots=%d/%d; next refresh in %.0fs.",
-                "PAPER exchange" if paper_mode else "LIVE account",
-                confirmed, len(TICKERS_TO_TRADE), refresh_sec,
-            )
-        await asyncio.sleep(retry_delay)
+    await market_background_services._finam_metadata_refresh_loop()
 
 
 async def _start_tables_sync_loop():
-    """Периодически обновляет позиции и фактическую оценку задействованного капитала."""
-    logger.info("📊 Воркер синхронизации таблиц и капитала запущен.")
-    while True:
-        try:
-            await asyncio.sleep(1.0)
+    await market_background_services._start_tables_sync_loop()
 
-            active_positions = await _get_dashboard_open_positions()
-            balance = await _refresh_dashboard_balance_snapshot(active_positions)
-            raw_closed = getattr(execution_engine, "closed_trades", getattr(execution_engine, "_closed_trades", []))
 
-            payload = {
-                "type": "TABLES_UPDATE",
-                "active_positions": active_positions,
-                "closed_trades": raw_closed[-30:] if isinstance(raw_closed, list) else [],
-                "balance": balance,
-            }
-            await manager.broadcast(json.dumps(payload, ensure_ascii=False))
-        except Exception as e:
-            logger.error("❌ Ошибка воркера синхронизации таблиц/капитала: %s", e, exc_info=True)
 # --------------------------------------------------------------
 #  7️⃣  FastAPI LIFESPAN
 # --------------------------------------------------------------
