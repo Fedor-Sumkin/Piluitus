@@ -372,7 +372,8 @@ def test_main_delegates_priority_queue_state_to_application_shared_runtime() -> 
     ).read_text(encoding="utf-8")
     assert "priority_queue_item_factory = application_shared_state_runtime.priority_queue_item_factory" in main_source
     assert "from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory" in shared_source
-    assert "asyncio.PriorityQueue(maxsize=1000)" in shared_source
+    assert "asyncio.PriorityQueue[" in shared_source
+    assert "maxsize=1000" in shared_source
     assert "PriorityQueueItemFactory()" in shared_source
     assert "def _make_priority_item" not in main_source
     assert "_priority_sequence" not in main_source
