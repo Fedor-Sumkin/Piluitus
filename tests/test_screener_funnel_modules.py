@@ -75,3 +75,17 @@ def test_funnel_mixins_do_not_import_the_facade_or_each_other():
         }
         assert "strategy.screener_funnel" not in imported
         assert "screener_funnel" not in imported
+
+
+def test_screener_facade_is_valid_python_and_retains_status_surface():
+    facade = ROOT / "strategy" / "screener_funnel.py"
+    tree = ast.parse(facade.read_text(encoding="utf-8"))
+    screener = next(
+        node for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "HFTMemoryScreener"
+    )
+    method_names = {
+        node.name for node in screener.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert {"__init__", "get_status", "get_status_text"} <= method_names

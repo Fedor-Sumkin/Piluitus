@@ -121,6 +121,9 @@ class HFTMemoryScreener(
         self.minute_bar_patterns = MinuteBarPatternEngine()
         self.trade_data_mode = False
 
+    def get_status(self) -> dict[str, Any]:
+        with self._lock:
+            return {
                 "ready": bool(self.selection_ready),
                 "universe_count": len(self.universe) if self.universe else len(self.history),
                 "eligible_count": int(self.eligible_count),
