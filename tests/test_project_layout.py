@@ -15,11 +15,16 @@ def test_templates_are_available_in_interface_package() -> None:
     assert not (PROJECT_ROOT / "templates").exists()
 
     main_source = (PROJECT_ROOT / "main.py").read_text(encoding="utf-8")
+    routes_source = (
+        PROJECT_ROOT / "interface" / "dashboard_routes.py"
+    ).read_text(encoding="utf-8")
+
     assert 'TEMPLATE_DIR = BASE_DIR / "interface" / "templates"' in main_source
-    assert "Jinja2Templates(directory=str(TEMPLATE_DIR))" in main_source
-    assert 'page_path = TEMPLATE_DIR / "maintenance.html"' in main_source
-    assert 'index_path = TEMPLATE_DIR / "index.html"' in main_source
+    assert "template_dir=TEMPLATE_DIR" in main_source
+    assert 'page_path = template_dir / "maintenance.html"' in routes_source
+    assert 'index_path = template_dir / "index.html"' in routes_source
     assert 'BASE_DIR / "templates"' not in main_source
+    assert "Jinja2Templates(" not in main_source
 
 
 def test_data_sources_are_in_data_tree() -> None:
