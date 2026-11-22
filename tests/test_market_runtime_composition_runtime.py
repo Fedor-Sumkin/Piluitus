@@ -185,7 +185,7 @@ def test_market_composition_registers_the_complete_strategy_and_execution_callba
         "publish_market_verdict",
     }
     for name, callback in expected.items():
-        assert callbacks[name] is callback
+        assert callbacks[name] == callback
     assert callbacks["trade_flow_increment"] == observability.increment_trade_flow
     assert callbacks["record_position_order_book_event"] == observability.record_position_order_book_event
     assert callbacks["mark_shadow_llm_not_called"] == observability.mark_shadow_llm_not_called

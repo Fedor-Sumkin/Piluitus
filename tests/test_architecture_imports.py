@@ -244,12 +244,22 @@ def test_main_delegates_runtime_logging_to_monitoring() -> None:
         and node.module == "monitoring.logging_setup"
         for alias in node.names
     }
-    assert {
-        "RUN_LOG_PATHS",
-        "logger",
-        "terminal_status",
-        "update_numpy_impulse_status",
-    } <= imported
+    assert imported == {"logger", "terminal_status"}
+    market_composition_source = (
+        ROOT / "runtime" / "market_runtime_composition_runtime.py"
+    ).read_text(encoding="utf-8")
+    market_composition_tree = ast.parse(
+        market_composition_source,
+        filename="runtime/market_runtime_composition_runtime.py",
+    )
+    market_logging_imports = {
+        alias.name
+        for node in market_composition_tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "monitoring.logging_setup"
+        for alias in node.names
+    }
+    assert market_logging_imports == {"update_numpy_impulse_status"}
 
     event_logger_source = (ROOT / "monitoring/trading_event_logger.py").read_text(encoding="utf-8")
     event_logger_tree = ast.parse(event_logger_source, filename="monitoring/trading_event_logger.py")
@@ -284,7 +294,13 @@ def test_main_delegates_background_operation_tracking_to_monitoring() -> None:
 
 def test_main_delegates_trading_event_journal_to_monitoring() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
+    composition_source = (
+        ROOT / "runtime" / "market_runtime_composition_runtime.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(
+        composition_source,
+        filename="runtime/market_runtime_composition_runtime.py",
+    )
     imports = {
         alias.name
         for node in tree.body
@@ -292,7 +308,8 @@ def test_main_delegates_trading_event_journal_to_monitoring() -> None:
         and node.module == "monitoring.trading_event_logger"
         for alias in node.names
     }
-    assert "log_trading_event_to_file" in imports
+    assert imports == {"log_trading_event_to_file"}
+    assert '"log_trading_event": log_trading_event_to_file' in composition_source
     assert "async def log_trading_event_to_file" not in source
     assert "_sync_write_trading_log" not in source
 
@@ -389,14 +406,22 @@ def test_main_delegates_paper_open_pnl_accounting_to_portfolio() -> None:
         for alias in node.names
     }
     assert composition_imports == {"DashboardApplicationRuntime"}
+    composition_source = (
+        ROOT / "runtime" / "market_runtime_composition_runtime.py"
+    ).read_text(encoding="utf-8")
+    composition_tree = ast.parse(
+        composition_source,
+        filename="runtime/market_runtime_composition_runtime.py",
+    )
     accounting_imports = {
-        alias.name: alias.asname
-        for node in tree.body
+        alias.name
+        for node in composition_tree.body
         if isinstance(node, ast.ImportFrom)
         and node.module == "portfolio.paper_accounting"
         for alias in node.names
     }
-    assert accounting_imports == {"parse_finite_float": "_parse_finite_float"}
+    assert accounting_imports == {"parse_finite_float"}
+    assert "self.parse_finite_float = parse_finite_float" in composition_source
     assert "dashboard_application_runtime.current_paper_open_pnl" in source
     assert "dashboard_application_runtime.current_paper_assets_cost" in source
 
@@ -459,10 +484,16 @@ def test_main_delegates_shadow_outcome_persistence_to_storage() -> None:
 
 def test_main_delegates_market_data_runtime_services() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
+    application_source = (
+        ROOT / "runtime" / "market_application_runtime.py"
+    ).read_text(encoding="utf-8")
+    application_tree = ast.parse(
+        application_source,
+        filename="runtime/market_application_runtime.py",
+    )
     imported = {
         alias.name
-        for node in tree.body
+        for node in application_tree.body
         if isinstance(node, ast.ImportFrom)
         and node.module == "strategy.market_data_runtime"
         for alias in node.names
@@ -678,7 +709,8 @@ def test_main_delegates_market_event_normalization_to_runtime() -> None:
     assert "self.ingestion_components = MarketIngestionRuntimeFactory(" in application_source
     assert "market_data_event_runtime = market_ingestion_components.market_data_event_runtime" in source
     assert "process_market_event = market_application_runtime.process_market_event" in source
-    assert "await self._require_ingestion().market_data_event_runtime.process_event(event)" in composition_source
+    assert "async def process_market_event(self, event: Any)" in application_source
+    assert "await self._require_ingestion().market_data_event_runtime.process_event(event)" in application_source
     assert "quote_event = normalize_market_quote_event(event)" in runtime_source
     assert "def normalize_market_quote_event(" in normalizer_source
     assert "self.candidate_pipeline.process_candidate(" in runtime_source
