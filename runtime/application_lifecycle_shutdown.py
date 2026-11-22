@@ -9,15 +9,6 @@ class ApplicationLifecycleShutdownMixin:
 
     async def _drain_application_services(self, logger: Any) -> None:
         try:
-            await self.background_operations.drain()
-        except Exception as operation_drain_err:
-            logger.error(
-                "[BACKGROUND OPERATIONS] shutdown drain failed: %s",
-                operation_drain_err,
-                exc_info=True,
-            )
-
-        try:
             paper_bbo_replay_recorder = self.paper_bbo_replay_recorder_provider()
             await paper_bbo_replay_recorder.close()
             logger.info("[PAPER BBO REPLAY] shutdown drain: %s", paper_bbo_replay_recorder.status())

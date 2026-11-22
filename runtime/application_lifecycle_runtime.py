@@ -16,13 +16,15 @@ from .application_lifecycle_shutdown import ApplicationLifecycleShutdownMixin
 from .application_lifecycle_startup import ApplicationLifecycleStartupMixin
 
 
-class ApplicationLifecycleRuntime(
-    ApplicationLifecycleStartupMixin,
-    ApplicationLifecycleBackgroundMixin,
-    ApplicationLifecycleShutdownMixin,
-    ApplicationLifecycleBase,
-):
+class ApplicationLifecycleRuntime:
     """Preserve lifespan sequencing while delegating lifecycle phases."""
+
+    # Explicit descriptor exports keep the legacy class declaration stable.
+    __init__ = ApplicationLifecycleBase.__init__
+    _restore_startup_state = ApplicationLifecycleStartupMixin._restore_startup_state
+    _run_market_worker_safely = ApplicationLifecycleBackgroundMixin._run_market_worker_safely
+    _spawn_auxiliary_background_tasks = ApplicationLifecycleBackgroundMixin._spawn_auxiliary_background_tasks
+    _drain_application_services = ApplicationLifecycleShutdownMixin._drain_application_services
 
     @asynccontextmanager
     async def lifespan(self, app: Any):
@@ -63,4 +65,12 @@ class ApplicationLifecycleRuntime(
         finally:
             logger.info("🛑 Начинаем штатную остановку фоновых задач PILUITUS...")
             await background_task_supervisor.cancel_and_drain()
+            try:
+                await self.background_operations.drain()
+            except Exception as operation_drain_err:
+                logger.error(
+                    "[BACKGROUND OPERATIONS] shutdown drain failed: %s",
+                    operation_drain_err,
+                    exc_info=True,
+                )
             await self._drain_application_services(logger)
