@@ -384,14 +384,10 @@ def test_main_delegates_priority_queue_state_to_application_shared_runtime() -> 
 def test_main_delegates_paper_open_pnl_accounting_to_portfolio() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
-    composition_imports = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "runtime.application_core_runtime"
-        for alias in node.names
-    }
-    assert composition_imports == {"ApplicationCoreRuntime"}
+    bootstrap_source = (
+        ROOT / "runtime" / "application_runtime_bootstrap.py"
+    ).read_text(encoding="utf-8")
+    assert "from runtime.application_core_runtime import ApplicationCoreRuntime" in bootstrap_source
     core_source = (
         ROOT / "runtime" / "application_core_runtime.py"
     ).read_text(encoding="utf-8")
@@ -451,7 +447,11 @@ def test_main_delegates_core_service_and_capital_composition_to_runtime() -> Non
     core_source = (
         ROOT / "runtime" / "application_core_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "ApplicationCoreRuntime(" in main_source
+    bootstrap_source = (
+        ROOT / "runtime" / "application_runtime_bootstrap.py"
+    ).read_text(encoding="utf-8")
+    assert "ApplicationRuntimeBootstrap(" in main_source
+    assert "ApplicationCoreRuntime(" in bootstrap_source
     for direct_constructor in (
         "DBManager()",
         "AIEngine()",
@@ -486,6 +486,9 @@ def test_main_delegates_shadow_outcome_persistence_to_storage() -> None:
     composition_source = (
         ROOT / "runtime" / "paper_session_composition_runtime.py"
     ).read_text(encoding="utf-8")
+    bootstrap_source = (
+        ROOT / "runtime" / "application_runtime_bootstrap.py"
+    ).read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
     imported = {
         alias.name
@@ -494,7 +497,7 @@ def test_main_delegates_shadow_outcome_persistence_to_storage() -> None:
         and node.module == "storage.shadow_outcomes"
         for alias in node.names
     }
-    assert imported == {"SHADOW_OUTCOMES_STORAGE_LIMIT"}
+    assert "from storage.shadow_outcomes import SHADOW_OUTCOMES_STORAGE_LIMIT" in bootstrap_source
 
     composition_imports = {
         alias.name
@@ -503,8 +506,8 @@ def test_main_delegates_shadow_outcome_persistence_to_storage() -> None:
         and node.module == "runtime.paper_session_composition_runtime"
         for alias in node.names
     }
-    assert composition_imports == {"PaperSessionCompositionRuntime"}
-    assert "paper_session_composition_runtime = PaperSessionCompositionRuntime(" in source
+    assert "from runtime.paper_session_composition_runtime import PaperSessionCompositionRuntime" in bootstrap_source
+    assert "PaperSessionCompositionRuntime(" in bootstrap_source
     assert "shadow_outcome_persistence = paper_session_composition_runtime.shadow_outcome_persistence" in source
     assert "paper_session_runtime = paper_session_composition_runtime.paper_session_runtime" in source
     assert "_persist_shadow_outcomes = paper_session_composition_runtime.persist_shadow_outcomes" in source
@@ -667,7 +670,11 @@ def test_main_delegates_fastapi_application_assembly_to_composition_runtimes() -
     composition_source = (
         ROOT / "runtime" / "application_composition_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "ApplicationCompositionRootRuntime(" in main_source
+    bootstrap_source = (
+        ROOT / "runtime" / "application_runtime_bootstrap.py"
+    ).read_text(encoding="utf-8")
+    assert "ApplicationRuntimeBootstrap(" in main_source
+    assert "ApplicationCompositionRootRuntime(" in bootstrap_source
     assert "ApplicationCompositionRuntime(" not in main_source
     assert "ApplicationLifecycleRuntime(" not in main_source
     assert "FastAPI(" not in main_source
@@ -744,15 +751,11 @@ def test_main_delegates_market_event_normalization_to_runtime() -> None:
         ROOT / "runtime" / "market_event_normalizer.py"
     ).read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
-    imported = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "runtime.market_runtime_composition_runtime"
-        for alias in node.names
-    }
-    assert imported == {"MarketRuntimeCompositionRuntime"}
-    assert "market_runtime_composition = MarketRuntimeCompositionRuntime(" in source
+    bootstrap_source = (
+        ROOT / "runtime" / "application_runtime_bootstrap.py"
+    ).read_text(encoding="utf-8")
+    assert "from runtime.market_runtime_composition_runtime import MarketRuntimeCompositionRuntime" in bootstrap_source
+    assert "MarketRuntimeCompositionRuntime(" in bootstrap_source
     assert "self.market_application_runtime = MarketApplicationRuntime(" in composition_source
     assert "market_application_runtime = market_runtime_composition.market_application_runtime" in source
     assert "market_ingestion_components = market_application_runtime.ingestion_components" in source
@@ -802,7 +805,9 @@ def test_main_delegates_candidate_admission_to_strategy_pipeline() -> None:
         ROOT / "runtime" / "market_ingestion_runtime.py"
     ).read_text(encoding="utf-8")
     assert "MarketCandidatePipeline(" in factory_source
-    assert "MarketRuntimeCompositionRuntime(" in source
+    assert "MarketRuntimeCompositionRuntime(" in (
+        ROOT / "runtime" / "application_runtime_bootstrap.py"
+    ).read_text(encoding="utf-8")
     assert "MarketApplicationRuntime(" in (
         ROOT / "runtime" / "market_runtime_composition_runtime.py"
     ).read_text(encoding="utf-8")
@@ -1178,20 +1183,18 @@ def test_main_delegates_dashboard_http_and_websocket_routes_to_interface() -> No
     ).read_text(encoding="utf-8")
     route_source = (ROOT / "interface" / "dashboard_routes.py").read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
-    imports = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "runtime.application_core_runtime"
-        for alias in node.names
-    }
-    assert imports == {"ApplicationCoreRuntime"}
+    bootstrap_source = (
+        ROOT / "runtime" / "application_runtime_bootstrap.py"
+    ).read_text(encoding="utf-8")
+    assert "from runtime.application_core_runtime import ApplicationCoreRuntime" in bootstrap_source
     core_source = (ROOT / "runtime" / "application_core_runtime.py").read_text(encoding="utf-8")
     assert "DashboardApplicationRuntime(" in core_source
     application_source = (ROOT / "runtime" / "application_composition_runtime.py").read_text(encoding="utf-8")
     root_source = (ROOT / "runtime" / "application_composition_root_runtime.py").read_text(encoding="utf-8")
     assert "dashboard_application_runtime.register_routes(" in application_source
-    assert "ApplicationCompositionRootRuntime(" in source
+    assert "ApplicationCompositionRootRuntime(" in (
+        ROOT / "runtime" / "application_runtime_bootstrap.py"
+    ).read_text(encoding="utf-8")
     assert "ApplicationCompositionRuntime(" in root_source
     assert "create_dashboard_router(" in composition_source
     assert "app.include_router(router)" in composition_source
