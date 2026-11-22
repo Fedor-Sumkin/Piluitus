@@ -1098,3 +1098,30 @@ def test_main_delegates_background_market_services_to_runtime() -> None:
     assert "RiskManager.update_finam_lot_sizes(" in runtime_source
     assert "await self.manager.broadcast(" in runtime_source
     assert "await self.refresh_dashboard_balance_snapshot(active_positions)" in runtime_source
+
+
+
+def test_main_delegates_dashboard_http_and_websocket_routes_to_interface() -> None:
+    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    route_source = (ROOT / "interface" / "dashboard_routes.py").read_text(encoding="utf-8")
+    tree = ast.parse(source, filename="main.py")
+    imports = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "interface.dashboard_routes"
+        for alias in node.names
+    }
+    assert imports == {"create_dashboard_router"}
+    assert "app.include_router(" in source
+    assert "create_dashboard_router(" in source
+    assert "@app.websocket(\"/ws/frontend\")" not in source
+    assert "@app.post(\"/api/v1/control/close_all\")" not in source
+    assert "@app.post(\"/api/v1/control/risk_limit\")" not in source
+    assert "@router.websocket(\"/ws/frontend\")" in route_source
+    assert "@router.post(\"/api/v1/control/close_all\")" in route_source
+    assert "@router.post(\"/api/v1/control/risk_limit\")" in route_source
+    assert "priority_queue_item_factory.create(0, \"CMD_CLOSE_ALL\", {})" in route_source
+    assert '"type": "INIT_DATA"' in route_source
+    assert "await manager.connect(websocket)" in route_source
+    assert "manager.disconnect(websocket)" in route_source
