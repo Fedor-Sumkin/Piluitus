@@ -32,16 +32,11 @@ class PaperSessionMaintenanceRuntime(
 ):
     """Stable public facade for the PAPER session maintenance coordinator."""
 
-    # Keep the async operations declared here for the architecture/import contract.
-    # The complete reset implementation (including position_order_book_diagnostics.clear())
-    # remains in PaperSessionClearMixin.
     async def clear_paper_session(
         self, payload: dict[str, object]
     ) -> dict[str, Any]:
         return await PaperSessionClearMixin.clear_paper_session(self, payload)
 
-    # Selective cleanup delegates db_manager.clear_unreconciled_paper_positions(...)
-    # to PaperSessionStaleCleanupMixin after its LIVE/stale preflight checks.
     async def cleanup_stale_and_resume(self) -> dict[str, Any]:
         return await PaperSessionStaleCleanupMixin.cleanup_stale_and_resume(self)
 

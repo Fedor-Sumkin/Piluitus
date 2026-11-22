@@ -324,13 +324,13 @@ def test_main_delegates_position_order_book_diagnostics_to_monitoring() -> None:
     runtime_source = (
         ROOT / "monitoring" / "market_observability_runtime.py"
     ).read_text(encoding="utf-8")
-    maintenance_source = (
-        ROOT / "storage" / "paper_session_maintenance_runtime.py"
+    clear_source = (
+        ROOT / "storage" / "paper_session_clear.py"
     ).read_text(encoding="utf-8")
     assert '"position_order_book_diagnostics": observability.position_order_book_diagnostics' in _compatibility_exports_source()
     assert "PositionOrderBookDiagnostics(" in runtime_source
     assert "self.position_order_book_diagnostics.record(" in runtime_source
-    assert "position_order_book_diagnostics.clear()" in maintenance_source
+    assert "position_order_book_diagnostics.clear()" in clear_source
     assert "_position_order_book_diag_lock" not in source
     assert "_position_order_book_diag:" not in source
 
@@ -1119,6 +1119,18 @@ def test_main_delegates_paper_session_maintenance_to_storage_and_interface() -> 
     runtime_source = (
         ROOT / "storage" / "paper_session_maintenance_runtime.py"
     ).read_text(encoding="utf-8")
+    clear_source = (
+        ROOT / "storage" / "paper_session_clear.py"
+    ).read_text(encoding="utf-8")
+    stale_cleanup_source = (
+        ROOT / "storage" / "paper_session_stale_cleanup.py"
+    ).read_text(encoding="utf-8")
+    resume_source = (
+        ROOT / "storage" / "paper_session_resume.py"
+    ).read_text(encoding="utf-8")
+    maintenance_base_source = (
+        ROOT / "storage" / "paper_session_maintenance_base.py"
+    ).read_text(encoding="utf-8")
     routes_source = (
         ROOT / "interface" / "paper_session_routes.py"
     ).read_text(encoding="utf-8")
@@ -1144,10 +1156,11 @@ def test_main_delegates_paper_session_maintenance_to_storage_and_interface() -> 
         "cleanup_stale_and_resume",
         "resume_paper_session",
     } <= methods.keys()
-    assert "clear_unreconciled_paper_positions" in runtime_source
-    assert "clear_paper_session()" in runtime_source
-    assert "Priority-zero emergency commands are retained" in runtime_source
-    assert 'await self._persist_maintenance(active=False, reason="")' in runtime_source
+    assert "async def clear_paper_session(" in clear_source
+    assert "clear_unreconciled_paper_positions" in stale_cleanup_source
+    assert "priority-zero emergency commands" in maintenance_base_source
+    assert 'await self._persist_maintenance(active=False, reason="")' in stale_cleanup_source
+    assert 'await self._persist_maintenance(active=False, reason="")' in resume_source
 
     route_tree = ast.parse(routes_source, filename="interface/paper_session_routes.py")
     route_paths = {
