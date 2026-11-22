@@ -1,6 +1,7 @@
 """Low-frequency dashboard data access and PAPER account providers."""
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from portfolio.dashboard_accounting import build_dashboard_balance_snapshot
@@ -85,3 +86,73 @@ class DashboardRuntime:
             if isinstance(item, dict)
             and str(item.get("status", "OPEN")).upper() == "OPEN"
         ]
+
+    async def refresh_balance_snapshot(
+        self,
+        positions: list[dict] | None = None,
+        *,
+        risk_manager: Any,
+        initial_deposit: object,
+    ) -> dict[str, Any]:
+        """Build the dashboard balance from fixed acquisition cost and session PnL."""
+        if positions is None:
+            positions = await self.get_dashboard_open_positions()
+
+        def finite(value: object, default: float) -> float:
+            try:
+                number = float(value)
+            except (TypeError, ValueError, OverflowError):
+                return default
+            return number if math.isfinite(number) else default
+
+        deposit = finite(initial_deposit, float("nan"))
+        if not math.isfinite(deposit) or deposit < 0:
+            deposit = max(0.0, finite(getattr(risk_manager, "initial_deposit", 0.0), 0.0))
+
+        total_pnl = finite(
+            getattr(risk_manager, "total_session_pnl", getattr(risk_manager, "session_pnl", 0.0)),
+            0.0,
+        )
+        realized_pnl = finite(getattr(risk_manager, "realized_pnl", 0.0), 0.0)
+        open_pnl = finite(
+            getattr(risk_manager, "open_pnl", total_pnl - realized_pnl),
+            total_pnl - realized_pnl,
+        )
+        paper_mode = bool(getattr(self.execution_engine, "paper_mode", True))
+        unresolved_map = (
+            getattr(self.execution_engine, "_unreconciled_paper_positions", {})
+            if paper_mode else {}
+        )
+        unresolved_positions = list(unresolved_map.values()) if isinstance(unresolved_map, dict) else []
+
+        calculation = build_dashboard_balance_snapshot(
+            positions=positions,
+            unresolved_positions=unresolved_positions,
+            initial_deposit=deposit,
+            total_pnl=total_pnl,
+            realized_pnl=realized_pnl,
+            open_pnl=open_pnl,
+            max_gross_exposure_pct=getattr(self.execution_engine, "max_gross_exposure_pct", 0.15),
+            max_single_position_pct=getattr(self.execution_engine, "max_single_position_pct", 0.05),
+            lot_sizes=self.lot_sizes,
+        )
+        signature = calculation["guard_signature"]
+        if signature != getattr(self, "_balance_guard_last_signature", None):
+            if unresolved_positions:
+                self.logger.critical(
+                    "🛑 [PAPER RECONCILIATION GUARD] %d старых PAPER-позиций на сверке; "
+                    "их себестоимость %.2f ₽ учтена в активах. Новые входы заблокированы.",
+                    len(unresolved_positions), calculation["unresolved_assets_cost"],
+                )
+            if calculation["over_cap"]:
+                self.logger.error(
+                    "🚨 [BALANCE GUARD] Себестоимость активов %.2f ₽ превышает лимит "
+                    "задействования %.2f ₽ (%.0f%% депозита). Новые входы будут заблокированы.",
+                    calculation["assets_used"], calculation["exposure_cap"],
+                    calculation["max_gross_pct"] * 100,
+                )
+            self._balance_guard_last_signature = signature
+        return dict(calculation["snapshot"])
+
+    def reset_balance_guard_signature(self) -> None:
+        self._balance_guard_last_signature = None

@@ -155,6 +155,39 @@ def test_dashboard_runtime_reads_cost_basis_open_pnl_and_prices():
     assert runtime.latest_screener_prices() == {"SBER": 101.5}
 
 
+def test_dashboard_runtime_builds_cost_basis_snapshot_and_resets_guard():
+    engine = SimpleNamespace(
+        paper_mode=True, max_gross_exposure_pct=0.15, max_single_position_pct=0.05,
+        _unreconciled_paper_positions={"legacy": {
+            "id": "legacy", "ticker": "GAZP", "status": "STALE_REVIEW",
+            "volume": 5, "entry_price": 200.0,
+        }},
+    )
+    logger = Logger()
+    runtime = DashboardRuntime(
+        engine, SimpleNamespace(), SimpleNamespace(history={}),
+        {"SBER": 1, "GAZP": 1}, logger,
+    )
+    risk = SimpleNamespace(
+        initial_deposit=100_000.0, total_session_pnl=1_500.0,
+        realized_pnl=500.0, open_pnl=1_000.0,
+    )
+    snapshot = asyncio.run(runtime.refresh_balance_snapshot(
+        [{
+            "id": "active", "ticker": "SBER", "status": "OPEN",
+            "volume": 25, "entry_price": 100.0,
+        }],
+        risk_manager=risk, initial_deposit=100_000.0,
+    ))
+    assert snapshot["margin_used"] == 3_500.0
+    assert snapshot["free_margin"] == 97_000.0
+    assert snapshot["equity"] == 101_500.0
+    assert snapshot["unreconciled_positions_count"] == 1
+    assert any(level == "critical" for level, _ in logger.messages)
+    runtime.reset_balance_guard_signature()
+    assert runtime._balance_guard_last_signature is None
+
+
 def test_dashboard_runtime_reads_only_open_live_positions():
     class DB:
         async def get_active_positions(self):
