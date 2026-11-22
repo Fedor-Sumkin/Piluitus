@@ -21,7 +21,10 @@ def test_critical_fire_and_forget_tasks_are_retained_and_drained():
     assert "from monitoring.background_tasks import BackgroundOperationTracker" in shared_state_source
     assert "background_operations = self.background_operations_factory(self.logger)" in shared_state_source
     assert "_background_operations = application_shared_state_runtime.background_operations" in source
-    assert source.count('"background_operations": _background_operations') >= 2
+    root_path = root / "runtime" / "application_composition_root_runtime.py"
+    root_source = root_path.read_text(encoding="utf-8")
+    assert source.count('"background_operations": _background_operations') == 1
+    assert '"background_operations": shared.background_operations' in root_source
     assert "_background_operations.spawn(" in runtime_source
     assert "_spawn_tracked_operation" not in source
     assert "_drain_tracked_operations" not in source
@@ -78,7 +81,10 @@ def test_shutdown_drains_tracked_operations_after_producers_stop():
     assert "from monitoring.background_tasks import BackgroundOperationTracker" in shared_state_source
     assert "background_operations = self.background_operations_factory(self.logger)" in shared_state_source
     assert "_background_operations = application_shared_state_runtime.background_operations" in main_source
-    assert main_source.count('"background_operations": _background_operations') >= 2
+    root_path = root / "runtime" / "application_composition_root_runtime.py"
+    root_source = root_path.read_text(encoding="utf-8")
+    assert main_source.count('"background_operations": _background_operations') == 1
+    assert '"background_operations": shared.background_operations' in root_source
     assert "_background_operations.spawn(" in (
         root / "runtime" / "market_worker_processing_runtime.py"
     ).read_text(encoding="utf-8")

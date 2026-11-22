@@ -1189,8 +1189,10 @@ def test_main_delegates_dashboard_http_and_websocket_routes_to_interface() -> No
     core_source = (ROOT / "runtime" / "application_core_runtime.py").read_text(encoding="utf-8")
     assert "DashboardApplicationRuntime(" in core_source
     application_source = (ROOT / "runtime" / "application_composition_runtime.py").read_text(encoding="utf-8")
+    root_source = (ROOT / "runtime" / "application_composition_root_runtime.py").read_text(encoding="utf-8")
     assert "dashboard_application_runtime.register_routes(" in application_source
-    assert "ApplicationCompositionRuntime(" in source
+    assert "ApplicationCompositionRootRuntime(" in source
+    assert "ApplicationCompositionRuntime(" in root_source
     assert "create_dashboard_router(" in composition_source
     assert "app.include_router(router)" in composition_source
     assert "@app.websocket(\"/ws/frontend\")" not in source

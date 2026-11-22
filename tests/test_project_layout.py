@@ -15,12 +15,15 @@ def test_templates_are_available_in_interface_package() -> None:
     assert not (PROJECT_ROOT / "templates").exists()
 
     main_source = (PROJECT_ROOT / "main.py").read_text(encoding="utf-8")
+    root_source = (
+        PROJECT_ROOT / "runtime" / "application_composition_root_runtime.py"
+    ).read_text(encoding="utf-8")
     routes_source = (
         PROJECT_ROOT / "interface" / "dashboard_routes.py"
     ).read_text(encoding="utf-8")
 
-    assert 'TEMPLATE_DIR = BASE_DIR / "interface" / "templates"' in main_source
-    assert '"template_dir": TEMPLATE_DIR' in main_source
+    assert '"template_dir": PROJECT_ROOT / "interface" / "templates"' in root_source
+    assert 'static_dir=PROJECT_ROOT / "static"' in root_source
     assert 'page_path = template_dir / "maintenance.html"' in routes_source
     assert 'index_path = template_dir / "index.html"' in routes_source
     assert 'BASE_DIR / "templates"' not in main_source
