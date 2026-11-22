@@ -713,7 +713,8 @@ def test_main_delegates_pending_bbo_candidate_lifecycle_to_strategy_runtime() ->
     ).read_text(encoding="utf-8")
     assert "self.pending_bbo_runtime.has_pending(ticker)" in event_runtime_source
     assert 'await self.pending_bbo_runtime.resume(ticker, trigger="QUOTES")' in event_runtime_source
-    assert "pending_bbo_candidate_store.count()" in source
+    assert "pending_bbo_count_provider=lambda: getattr(" in source
+    assert 'globals().get("pending_bbo_candidate_store")' in source
 
     tree = ast.parse(source, filename="main.py")
     wrapper = next(
