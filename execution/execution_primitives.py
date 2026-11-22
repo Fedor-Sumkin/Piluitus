@@ -1,6 +1,7 @@
 """Shared types and narrow input primitives for execution components."""
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from typing import Any, TypedDict, cast
 
