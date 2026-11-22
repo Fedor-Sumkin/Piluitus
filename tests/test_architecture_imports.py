@@ -752,6 +752,7 @@ def test_main_delegates_pending_bbo_candidate_lifecycle_to_strategy_runtime() ->
     assert 'await self.pending_bbo_runtime.resume(ticker, trigger="QUOTES")' in event_runtime_source
     assert "pending_bbo_candidate_store.count()" in source
 
+    tree = ast.parse(source, filename="main.py")
     wrapper = next(
         node for node in tree.body
         if isinstance(node, ast.AsyncFunctionDef)
