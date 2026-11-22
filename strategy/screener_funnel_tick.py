@@ -9,7 +9,6 @@ from typing import Any
 import numpy as np
 
 from strategy.screener_funnel_primitives import (
-    _event_timestamp_to_monotonic,
     _ofi_window,
     _queue_imbalance_window,
     logger,
@@ -144,7 +143,7 @@ class ScreenerFunnelTickMixin:
                         received_at = min(now, supplied_received)
                 except (TypeError, ValueError, OverflowError):
                     pass
-            event_seen_at = _event_timestamp_to_monotonic(event_timestamp, received_at)
+            event_seen_at = self._event_timestamp_to_monotonic(event_timestamp, received_at)
             prior_bid_event = float(quote.get("last_bid_quotes_event_seen", 0.0) or 0.0)
             prior_ask_event = float(quote.get("last_ask_quotes_event_seen", 0.0) or 0.0)
             accept_bid_event = bool(

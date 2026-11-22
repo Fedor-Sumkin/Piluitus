@@ -14,6 +14,15 @@ class ScreenerFunnelStateMixin:
     """Composable behavior over the single HFTMemoryScreener state owner."""
 
     @staticmethod
+    def _event_timestamp_to_monotonic(
+        value: object, receive_monotonic: float
+    ) -> float:
+        """Resolve through the facade to preserve legacy monkeypatch/injection seams."""
+        from strategy.screener_funnel import _event_timestamp_to_monotonic
+
+        return _event_timestamp_to_monotonic(value, receive_monotonic)
+
+    @staticmethod
     def normalize_ticker(ticker: str) -> str:
         return str(ticker or "").strip().upper().split("@")[0]
 

@@ -10,7 +10,6 @@ import numpy as np
 
 from strategy.screener_funnel_primitives import (
     _best_quote_ofi_delta,
-    _event_timestamp_to_monotonic,
     logger,
 )
 
@@ -146,12 +145,12 @@ class ScreenerFunnelOrderBookMixin:
             quote = self.quotes[ticker]
             bid = float(bid)
             ask = float(ask)
-            bid_seen_at = _event_timestamp_to_monotonic(bid_timestamp, received_at) if bid_present else 0.0
-            ask_seen_at = _event_timestamp_to_monotonic(ask_timestamp, received_at) if ask_present else 0.0
+            bid_seen_at = self._event_timestamp_to_monotonic(bid_timestamp, received_at) if bid_present else 0.0
+            ask_seen_at = self._event_timestamp_to_monotonic(ask_timestamp, received_at) if ask_present else 0.0
             # ORDER_BOOK envelope time is the ordering/freshness clock for the
             # complete reconstructed state. Level timestamps describe when an
             # individual price level changed and must not age the whole book.
-            book_seen_at = _event_timestamp_to_monotonic(order_book_timestamp, received_at)
+            book_seen_at = self._event_timestamp_to_monotonic(order_book_timestamp, received_at)
             confirmation_seen_at = min(received_at, book_seen_at)
             prior_book_event = float(quote.get("last_order_book_event_seen", 0.0) or 0.0)
             accept_book_event = prior_book_event <= 0.0 or book_seen_at + 0.001 >= prior_book_event

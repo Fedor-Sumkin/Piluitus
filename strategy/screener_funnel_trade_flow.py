@@ -10,7 +10,6 @@ import numpy as np
 
 from strategy.screener_funnel_primitives import (
     _env_int,
-    _event_timestamp_to_monotonic,
     logger,
 )
 
@@ -83,7 +82,7 @@ class ScreenerFunnelTradeFlowMixin:
                     received = min(now, candidate)
             except (TypeError, ValueError, OverflowError):
                 pass
-        event_seen = _event_timestamp_to_monotonic(event_timestamp, received)
+        event_seen = self._event_timestamp_to_monotonic(event_timestamp, received)
         if event_seen < now - 120.0 or event_seen > now + 0.05:
             return {"accepted": False, "reason": "stale_or_future_trade"}
         raw_id = str(trade_id or "").strip()
