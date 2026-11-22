@@ -692,9 +692,16 @@ def test_lifespan_delegates_long_running_task_ownership_to_supervisor() -> None:
         runtime_source, filename="runtime/application_lifecycle_runtime.py"
     )
 
+    root_source = (
+        ROOT / "runtime" / "application_composition_root_runtime.py"
+    ).read_text(encoding="utf-8")
+    root_tree = ast.parse(
+        root_source,
+        filename="runtime/application_composition_root_runtime.py",
+    )
     imports = {
         alias.name
-        for node in main_tree.body
+        for node in root_tree.body
         if isinstance(node, ast.ImportFrom)
         and node.module == "monitoring.background_tasks"
         for alias in node.names
