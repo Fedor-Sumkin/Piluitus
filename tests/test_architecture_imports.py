@@ -10,6 +10,12 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _compatibility_exports_source() -> str:
+    return (
+        ROOT / "runtime" / "application_compatibility_exports.py"
+    ).read_text(encoding="utf-8")
 PACKAGE_DIRS = (
     "ai",
     "exchange",
@@ -311,7 +317,7 @@ def test_main_delegates_position_order_book_diagnostics_to_monitoring() -> None:
     maintenance_source = (
         ROOT / "storage" / "paper_session_maintenance_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "position_order_book_diagnostics = market_observability_runtime.position_order_book_diagnostics" in source
+    assert '"position_order_book_diagnostics": observability.position_order_book_diagnostics' in _compatibility_exports_source()
     assert "PositionOrderBookDiagnostics(" in runtime_source
     assert "self.position_order_book_diagnostics.record(" in runtime_source
     assert "position_order_book_diagnostics.clear()" in maintenance_source
@@ -324,7 +330,7 @@ def test_main_delegates_prefilter_warning_rate_limiting_to_monitoring() -> None:
     runtime_source = (
         ROOT / "monitoring" / "market_observability_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "prefilter_block_logger = market_observability_runtime.prefilter_block_logger" in source
+    assert '"prefilter_block_logger": observability.prefilter_block_logger' in _compatibility_exports_source()
     assert "PrefilterBlockLogger(" in runtime_source
     assert "self.prefilter_block_logger.log(" in runtime_source
     assert "_prefilter_last_logged" not in source
@@ -336,7 +342,7 @@ def test_main_delegates_strategy_shadow_scorecard_logging_to_monitoring() -> Non
     runtime_source = (
         ROOT / "monitoring" / "market_observability_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "shadow_scorecard_logger = market_observability_runtime.shadow_scorecard_logger" in source
+    assert '"shadow_scorecard_logger": observability.shadow_scorecard_logger' in _compatibility_exports_source()
     assert "StrategyShadowScorecardLogger(" in runtime_source
     assert "self.shadow_scorecard_logger.log(self.shadow_tracker)" in runtime_source
     assert "scalping_shadow_tracker.statistics_snapshot()" not in source
@@ -347,7 +353,7 @@ def test_main_delegates_trade_flow_report_formatting_to_monitoring() -> None:
     runtime_source = (
         ROOT / "monitoring" / "market_observability_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "trade_flow_report_logger = market_observability_runtime.trade_flow_report_logger" in source
+    assert '"trade_flow_report_logger": observability.trade_flow_report_logger' in _compatibility_exports_source()
     assert "TradeFlowReportLogger(" in runtime_source
     assert "self.trade_flow_report_logger.log(counts, pending_bbo=pending_bbo)" in runtime_source
 
@@ -357,12 +363,12 @@ def test_main_delegates_strategy_shadow_events_to_monitoring() -> None:
     runtime_source = (
         ROOT / "monitoring" / "market_observability_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "strategy_shadow_diagnostics = market_observability_runtime.strategy_shadow_diagnostics" in source
+    assert '"strategy_shadow_diagnostics": observability.strategy_shadow_diagnostics' in _compatibility_exports_source()
     assert "StrategyShadowDiagnostics(" in runtime_source
     assert "self.strategy_shadow_diagnostics.mark_llm_not_called(" in runtime_source
     assert "self.strategy_shadow_diagnostics.log_candidate(" in runtime_source
-    assert "_mark_shadow_llm_not_called = market_observability_runtime.mark_shadow_llm_not_called" in source
-    assert "_log_scalping_shadow = market_observability_runtime.log_shadow_candidate" in source
+    assert '"_mark_shadow_llm_not_called": observability.mark_shadow_llm_not_called' in _compatibility_exports_source()
+    assert '"_log_scalping_shadow": observability.log_shadow_candidate' in _compatibility_exports_source()
 
 
 def test_main_delegates_priority_queue_state_to_application_shared_runtime() -> None:
@@ -431,8 +437,8 @@ def test_main_delegates_dashboard_balance_runtime_to_portfolio() -> None:
         ROOT / "runtime" / "application_core_runtime.py"
     ).read_text(encoding="utf-8")
     assert "DashboardApplicationRuntime(" in core_source
-    assert "dashboard_application_runtime = application_core_runtime.dashboard_application_runtime" in source
-    assert "_refresh_dashboard_balance_snapshot = dashboard_application_runtime.refresh_balance_snapshot" in source
+    assert '"dashboard_application_runtime": dashboard' in _compatibility_exports_source()
+    assert '"_refresh_dashboard_balance_snapshot": dashboard.refresh_balance_snapshot' in _compatibility_exports_source()
     assert "self.dashboard_runtime.refresh_balance_snapshot(" in composition_source
     assert "self.dashboard_runtime.reset_balance_guard_signature()" in composition_source
     runtime_source = (
@@ -508,12 +514,12 @@ def test_main_delegates_shadow_outcome_persistence_to_storage() -> None:
     }
     assert "from runtime.paper_session_composition_runtime import PaperSessionCompositionRuntime" in bootstrap_source
     assert "PaperSessionCompositionRuntime(" in bootstrap_source
-    assert "shadow_outcome_persistence = paper_session_composition_runtime.shadow_outcome_persistence" in source
-    assert "paper_session_runtime = paper_session_composition_runtime.paper_session_runtime" in source
-    assert "_persist_shadow_outcomes = paper_session_composition_runtime.persist_shadow_outcomes" in source
-    assert "_restore_shadow_outcomes = paper_session_composition_runtime.restore_shadow_outcomes" in source
-    assert "_rotate_paper_bbo_replay_session = paper_session_composition_runtime.rotate_bbo_replay_session" in source
-    assert "_restore_paper_performance = paper_session_composition_runtime.restore_paper_performance" in source
+    assert '"shadow_outcome_persistence": paper.shadow_outcome_persistence' in _compatibility_exports_source()
+    assert '"paper_session_runtime": paper.paper_session_runtime' in _compatibility_exports_source()
+    assert '"_persist_shadow_outcomes": paper.persist_shadow_outcomes' in _compatibility_exports_source()
+    assert '"_restore_shadow_outcomes": paper.restore_shadow_outcomes' in _compatibility_exports_source()
+    assert '"_rotate_paper_bbo_replay_session": paper.rotate_bbo_replay_session' in _compatibility_exports_source()
+    assert '"_restore_paper_performance": paper.restore_paper_performance' in _compatibility_exports_source()
 
     assert "ShadowOutcomePersistence(" in composition_source
     assert "PaperSessionRuntime(" in composition_source
@@ -549,8 +555,8 @@ def test_main_delegates_market_data_runtime_services() -> None:
     assert "class MarketIngestionRuntimeFactory" in factory_source
     assert "M1HistoryWarmup(" in factory_source
     assert "PendingBBOCandidateStore(" in factory_source
-    assert "m1_history_warmup = market_ingestion_components.m1_history_warmup" in source
-    assert "pending_bbo_candidate_store = market_ingestion_components.pending_bbo_candidate_store" in source
+    assert '"m1_history_warmup": ingestion.m1_history_warmup' in _compatibility_exports_source()
+    assert '"pending_bbo_candidate_store": ingestion.pending_bbo_candidate_store' in _compatibility_exports_source()
     assert "coalesce_pending_bbo_entry(" not in source
     assert "bars = await broker.get_historical_m1_bars(" not in source
 
@@ -560,14 +566,14 @@ def test_main_delegates_paper_api_helpers_to_interface() -> None:
     runtime_source = (
         ROOT / "runtime" / "paper_operations_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "paper_operations_runtime = application_composition_runtime.paper_operations_runtime" in source
+    assert '"paper_operations_runtime": paper_ops' in _compatibility_exports_source()
     assert "PaperOperationsRuntime(" in (ROOT / "runtime" / "application_composition_runtime.py").read_text(encoding="utf-8")
     assert "PaperAPIHelpers(" in runtime_source
     assert "self.paper_api_helpers.require_paper_mode()" in runtime_source
     assert "self.paper_api_helpers.paper_trade_rows(snapshot)" in runtime_source
     assert "self.paper_api_helpers.broadcast_paper_tables()" in runtime_source
-    assert "paper_api_helpers = paper_operations_runtime.paper_api_helpers" in source
-    assert "_broadcast_paper_tables = paper_operations_runtime.broadcast_paper_tables" in source
+    assert '"paper_api_helpers": paper_ops.paper_api_helpers' in _compatibility_exports_source()
+    assert '"_broadcast_paper_tables": paper_ops.broadcast_paper_tables' in _compatibility_exports_source()
 
 
 def test_main_delegates_paper_research_and_reconciliation_apis_to_storage() -> None:
@@ -582,7 +588,7 @@ def test_main_delegates_paper_research_and_reconciliation_apis_to_storage() -> N
     router_tree = ast.parse(router_source, filename="paper_research_routes.py")
 
     assert "PaperResearchRuntime(" in composition_source
-    assert "paper_research_runtime = paper_operations_runtime.paper_research_runtime" in source
+    assert '"paper_research_runtime": paper_ops.paper_research_runtime' in _compatibility_exports_source()
     assert "create_paper_research_router(self.paper_research_runtime)" in composition_source
 
     route_methods = {
@@ -757,12 +763,12 @@ def test_main_delegates_market_event_normalization_to_runtime() -> None:
     assert "from runtime.market_runtime_composition_runtime import MarketRuntimeCompositionRuntime" in bootstrap_source
     assert "MarketRuntimeCompositionRuntime(" in bootstrap_source
     assert "self.market_application_runtime = MarketApplicationRuntime(" in composition_source
-    assert "market_application_runtime = market_runtime_composition.market_application_runtime" in source
-    assert "market_ingestion_components = market_application_runtime.ingestion_components" in source
+    assert '"market_application_runtime": market_app' in _compatibility_exports_source()
+    assert '"market_ingestion_components": ingestion' in _compatibility_exports_source()
     assert "from runtime.market_ingestion_runtime import MarketIngestionRuntimeFactory" in application_source
     assert "self.ingestion_components = MarketIngestionRuntimeFactory(" in application_source
-    assert "market_data_event_runtime = market_ingestion_components.market_data_event_runtime" in source
-    assert "process_market_event = market_application_runtime.process_market_event" in source
+    assert '"market_data_event_runtime": ingestion.market_data_event_runtime' in _compatibility_exports_source()
+    assert '"process_market_event": market_app.process_market_event' in _compatibility_exports_source()
     assert "async def process_market_event(self, event: Any)" in application_source
     assert "await self._require_ingestion().market_data_event_runtime.process_event(event)" in application_source
     assert "quote_event = normalize_market_quote_event(event)" in runtime_source
@@ -811,7 +817,7 @@ def test_main_delegates_candidate_admission_to_strategy_pipeline() -> None:
     assert "MarketApplicationRuntime(" in (
         ROOT / "runtime" / "market_runtime_composition_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "market_candidate_pipeline = market_ingestion_components.market_candidate_pipeline" in source
+    assert '"market_candidate_pipeline": ingestion.market_candidate_pipeline' in _compatibility_exports_source()
     assert "MarketIngestionRuntimeFactory(" in composition_source
     assert "self.candidate_pipeline.process_candidate(" in runtime_source
     assert "validate_atr_readiness" not in runtime_source
@@ -834,7 +840,7 @@ def test_main_delegates_pending_bbo_candidate_lifecycle_to_strategy_runtime() ->
         ROOT / "runtime" / "market_ingestion_runtime.py"
     ).read_text(encoding="utf-8")
     assert "PendingBBOCandidateRuntime(" in factory_source
-    assert "pending_bbo_runtime = market_ingestion_components.pending_bbo_runtime" in source
+    assert '"pending_bbo_runtime": ingestion.pending_bbo_runtime' in _compatibility_exports_source()
     event_runtime_source = (
         ROOT / "runtime" / "market_data_event_runtime.py"
     ).read_text(encoding="utf-8")
@@ -842,7 +848,7 @@ def test_main_delegates_pending_bbo_candidate_lifecycle_to_strategy_runtime() ->
     assert 'await self.pending_bbo_runtime.resume(ticker, trigger="QUOTES")' in event_runtime_source
     assert "def store_pending_bbo_candidate(" in composition_source
     assert "pending_bbo_candidate_store.store_candidate(" in composition_source
-    assert "_resume_pending_bbo_candidate = market_application_runtime.resume_pending_bbo_candidate" in source
+    assert '"_resume_pending_bbo_candidate": market_app.resume_pending_bbo_candidate' in _compatibility_exports_source()
 
     runtime_tree = ast.parse(
         runtime_source, filename="strategy/market_data_runtime.py"
@@ -1070,7 +1076,7 @@ def test_main_delegates_paper_research_routes_to_interface() -> None:
     runtime_source = (
         ROOT / "runtime" / "paper_operations_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "paper_operations_runtime = application_composition_runtime.paper_operations_runtime" in source
+    assert '"paper_operations_runtime": paper_ops' in _compatibility_exports_source()
     assert "PaperOperationsRuntime(" in (ROOT / "runtime" / "application_composition_runtime.py").read_text(encoding="utf-8")
     assert "from interface.paper_research_routes import create_paper_research_router" in runtime_source
     assert "create_paper_research_router(self.paper_research_runtime)" in runtime_source
@@ -1160,11 +1166,11 @@ def test_main_delegates_background_market_services_to_runtime() -> None:
     ).read_text(encoding="utf-8")
     runtime_source = (root / "runtime" / "market_background_services.py").read_text(encoding="utf-8")
     assert "MarketBackgroundServicesRuntime(" in composition_source
-    assert "market_background_services = market_application_runtime.market_background_services" in source
-    assert "background_broker_init = market_background_services.background_broker_init" in source
-    assert "_start_news_updater = market_background_services._start_news_updater" in source
-    assert "_finam_metadata_refresh_loop = market_background_services._finam_metadata_refresh_loop" in source
-    assert "_start_tables_sync_loop = market_background_services._start_tables_sync_loop" in source
+    assert '"market_background_services": background' in _compatibility_exports_source()
+    assert '"background_broker_init": background.background_broker_init' in _compatibility_exports_source()
+    assert '"_start_news_updater": background._start_news_updater' in _compatibility_exports_source()
+    assert '"_finam_metadata_refresh_loop": background._finam_metadata_refresh_loop' in _compatibility_exports_source()
+    assert '"_start_tables_sync_loop": background._start_tables_sync_loop' in _compatibility_exports_source()
     assert "process_market_event=self.process_market_event" in composition_source
     for method in ("background_broker_init", "_finam_metadata_refresh_loop", "_start_news_updater", "_start_tables_sync_loop"):
         assert f"async def {method}(self" in runtime_source

@@ -20,7 +20,9 @@ def test_critical_fire_and_forget_tasks_are_retained_and_drained():
     shared_state_source = shared_state_path.read_text(encoding="utf-8")
     assert "from monitoring.background_tasks import BackgroundOperationTracker" in shared_state_source
     assert "background_operations = self.background_operations_factory(self.logger)" in shared_state_source
-    assert "_background_operations = application_shared_state_runtime.background_operations" in source
+    assert '"_background_operations": shared.background_operations' in (
+        root / "runtime" / "application_compatibility_exports.py"
+    ).read_text(encoding="utf-8")
     root_path = root / "runtime" / "application_composition_root_runtime.py"
     root_source = root_path.read_text(encoding="utf-8")
     assert '"background_operations": shared.background_operations' in root_source
@@ -80,7 +82,9 @@ def test_shutdown_drains_tracked_operations_after_producers_stop():
     shared_state_source = shared_state_path.read_text(encoding="utf-8")
     assert "from monitoring.background_tasks import BackgroundOperationTracker" in shared_state_source
     assert "background_operations = self.background_operations_factory(self.logger)" in shared_state_source
-    assert "_background_operations = application_shared_state_runtime.background_operations" in main_source
+    assert '"_background_operations": shared.background_operations' in (
+        root / "runtime" / "application_compatibility_exports.py"
+    ).read_text(encoding="utf-8")
     root_path = root / "runtime" / "application_composition_root_runtime.py"
     root_source = root_path.read_text(encoding="utf-8")
     assert '"background_operations": shared.background_operations' in root_source

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from runtime import application_runtime_bootstrap as module
+from runtime.application_compatibility_exports import build_application_compatibility_exports
 
 
 class _Core:
@@ -193,9 +194,9 @@ def test_bootstrap_callbacks_keep_shared_and_external_references_synchronized(mo
 def test_bootstrap_exports_compatibility_names_and_rejects_duplicate_create(monkeypatch):
     runtime, *_ = _build(monkeypatch)
     with pytest.raises(RuntimeError, match="must run first"):
-        runtime.compatibility_exports()
+        build_application_compatibility_exports(runtime)
     runtime.create()
-    exports = runtime.compatibility_exports()
+    exports = build_application_compatibility_exports(runtime)
     for name in (
         "application_core_runtime", "db_manager", "application_shared_state_runtime",
         "anomaly_queue", "paper_session_composition_runtime", "market_runtime_composition",
