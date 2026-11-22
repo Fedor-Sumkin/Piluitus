@@ -1,6 +1,8 @@
 """Chronological candidate-grouped purged walk-forward validation."""
 from __future__ import annotations
 
+import math
+
 from collections import defaultdict
 from collections.abc import Mapping
 from datetime import datetime
