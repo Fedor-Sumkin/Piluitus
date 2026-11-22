@@ -10,30 +10,35 @@ def _main_source() -> tuple[str, ast.Module]:
 
 
 def test_critical_fire_and_forget_tasks_are_retained_and_drained():
+    root = Path(__file__).resolve().parents[1]
     source, module = _main_source()
+    runtime_path = root / "runtime" / "market_worker_processing_runtime.py"
+    runtime_source = runtime_path.read_text(encoding="utf-8")
+    runtime_module = ast.parse(runtime_source, filename=str(runtime_path))
 
     assert "from monitoring.background_tasks import BackgroundOperationTracker" in source
     assert "_background_operations = BackgroundOperationTracker(logger)" in source
-    assert "_background_operations.spawn(" in source
+    assert "_background_operations.spawn(" in runtime_source
     assert "_spawn_tracked_operation" not in source
     assert "_drain_tracked_operations" not in source
 
     untracked_critical_calls = []
-    for node in ast.walk(module):
-        if not isinstance(node, ast.Call):
-            continue
-        if not (
-            isinstance(node.func, ast.Attribute)
-            and node.func.attr == "create_task"
-        ):
-            continue
-        if not node.args or not isinstance(node.args[0], ast.Call):
-            continue
-        inner = node.args[0].func
-        if isinstance(inner, ast.Name) and inner.id == "log_trading_event_to_file":
-            untracked_critical_calls.append(node.lineno)
-        if isinstance(inner, ast.Attribute) and inner.attr == "_execute_and_publish":
-            untracked_critical_calls.append(node.lineno)
+    for parsed_module in (module, runtime_module):
+        for node in ast.walk(parsed_module):
+            if not isinstance(node, ast.Call):
+                continue
+            if not (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "create_task"
+            ):
+                continue
+            if not node.args or not isinstance(node.args[0], ast.Call):
+                continue
+            inner = node.args[0].func
+            if isinstance(inner, ast.Name) and inner.id == "log_trading_event_to_file":
+                untracked_critical_calls.append(node.lineno)
+            if isinstance(inner, ast.Attribute) and inner.attr == "_execute_and_publish":
+                untracked_critical_calls.append(node.lineno)
 
     assert untracked_critical_calls == []
 

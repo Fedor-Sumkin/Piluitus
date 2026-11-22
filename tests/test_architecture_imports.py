@@ -815,8 +815,12 @@ def test_market_worker_delegates_order_execution_lifecycle_to_execution_package(
     assert "await self.publish_execution_outcome(" in runtime_source
 
 
+
 def test_main_delegates_market_verdict_publication_to_execution_package() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
+    runtime_source = (
+        ROOT / "runtime" / "market_worker_processing_runtime.py"
+    ).read_text(encoding="utf-8")
     module_source = (
         ROOT / "execution" / "verdict_publisher.py"
     ).read_text(encoding="utf-8")
@@ -829,24 +833,17 @@ def test_main_delegates_market_verdict_publication_to_execution_package() -> Non
         for alias in node.names
     }
     assert imported == {"publish_market_verdict"}
-    assert "await publish_market_verdict(" in source
-    worker_class = next(
-        node for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "MarketWorker"
-    )
-    start_processing = next(
-        node for node in worker_class.body
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "start_processing"
-    )
-    start_processing_source = ast.get_source_segment(source, start_processing) or ""
-    assert "redis_inst.lpush(" not in start_processing_source
-    assert "manager.broadcast(json.dumps(payload" not in start_processing_source
+    assert "publish_market_verdict=publish_market_verdict" in source
+    assert "await publish_market_verdict(" in runtime_source
+    assert "manager.broadcast(json.dumps({\"type\": \"EXECUTION_UPDATE\"" not in runtime_source
     assert "verdict_cache.append(verdict)" in module_source
 
 
 def test_main_delegates_verdict_record_construction_and_enrichment_to_strategy() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
+    runtime_source = (
+        ROOT / "runtime" / "market_worker_processing_runtime.py"
+    ).read_text(encoding="utf-8")
     module_source = (
         ROOT / "strategy" / "verdict_records.py"
     ).read_text(encoding="utf-8")
@@ -866,17 +863,16 @@ def test_main_delegates_verdict_record_construction_and_enrichment_to_strategy()
         "link_shadow_candidate_verdict",
         "enrich_ai_analysis_with_verdict",
     }
-    assert "verdict = build_pre_llm_risk_block_verdict(" in source
-    assert "verdict_data = build_llm_verdict_record(" in source
-    assert "link_shadow_candidate_verdict(" in source
-    assert "enrich_ai_analysis_with_verdict(" in source
+    assert "build_pre_llm_risk_block_verdict=build_pre_llm_risk_block_verdict" in source
+    assert "build_llm_verdict_record=build_llm_verdict_record" in source
+    assert "verdict = self.build_pre_llm_risk_block_verdict(" in runtime_source
+    assert "verdict_data = build_llm_verdict_record(" in runtime_source
+    assert "link_shadow_candidate_verdict(" in runtime_source
+    assert "enrich_ai_analysis_with_verdict(" in runtime_source
     assert "decision_source" in module_source
     assert "llm_reason_code_raw" in module_source
     assert "market_regime" in module_source
-    assert "scalping_shadow_tracker.attach_llm_verdict(" not in source
-
-
-
+    assert "scalping_shadow_tracker.attach_llm_verdict(" not in runtime_source
 
 def test_market_worker_delegates_queue_and_llm_processing_to_runtime() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
