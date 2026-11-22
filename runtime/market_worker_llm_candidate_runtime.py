@@ -36,7 +36,7 @@ class MarketWorkerLlmCandidateMixin:
         try:
             ai_response = await asyncio.wait_for(
                 self.ai.analyze_market_state(event_payload),
-                timeout=float(Settings.VLLM_TIMEOUT) * 2.0 + 1.0,
+                timeout=float(self.settings.VLLM_TIMEOUT) * 2.0 + 1.0,
             )
         except asyncio.TimeoutError as exc:
             ai_response = self.build_llm_error_response(
@@ -48,7 +48,7 @@ class MarketWorkerLlmCandidateMixin:
             )
 
         if (
-            getattr(execution_engine, "_maintenance_active", False)
+            getattr(self.execution_engine, "_maintenance_active", False)
             or event_payload.get("paper_session_generation") != self.session_generation_provider()
         ):
             return False
@@ -75,7 +75,7 @@ class MarketWorkerLlmCandidateMixin:
         # Rebuild executable BBO and trade-flow evidence after LLM latency.
         # Pre-LLM metrics remain available separately for attribution, but
         # stale quote sides must never authorize a new entry.
-        post_llm_state = validate_post_llm_entry(
+        post_llm_state = self.validate_post_llm_entry(
             screener=self.screener,
             ticker=ticker,
             metrics=metrics,

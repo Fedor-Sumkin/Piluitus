@@ -984,7 +984,7 @@ def test_main_delegates_market_verdict_publication_to_execution_package() -> Non
     }
     assert imported == {"publish_market_verdict"}
     assert '"publish_market_verdict": publish_market_verdict' in composition_source
-    assert "await publish_market_verdict(" in runtime_source
+    assert "await self.publish_market_verdict(" in runtime_source
     assert "manager.broadcast(json.dumps({\"type\": \"EXECUTION_UPDATE\"" not in runtime_source
     assert "verdict_cache.append(verdict)" in module_source
 
@@ -1024,9 +1024,9 @@ def test_main_delegates_verdict_record_construction_and_enrichment_to_strategy()
     assert '"build_pre_llm_risk_block_verdict": build_pre_llm_risk_block_verdict' in composition_source
     assert '"build_llm_verdict_record": build_llm_verdict_record' in composition_source
     assert "verdict = self.build_pre_llm_risk_block_verdict(" in risk_source
-    assert "verdict_data = build_llm_verdict_record(" in verdict_source
-    assert "link_shadow_candidate_verdict(" in verdict_source
-    assert "enrich_ai_analysis_with_verdict(" in verdict_source
+    assert "verdict_data = self.build_llm_verdict_record(" in verdict_source
+    assert "self.link_shadow_candidate_verdict(" in verdict_source
+    assert "self.enrich_ai_analysis_with_verdict(" in verdict_source
     assert "decision_source" in module_source
     assert "llm_reason_code_raw" in module_source
     assert "market_regime" in module_source
@@ -1081,6 +1081,10 @@ def test_market_worker_delegates_queue_and_llm_processing_to_runtime() -> None:
     assert "await self._publish_candidate_verdict(state)" in runtime_source
     assert "self.anomaly_queue.task_done()" in runtime_source
     assert "self.release_ai_ticker(pending_ticker)" in runtime_source
+    assert "async def _prepare_market_candidate_state(" in admission_source
+    assert "async def _analyze_candidate_and_prepare_entry(" in llm_source
+    assert "def _build_candidate_verdict(" in verdict_source
+    assert "async def _publish_candidate_verdict(" in publication_source
     assert "async def publish_pre_llm_risk_block(" in risk_source
     assert "async def publish_pre_llm_risk_block_locked(" in risk_source
 
@@ -1089,7 +1093,7 @@ def test_processing_runtime_preserves_llm_context_and_response_contract_delegati
     source = (ROOT / "runtime" / "market_worker_llm_candidate_runtime.py").read_text(encoding="utf-8")
     context_source = (ROOT / "strategy" / "llm_context.py").read_text(encoding="utf-8")
     response_source = (ROOT / "strategy" / "llm_response.py").read_text(encoding="utf-8")
-    assert "await attach_llm_rule_context(" in source
+    assert "await self.attach_llm_rule_context(" in source
     assert "process_llm_response(" in source
     assert "TechnicalKnowledgeParser" not in source
     assert "contract_retry_attempted" not in source
@@ -1105,7 +1109,7 @@ def test_processing_runtime_delegates_post_llm_evidence_refresh_and_validation()
     module_source = (
         ROOT / "strategy" / "post_llm_validation.py"
     ).read_text(encoding="utf-8")
-    assert "validate_post_llm_entry(" in source
+    assert "self.validate_post_llm_entry(" in source
     assert "refresh_post_llm_evidence(" not in source
     assert "validate_entry_evidence(" not in source
     assert "classify_direction_evidence(" not in source
@@ -1119,7 +1123,7 @@ def test_processing_runtime_delegates_final_entry_readiness_gates() -> None:
     module_source = (
         ROOT / "strategy" / "entry_decision_pipeline.py"
     ).read_text(encoding="utf-8")
-    assert "entry_plan = prepare_entry_execution_plan(" in source
+    assert "entry_plan = self.prepare_entry_execution_plan(" in source
     assert "calculate_atr_stop(" not in source
     assert "calculate_lot_size(" not in source
     assert "confidence < 75.0" not in source

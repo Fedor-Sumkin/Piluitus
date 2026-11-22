@@ -35,7 +35,7 @@ def test_critical_fire_and_forget_tasks_are_retained_and_drained():
     root_source = root_path.read_text(encoding="utf-8")
     assert '"background_operations": shared.background_operations' in root_source
     assert '"background_operations": shared.background_operations' in root_source
-    assert "_background_operations.spawn(" in runtime_source
+    assert "self.background_operations.spawn(" in runtime_source
     assert "_spawn_tracked_operation" not in source
     assert "_drain_tracked_operations" not in source
 

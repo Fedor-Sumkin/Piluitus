@@ -17,9 +17,10 @@ class MarketWorkerVerdictPublicationMixin:
         requested_lots = state["requested_lots"]
         decision = state["decision"]
         shadow_candidate_id = state["shadow_candidate_id"]
+        verdict_id = state["verdict_id"]
         async with self.paper_session_generation_lock:
             if (
-                getattr(execution_engine, "_maintenance_active", False)
+                getattr(self.execution_engine, "_maintenance_active", False)
                 or event_payload.get("paper_session_generation") != self.session_generation_provider()
             ):
                 return

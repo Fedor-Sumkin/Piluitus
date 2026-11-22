@@ -65,7 +65,7 @@ class MarketWorkerCandidateAdmissionMixin:
 
         trading_allowed = await self.risk_manager.is_trading_allowed(self.db)
         if (
-            getattr(execution_engine, "_maintenance_active", False)
+            getattr(self.execution_engine, "_maintenance_active", False)
             or event_payload.get("paper_session_generation") != self.session_generation_provider()
         ):
             return

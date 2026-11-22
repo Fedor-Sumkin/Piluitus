@@ -133,7 +133,7 @@ class MarketWorkerVerdictConstructionMixin:
             verdict_data,
             shadow_candidate_id=shadow_candidate_id,
             shadow_tracker=self.shadow_tracker,
-            logger=logger,
+            logger=self.logger,
             verdict_id=verdict_id,
             model_decision=model_decision,
             final_decision=decision,
