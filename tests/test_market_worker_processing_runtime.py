@@ -205,3 +205,44 @@ def test_processing_runtime_rate_limits_pre_llm_risk_verdicts():
 
     asyncio.run(scenario())
 
+
+
+def test_queue_processor_runs_candidate_phases_in_order_and_acknowledges() -> None:
+    from types import MethodType
+
+    async def scenario() -> None:
+        queue = asyncio.PriorityQueue()
+        queue.put_nowait((
+            1, 1, 1, "MARKET_TICK",
+            {"ticker": "SBER", "paper_session_generation": 3},
+        ))
+        runtime, _, _logger, _risk, _engine, released, *_ = _runtime(queue=queue)
+        calls = []
+
+        async def prepare(self, event_payload):
+            calls.append("admission")
+            return {"event_payload": event_payload, "ticker": "SBER"}
+
+        async def analyze(self, state):
+            calls.append("llm")
+            return True
+
+        def build(self, state):
+            calls.append("verdict")
+
+        async def publish(self, state):
+            calls.append("publish")
+
+        runtime._prepare_market_candidate_state = MethodType(prepare, runtime)
+        runtime._analyze_candidate_and_prepare_entry = MethodType(analyze, runtime)
+        runtime._build_candidate_verdict = MethodType(build, runtime)
+        runtime._publish_candidate_verdict = MethodType(publish, runtime)
+
+        await runtime.process_next_item()
+        await asyncio.wait_for(queue.join(), timeout=0.5)
+
+        assert calls == ["admission", "llm", "verdict", "publish"]
+        assert released == ["SBER"]
+        assert queue.empty()
+
+    asyncio.run(scenario())

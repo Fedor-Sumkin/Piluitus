@@ -12,9 +12,17 @@ def _main_source() -> tuple[str, ast.Module]:
 def test_critical_fire_and_forget_tasks_are_retained_and_drained():
     root = Path(__file__).resolve().parents[1]
     source, module = _main_source()
-    runtime_path = root / "runtime" / "market_worker_queue_processing_runtime.py"
-    runtime_source = runtime_path.read_text(encoding="utf-8")
-    runtime_module = ast.parse(runtime_source, filename=str(runtime_path))
+    runtime_paths = [
+        root / "runtime" / "market_worker_candidate_admission_runtime.py",
+        root / "runtime" / "market_worker_verdict_construction_runtime.py",
+        root / "runtime" / "market_worker_verdict_publication_runtime.py",
+    ]
+    runtime_sources = [path.read_text(encoding="utf-8") for path in runtime_paths]
+    runtime_modules = [
+        ast.parse(source, filename=str(path))
+        for path, source in zip(runtime_paths, runtime_sources)
+    ]
+    runtime_source = "\\n".join(runtime_sources)
 
     shared_state_path = root / "runtime" / "application_shared_state_runtime.py"
     shared_state_source = shared_state_path.read_text(encoding="utf-8")
@@ -32,7 +40,7 @@ def test_critical_fire_and_forget_tasks_are_retained_and_drained():
     assert "_drain_tracked_operations" not in source
 
     untracked_critical_calls = []
-    for parsed_module in (module, runtime_module):
+    for parsed_module in (module, *runtime_modules):
         for node in ast.walk(parsed_module):
             if not isinstance(node, ast.Call):
                 continue
@@ -89,9 +97,12 @@ def test_shutdown_drains_tracked_operations_after_producers_stop():
     root_source = root_path.read_text(encoding="utf-8")
     assert '"background_operations": shared.background_operations' in root_source
     assert '"background_operations": shared.background_operations' in root_source
-    assert "_background_operations.spawn(" in (
-        root / "runtime" / "market_worker_queue_processing_runtime.py"
-    ).read_text(encoding="utf-8")
+    tracked_runtime_sources = [
+        (root / "runtime" / "market_worker_candidate_admission_runtime.py").read_text(encoding="utf-8"),
+        (root / "runtime" / "market_worker_verdict_construction_runtime.py").read_text(encoding="utf-8"),
+        (root / "runtime" / "market_worker_verdict_publication_runtime.py").read_text(encoding="utf-8"),
+    ]
+    assert any("self.background_operations.spawn(" in source for source in tracked_runtime_sources)
     assert "_spawn_tracked_operation" not in main_source
     assert "_drain_tracked_operations" not in main_source
 
