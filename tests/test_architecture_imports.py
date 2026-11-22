@@ -205,22 +205,14 @@ def test_main_delegates_trade_flow_state_to_market_runtime_composition() -> None
     assert "_trade_flow_last_log_at" not in main_source
 
 
-def test_main_reuses_extracted_websocket_manager() -> None:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    local_classes = {
-        node.name for node in tree.body if isinstance(node, ast.ClassDef)
-    }
-    assert "ConnectionManager" not in local_classes
-
-    imported = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "interface.websocket_manager"
-        for alias in node.names
-    }
-    assert "ConnectionManager" in imported
+def test_application_shared_state_runtime_owns_websocket_manager() -> None:
+    main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+    shared_source = (
+        ROOT / "runtime" / "application_shared_state_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "manager = application_shared_state_runtime.connection_manager" in main_source
+    assert "from interface.websocket_manager import ConnectionManager" in shared_source
+    assert "connection_manager = self.connection_manager_factory()" in shared_source
 
 def test_main_delegates_runtime_logging_to_monitoring() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -274,21 +266,17 @@ def test_main_delegates_runtime_logging_to_monitoring() -> None:
 
 
 
-def test_main_delegates_background_operation_tracking_to_monitoring() -> None:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imports = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "monitoring.background_tasks"
-        for alias in node.names
-    }
-    assert "BackgroundOperationTracker" in imports
-    assert "_background_operations = BackgroundOperationTracker(logger)" in source
-    assert "_tracked_operation_tasks" not in source
-    assert "def _spawn_tracked_operation" not in source
-    assert "async def _drain_tracked_operations" not in source
+def test_application_shared_state_runtime_owns_background_operation_tracking() -> None:
+    main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+    shared_source = (
+        ROOT / "runtime" / "application_shared_state_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "_background_operations = application_shared_state_runtime.background_operations" in main_source
+    assert "from monitoring.background_tasks import BackgroundOperationTracker" in shared_source
+    assert "background_operations = self.background_operations_factory(self.logger)" in shared_source
+    assert "_tracked_operation_tasks" not in main_source
+    assert "def _spawn_tracked_operation" not in main_source
+    assert "async def _drain_tracked_operations" not in main_source
 
 
 
@@ -377,21 +365,18 @@ def test_main_delegates_strategy_shadow_events_to_monitoring() -> None:
     assert "_log_scalping_shadow = market_observability_runtime.log_shadow_candidate" in source
 
 
-def test_main_delegates_priority_queue_item_creation_to_runtime() -> None:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imported = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "runtime.priority_queue"
-        for alias in node.names
-    }
-    assert imported == {"PriorityItem", "PriorityQueueItemFactory"}
-    assert "priority_queue_item_factory = PriorityQueueItemFactory()" in source
-    assert "def _make_priority_item" not in source
-    assert "_priority_sequence" not in source
-    assert "from itertools import count" not in source
+def test_main_delegates_priority_queue_state_to_application_shared_runtime() -> None:
+    main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+    shared_source = (
+        ROOT / "runtime" / "application_shared_state_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "priority_queue_item_factory = application_shared_state_runtime.priority_queue_item_factory" in main_source
+    assert "from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory" in shared_source
+    assert "asyncio.PriorityQueue(maxsize=1000)" in shared_source
+    assert "PriorityQueueItemFactory()" in shared_source
+    assert "def _make_priority_item" not in main_source
+    assert "_priority_sequence" not in main_source
+    assert "from itertools import count" not in main_source
 
 
 
@@ -714,7 +699,11 @@ def test_lifespan_delegates_long_running_task_ownership_to_supervisor() -> None:
         and node.module == "monitoring.background_tasks"
         for alias in node.names
     }
-    assert {"BackgroundOperationTracker", "BackgroundTaskSupervisor"} <= imports
+    assert imports == {"BackgroundTaskSupervisor"}
+    shared_source = (
+        ROOT / "runtime" / "application_shared_state_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "BackgroundOperationTracker" in shared_source
 
     lifecycle_class = next(
         node for node in runtime_tree.body

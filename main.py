@@ -1,4 +1,3 @@
-import asyncio
 import json
 import re
 import os
@@ -27,15 +26,13 @@ from risk.risk_limits import validate_daily_loss_limit
 # --- PILUITUS‑V3 modules ------------------------------------------------
 from storage.db_manager import DBManager
 from runtime.application_core_runtime import ApplicationCoreRuntime
+from runtime.application_shared_state_runtime import ApplicationSharedStateRuntime
 from runtime.paper_session_composition_runtime import PaperSessionCompositionRuntime
 from storage.shadow_outcomes import SHADOW_OUTCOMES_STORAGE_LIMIT
 from runtime.paper_operations_runtime import PAPER_CLEAR_CONFIRMATION
-from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory
 from runtime.application_composition_runtime import ApplicationCompositionRuntime
 from runtime.market_runtime_composition_runtime import MarketRuntimeCompositionRuntime
-from strategy.shadow_outcomes import ShadowForwardTracker
 from strategy.bbo_replay import (
-    BBOReplayRecorder,
     BBO_REPLAY_STORAGE_KEY,
     BBO_REPLAY_STORAGE_LIMIT,
 )
@@ -52,7 +49,6 @@ from strategy.paper_performance import (
     paper_performance_tracker,
 )
 from interface import tg_bot
-from interface.websocket_manager import ConnectionManager
 from ai.news_parser import MarketNewsParser
 
 # --------------------------------------------------------------
@@ -60,7 +56,6 @@ from ai.news_parser import MarketNewsParser
 # --------------------------------------------------------------
 load_dotenv()
 
-from monitoring.background_tasks import BackgroundOperationTracker
 from monitoring.background_tasks import BackgroundTaskSupervisor
 from monitoring.logging_setup import logger, terminal_status
 
@@ -101,27 +96,36 @@ _dashboard_balance_snapshot = dashboard_application_runtime.balance_snapshot
 _current_paper_open_pnl = dashboard_application_runtime.current_paper_open_pnl
 _current_paper_assets_cost = dashboard_application_runtime.current_paper_assets_cost
 
-# Глобальные кэши и лимиты ОЗУ под High-Load тики
+# Application-wide shared queues, locks, trackers and infrastructure services.
+application_shared_state_runtime = ApplicationSharedStateRuntime(
+    logger=logger,
+    execution_engine=execution_engine,
+).create()
+
+anomaly_queue = application_shared_state_runtime.anomaly_queue
+priority_queue_item_factory = application_shared_state_runtime.priority_queue_item_factory
+_paper_session_lock = application_shared_state_runtime.paper_session_lock
+_paper_session_generation = application_shared_state_runtime.paper_session_generation
+bg_market_task = application_shared_state_runtime.bg_market_task
+scalping_shadow_tracker = application_shared_state_runtime.shadow_tracker
+paper_bbo_replay_recorder = application_shared_state_runtime.bbo_replay_recorder
+paper_shadow_labels = application_shared_state_runtime.paper_shadow_labels
+_background_operations = application_shared_state_runtime.background_operations
+manager = application_shared_state_runtime.connection_manager
+
+# Глобальные кэши и лимиты ОЗУ под High-Load тики.
 last_ai_verdicts_cache: list[dict[str, Any]] = []
 MAX_CACHE_SIZE = 100  # Защита ОЗУ от утечек памяти
 
-# Асинхронная очередь с приоритетами. Второй элемент — уникальный sequence ID:
-# PriorityQueue сравнивает tuple поэлементно; без уникального ID при совпадении
-# priority/timestamp/event_type Python пытался сравнивать payload-словари и падал
-# с TypeError: '<' not supported between instances of 'dict' and 'dict'.
-anomaly_queue: asyncio.PriorityQueue[PriorityItem] = asyncio.PriorityQueue(maxsize=1000)
-priority_queue_item_factory = PriorityQueueItemFactory()
-# Serializes order publication with PAPER maintenance; generation invalidates old queued/in-flight AI events.
-_paper_session_lock = asyncio.Lock()
-_paper_session_generation = 0
-bg_market_task = None
 
-# Forward labels are research-only and bounded in memory; all observations are logged.
-scalping_shadow_tracker = ShadowForwardTracker()
-paper_bbo_replay_recorder = BBOReplayRecorder()
-execution_engine.bbo_replay_session_id = paper_bbo_replay_recorder.session_id
-execution_engine.paper_exit_event_recorder = paper_bbo_replay_recorder.record_exit_trigger
-paper_shadow_labels: list[dict[str, Any]] = []
+def _set_paper_bbo_replay_recorder(recorder: Any) -> None:
+    application_shared_state_runtime.set_bbo_replay_recorder(recorder)
+    globals().__setitem__("paper_bbo_replay_recorder", recorder)
+
+
+def _set_market_task(task: Any) -> None:
+    application_shared_state_runtime.set_market_task(task)
+    globals().__setitem__("bg_market_task", task)
 
 paper_session_composition_runtime = PaperSessionCompositionRuntime(
     db_manager=db_manager,
@@ -135,9 +139,7 @@ paper_session_composition_runtime = PaperSessionCompositionRuntime(
     closed_trades_storage_key=PAPER_CLOSED_TRADES_STORAGE_KEY,
     closed_trades_storage_limit=PAPER_CLOSED_TRADES_STORAGE_LIMIT,
     shadow_outcomes_storage_limit=SHADOW_OUTCOMES_STORAGE_LIMIT,
-    set_bbo_replay_recorder=lambda recorder: globals().__setitem__(
-        "paper_bbo_replay_recorder", recorder
-    ),
+    set_bbo_replay_recorder=_set_paper_bbo_replay_recorder,
 ).create()
 shadow_outcome_persistence = paper_session_composition_runtime.shadow_outcome_persistence
 paper_session_runtime = paper_session_composition_runtime.paper_session_runtime
@@ -160,16 +162,7 @@ _refresh_dashboard_balance_snapshot = dashboard_application_runtime.refresh_bala
 screener.set_universe(TICKERS_TO_TRADE)
 
 # --------------------------------------------------------------
-#  2️⃣  НЕБЛОКИРУЮЩИЙ ДИСКОВЫЙ БОРТОВОЙ ЖУРНАЛ ТЕСТОВ
-# --------------------------------------------------------------
-_background_operations = BackgroundOperationTracker(logger)
-# --------------------------------------------------------------
-#  3️⃣  CONNECTION MANAGER (WebSocket)
-# --------------------------------------------------------------
-manager = ConnectionManager()
-# --------------------------------------------------------------
-#  4️⃣  ПОЛИМОРФНЫЙ ТИКЕРНЫЙ ОБРАБОТЧИК С АВТО-ЗАВЕРШЕНИЕМ ПОЗИЦИЙ
-# --------------------------------------------------------------
+#  2️⃣–4️⃣  MARKET WORKER И ОБЩАЯ ИНФРАСТРУКТУРА
 # --------------------------------------------------------------
 #  5️⃣  MARKET WORKER И ФОНОВЫЕ СЕРВИСЫ: ЕДИНЫЙ COMPOSITION ROOT
 market_runtime_composition = MarketRuntimeCompositionRuntime(
@@ -272,7 +265,9 @@ STATIC_DIR = BASE_DIR / "static"
 
 def _advance_paper_session_generation() -> None:
     global _paper_session_generation
-    _paper_session_generation += 1
+    _paper_session_generation = (
+        application_shared_state_runtime.advance_paper_session_generation()
+    )
 
 
 _reset_balance_guard_signature = dashboard_application_runtime.reset_balance_guard_signature
@@ -301,7 +296,7 @@ application_composition_runtime = ApplicationCompositionRuntime(
         "telegram_bot_module": tg_bot,
         "broker": broker,
         "market_broker_init": background_broker_init,
-        "set_market_task": lambda task: globals().__setitem__("bg_market_task", task),
+        "set_market_task": _set_market_task,
         "background_operations": _background_operations,
         "trade_flow_maybe_log": _trade_flow_maybe_log,
         "task_supervisor_factory": BackgroundTaskSupervisor,
