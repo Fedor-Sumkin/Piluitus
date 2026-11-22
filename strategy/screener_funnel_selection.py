@@ -332,5 +332,3 @@ class ScreenerFunnelSelectionMixin:
             )
         self._last_selection_update = now
 
-    @staticmethod
-

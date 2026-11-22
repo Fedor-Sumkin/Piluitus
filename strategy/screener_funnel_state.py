@@ -116,5 +116,3 @@ class ScreenerFunnelStateMixin:
             len(normalized), min(self.top_n, len(normalized)), self.min_samples, self.minimum_coverage * 100,
         )
 
-    @staticmethod
-
