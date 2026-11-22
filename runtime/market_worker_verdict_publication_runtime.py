@@ -31,7 +31,7 @@ class MarketWorkerVerdictPublicationMixin:
                 max_cache_size=self.max_cache_size,
                 manager=self.manager,
                 balance_snapshot=self.balance_snapshot,
-                self.logger=logger,
+                logger=self.logger,
                 candidate_id=str(event_payload.get("shadow_candidate_id") or "NONE"),
             )
 
