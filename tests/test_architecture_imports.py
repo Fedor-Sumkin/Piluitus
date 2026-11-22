@@ -779,7 +779,12 @@ def test_main_delegates_market_event_normalization_to_runtime() -> None:
     assert '"market_application_runtime": market_app' in _compatibility_exports_source()
     assert '"market_ingestion_components": ingestion' in _compatibility_exports_source()
     assert "from runtime.market_ingestion_runtime import MarketIngestionRuntimeFactory" in application_source
-    assert "self.ingestion_components = MarketIngestionRuntimeFactory(" in application_source
+    assert "create_market_ingestion_components(self, MarketIngestionRuntimeFactory)" in application_source
+    ingestion_composition_source = (
+        ROOT / "runtime" / "market_application_ingestion_composition.py"
+    ).read_text(encoding="utf-8")
+    assert "return factory_cls(" in ingestion_composition_source
+    assert '"queue_flow_conflict_reason": runtime.paper_queue_flow_conflict_reason' in ingestion_composition_source
     assert '"market_data_event_runtime": ingestion.market_data_event_runtime' in _compatibility_exports_source()
     assert '"process_market_event": market_app.process_market_event' in _compatibility_exports_source()
     assert "async def process_market_event(self, event: Any)" in application_source
@@ -1191,6 +1196,8 @@ def test_main_delegates_background_market_services_to_runtime() -> None:
         root / "runtime" / "market_application_runtime.py"
     ).read_text(encoding="utf-8")
     runtime_source = (root / "runtime" / "market_background_services.py").read_text(encoding="utf-8")
+    finam_source = (root / "runtime" / "market_background_finam_runtime.py").read_text(encoding="utf-8")
+    dashboard_source = (root / "runtime" / "market_background_dashboard_runtime.py").read_text(encoding="utf-8")
     assert "MarketBackgroundServicesRuntime(" in composition_source
     assert '"market_background_services": background' in _compatibility_exports_source()
     assert '"background_broker_init": background.background_broker_init' in _compatibility_exports_source()
@@ -1198,14 +1205,18 @@ def test_main_delegates_background_market_services_to_runtime() -> None:
     assert '"_finam_metadata_refresh_loop": background._finam_metadata_refresh_loop' in _compatibility_exports_source()
     assert '"_start_tables_sync_loop": background._start_tables_sync_loop' in _compatibility_exports_source()
     assert "process_market_event=self.process_market_event" in composition_source
-    for method in ("background_broker_init", "_finam_metadata_refresh_loop", "_start_news_updater", "_start_tables_sync_loop"):
-        assert f"async def {method}(self" in runtime_source
-    assert "asyncio.TaskGroup()" in runtime_source
-    assert "bridge_queue.task_done()" in runtime_source
-    assert "await self.process_market_event(raw_event)" in runtime_source
-    assert "RiskManager.update_finam_lot_sizes(" in runtime_source
-    assert "await self.manager.broadcast(" in runtime_source
-    assert "await self.refresh_dashboard_balance_snapshot(active_positions)" in runtime_source
+    assert "MarketBackgroundFinamMixin" in runtime_source
+    assert "MarketBackgroundDashboardMixin" in runtime_source
+    for method in ("background_broker_init", "_finam_metadata_refresh_loop"):
+        assert f"async def {method}(self" in finam_source
+    for method in ("_start_news_updater", "_start_tables_sync_loop"):
+        assert f"async def {method}(self" in dashboard_source
+    assert "asyncio.TaskGroup()" in finam_source
+    assert "bridge_queue.task_done()" in finam_source
+    assert "await self.process_market_event(raw_event)" in finam_source
+    assert "RiskManager.update_finam_lot_sizes(" in finam_source
+    assert "await self.manager.broadcast(" in dashboard_source
+    assert "await self.refresh_dashboard_balance_snapshot(active_positions)" in dashboard_source
 
 
 def test_main_delegates_dashboard_http_and_websocket_routes_to_interface() -> None:
