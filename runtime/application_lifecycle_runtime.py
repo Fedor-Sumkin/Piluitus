@@ -73,4 +73,11 @@ class ApplicationLifecycleRuntime:
                     operation_drain_err,
                     exc_info=True,
                 )
+            try:
+                paper_bbo_replay_recorder = self.paper_bbo_replay_recorder_provider()
+                await paper_bbo_replay_recorder.close()
+                logger.info("[PAPER BBO REPLAY] shutdown drain: %s", paper_bbo_replay_recorder.status())
+            except Exception as replay_close_err:
+                logger.error("[PAPER BBO REPLAY] shutdown drain failed: %s", replay_close_err, exc_info=True)
+
             await self._drain_application_services(logger)
