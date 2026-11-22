@@ -40,6 +40,8 @@ class PaperSessionMaintenanceRuntime(
     ) -> dict[str, Any]:
         return await PaperSessionClearMixin.clear_paper_session(self, payload)
 
+    # Selective cleanup delegates db_manager.clear_unreconciled_paper_positions(...)
+    # to PaperSessionStaleCleanupMixin after its LIVE/stale preflight checks.
     async def cleanup_stale_and_resume(self) -> dict[str, Any]:
         return await PaperSessionStaleCleanupMixin.cleanup_stale_and_resume(self)
 
