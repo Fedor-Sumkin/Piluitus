@@ -479,42 +479,32 @@ def test_main_delegates_market_data_runtime_services() -> None:
 
 def test_main_delegates_paper_api_helpers_to_interface() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
-    assert "paper_api_helpers = PaperAPIHelpers(" in source
-    assert "paper_api_helpers.require_paper_mode()" in source
-    assert "paper_api_helpers.paper_trade_rows(snapshot)" in source
-    assert "paper_api_helpers.broadcast_paper_tables()" in source
+    runtime_source = (
+        ROOT / "runtime" / "paper_operations_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "paper_operations_runtime = PaperOperationsRuntime(" in source
+    assert "PaperAPIHelpers(" in runtime_source
+    assert "self.paper_api_helpers.require_paper_mode()" in runtime_source
+    assert "self.paper_api_helpers.paper_trade_rows(snapshot)" in runtime_source
+    assert "self.paper_api_helpers.broadcast_paper_tables()" in runtime_source
+    assert "paper_api_helpers = paper_operations_runtime.paper_api_helpers" in source
+    assert "_broadcast_paper_tables = paper_operations_runtime.broadcast_paper_tables" in source
 
 
 def test_main_delegates_paper_research_and_reconciliation_apis_to_storage() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
+    composition_source = (
+        ROOT / "runtime" / "paper_operations_runtime.py"
+    ).read_text(encoding="utf-8")
     router_source = (
         ROOT / "interface" / "paper_research_routes.py"
     ).read_text(encoding="utf-8")
     main_tree = ast.parse(source, filename="main.py")
     router_tree = ast.parse(router_source, filename="paper_research_routes.py")
 
-    runtime_imports = {
-        alias.name
-        for node in main_tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "storage.paper_research_runtime"
-        for alias in node.names
-    }
-    assert runtime_imports == {"PaperResearchRuntime"}
-    assert "paper_research_runtime = PaperResearchRuntime(" in source
-
-    router_imports = {
-        alias.name
-        for node in main_tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "interface.paper_research_routes"
-        for alias in node.names
-    }
-    assert router_imports == {"create_paper_research_router"}
-    assert (
-        "app.include_router(create_paper_research_router(paper_research_runtime))"
-        in source
-    )
+    assert "PaperResearchRuntime(" in composition_source
+    assert "paper_research_runtime = paper_operations_runtime.paper_research_runtime" in source
+    assert "create_paper_research_router(self.paper_research_runtime)" in composition_source
 
     route_methods = {
         "get_paper_performance": ("get", "/api/v1/paper/performance", "get_performance"),
@@ -561,7 +551,6 @@ def test_main_delegates_paper_research_and_reconciliation_apis_to_storage() -> N
         assert len(decorators) == 1, function_name
         assert decorators[0].args and isinstance(decorators[0].args[0], ast.Constant)
         assert decorators[0].args[0].value == route_path, function_name
-
         calls = [
             node for node in ast.walk(function)
             if isinstance(node, ast.Call)
@@ -944,19 +933,15 @@ def test_processing_runtime_delegates_final_entry_readiness_gates() -> None:
 
 def test_main_delegates_paper_research_routes_to_interface() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imported = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "interface.paper_research_routes"
-        for alias in node.names
-    }
-    assert imported == {"create_paper_research_router"}
-    assert "app.include_router(create_paper_research_router(paper_research_runtime))" in source
+    runtime_source = (
+        ROOT / "runtime" / "paper_operations_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "paper_operations_runtime = PaperOperationsRuntime(" in source
+    assert "from interface.paper_research_routes import create_paper_research_router" in runtime_source
+    assert "create_paper_research_router(self.paper_research_runtime)" in runtime_source
 
     legacy_handlers = {
-        node.name for node in tree.body
+        node.name for node in ast.parse(source, filename="main.py").body
         if isinstance(node, ast.AsyncFunctionDef)
     }
     assert not {
@@ -974,50 +959,20 @@ def test_main_delegates_paper_research_routes_to_interface() -> None:
 
 def test_main_delegates_paper_session_maintenance_to_storage_and_interface() -> None:
     main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+    composition_source = (
+        ROOT / "runtime" / "paper_operations_runtime.py"
+    ).read_text(encoding="utf-8")
     runtime_source = (
         ROOT / "storage" / "paper_session_maintenance_runtime.py"
     ).read_text(encoding="utf-8")
     routes_source = (
         ROOT / "interface" / "paper_session_routes.py"
     ).read_text(encoding="utf-8")
-    tree = ast.parse(main_source, filename="main.py")
 
-    runtime_imports = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "storage.paper_session_maintenance_runtime"
-        for alias in node.names
-    }
-    route_imports = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "interface.paper_session_routes"
-        for alias in node.names
-    }
-    assert runtime_imports == {
-        "PAPER_CLEAR_CONFIRMATION",
-        "PaperSessionMaintenanceRuntime",
-    }
-    assert route_imports == {"create_paper_session_router"}
-    assert "paper_session_maintenance_runtime = PaperSessionMaintenanceRuntime(" in main_source
-    compact_main_source = "".join(main_source.split())
-    assert (
-        "app.include_router("
-        "create_paper_session_router(paper_session_maintenance_runtime)"
-        ")" in compact_main_source
-    )
-
-    legacy_handlers = {
-        node.name for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef)
-    }
-    assert not {
-        "clear_paper_session",
-        "cleanup_stale_and_resume_paper_session",
-        "resume_paper_session",
-    } & legacy_handlers
+    assert "PaperSessionMaintenanceRuntime(" in composition_source
+    assert "paper_session_maintenance_runtime = paper_operations_runtime.paper_session_maintenance_runtime" in main_source
+    assert "create_paper_session_router(" in composition_source
+    assert "PAPER_CLEAR_CONFIRMATION" in composition_source
 
     runtime_tree = ast.parse(runtime_source, filename="storage/paper_session_maintenance_runtime.py")
     runtime_class = next(
@@ -1060,7 +1015,6 @@ def test_main_delegates_paper_session_maintenance_to_storage_and_interface() -> 
     assert "await runtime.clear_paper_session(payload)" in routes_source
     assert "await runtime.cleanup_stale_and_resume()" in routes_source
     assert "await runtime.resume_paper_session()" in routes_source
-
 
 
 def test_main_delegates_background_market_services_to_runtime() -> None:

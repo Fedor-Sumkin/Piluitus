@@ -34,7 +34,7 @@ from storage.shadow_outcomes import (
     ShadowOutcomePersistence,
     SHADOW_OUTCOMES_STORAGE_LIMIT,
 )
-from storage.paper_research_runtime import PaperResearchRuntime
+from runtime.paper_operations_runtime import PaperOperationsRuntime, PAPER_CLEAR_CONFIRMATION
 from exchange.finam_client import FinamBrokerClient
 from strategy.screener_funnel import HFTMemoryScreener
 from execution.execution_layer import BaseExecutionEngine
@@ -70,15 +70,8 @@ from strategy.candidate_recovery import (
 from strategy.scalping_strategy import evaluate_scalping_candidate, has_queue_trade_flow_conflict
 from strategy.market_data_runtime import paper_queue_flow_conflict_reason
 from portfolio.dashboard_runtime import DashboardRuntime
-from interface.paper_api_helpers import PaperAPIHelpers
 from interface.dashboard_routes import create_dashboard_router
-from interface.paper_session_routes import create_paper_session_router
-from interface.paper_research_routes import create_paper_research_router
 from storage.paper_session_runtime import PaperSessionRuntime
-from storage.paper_session_maintenance_runtime import (
-    PAPER_CLEAR_CONFIRMATION,
-    PaperSessionMaintenanceRuntime,
-)
 from strategy.shadow_outcomes import ShadowForwardTracker
 from strategy.bbo_replay import (
     BBOReplayRecorder,
@@ -346,13 +339,6 @@ _background_operations = BackgroundOperationTracker(logger)
 #  3️⃣  CONNECTION MANAGER (WebSocket)
 # --------------------------------------------------------------
 manager = ConnectionManager()
-paper_api_helpers = PaperAPIHelpers(
-    execution_engine=execution_engine,
-    connection_manager=manager,
-    get_open_positions=_get_dashboard_open_positions,
-    refresh_balance=_refresh_dashboard_balance_snapshot,
-)
-
 # --------------------------------------------------------------
 #  4️⃣  ПОЛИМОРФНЫЙ ТИКЕРНЫЙ ОБРАБОТЧИК С АВТО-ЗАВЕРШЕНИЕМ ПОЗИЦИЙ
 # --------------------------------------------------------------
@@ -540,44 +526,6 @@ app.include_router(
 # Dashboard HTTP/WebSocket endpoints are owned by the interface package.
 
 
-def _require_paper_mode() -> None:
-    paper_api_helpers.require_paper_mode()
-
-
-def _paper_trade_rows(snapshot: dict) -> list[dict]:
-    return paper_api_helpers.paper_trade_rows(snapshot)
-
-
-async def _broadcast_paper_tables() -> None:
-    await paper_api_helpers.broadcast_paper_tables()
-
-
-paper_research_runtime = PaperResearchRuntime(
-    db_manager=db_manager,
-    is_paper_trade=DBManager.is_paper_trade,
-    execution_engine=execution_engine,
-    screener=screener,
-    paper_performance_tracker=paper_performance_tracker,
-    paper_shadow_labels=paper_shadow_labels,
-    paper_session_lock=_paper_session_lock,
-    broadcast_paper_tables=_broadcast_paper_tables,
-    bbo_replay_storage_key=BBO_REPLAY_STORAGE_KEY,
-    bbo_replay_storage_limit=BBO_REPLAY_STORAGE_LIMIT,
-    paper_closed_trades_storage_limit=PAPER_CLOSED_TRADES_STORAGE_LIMIT,
-    shadow_outcomes_storage_limit=SHADOW_OUTCOMES_STORAGE_LIMIT,
-    lot_sizes=LOT_SIZES,
-    parse_finite_float=_parse_finite_float,
-    replay_exit_batch=replay_exit_batch,
-    replay_exit_scenarios=replay_exit_scenarios,
-    build_shadow_reconciliation=build_shadow_reconciliation,
-    build_actual_vs_replay_reconciliation=build_actual_vs_replay_reconciliation,
-    build_shadow_cost_sensitivity=build_shadow_cost_sensitivity,
-    build_shadow_walk_forward_validation=build_shadow_walk_forward_validation,
-)
-
-
-app.include_router(create_paper_research_router(paper_research_runtime))
-
 
 def _advance_paper_session_generation() -> None:
     global _paper_session_generation
@@ -588,43 +536,59 @@ def _reset_balance_guard_signature() -> None:
     dashboard_runtime.reset_balance_guard_signature()
 
 
-async def _broadcast_paper_session_reset(payload: dict[str, Any]) -> None:
-    await manager.broadcast(json.dumps(payload, ensure_ascii=False))
+paper_operations_runtime = PaperOperationsRuntime(
+    dependencies={
+        "db_manager": db_manager,
+        "is_paper_trade": DBManager.is_paper_trade,
+        "execution_engine": execution_engine,
+        "risk_manager": risk_manager,
+        "screener": screener,
+        "paper_performance_tracker": paper_performance_tracker,
+        "shadow_tracker": scalping_shadow_tracker,
+        "paper_shadow_labels": paper_shadow_labels,
+        "paper_session_lock": _paper_session_lock,
+        "connection_manager": manager,
+        "get_open_positions": _get_dashboard_open_positions,
+        "refresh_balance": _refresh_dashboard_balance_snapshot,
+        "anomaly_queue": anomaly_queue,
+        "ai_candidate_deduplicator": _ai_candidate_deduplicator,
+        "last_ai_verdicts_cache": last_ai_verdicts_cache,
+        "trade_flow_counters": _trade_flow_counters,
+        "pending_bbo_candidates": _pending_bbo_candidates,
+        "pending_bbo_lock": _pending_bbo_lock,
+        "position_order_book_diagnostics": position_order_book_diagnostics,
+        "bbo_replay_storage_key": BBO_REPLAY_STORAGE_KEY,
+        "bbo_replay_storage_limit": BBO_REPLAY_STORAGE_LIMIT,
+        "paper_closed_trades_storage_limit": PAPER_CLOSED_TRADES_STORAGE_LIMIT,
+        "shadow_outcomes_storage_limit": SHADOW_OUTCOMES_STORAGE_LIMIT,
+        "lot_sizes": LOT_SIZES,
+        "parse_finite_float": _parse_finite_float,
+        "replay_exit_batch": replay_exit_batch,
+        "replay_exit_scenarios": replay_exit_scenarios,
+        "build_shadow_reconciliation": build_shadow_reconciliation,
+        "build_actual_vs_replay_reconciliation": build_actual_vs_replay_reconciliation,
+        "build_shadow_cost_sensitivity": build_shadow_cost_sensitivity,
+        "build_shadow_walk_forward_validation": build_shadow_walk_forward_validation,
+        "deposit": DEPOSIT,
+        "logger": logger,
+        "paper_clear_confirmation": PAPER_CLEAR_CONFIRMATION,
+        "monotonic": time_module.monotonic,
+    },
+    callbacks={
+        "advance_session_generation": _advance_paper_session_generation,
+        "reset_balance_guard_signature": _reset_balance_guard_signature,
+        "rotate_bbo_replay_session": _rotate_paper_bbo_replay_session,
+        "get_bbo_replay_session_id": lambda: paper_bbo_replay_recorder.session_id,
+    },
+).create(app)
 
-
-paper_session_maintenance_runtime = PaperSessionMaintenanceRuntime(
-    db_manager=db_manager,
-    execution_engine=execution_engine,
-    risk_manager=risk_manager,
-    paper_session_lock=_paper_session_lock,
-    anomaly_queue=anomaly_queue,
-    ai_candidate_deduplicator=_ai_candidate_deduplicator,
-    paper_performance_tracker=paper_performance_tracker,
-    shadow_tracker=scalping_shadow_tracker,
-    paper_shadow_labels=paper_shadow_labels,
-    last_ai_verdicts_cache=last_ai_verdicts_cache,
-    trade_flow_counters=_trade_flow_counters,
-    pending_bbo_candidates=_pending_bbo_candidates,
-    pending_bbo_lock=_pending_bbo_lock,
-    position_order_book_diagnostics=position_order_book_diagnostics,
-    require_paper_mode=_require_paper_mode,
-    advance_session_generation=_advance_paper_session_generation,
-    reset_balance_guard_signature=_reset_balance_guard_signature,
-    rotate_bbo_replay_session=_rotate_paper_bbo_replay_session,
-    refresh_dashboard_balance_snapshot=_refresh_dashboard_balance_snapshot,
-    broadcast_paper_tables=_broadcast_paper_tables,
-    broadcast_paper_session_reset=_broadcast_paper_session_reset,
-    get_bbo_replay_session_id=lambda: paper_bbo_replay_recorder.session_id,
-    deposit=DEPOSIT,
-    logger=logger,
-    paper_clear_confirmation=PAPER_CLEAR_CONFIRMATION,
-    monotonic=time_module.monotonic,
-)
-app.include_router(
-    create_paper_session_router(paper_session_maintenance_runtime)
-)
-
-
+paper_api_helpers = paper_operations_runtime.paper_api_helpers
+paper_research_runtime = paper_operations_runtime.paper_research_runtime
+paper_session_maintenance_runtime = paper_operations_runtime.paper_session_maintenance_runtime
+_require_paper_mode = paper_operations_runtime.require_paper_mode
+_paper_trade_rows = paper_operations_runtime.paper_trade_rows
+_broadcast_paper_tables = paper_operations_runtime.broadcast_paper_tables
+_broadcast_paper_session_reset = paper_operations_runtime.broadcast_paper_session_reset
 STATIC_DIR = BASE_DIR / "static"
 if STATIC_DIR.is_dir():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
