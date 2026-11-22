@@ -419,6 +419,9 @@ def test_main_delegates_dashboard_balance_runtime_to_portfolio() -> None:
 
 def test_main_delegates_shadow_outcome_persistence_to_storage() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
+    composition_source = (
+        ROOT / "runtime" / "paper_session_composition_runtime.py"
+    ).read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
     imported = {
         alias.name
@@ -427,31 +430,33 @@ def test_main_delegates_shadow_outcome_persistence_to_storage() -> None:
         and node.module == "storage.shadow_outcomes"
         for alias in node.names
     }
-    assert imported == {
-        "ShadowOutcomePersistence",
-        "SHADOW_OUTCOMES_STORAGE_LIMIT",
-    }
-    assert "shadow_outcome_persistence = ShadowOutcomePersistence(" in source
-    assert "paper_session_runtime = PaperSessionRuntime(" in source
+    assert imported == {"SHADOW_OUTCOMES_STORAGE_LIMIT"}
 
-    persist = next(
-        node for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_persist_shadow_outcomes"
-    )
-    restore = next(
-        node for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_restore_shadow_outcomes"
-    )
-    assert "paper_session_runtime.persist_shadow_outcomes(labels, source=source)" in (
-        ast.get_source_segment(source, persist) or ""
-    )
-    assert "paper_session_runtime.restore_shadow_outcomes()" in (
-        ast.get_source_segment(source, restore) or ""
-    )
-    assert "persist_completed_labels(" not in (ast.get_source_segment(source, persist) or "")
-    assert "restore_completed_labels(" not in (ast.get_source_segment(source, restore) or "")
+    composition_imports = {
+        alias.name
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom)
+        and node.module == "runtime.paper_session_composition_runtime"
+        for alias in node.names
+    }
+    assert composition_imports == {"PaperSessionCompositionRuntime"}
+    assert "paper_session_composition_runtime = PaperSessionCompositionRuntime(" in source
+    assert "shadow_outcome_persistence = paper_session_composition_runtime.shadow_outcome_persistence" in source
+    assert "paper_session_runtime = paper_session_composition_runtime.paper_session_runtime" in source
+    assert "_persist_shadow_outcomes = paper_session_composition_runtime.persist_shadow_outcomes" in source
+    assert "_restore_shadow_outcomes = paper_session_composition_runtime.restore_shadow_outcomes" in source
+    assert "_rotate_paper_bbo_replay_session = paper_session_composition_runtime.rotate_bbo_replay_session" in source
+    assert "_restore_paper_performance = paper_session_composition_runtime.restore_paper_performance" in source
+
+    assert "ShadowOutcomePersistence(" in composition_source
+    assert "PaperSessionRuntime(" in composition_source
+    assert "await self.paper_session_runtime.persist_shadow_outcomes(" in composition_source
+    assert "await self.paper_session_runtime.restore_shadow_outcomes()" in composition_source
+    assert "await self.paper_session_runtime.rotate_bbo_replay_session()" in composition_source
+    assert "self.set_bbo_replay_recorder(recorder)" in composition_source
+    assert "await self.paper_session_runtime.restore_paper_performance()" in composition_source
+    assert "persist_completed_labels(" not in source
+    assert "restore_completed_labels(" not in source
 
 
 def test_main_delegates_market_data_runtime_services() -> None:
@@ -583,7 +588,7 @@ def test_main_uses_canonical_shadow_retention_limit() -> None:
         and node.module == "storage.shadow_outcomes"
         for alias in node.names
     }
-    assert {"ShadowOutcomePersistence", "SHADOW_OUTCOMES_STORAGE_LIMIT"} <= imported
+    assert imported == {"SHADOW_OUTCOMES_STORAGE_LIMIT"}
     assert '"shadow_outcomes_storage_limit": SHADOW_OUTCOMES_STORAGE_LIMIT' in source
     assert 'shadow_outcomes_storage_limit=deps["shadow_outcomes_storage_limit"]' in composition_source
 

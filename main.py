@@ -30,10 +30,8 @@ from risk.risk_limits import validate_daily_loss_limit
 # --- PILUITUS‑V3 modules ------------------------------------------------
 from ai.ai_engine import AIEngine
 from storage.db_manager import DBManager
-from storage.shadow_outcomes import (
-    ShadowOutcomePersistence,
-    SHADOW_OUTCOMES_STORAGE_LIMIT,
-)
+from runtime.paper_session_composition_runtime import PaperSessionCompositionRuntime
+from storage.shadow_outcomes import SHADOW_OUTCOMES_STORAGE_LIMIT
 from runtime.paper_operations_runtime import PaperOperationsRuntime, PAPER_CLEAR_CONFIRMATION
 from exchange.finam_client import FinamBrokerClient
 from strategy.screener_funnel import HFTMemoryScreener
@@ -71,7 +69,6 @@ from strategy.scalping_strategy import evaluate_scalping_candidate, has_queue_tr
 from strategy.market_data_runtime import paper_queue_flow_conflict_reason
 from portfolio.dashboard_runtime import DashboardRuntime
 from interface.dashboard_routes import create_dashboard_router
-from storage.paper_session_runtime import PaperSessionRuntime
 from strategy.shadow_outcomes import ShadowForwardTracker
 from strategy.bbo_replay import (
     BBOReplayRecorder,
@@ -242,15 +239,10 @@ shadow_scorecard_logger = market_observability_runtime.shadow_scorecard_logger
 trade_flow_report_logger = market_observability_runtime.trade_flow_report_logger
 strategy_shadow_diagnostics = market_observability_runtime.strategy_shadow_diagnostics
 prefilter_block_logger = market_observability_runtime.prefilter_block_logger
-shadow_outcome_persistence = ShadowOutcomePersistence(
-    db_manager, scalping_shadow_tracker, paper_shadow_labels, logger
-)
-
-
-paper_session_runtime = PaperSessionRuntime(
+paper_session_composition_runtime = PaperSessionCompositionRuntime(
     db_manager=db_manager,
     execution_engine=execution_engine,
-    shadow_outcome_persistence=shadow_outcome_persistence,
+    shadow_tracker=scalping_shadow_tracker,
     bbo_replay_recorder=paper_bbo_replay_recorder,
     bbo_replay_recorder_factory=BBOReplayRecorder,
     paper_performance_tracker=paper_performance_tracker,
@@ -258,28 +250,19 @@ paper_session_runtime = PaperSessionRuntime(
     logger=logger,
     closed_trades_storage_key=PAPER_CLOSED_TRADES_STORAGE_KEY,
     closed_trades_storage_limit=PAPER_CLOSED_TRADES_STORAGE_LIMIT,
-)
+    shadow_outcomes_storage_limit=SHADOW_OUTCOMES_STORAGE_LIMIT,
+    set_bbo_replay_recorder=lambda recorder: globals().__setitem__(
+        "paper_bbo_replay_recorder", recorder
+    ),
+).create()
+shadow_outcome_persistence = paper_session_composition_runtime.shadow_outcome_persistence
+paper_session_runtime = paper_session_composition_runtime.paper_session_runtime
 
-
-async def _persist_shadow_outcomes(
-    labels: list[dict[str, Any]], *, source: str
-) -> None:
-    await paper_session_runtime.persist_shadow_outcomes(labels, source=source)
-
-
-async def _restore_shadow_outcomes() -> None:
-    await paper_session_runtime.restore_shadow_outcomes()
-
-
-async def _rotate_paper_bbo_replay_session() -> None:
-    global paper_bbo_replay_recorder
-    paper_bbo_replay_recorder = (
-        await paper_session_runtime.rotate_bbo_replay_session()
-    )
-
-
-async def _restore_paper_performance() -> None:
-    await paper_session_runtime.restore_paper_performance()
+# Keep the established callback names consumed by market and lifecycle runtimes.
+_persist_shadow_outcomes = paper_session_composition_runtime.persist_shadow_outcomes
+_restore_shadow_outcomes = paper_session_composition_runtime.restore_shadow_outcomes
+_rotate_paper_bbo_replay_session = paper_session_composition_runtime.rotate_bbo_replay_session
+_restore_paper_performance = paper_session_composition_runtime.restore_paper_performance
 
 
 # Preserve the callback names consumed by the market and worker runtimes.
