@@ -109,6 +109,12 @@ def test_fastapi_lifespan_is_delegated_to_runtime_package() -> None:
     lifecycle_source = (
         PROJECT_ROOT / "runtime" / "application_lifecycle_runtime.py"
     ).read_text(encoding="utf-8")
+    startup_source = (
+        PROJECT_ROOT / "runtime" / "application_lifecycle_startup.py"
+    ).read_text(encoding="utf-8")
+    shutdown_source = (
+        PROJECT_ROOT / "runtime" / "application_lifecycle_shutdown.py"
+    ).read_text(encoding="utf-8")
 
     exports_source = (
         PROJECT_ROOT / "runtime" / "application_compatibility_exports.py"
@@ -119,7 +125,7 @@ def test_fastapi_lifespan_is_delegated_to_runtime_package() -> None:
     assert "class ApplicationLifecycleRuntime:" in lifecycle_source
     assert "background_task_supervisor.cancel_and_drain()" in lifecycle_source
     assert "self.background_operations.drain()" in lifecycle_source
+    assert "self.paper_bbo_replay_recorder_provider()" in startup_source
     assert "self.paper_bbo_replay_recorder_provider()" in lifecycle_source
     assert "await paper_bbo_replay_recorder.close()" in lifecycle_source
-    assert lifecycle_source.count("self.paper_bbo_replay_recorder_provider()") == 2
-    assert "await self.ai_engine.close()" in lifecycle_source
+    assert "await self.ai_engine.close()" in shutdown_source
