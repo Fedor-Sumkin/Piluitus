@@ -966,7 +966,7 @@ def test_main_delegates_market_verdict_publication_to_execution_package() -> Non
         ROOT / "runtime" / "market_runtime_composition_runtime.py"
     ).read_text(encoding="utf-8")
     runtime_source = (
-        ROOT / "runtime" / "market_worker_processing_runtime.py"
+        ROOT / "runtime" / "market_worker_queue_processing_runtime.py"
     ).read_text(encoding="utf-8")
     module_source = (
         ROOT / "execution" / "verdict_publisher.py"
@@ -993,8 +993,11 @@ def test_main_delegates_verdict_record_construction_and_enrichment_to_strategy()
     composition_source = (
         ROOT / "runtime" / "market_runtime_composition_runtime.py"
     ).read_text(encoding="utf-8")
-    runtime_source = (
-        ROOT / "runtime" / "market_worker_processing_runtime.py"
+    queue_source = (
+        ROOT / "runtime" / "market_worker_queue_processing_runtime.py"
+    ).read_text(encoding="utf-8")
+    risk_source = (
+        ROOT / "runtime" / "market_worker_risk_verdict_runtime.py"
     ).read_text(encoding="utf-8")
     module_source = (
         ROOT / "strategy" / "verdict_records.py"
@@ -1020,7 +1023,7 @@ def test_main_delegates_verdict_record_construction_and_enrichment_to_strategy()
     }
     assert '"build_pre_llm_risk_block_verdict": build_pre_llm_risk_block_verdict' in composition_source
     assert '"build_llm_verdict_record": build_llm_verdict_record' in composition_source
-    assert "verdict = self.build_pre_llm_risk_block_verdict(" in runtime_source
+    assert "verdict = self.build_pre_llm_risk_block_verdict(" in risk_source
     assert "verdict_data = build_llm_verdict_record(" in runtime_source
     assert "link_shadow_candidate_verdict(" in runtime_source
     assert "enrich_ai_analysis_with_verdict(" in runtime_source
@@ -1032,7 +1035,10 @@ def test_main_delegates_verdict_record_construction_and_enrichment_to_strategy()
 def test_market_worker_delegates_queue_and_llm_processing_to_runtime() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
     runtime_source = (
-        ROOT / "runtime" / "market_worker_processing_runtime.py"
+        ROOT / "runtime" / "market_worker_queue_processing_runtime.py"
+    ).read_text(encoding="utf-8")
+    risk_source = (
+        ROOT / "runtime" / "market_worker_risk_verdict_runtime.py"
     ).read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
     worker_source = (ROOT / "runtime" / "market_worker.py").read_text(encoding="utf-8")
@@ -1059,12 +1065,12 @@ def test_market_worker_delegates_queue_and_llm_processing_to_runtime() -> None:
     assert "async def process_next_item(" in runtime_source
     assert "anomaly_queue.task_done()" in runtime_source
     assert "_release_ai_ticker(pending_ticker)" in runtime_source
-    assert "async def publish_pre_llm_risk_block(" in runtime_source
-    assert "async def publish_pre_llm_risk_block_locked(" in runtime_source
+    assert "async def publish_pre_llm_risk_block(" in risk_source
+    assert "async def publish_pre_llm_risk_block_locked(" in risk_source
 
 
 def test_processing_runtime_preserves_llm_context_and_response_contract_delegation() -> None:
-    source = (ROOT / "runtime" / "market_worker_processing_runtime.py").read_text(encoding="utf-8")
+    source = (ROOT / "runtime" / "market_worker_queue_processing_runtime.py").read_text(encoding="utf-8")
     context_source = (ROOT / "strategy" / "llm_context.py").read_text(encoding="utf-8")
     response_source = (ROOT / "strategy" / "llm_response.py").read_text(encoding="utf-8")
     assert "await attach_llm_rule_context(" in source
@@ -1079,7 +1085,7 @@ def test_processing_runtime_preserves_llm_context_and_response_contract_delegati
 
 
 def test_processing_runtime_delegates_post_llm_evidence_refresh_and_validation() -> None:
-    source = (ROOT / "runtime" / "market_worker_processing_runtime.py").read_text(encoding="utf-8")
+    source = (ROOT / "runtime" / "market_worker_queue_processing_runtime.py").read_text(encoding="utf-8")
     module_source = (
         ROOT / "strategy" / "post_llm_validation.py"
     ).read_text(encoding="utf-8")
@@ -1093,7 +1099,7 @@ def test_processing_runtime_delegates_post_llm_evidence_refresh_and_validation()
 
 
 def test_processing_runtime_delegates_final_entry_readiness_gates() -> None:
-    source = (ROOT / "runtime" / "market_worker_processing_runtime.py").read_text(encoding="utf-8")
+    source = (ROOT / "runtime" / "market_worker_queue_processing_runtime.py").read_text(encoding="utf-8")
     module_source = (
         ROOT / "strategy" / "entry_decision_pipeline.py"
     ).read_text(encoding="utf-8")
