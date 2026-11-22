@@ -101,7 +101,7 @@ class MarketBackgroundServicesRuntime:
                 await self.broker.start_market_data_stream(
                     tickers=self.tickers,
                     queue=bridge_queue,
-                    self.screener=self.screener,
+                    screener=self.screener,
                 )
     
             async def _bridge_worker():
