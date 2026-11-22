@@ -67,7 +67,7 @@ def test_market_worker_factory_preserves_dependency_and_delegation_contract(monk
     ))
     asyncio.run(worker._execute_and_publish_locked(
         verdict_id="v2", ticker="GAZP", lots=2, side="SELL", price=200.0,
-        ai_analysis={}, session_generation=4,
+        ai_analysis={},
     ))
     asyncio.run(worker._publish_pre_llm_risk_block(payload, 5))
     asyncio.run(worker._publish_pre_llm_risk_block_locked(payload))

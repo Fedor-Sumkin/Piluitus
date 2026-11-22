@@ -853,7 +853,7 @@ def test_main_delegates_market_verdict_publication_to_execution_package() -> Non
         for alias in node.names
     }
     assert imported == {"publish_market_verdict"}
-    assert "publish_market_verdict=publish_market_verdict" in source
+    assert '"publish_market_verdict": publish_market_verdict' in source
     assert "await publish_market_verdict(" in runtime_source
     assert "manager.broadcast(json.dumps({\"type\": \"EXECUTION_UPDATE\"" not in runtime_source
     assert "verdict_cache.append(verdict)" in module_source
@@ -883,8 +883,8 @@ def test_main_delegates_verdict_record_construction_and_enrichment_to_strategy()
         "link_shadow_candidate_verdict",
         "enrich_ai_analysis_with_verdict",
     }
-    assert "build_pre_llm_risk_block_verdict=build_pre_llm_risk_block_verdict" in source
-    assert "build_llm_verdict_record=build_llm_verdict_record" in source
+    assert '"build_pre_llm_risk_block_verdict": build_pre_llm_risk_block_verdict' in source
+    assert '"build_llm_verdict_record": build_llm_verdict_record' in source
     assert "verdict = self.build_pre_llm_risk_block_verdict(" in runtime_source
     assert "verdict_data = build_llm_verdict_record(" in runtime_source
     assert "link_shadow_candidate_verdict(" in runtime_source
