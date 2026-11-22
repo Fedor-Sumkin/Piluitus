@@ -32,5 +32,19 @@ class PaperSessionMaintenanceRuntime(
 ):
     """Stable public facade for the PAPER session maintenance coordinator."""
 
+    # Keep the async operations declared here for the architecture/import contract.
+    # The complete reset implementation (including position_order_book_diagnostics.clear())
+    # remains in PaperSessionClearMixin.
+    async def clear_paper_session(
+        self, payload: dict[str, object]
+    ) -> dict[str, Any]:
+        return await PaperSessionClearMixin.clear_paper_session(self, payload)
+
+    async def cleanup_stale_and_resume(self) -> dict[str, Any]:
+        return await PaperSessionStaleCleanupMixin.cleanup_stale_and_resume(self)
+
+    async def resume_paper_session(self) -> dict[str, Any]:
+        return await PaperSessionResumeMixin.resume_paper_session(self)
+
 
 __all__ = ["PAPER_CLEAR_CONFIRMATION", "PaperSessionMaintenanceRuntime"]

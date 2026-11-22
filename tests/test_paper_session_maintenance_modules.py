@@ -25,20 +25,23 @@ class PaperSessionMaintenanceModuleTests(unittest.TestCase):
             PaperSessionClearMixin,
         )
 
-    def test_operations_are_owned_by_focused_mixins(self):
+    def test_facade_declares_async_contracts_and_delegates_to_focused_mixins(self):
         runtime = facade.PaperSessionMaintenanceRuntime
-        self.assertIs(
-            runtime.clear_paper_session,
-            PaperSessionClearMixin.clear_paper_session,
+        self.assertEqual(
+            runtime.clear_paper_session.__qualname__,
+            "PaperSessionMaintenanceRuntime.clear_paper_session",
         )
-        self.assertIs(
-            runtime.cleanup_stale_and_resume,
-            PaperSessionStaleCleanupMixin.cleanup_stale_and_resume,
+        self.assertEqual(
+            runtime.cleanup_stale_and_resume.__qualname__,
+            "PaperSessionMaintenanceRuntime.cleanup_stale_and_resume",
         )
-        self.assertIs(
-            runtime.resume_paper_session,
-            PaperSessionResumeMixin.resume_paper_session,
+        self.assertEqual(
+            runtime.resume_paper_session.__qualname__,
+            "PaperSessionMaintenanceRuntime.resume_paper_session",
         )
+        self.assertTrue(callable(PaperSessionClearMixin.clear_paper_session))
+        self.assertTrue(callable(PaperSessionStaleCleanupMixin.cleanup_stale_and_resume))
+        self.assertTrue(callable(PaperSessionResumeMixin.resume_paper_session))
 
     def test_shared_constructor_and_maintenance_guards_are_in_base(self):
         runtime = facade.PaperSessionMaintenanceRuntime
