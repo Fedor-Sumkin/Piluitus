@@ -16,8 +16,12 @@ def test_critical_fire_and_forget_tasks_are_retained_and_drained():
     runtime_source = runtime_path.read_text(encoding="utf-8")
     runtime_module = ast.parse(runtime_source, filename=str(runtime_path))
 
-    assert "from monitoring.background_tasks import BackgroundOperationTracker" in source
-    assert "_background_operations = BackgroundOperationTracker(logger)" in source
+    shared_state_path = root / "runtime" / "application_shared_state_runtime.py"
+    shared_state_source = shared_state_path.read_text(encoding="utf-8")
+    assert "from monitoring.background_tasks import BackgroundOperationTracker" in shared_state_source
+    assert "background_operations = self.background_operations_factory(self.logger)" in shared_state_source
+    assert "_background_operations = application_shared_state_runtime.background_operations" in source
+    assert source.count('"background_operations": _background_operations') >= 2
     assert "_background_operations.spawn(" in runtime_source
     assert "_spawn_tracked_operation" not in source
     assert "_drain_tracked_operations" not in source
@@ -69,8 +73,12 @@ def test_shutdown_drains_tracked_operations_after_producers_stop():
     runtime_source = runtime_path.read_text(encoding="utf-8")
     runtime_module = ast.parse(runtime_source, filename=str(runtime_path))
 
-    assert "from monitoring.background_tasks import BackgroundOperationTracker" in main_source
-    assert "_background_operations = BackgroundOperationTracker(logger)" in main_source
+    shared_state_path = root / "runtime" / "application_shared_state_runtime.py"
+    shared_state_source = shared_state_path.read_text(encoding="utf-8")
+    assert "from monitoring.background_tasks import BackgroundOperationTracker" in shared_state_source
+    assert "background_operations = self.background_operations_factory(self.logger)" in shared_state_source
+    assert "_background_operations = application_shared_state_runtime.background_operations" in main_source
+    assert main_source.count('"background_operations": _background_operations') >= 2
     assert "_background_operations.spawn(" in (
         root / "runtime" / "market_worker_processing_runtime.py"
     ).read_text(encoding="utf-8")
