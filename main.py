@@ -34,37 +34,10 @@ from runtime.paper_operations_runtime import PAPER_CLEAR_CONFIRMATION
 from exchange.finam_client import FinamBrokerClient
 from strategy.screener_funnel import HFTMemoryScreener
 from execution.execution_layer import BaseExecutionEngine
-from execution.outcome_reporting import normalize_execution_fill
-from execution.outcome_publisher import publish_execution_outcome
-from execution.verdict_publisher import publish_market_verdict
 from risk.risk_manager import RiskManager
 from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory
-from runtime.market_event_normalizer import build_market_candidate_payload
 from runtime.application_composition_runtime import ApplicationCompositionRuntime
-from runtime.market_application_runtime import MarketApplicationRuntime
-from strategy.llm_context import attach_llm_rule_context
-from strategy.llm_response import build_llm_error_response, process_llm_response
-from strategy.post_llm_validation import validate_post_llm_entry
-from strategy.entry_decision_pipeline import prepare_entry_execution_plan
-from strategy.verdict_records import (
-    build_pre_llm_risk_block_verdict,
-    build_default_signal_reason,
-    classify_local_evidence_diagnostic,
-    build_llm_verdict_record,
-    link_shadow_candidate_verdict,
-    enrich_ai_analysis_with_verdict,
-)
-from strategy.signal_guard import (
-    validate_entry_evidence,
-    infer_candidate_direction, validate_atr_readiness,
-    classify_direction_evidence,
-)
-from strategy.candidate_dedup import candidate_is_expired
-from strategy.candidate_recovery import (
-    refresh_candidate_bbo_metrics,
-)
-from strategy.scalping_strategy import evaluate_scalping_candidate, has_queue_trade_flow_conflict
-from strategy.market_data_runtime import paper_queue_flow_conflict_reason
+from runtime.market_runtime_composition_runtime import MarketRuntimeCompositionRuntime
 from runtime.dashboard_application_runtime import DashboardApplicationRuntime
 from strategy.shadow_outcomes import ShadowForwardTracker
 from strategy.bbo_replay import (
@@ -84,23 +57,9 @@ from strategy.paper_performance import (
     PAPER_CLOSED_TRADES_STORAGE_LIMIT,
     paper_performance_tracker,
 )
-from ai.dashboard_verdicts import (
-    build_verdict_explanation,
-    finite_float,
-    nonnegative_int,
-    normalise_execution_status,
-)
-from strategy.decision_diagnostics import (
-    build_llm_feature_snapshot,
-)
 from interface import tg_bot
 from interface.websocket_manager import ConnectionManager
 from ai.news_parser import MarketNewsParser
-from monitoring.trade_flow_diagnostics import (
-    bbo_resume_reason_bucket as _bbo_resume_reason_bucket,
-    guard_reason_bucket as _guard_reason_bucket,
-)
-from monitoring.market_observability_runtime import MarketObservabilityRuntime
 
 # --------------------------------------------------------------
 #  ENVIRONMENT & INITIALIZATION
@@ -109,17 +68,8 @@ load_dotenv()
 
 from monitoring.background_tasks import BackgroundOperationTracker
 from monitoring.background_tasks import BackgroundTaskSupervisor
-from monitoring.logging_setup import (
-    RUN_LOG_PATHS,
-    logger,
-    terminal_status,
-    update_numpy_impulse_status,
-)
-from monitoring.trading_event_logger import log_trading_event_to_file
+from monitoring.logging_setup import logger, terminal_status
 
-from portfolio.paper_accounting import (
-    parse_finite_float as _parse_finite_float,
-)
 
 
 
@@ -219,26 +169,6 @@ execution_engine.bbo_replay_session_id = paper_bbo_replay_recorder.session_id
 execution_engine.paper_exit_event_recorder = paper_bbo_replay_recorder.record_exit_trigger
 paper_shadow_labels: list[dict[str, Any]] = []
 
-# One composition boundary owns the observational diagnostics used across runtimes.
-market_observability_runtime = MarketObservabilityRuntime(
-    logger=logger,
-    shadow_tracker=scalping_shadow_tracker,
-    execution_engine=execution_engine,
-    screener=screener,
-    parse_finite_float=_parse_finite_float,
-    guard_reason_bucket=_guard_reason_bucket,
-    evaluate_candidate=evaluate_scalping_candidate,
-    pending_bbo_count_provider=lambda: getattr(
-        globals().get("pending_bbo_candidate_store"), "count", lambda: 0
-    )(),
-    monotonic=time_module.monotonic,
-)
-_trade_flow_counters = market_observability_runtime.trade_flow_counters
-position_order_book_diagnostics = market_observability_runtime.position_order_book_diagnostics
-shadow_scorecard_logger = market_observability_runtime.shadow_scorecard_logger
-trade_flow_report_logger = market_observability_runtime.trade_flow_report_logger
-strategy_shadow_diagnostics = market_observability_runtime.strategy_shadow_diagnostics
-prefilter_block_logger = market_observability_runtime.prefilter_block_logger
 paper_session_composition_runtime = PaperSessionCompositionRuntime(
     db_manager=db_manager,
     execution_engine=execution_engine,
@@ -265,17 +195,6 @@ _rotate_paper_bbo_replay_session = paper_session_composition_runtime.rotate_bbo_
 _restore_paper_performance = paper_session_composition_runtime.restore_paper_performance
 
 
-# Preserve the callback names consumed by the market and worker runtimes.
-_record_position_order_book_event = market_observability_runtime.record_position_order_book_event
-_log_open_position_bbo_diagnostics = market_observability_runtime.log_open_position_bbo_diagnostics
-_trade_flow_inc = market_observability_runtime.increment_trade_flow
-_trade_flow_maybe_log = market_observability_runtime.maybe_log_trade_flow
-_trade_flow_guard_block = market_observability_runtime.guard_block
-_mark_shadow_llm_not_called = market_observability_runtime.mark_shadow_llm_not_called
-_log_scalping_shadow = market_observability_runtime.log_shadow_candidate
-_log_prefilter_blocked = market_observability_runtime.log_prefilter_blocked
-
-
 # Dashboard callbacks are owned by the application composition runtime.
 _latest_screener_prices = dashboard_application_runtime.latest_screener_prices
 _get_dashboard_open_positions = dashboard_application_runtime.get_dashboard_open_positions
@@ -297,13 +216,9 @@ manager = ConnectionManager()
 # --------------------------------------------------------------
 #  4️⃣  ПОЛИМОРФНЫЙ ТИКЕРНЫЙ ОБРАБОТЧИК С АВТО-ЗАВЕРШЕНИЕМ ПОЗИЦИЙ
 # --------------------------------------------------------------
-async def process_market_event(event: Union[SimpleNamespace, dict]):
-    await market_data_event_runtime.process_event(event)
-
-
 # --------------------------------------------------------------
 #  5️⃣  MARKET WORKER И ФОНОВЫЕ СЕРВИСЫ: ЕДИНЫЙ COMPOSITION ROOT
-market_application_runtime = MarketApplicationRuntime(
+market_runtime_composition = MarketRuntimeCompositionRuntime(
     dependencies={
         "broker": broker,
         "screener": screener,
@@ -333,48 +248,28 @@ market_application_runtime = MarketApplicationRuntime(
         "tickers": TICKERS_TO_TRADE,
         "finam_trade_lot_sizes": FINAM_TRADE_LOT_SIZES,
     },
-    callbacks={
-        "trade_flow_increment": _trade_flow_inc,
-        "guard_reason_bucket": _guard_reason_bucket,
-        "record_position_order_book_event": _record_position_order_book_event,
-        "refresh_bbo_metrics": refresh_candidate_bbo_metrics,
-        "persist_shadow_outcomes": _persist_shadow_outcomes,
-        "infer_candidate_direction": infer_candidate_direction,
-        "paper_mode_provider": lambda: bool(getattr(execution_engine, "paper_mode", False)),
-        "validate_entry_evidence": validate_entry_evidence,
-        "validate_atr_readiness": validate_atr_readiness,
-        "mark_shadow_llm_not_called": _mark_shadow_llm_not_called,
-        "log_shadow_candidate": _log_scalping_shadow,
-        "trade_flow_guard_block": _trade_flow_guard_block,
-        "log_prefilter_blocked": _log_prefilter_blocked,
-        "update_numpy_impulse_status": update_numpy_impulse_status,
-        "build_candidate_payload": build_market_candidate_payload,
-        "classify_direction": classify_direction_evidence,
-        "candidate_is_expired": candidate_is_expired,
-        "normalise_execution_status": normalise_execution_status,
-        "nonnegative_int": nonnegative_int,
-        "normalize_execution_fill": normalize_execution_fill,
-        "publish_execution_outcome": publish_execution_outcome,
-        "validate_daily_loss_limit": validate_daily_loss_limit,
-        "parse_finite_float": _parse_finite_float,
-        "log_trading_event": log_trading_event_to_file,
-        "attach_llm_rule_context": attach_llm_rule_context,
-        "build_llm_feature_snapshot": build_llm_feature_snapshot,
-        "build_llm_error_response": build_llm_error_response,
-        "process_llm_response": process_llm_response,
-        "validate_post_llm_entry": validate_post_llm_entry,
-        "prepare_entry_execution_plan": prepare_entry_execution_plan,
-        "finite_float": finite_float,
-        "build_default_signal_reason": build_default_signal_reason,
-        "build_verdict_explanation": build_verdict_explanation,
-        "classify_local_evidence_diagnostic": classify_local_evidence_diagnostic,
-        "build_pre_llm_risk_block_verdict": build_pre_llm_risk_block_verdict,
-        "build_llm_verdict_record": build_llm_verdict_record,
-        "link_shadow_candidate_verdict": link_shadow_candidate_verdict,
-        "enrich_ai_analysis_with_verdict": enrich_ai_analysis_with_verdict,
-        "publish_market_verdict": publish_market_verdict,
-    },
+    paper_session_composition_runtime=paper_session_composition_runtime,
+    monotonic=time_module.monotonic,
 ).create()
+
+market_observability_runtime = market_runtime_composition.market_observability_runtime
+market_application_runtime = market_runtime_composition.market_application_runtime
+_parse_finite_float = market_runtime_composition.parse_finite_float
+
+_trade_flow_counters = market_observability_runtime.trade_flow_counters
+position_order_book_diagnostics = market_observability_runtime.position_order_book_diagnostics
+shadow_scorecard_logger = market_observability_runtime.shadow_scorecard_logger
+trade_flow_report_logger = market_observability_runtime.trade_flow_report_logger
+strategy_shadow_diagnostics = market_observability_runtime.strategy_shadow_diagnostics
+prefilter_block_logger = market_observability_runtime.prefilter_block_logger
+_record_position_order_book_event = market_observability_runtime.record_position_order_book_event
+_log_open_position_bbo_diagnostics = market_observability_runtime.log_open_position_bbo_diagnostics
+_trade_flow_inc = market_observability_runtime.increment_trade_flow
+_trade_flow_maybe_log = market_observability_runtime.maybe_log_trade_flow
+_trade_flow_guard_block = market_observability_runtime.guard_block
+_mark_shadow_llm_not_called = market_observability_runtime.mark_shadow_llm_not_called
+_log_scalping_shadow = market_observability_runtime.log_shadow_candidate
+_log_prefilter_blocked = market_observability_runtime.log_prefilter_blocked
 
 market_ingestion_components = market_application_runtime.ingestion_components
 market_worker_factory = market_application_runtime.market_worker_factory
@@ -389,6 +284,7 @@ pending_bbo_runtime = market_ingestion_components.pending_bbo_runtime
 market_auxiliary_event_router = market_ingestion_components.market_auxiliary_event_router
 market_candidate_pipeline = market_ingestion_components.market_candidate_pipeline
 market_data_event_runtime = market_ingestion_components.market_data_event_runtime
+process_market_event = market_application_runtime.process_market_event
 
 # Keep stable main-module helper names for callers and operator diagnostics.
 _paper_queue_flow_conflict_reason = market_application_runtime.paper_queue_flow_conflict_reason
@@ -406,20 +302,10 @@ _resume_pending_bbo_candidate = market_application_runtime.resume_pending_bbo_ca
 market_background_services = market_application_runtime.market_background_services
 
 
-async def background_broker_init():
-    await market_background_services.background_broker_init()
-
-
-async def _start_news_updater() -> None:
-    await market_background_services._start_news_updater()
-
-
-async def _finam_metadata_refresh_loop() -> None:
-    await market_background_services._finam_metadata_refresh_loop()
-
-
-async def _start_tables_sync_loop():
-    await market_background_services._start_tables_sync_loop()
+background_broker_init = market_background_services.background_broker_init
+_start_news_updater = market_background_services._start_news_updater
+_finam_metadata_refresh_loop = market_background_services._finam_metadata_refresh_loop
+_start_tables_sync_loop = market_background_services._start_tables_sync_loop
 
 
 # --------------------------------------------------------------
@@ -503,7 +389,7 @@ application_composition_runtime = ApplicationCompositionRuntime(
         "paper_closed_trades_storage_limit": PAPER_CLOSED_TRADES_STORAGE_LIMIT,
         "shadow_outcomes_storage_limit": SHADOW_OUTCOMES_STORAGE_LIMIT,
         "lot_sizes": LOT_SIZES,
-        "parse_finite_float": _parse_finite_float,
+        "parse_finite_float": market_runtime_composition.parse_finite_float,
         "replay_exit_batch": replay_exit_batch,
         "replay_exit_scenarios": replay_exit_scenarios,
         "build_shadow_reconciliation": build_shadow_reconciliation,

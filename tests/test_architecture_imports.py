@@ -128,20 +128,22 @@ def test_logging_setup_owns_terminal_status_implementations() -> None:
     assert "TerminalStatusLine" not in local_classes
     assert "StatusAwareStreamHandler" not in local_classes
 
-def test_main_imports_reason_classifiers_from_monitoring() -> None:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
+def test_market_runtime_composition_imports_reason_classifier_from_monitoring() -> None:
+    composition_source = (
+        ROOT / "runtime" / "market_runtime_composition_runtime.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(
+        composition_source,
+        filename="runtime/market_runtime_composition_runtime.py",
+    )
     imports = {
-        alias.name: alias.asname
+        alias.name
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
         and node.module == "monitoring.trade_flow_diagnostics"
         for alias in node.names
     }
-    assert imports == {
-        "bbo_resume_reason_bucket": "_bbo_resume_reason_bucket",
-        "guard_reason_bucket": "_guard_reason_bucket",
-    }
+    assert imports == {"guard_reason_bucket"}
 
 
 def test_guard_reason_bucket_preserves_diagnostic_categories() -> None:
@@ -173,12 +175,18 @@ def test_bbo_resume_reason_bucket_preserves_diagnostic_categories() -> None:
     assert {reason: bbo_resume_reason_bucket(reason) for reason in cases} == cases
 
 
-def test_main_delegates_trade_flow_state_to_monitoring() -> None:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
+def test_main_delegates_trade_flow_state_to_market_runtime_composition() -> None:
+    main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+    composition_source = (
+        ROOT / "runtime" / "market_runtime_composition_runtime.py"
+    ).read_text(encoding="utf-8")
     runtime_source = (
         ROOT / "monitoring" / "market_observability_runtime.py"
     ).read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
+    tree = ast.parse(
+        composition_source,
+        filename="runtime/market_runtime_composition_runtime.py",
+    )
     imports = {
         alias.name
         for node in tree.body
@@ -187,13 +195,14 @@ def test_main_delegates_trade_flow_state_to_monitoring() -> None:
         for alias in node.names
     }
     assert imports == {"MarketObservabilityRuntime"}
-    assert "market_observability_runtime = MarketObservabilityRuntime(" in source
-    assert "_trade_flow_counters = market_observability_runtime.trade_flow_counters" in source
+    assert "market_observability_runtime = market_runtime_composition.market_observability_runtime" in main_source
+    assert "_trade_flow_counters = market_observability_runtime.trade_flow_counters" in main_source
+    assert "MarketObservabilityRuntime(" in composition_source
     assert "self.trade_flow_counters = TradeFlowCounters(monotonic())" in runtime_source
     assert "self.trade_flow_counters.increment(key, amount)" in runtime_source
-    assert "_trade_flow_lock" not in source
-    assert "_trade_flow_counts" not in source
-    assert "_trade_flow_last_log_at" not in source
+    assert "_trade_flow_lock" not in main_source
+    assert "_trade_flow_counts" not in main_source
+    assert "_trade_flow_last_log_at" not in main_source
 
 
 def test_main_reuses_extracted_websocket_manager() -> None:
@@ -641,6 +650,9 @@ def test_lifespan_delegates_long_running_task_ownership_to_supervisor() -> None:
 def test_main_delegates_market_event_normalization_to_runtime() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
     composition_source = (
+        ROOT / "runtime" / "market_runtime_composition_runtime.py"
+    ).read_text(encoding="utf-8")
+    application_source = (
         ROOT / "runtime" / "market_application_runtime.py"
     ).read_text(encoding="utf-8")
     runtime_source = (
@@ -654,16 +666,19 @@ def test_main_delegates_market_event_normalization_to_runtime() -> None:
         alias.name
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
-        and node.module == "runtime.market_application_runtime"
+        and node.module == "runtime.market_runtime_composition_runtime"
         for alias in node.names
     }
-    assert imported == {"MarketApplicationRuntime"}
-    assert "market_application_runtime = MarketApplicationRuntime(" in source
+    assert imported == {"MarketRuntimeCompositionRuntime"}
+    assert "market_runtime_composition = MarketRuntimeCompositionRuntime(" in source
+    assert "self.market_application_runtime = MarketApplicationRuntime(" in composition_source
+    assert "market_application_runtime = market_runtime_composition.market_application_runtime" in source
     assert "market_ingestion_components = market_application_runtime.ingestion_components" in source
-    assert "from runtime.market_ingestion_runtime import MarketIngestionRuntimeFactory" in composition_source
-    assert "self.ingestion_components = MarketIngestionRuntimeFactory(" in composition_source
+    assert "from runtime.market_ingestion_runtime import MarketIngestionRuntimeFactory" in application_source
+    assert "self.ingestion_components = MarketIngestionRuntimeFactory(" in application_source
     assert "market_data_event_runtime = market_ingestion_components.market_data_event_runtime" in source
-    assert "await market_data_event_runtime.process_event(event)" in source
+    assert "process_market_event = market_application_runtime.process_market_event" in source
+    assert "await self._require_ingestion().market_data_event_runtime.process_event(event)" in composition_source
     assert "quote_event = normalize_market_quote_event(event)" in runtime_source
     assert "def normalize_market_quote_event(" in normalizer_source
     assert "self.candidate_pipeline.process_candidate(" in runtime_source
@@ -704,7 +719,10 @@ def test_main_delegates_candidate_admission_to_strategy_pipeline() -> None:
         ROOT / "runtime" / "market_ingestion_runtime.py"
     ).read_text(encoding="utf-8")
     assert "MarketCandidatePipeline(" in factory_source
-    assert "MarketApplicationRuntime(" in source
+    assert "MarketRuntimeCompositionRuntime(" in source
+    assert "MarketApplicationRuntime(" in (
+        ROOT / "runtime" / "market_runtime_composition_runtime.py"
+    ).read_text(encoding="utf-8")
     assert "market_candidate_pipeline = market_ingestion_components.market_candidate_pipeline" in source
     assert "MarketIngestionRuntimeFactory(" in composition_source
     assert "self.candidate_pipeline.process_candidate(" in runtime_source
@@ -813,14 +831,19 @@ def test_market_worker_delegates_order_execution_lifecycle_to_execution_package(
 
 
 def test_main_delegates_market_verdict_publication_to_execution_package() -> None:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    composition_source = (
+        ROOT / "runtime" / "market_runtime_composition_runtime.py"
+    ).read_text(encoding="utf-8")
     runtime_source = (
         ROOT / "runtime" / "market_worker_processing_runtime.py"
     ).read_text(encoding="utf-8")
     module_source = (
         ROOT / "execution" / "verdict_publisher.py"
     ).read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
+    tree = ast.parse(
+        composition_source,
+        filename="runtime/market_runtime_composition_runtime.py",
+    )
     imported = {
         alias.name
         for node in tree.body
@@ -829,21 +852,26 @@ def test_main_delegates_market_verdict_publication_to_execution_package() -> Non
         for alias in node.names
     }
     assert imported == {"publish_market_verdict"}
-    assert '"publish_market_verdict": publish_market_verdict' in source
+    assert '"publish_market_verdict": publish_market_verdict' in composition_source
     assert "await publish_market_verdict(" in runtime_source
     assert "manager.broadcast(json.dumps({\"type\": \"EXECUTION_UPDATE\"" not in runtime_source
     assert "verdict_cache.append(verdict)" in module_source
 
 
 def test_main_delegates_verdict_record_construction_and_enrichment_to_strategy() -> None:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    composition_source = (
+        ROOT / "runtime" / "market_runtime_composition_runtime.py"
+    ).read_text(encoding="utf-8")
     runtime_source = (
         ROOT / "runtime" / "market_worker_processing_runtime.py"
     ).read_text(encoding="utf-8")
     module_source = (
         ROOT / "strategy" / "verdict_records.py"
     ).read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
+    tree = ast.parse(
+        composition_source,
+        filename="runtime/market_runtime_composition_runtime.py",
+    )
     imported = {
         alias.name
         for node in tree.body
@@ -852,15 +880,15 @@ def test_main_delegates_verdict_record_construction_and_enrichment_to_strategy()
         for alias in node.names
     }
     assert imported == {
-        "build_pre_llm_risk_block_verdict",
         "build_default_signal_reason",
-        "classify_local_evidence_diagnostic",
         "build_llm_verdict_record",
-        "link_shadow_candidate_verdict",
+        "build_pre_llm_risk_block_verdict",
+        "classify_local_evidence_diagnostic",
         "enrich_ai_analysis_with_verdict",
+        "link_shadow_candidate_verdict",
     }
-    assert '"build_pre_llm_risk_block_verdict": build_pre_llm_risk_block_verdict' in source
-    assert '"build_llm_verdict_record": build_llm_verdict_record' in source
+    assert '"build_pre_llm_risk_block_verdict": build_pre_llm_risk_block_verdict' in composition_source
+    assert '"build_llm_verdict_record": build_llm_verdict_record' in composition_source
     assert "verdict = self.build_pre_llm_risk_block_verdict(" in runtime_source
     assert "verdict_data = build_llm_verdict_record(" in runtime_source
     assert "link_shadow_candidate_verdict(" in runtime_source
@@ -1045,6 +1073,10 @@ def test_main_delegates_background_market_services_to_runtime() -> None:
     runtime_source = (root / "runtime" / "market_background_services.py").read_text(encoding="utf-8")
     assert "MarketBackgroundServicesRuntime(" in composition_source
     assert "market_background_services = market_application_runtime.market_background_services" in source
+    assert "background_broker_init = market_background_services.background_broker_init" in source
+    assert "_start_news_updater = market_background_services._start_news_updater" in source
+    assert "_finam_metadata_refresh_loop = market_background_services._finam_metadata_refresh_loop" in source
+    assert "_start_tables_sync_loop = market_background_services._start_tables_sync_loop" in source
     assert "process_market_event=self.process_market_event" in composition_source
     for method in ("background_broker_init", "_finam_metadata_refresh_loop", "_start_news_updater", "_start_tables_sync_loop"):
         assert f"async def {method}(self" in runtime_source
