@@ -167,6 +167,9 @@ def test_bootstrap_preserves_creation_order_and_shared_dependency_identity(monke
     assert deps["session_generation_provider"]() == 0
     assert deps["recorder_provider"]() is runtime.application_shared_state_runtime.bbo_replay_recorder
     assert deps["balance_snapshot"] == {"equity": 400_000}
+    assert deps["tickers"] is runtime.tickers
+    assert deps["finam_trade_lot_sizes"] is runtime.finam_trade_lot_sizes
+    assert runtime.application_core_runtime.kwargs["lot_sizes"] is runtime.lot_sizes
     root_kwargs = runtime.application_composition_root_runtime.kwargs
     assert root_kwargs["application_core_runtime"] is runtime.application_core_runtime
     assert root_kwargs["market_runtime_composition"] is runtime.market_runtime_composition

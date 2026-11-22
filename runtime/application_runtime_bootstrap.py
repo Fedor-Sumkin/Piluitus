@@ -53,9 +53,10 @@ class ApplicationRuntimeBootstrap:
         self.logger = logger
         self.terminal_status = terminal_status
         self.environment = environment if environment is not None else os.environ
-        self.tickers = tuple(str(item) for item in tickers)
-        self.finam_trade_lot_sizes = dict(finam_trade_lot_sizes)
-        self.lot_sizes = dict(lot_sizes)
+        # Keep the original configuration objects and their identity intact.
+        self.tickers = tickers
+        self.finam_trade_lot_sizes = finam_trade_lot_sizes
+        self.lot_sizes = lot_sizes
         self.verdict_cache = verdict_cache if verdict_cache is not None else []
         self.max_cache_size = max(1, int(max_cache_size))
         self.monotonic = monotonic
