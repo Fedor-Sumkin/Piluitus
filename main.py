@@ -67,8 +67,7 @@ from strategy.candidate_recovery import (
 )
 from strategy.scalping_strategy import evaluate_scalping_candidate, has_queue_trade_flow_conflict
 from strategy.market_data_runtime import paper_queue_flow_conflict_reason
-from portfolio.dashboard_runtime import DashboardRuntime
-from interface.dashboard_routes import create_dashboard_router
+from runtime.dashboard_application_runtime import DashboardApplicationRuntime
 from strategy.shadow_outcomes import ShadowForwardTracker
 from strategy.bbo_replay import (
     BBOReplayRecorder,
@@ -174,21 +173,24 @@ logger.info(
 )
 
 
-dashboard_runtime = DashboardRuntime(
+dashboard_application_runtime = DashboardApplicationRuntime(
     execution_engine=execution_engine,
     db_manager=db_manager,
     screener=screener,
     lot_sizes=LOT_SIZES,
     logger=logger,
-)
+    risk_manager=risk_manager,
+    initial_deposit=DEPOSIT,
+    set_balance_snapshot=lambda snapshot: globals().__setitem__(
+        "_dashboard_balance_snapshot", snapshot
+    ),
+).create()
+dashboard_runtime = dashboard_application_runtime.dashboard_runtime
+_dashboard_balance_snapshot = dashboard_application_runtime.balance_snapshot
 
-
-def _current_paper_open_pnl() -> float:
-    return dashboard_runtime.current_paper_open_pnl()
-
-
-def _current_paper_assets_cost() -> float:
-    return dashboard_runtime.current_paper_assets_cost()
+# Preserve stable providers used by risk, market, PAPER APIs and the dashboard.
+_current_paper_open_pnl = dashboard_application_runtime.current_paper_open_pnl
+_current_paper_assets_cost = dashboard_application_runtime.current_paper_assets_cost
 
 
 # In PAPER, in-memory positions are the live source of floating PnL and book cost.
@@ -276,38 +278,10 @@ _log_scalping_shadow = market_observability_runtime.log_shadow_candidate
 _log_prefilter_blocked = market_observability_runtime.log_prefilter_blocked
 
 
-# Последний рассчитанный срез баланса для UI. Не изменяет внутреннюю риск-модель.
-_dashboard_balance_snapshot = {
-    "equity": round(DEPOSIT, 2),
-    "initial_deposit": round(DEPOSIT, 2),
-    "free_margin": round(DEPOSIT, 2),
-    "margin_used": 0.0,
-    "exposure_cap": round(DEPOSIT * 0.15, 2),
-    "exposure_cap_pct": 0.15,
-    "single_position_cap": round(DEPOSIT * 0.05, 2),
-    "unreconciled_positions_count": 0,
-    "pnl": 0.0,
-    "realized_pnl": 0.0,
-    "open_pnl": 0.0,
-    "active_positions_count": 0,
-}
-
-def _latest_screener_prices() -> dict[str, float]:
-    return dashboard_runtime.latest_screener_prices()
-
-
-async def _get_dashboard_open_positions() -> list[dict]:
-    return await dashboard_runtime.get_dashboard_open_positions()
-
-
-async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = None) -> dict:
-    global _dashboard_balance_snapshot
-    _dashboard_balance_snapshot = await dashboard_runtime.refresh_balance_snapshot(
-        positions,
-        risk_manager=risk_manager,
-        initial_deposit=DEPOSIT,
-    )
-    return dict(_dashboard_balance_snapshot)
+# Dashboard callbacks are owned by the application composition runtime.
+_latest_screener_prices = dashboard_application_runtime.latest_screener_prices
+_get_dashboard_open_positions = dashboard_application_runtime.get_dashboard_open_positions
+_refresh_dashboard_balance_snapshot = dashboard_application_runtime.refresh_balance_snapshot
 
 
 # Все 88 инструментов остаются подписанными для сбора сравнимой статистики.
@@ -488,22 +462,16 @@ app = FastAPI(title="PILUITUS v35.2 — AI Trading Core", lifespan=lifespan)
 BASE_DIR = PROJECT_ROOT
 TEMPLATE_DIR = BASE_DIR / "interface" / "templates"
 
-app.include_router(
-    create_dashboard_router(
-        anomaly_queue=anomaly_queue,
-        priority_queue_item_factory=priority_queue_item_factory,
-        validate_daily_loss_limit=validate_daily_loss_limit,
-        default_daily_loss_limit=Settings.DAILY_LOSS_LIMIT_PCT,
-        template_dir=TEMPLATE_DIR,
-        manager=manager,
-        logger=logger,
-        get_dashboard_open_positions=_get_dashboard_open_positions,
-        refresh_dashboard_balance_snapshot=_refresh_dashboard_balance_snapshot,
-        db_manager=db_manager,
-        execution_engine=execution_engine,
-        last_ai_verdicts_cache=last_ai_verdicts_cache,
-        process_market_event=process_market_event,
-    )
+dashboard_application_runtime.register_routes(
+    app,
+    anomaly_queue=anomaly_queue,
+    priority_queue_item_factory=priority_queue_item_factory,
+    validate_daily_loss_limit=validate_daily_loss_limit,
+    default_daily_loss_limit=Settings.DAILY_LOSS_LIMIT_PCT,
+    template_dir=TEMPLATE_DIR,
+    manager=manager,
+    last_ai_verdicts_cache=last_ai_verdicts_cache,
+    process_market_event=process_market_event,
 )
 
 # Dashboard HTTP/WebSocket endpoints are owned by the interface package.
@@ -515,8 +483,7 @@ def _advance_paper_session_generation() -> None:
     _paper_session_generation += 1
 
 
-def _reset_balance_guard_signature() -> None:
-    dashboard_runtime.reset_balance_guard_signature()
+_reset_balance_guard_signature = dashboard_application_runtime.reset_balance_guard_signature
 
 
 paper_operations_runtime = PaperOperationsRuntime(

@@ -372,14 +372,14 @@ def test_main_delegates_priority_queue_item_creation_to_runtime() -> None:
 def test_main_delegates_paper_open_pnl_accounting_to_portfolio() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
-    runtime_imports = {
+    composition_imports = {
         alias.name
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
-        and node.module == "portfolio.dashboard_runtime"
+        and node.module == "runtime.dashboard_application_runtime"
         for alias in node.names
     }
-    assert runtime_imports == {"DashboardRuntime"}
+    assert composition_imports == {"DashboardApplicationRuntime"}
     accounting_imports = {
         alias.name: alias.asname
         for node in tree.body
@@ -388,34 +388,23 @@ def test_main_delegates_paper_open_pnl_accounting_to_portfolio() -> None:
         for alias in node.names
     }
     assert accounting_imports == {"parse_finite_float": "_parse_finite_float"}
-    assert "dashboard_runtime.current_paper_open_pnl()" in source
-    assert "dashboard_runtime.current_paper_assets_cost()" in source
-
+    assert "dashboard_application_runtime.current_paper_open_pnl" in source
+    assert "dashboard_application_runtime.current_paper_assets_cost" in source
 
 def test_main_delegates_dashboard_balance_runtime_to_portfolio() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imported = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "portfolio.dashboard_runtime"
-        for alias in node.names
-    }
-    assert imported == {"DashboardRuntime"}
-    refresh = next(
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_refresh_dashboard_balance_snapshot"
-    )
-    refresh_source = ast.get_source_segment(source, refresh) or ""
-    assert "dashboard_runtime.refresh_balance_snapshot(" in refresh_source
+    composition_source = (
+        ROOT / "runtime" / "dashboard_application_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "DashboardApplicationRuntime(" in source
+    assert "_refresh_dashboard_balance_snapshot = dashboard_application_runtime.refresh_balance_snapshot" in source
+    assert "self.dashboard_runtime.refresh_balance_snapshot(" in composition_source
+    assert "self.dashboard_runtime.reset_balance_guard_signature()" in composition_source
     runtime_source = (
         ROOT / "portfolio" / "dashboard_runtime.py"
     ).read_text(encoding="utf-8")
     assert "build_dashboard_balance_snapshot(" in runtime_source
     assert "reset_balance_guard_signature" in runtime_source
-
 
 def test_main_delegates_shadow_outcome_persistence_to_storage() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -1048,18 +1037,22 @@ def test_main_delegates_background_market_services_to_runtime() -> None:
 
 def test_main_delegates_dashboard_http_and_websocket_routes_to_interface() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
+    composition_source = (
+        ROOT / "runtime" / "dashboard_application_runtime.py"
+    ).read_text(encoding="utf-8")
     route_source = (ROOT / "interface" / "dashboard_routes.py").read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
     imports = {
         alias.name
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
-        and node.module == "interface.dashboard_routes"
+        and node.module == "runtime.dashboard_application_runtime"
         for alias in node.names
     }
-    assert imports == {"create_dashboard_router"}
-    assert "app.include_router(" in source
-    assert "create_dashboard_router(" in source
+    assert imports == {"DashboardApplicationRuntime"}
+    assert "dashboard_application_runtime.register_routes(" in source
+    assert "create_dashboard_router(" in composition_source
+    assert "app.include_router(router)" in composition_source
     assert "@app.websocket(\"/ws/frontend\")" not in source
     assert "@app.post(\"/api/v1/control/close_all\")" not in source
     assert "@app.post(\"/api/v1/control/risk_limit\")" not in source
@@ -1070,3 +1063,4 @@ def test_main_delegates_dashboard_http_and_websocket_routes_to_interface() -> No
     assert '"type": "INIT_DATA"' in route_source
     assert "await manager.connect(websocket)" in route_source
     assert "manager.disconnect(websocket)" in route_source
+
