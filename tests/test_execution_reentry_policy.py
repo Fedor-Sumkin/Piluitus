@@ -44,7 +44,7 @@ class ExecutionReentryPolicyTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_recent_same_side_stops_are_restored_after_restart(self) -> None:
-        now_wall = datetime.now(timezone(timedelta(hours=3)))
+        now_wall = datetime(2026, 11, 10, 12, 0, tzinfo=timezone(timedelta(hours=3)))
         rows = {
             "old": {
                 "status": "CLOSED", "mode": "PAPER", "ticker": "ALRS", "side": "SELL",
@@ -65,7 +65,7 @@ class ExecutionReentryPolicyTests(unittest.IsolatedAsyncioTestCase):
         db = SimpleNamespace(get_all_daily_trades=AsyncMock(return_value=rows))
         mono_now = 5000.0
         count, remaining = await self.engine._hydrate_stop_loss_cooldown(
-            db, "ALRS", "SELL", now_monotonic=mono_now
+            db, "ALRS", "SELL", now_monotonic=mono_now, now_wall=now_wall
         )
 
         self.assertEqual(count, 2)

@@ -5,9 +5,21 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from risk_manager import RiskManager
+from risk import risk_manager as risk_manager_module
 
 
 MSK = timezone(timedelta(hours=3))
+
+
+def frozen_risk_clock(now):
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return now.replace(tzinfo=None)
+            return now.astimezone(tz)
+
+    return patch.object(risk_manager_module, "datetime", FrozenDateTime)
 
 
 class FakeRedis:
@@ -75,7 +87,7 @@ class SessionLossStreakTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(manager.current_drawdown_pct, 0.0)
 
     async def test_force_refresh_bypasses_recent_allowed_cache(self):
-        now = datetime.now(MSK)
+        now = datetime(2026, 11, 10, 12, 0, tzinfo=MSK)
         trades = {
             f"TODAY_{i}": closed_loss(
                 f"TODAY_{i}", now - timedelta(minutes=5 - i)
@@ -88,7 +100,7 @@ class SessionLossStreakTests(unittest.IsolatedAsyncioTestCase):
         manager._blocked_date = now.date()
         db = FakeDB(trades)
 
-        with patch.dict(os.environ, {"PAPER_TRADING": "True"}):
+        with frozen_risk_clock(now), patch.dict(os.environ, {"PAPER_TRADING": "True"}):
             cached = await manager.is_trading_allowed(db)
             refreshed = await manager.is_trading_allowed(db, force_refresh=True)
 
@@ -97,7 +109,7 @@ class SessionLossStreakTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(manager.block_trading)
 
     async def test_five_losses_in_current_session_still_trigger_pause(self):
-        now = datetime.now(MSK)
+        now = datetime(2026, 11, 10, 12, 0, tzinfo=MSK)
         trades = {
             f"TODAY_{i}": closed_loss(
                 f"TODAY_{i}", now - timedelta(minutes=5 - i)
@@ -111,7 +123,7 @@ class SessionLossStreakTests(unittest.IsolatedAsyncioTestCase):
         )
         db = FakeDB(trades)
 
-        with patch.dict(os.environ, {"PAPER_TRADING": "True"}):
+        with frozen_risk_clock(now), patch.dict(os.environ, {"PAPER_TRADING": "True"}):
             allowed = await manager.is_trading_allowed(db)
 
         self.assertFalse(allowed)
