@@ -429,25 +429,29 @@ def test_main_delegates_paper_open_pnl_accounting_to_portfolio() -> None:
     assert "dashboard_runtime.current_paper_assets_cost()" in source
 
 
-def test_main_delegates_dashboard_balance_calculation_to_portfolio() -> None:
+def test_main_delegates_dashboard_balance_runtime_to_portfolio() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
     imported = {
         alias.name
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
-        and node.module == "portfolio.dashboard_accounting"
+        and node.module == "portfolio.dashboard_runtime"
         for alias in node.names
     }
-    assert imported == {"build_dashboard_balance_snapshot"}
-    assert "calculation = build_dashboard_balance_snapshot(" in source
+    assert imported == {"DashboardRuntime"}
     refresh = next(
         node for node in ast.walk(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if isinstance(node, ast.AsyncFunctionDef)
         and node.name == "_refresh_dashboard_balance_snapshot"
     )
     refresh_source = ast.get_source_segment(source, refresh) or ""
-    assert "calculate_assets_used(" not in refresh_source
+    assert "dashboard_runtime.refresh_balance_snapshot(" in refresh_source
+    runtime_source = (
+        ROOT / "portfolio" / "dashboard_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "build_dashboard_balance_snapshot(" in runtime_source
+    assert "reset_balance_guard_signature" in runtime_source
 
 
 def test_main_delegates_shadow_outcome_persistence_to_storage() -> None:

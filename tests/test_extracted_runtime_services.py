@@ -33,6 +33,9 @@ class Logger:
     def error(self, *args, **kwargs):
         self.messages.append(("error", args))
 
+    def critical(self, *args, **kwargs):
+        self.messages.append(("critical", args))
+
 
 def test_pending_bbo_store_coalesces_without_restarting_ttl():
     now = [10.0]

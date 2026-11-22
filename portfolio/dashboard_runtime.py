@@ -3,12 +3,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from portfolio.dashboard_accounting import build_dashboard_balance_snapshot
 from portfolio.paper_accounting import calculate_open_pnl
 from portfolio.portfolio_metrics import calculate_assets_used
 
 
 class DashboardRuntime:
-    """Read dashboard state from the active execution mode without mutating it."""
+    """Read dashboard state without mutating trading or risk state."""
 
     def __init__(
         self,

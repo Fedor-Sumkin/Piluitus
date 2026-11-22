@@ -154,7 +154,6 @@ prefilter_block_logger = PrefilterBlockLogger(logger)
 from portfolio.paper_accounting import (
     parse_finite_float as _parse_finite_float,
 )
-from portfolio.dashboard_accounting import build_dashboard_balance_snapshot
 
 
 
@@ -528,7 +527,6 @@ _dashboard_balance_snapshot = {
     "open_pnl": 0.0,
     "active_positions_count": 0,
 }
-_balance_guard_last_signature: tuple[int, bool] | None = None
 
 def _latest_screener_prices() -> dict[str, float]:
     return dashboard_runtime.latest_screener_prices()
@@ -539,82 +537,12 @@ async def _get_dashboard_open_positions() -> list[dict]:
 
 
 async def _refresh_dashboard_balance_snapshot(positions: list[dict] | None = None) -> dict:
-    """Build a non-mark-to-market dashboard snapshot.
-
-    Free cash = configured initial deposit + realized net PnL - acquisition cost
-    of currently open assets. The assets field uses entry_price * quantity and
-    therefore stays unchanged when market quotes move. Total PnL also includes
-    floating PnL from open positions. The original deposit remains unchanged for
-    risk limits; equity reports deposit plus total (realized + floating) PnL.
-    """
     global _dashboard_balance_snapshot
-    if positions is None:
-        positions = await _get_dashboard_open_positions()
-
-    try:
-        initial_deposit = float(DEPOSIT)
-        if not math.isfinite(initial_deposit) or initial_deposit < 0:
-            raise ValueError("invalid configured deposit")
-    except (TypeError, ValueError, OverflowError):
-        initial_deposit = float(getattr(risk_manager, "initial_deposit", 0.0) or 0.0)
-
-    try:
-        pnl = float(getattr(risk_manager, "total_session_pnl", getattr(risk_manager, "session_pnl", 0.0)))
-        if not math.isfinite(pnl):
-            pnl = 0.0
-    except (TypeError, ValueError, OverflowError):
-        pnl = 0.0
-
-    try:
-        realized_pnl = float(getattr(risk_manager, "realized_pnl", 0.0) or 0.0)
-        if not math.isfinite(realized_pnl):
-            realized_pnl = 0.0
-    except (TypeError, ValueError, OverflowError):
-        realized_pnl = 0.0
-
-    try:
-        open_pnl = float(getattr(risk_manager, "open_pnl", pnl - realized_pnl) or 0.0)
-        if not math.isfinite(open_pnl):
-            open_pnl = pnl - realized_pnl
-    except (TypeError, ValueError, OverflowError):
-        open_pnl = pnl - realized_pnl
-
-    # Old PAPER positions remain reserved until an operator reviews them.
-    unresolved_map = (
-        getattr(execution_engine, "_unreconciled_paper_positions", {})
-        if getattr(execution_engine, "paper_mode", True) else {}
+    _dashboard_balance_snapshot = await dashboard_runtime.refresh_balance_snapshot(
+        positions,
+        risk_manager=risk_manager,
+        initial_deposit=DEPOSIT,
     )
-    unresolved_positions = list(unresolved_map.values()) if isinstance(unresolved_map, dict) else []
-    calculation = build_dashboard_balance_snapshot(
-        positions=positions,
-        unresolved_positions=unresolved_positions,
-        initial_deposit=initial_deposit,
-        total_pnl=pnl,
-        realized_pnl=realized_pnl,
-        open_pnl=open_pnl,
-        max_gross_exposure_pct=getattr(execution_engine, "max_gross_exposure_pct", 0.15),
-        max_single_position_pct=getattr(execution_engine, "max_single_position_pct", 0.05),
-        lot_sizes=LOT_SIZES,
-    )
-    _dashboard_balance_snapshot = calculation["snapshot"]
-    assets_used = calculation["assets_used"]
-    exposure_cap = calculation["exposure_cap"]
-    max_gross_pct = calculation["max_gross_pct"]
-
-    global _balance_guard_last_signature
-    signature = calculation["guard_signature"]
-    if signature != _balance_guard_last_signature:
-        if unresolved_positions:
-            logger.critical(
-                "🛑 [PAPER RECONCILIATION GUARD] %d старых PAPER-позиций на сверке; их себестоимость %.2f ₽ учтена в активах. Новые входы заблокированы.",
-                len(unresolved_positions), calculation["unresolved_assets_cost"],
-            )
-        if calculation["over_cap"]:
-            logger.error(
-                "🚨 [BALANCE GUARD] Себестоимость активов %.2f ₽ превышает лимит задействования %.2f ₽ (%.0f%% депозита). Новые входы будут заблокированы.",
-                assets_used, exposure_cap, max_gross_pct * 100,
-            )
-        _balance_guard_last_signature = signature
     return dict(_dashboard_balance_snapshot)
 
 
@@ -988,8 +916,7 @@ def _advance_paper_session_generation() -> None:
 
 
 def _reset_balance_guard_signature() -> None:
-    global _balance_guard_last_signature
-    _balance_guard_last_signature = None
+    dashboard_runtime.reset_balance_guard_signature()
 
 
 async def _broadcast_paper_session_reset(payload: dict[str, Any]) -> None:
