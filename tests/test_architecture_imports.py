@@ -781,7 +781,8 @@ def test_main_delegates_market_event_normalization_to_runtime() -> None:
     assert "from runtime.market_ingestion_runtime import MarketIngestionRuntimeFactory" in application_source
     assert "create_market_ingestion_components(" in application_source
     assert "self, MarketIngestionRuntimeFactory" in application_source
-    assert "create_market_worker_factory(self, MarketWorkerFactory)" in application_source
+    assert "create_market_worker_factory(" in application_source
+    assert "self, MarketWorkerFactory" in application_source
     worker_composition_source = (
         ROOT / "runtime" / "market_application_worker_composition.py"
     ).read_text(encoding="utf-8")
