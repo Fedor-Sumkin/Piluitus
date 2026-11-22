@@ -22,7 +22,7 @@ def build_application_compatibility_exports(bootstrap: Any) -> dict[str, Any]:
     composition = root.application_composition_runtime
     paper_ops = composition.paper_operations_runtime
     return {
-        "application_runtime_bootstrap": self,
+        "application_runtime_bootstrap": bootstrap,
         "application_core_runtime": core,
         "db_manager": core.db_manager, "ai_engine": core.ai_engine,
         "broker": core.broker, "screener": core.screener,

@@ -201,8 +201,8 @@ def test_main_delegates_trade_flow_state_to_market_runtime_composition() -> None
         for alias in node.names
     }
     assert imports == {"MarketObservabilityRuntime"}
-    assert "market_observability_runtime = market_runtime_composition.market_observability_runtime" in main_source
-    assert "_trade_flow_counters = market_observability_runtime.trade_flow_counters" in main_source
+    assert '"market_observability_runtime": observability' in _compatibility_exports_source()
+    assert '"_trade_flow_counters": observability.trade_flow_counters' in _compatibility_exports_source()
     assert "MarketObservabilityRuntime(" in composition_source
     assert "self.trade_flow_counters = TradeFlowCounters(monotonic())" in runtime_source
     assert "self.trade_flow_counters.increment(key, amount)" in runtime_source
@@ -216,7 +216,7 @@ def test_application_shared_state_runtime_owns_websocket_manager() -> None:
     shared_source = (
         ROOT / "runtime" / "application_shared_state_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "manager = application_shared_state_runtime.connection_manager" in main_source
+    assert '"manager": shared.connection_manager' in _compatibility_exports_source()
     assert "from interface.websocket_manager import ConnectionManager" in shared_source
     assert "connection_manager = self.connection_manager_factory()" in shared_source
 
@@ -376,7 +376,7 @@ def test_main_delegates_priority_queue_state_to_application_shared_runtime() -> 
     shared_source = (
         ROOT / "runtime" / "application_shared_state_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "priority_queue_item_factory = application_shared_state_runtime.priority_queue_item_factory" in main_source
+    assert '"priority_queue_item_factory": shared.priority_queue_item_factory' in _compatibility_exports_source()
     assert "from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory" in shared_source
     assert "asyncio.PriorityQueue[" in shared_source
     assert "maxsize=1000" in shared_source
@@ -425,8 +425,8 @@ def test_main_delegates_paper_open_pnl_accounting_to_portfolio() -> None:
     }
     assert accounting_imports == {"parse_finite_float"}
     assert "self.parse_finite_float = parse_finite_float" in composition_source
-    assert "dashboard_application_runtime.current_paper_open_pnl" in source
-    assert "dashboard_application_runtime.current_paper_assets_cost" in source
+    assert '"_current_paper_open_pnl": dashboard.current_paper_open_pnl' in _compatibility_exports_source()
+    assert '"_current_paper_assets_cost": dashboard.current_paper_assets_cost' in _compatibility_exports_source()
 
 def test_main_delegates_dashboard_balance_runtime_to_portfolio() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -485,7 +485,7 @@ def test_main_delegates_core_service_and_capital_composition_to_runtime() -> Non
     assert 'abs_tol=0.01' in core_source
     assert "self.risk_manager.open_pnl_provider" in core_source
     assert "self.risk_manager.open_assets_cost_provider" in core_source
-    assert "dashboard_application_runtime = application_core_runtime.dashboard_application_runtime" in main_source
+    assert '"dashboard_application_runtime": dashboard' in _compatibility_exports_source()
 
 def test_main_delegates_shadow_outcome_persistence_to_storage() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -692,8 +692,8 @@ def test_main_delegates_fastapi_application_assembly_to_composition_runtimes() -
     assert "dashboard_application_runtime.register_routes(" in composition_source
     assert ").create(app)" in composition_source
     assert '"/static"' in composition_source
-    assert "application_lifecycle_runtime = application_composition_runtime.application_lifecycle_runtime" in main_source
-    assert "paper_operations_runtime = application_composition_runtime.paper_operations_runtime" in main_source
+    assert '"application_lifecycle_runtime": composition.application_lifecycle_runtime' in _compatibility_exports_source()
+    assert '"paper_operations_runtime": paper_ops' in _compatibility_exports_source()
 
 def test_lifespan_delegates_long_running_task_ownership_to_supervisor() -> None:
     main_source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -1111,7 +1111,7 @@ def test_main_delegates_paper_session_maintenance_to_storage_and_interface() -> 
     ).read_text(encoding="utf-8")
 
     assert "PaperSessionMaintenanceRuntime(" in composition_source
-    assert "paper_session_maintenance_runtime = paper_operations_runtime.paper_session_maintenance_runtime" in main_source
+    assert '"paper_session_maintenance_runtime": paper_ops.paper_session_maintenance_runtime' in _compatibility_exports_source()
     assert "create_paper_session_router(" in composition_source
     assert "PAPER_CLEAR_CONFIRMATION" in composition_source
 

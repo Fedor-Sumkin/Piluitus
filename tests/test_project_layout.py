@@ -110,8 +110,11 @@ def test_fastapi_lifespan_is_delegated_to_runtime_package() -> None:
         PROJECT_ROOT / "runtime" / "application_lifecycle_runtime.py"
     ).read_text(encoding="utf-8")
 
-    assert "application_lifecycle_runtime = application_composition_runtime.application_lifecycle_runtime" in main_source
-    assert "lifespan = application_composition_runtime.lifespan" in main_source
+    exports_source = (
+        PROJECT_ROOT / "runtime" / "application_compatibility_exports.py"
+    ).read_text(encoding="utf-8")
+    assert '"application_lifecycle_runtime": composition.application_lifecycle_runtime' in exports_source
+    assert '"lifespan": composition.lifespan' in exports_source
     assert "async def lifespan(" not in main_source
     assert "class ApplicationLifecycleRuntime:" in lifecycle_source
     assert "background_task_supervisor.cancel_and_drain()" in lifecycle_source
