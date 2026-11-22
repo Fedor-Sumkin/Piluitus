@@ -779,7 +779,8 @@ def test_main_delegates_market_event_normalization_to_runtime() -> None:
     assert '"market_application_runtime": market_app' in _compatibility_exports_source()
     assert '"market_ingestion_components": ingestion' in _compatibility_exports_source()
     assert "from runtime.market_ingestion_runtime import MarketIngestionRuntimeFactory" in application_source
-    assert "create_market_ingestion_components(self, MarketIngestionRuntimeFactory)" in application_source
+    assert "create_market_ingestion_components(" in application_source
+    assert "self, MarketIngestionRuntimeFactory" in application_source
     assert "create_market_worker_factory(self, MarketWorkerFactory)" in application_source
     worker_composition_source = (
         ROOT / "runtime" / "market_application_worker_composition.py"
@@ -842,7 +843,8 @@ def test_main_delegates_candidate_admission_to_strategy_pipeline() -> None:
         ROOT / "runtime" / "market_runtime_composition_runtime.py"
     ).read_text(encoding="utf-8")
     assert '"market_candidate_pipeline": ingestion.market_candidate_pipeline' in _compatibility_exports_source()
-    assert "create_market_ingestion_components(self, MarketIngestionRuntimeFactory)" in composition_source
+    assert "create_market_ingestion_components(" in composition_source
+    assert "self, MarketIngestionRuntimeFactory" in composition_source
     ingestion_composition_source = (
         ROOT / "runtime" / "market_application_ingestion_composition.py"
     ).read_text(encoding="utf-8")
@@ -926,7 +928,8 @@ def test_market_worker_delegates_order_execution_lifecycle_to_execution_package(
         for alias in node.names
     }
     assert worker_imports == {"MarketWorkerExecutionRuntime"}
-    assert "create_market_worker_factory(self, MarketWorkerFactory)" in composition_source
+    assert "create_market_worker_factory(" in composition_source
+    assert "self, MarketWorkerFactory" in composition_source
     worker_composition_source = (
         ROOT / "runtime" / "market_application_worker_composition.py"
     ).read_text(encoding="utf-8")
@@ -1212,7 +1215,8 @@ def test_main_delegates_background_market_services_to_runtime() -> None:
     runtime_source = (root / "runtime" / "market_background_services.py").read_text(encoding="utf-8")
     finam_source = (root / "runtime" / "market_background_finam_runtime.py").read_text(encoding="utf-8")
     dashboard_source = (root / "runtime" / "market_background_dashboard_runtime.py").read_text(encoding="utf-8")
-    assert "create_market_background_services(self, MarketBackgroundServicesRuntime)" in composition_source
+    assert "create_market_background_services(" in composition_source
+    assert "self, MarketBackgroundServicesRuntime" in composition_source
     background_composition_source = (
         root / "runtime" / "market_application_background_composition.py"
     ).read_text(encoding="utf-8")
