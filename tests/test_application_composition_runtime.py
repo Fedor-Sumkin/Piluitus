@@ -109,8 +109,10 @@ def test_application_composition_preserves_lifecycle_and_route_registration_orde
     assert runtime.application_lifecycle_runtime.kwargs == lifecycle_deps
     assert runtime.app.title == "PILUITUS test"
     assert runtime.app.lifespan is runtime.lifespan
-    assert runtime.paper_operations_runtime.dependencies is paper_deps
-    assert runtime.paper_operations_runtime.callbacks is paper_callbacks
+    assert runtime.paper_operations_runtime.dependencies == paper_deps
+    assert runtime.paper_operations_runtime.dependencies["execution_engine"] is paper_deps["execution_engine"]
+    assert runtime.paper_operations_runtime.callbacks == paper_callbacks
+    assert runtime.paper_operations_runtime.callbacks["rotate"] is paper_callbacks["rotate"]
     assert calls[0][0] == "fastapi"
     assert calls[1] == ("dashboard", runtime.app, dashboard_deps)
     assert calls[2] == ("include_router", "dashboard")

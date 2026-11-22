@@ -20,7 +20,7 @@ def test_templates_are_available_in_interface_package() -> None:
     ).read_text(encoding="utf-8")
 
     assert 'TEMPLATE_DIR = BASE_DIR / "interface" / "templates"' in main_source
-    assert "template_dir=TEMPLATE_DIR" in main_source
+    assert '"template_dir": TEMPLATE_DIR' in main_source
     assert 'page_path = template_dir / "maintenance.html"' in routes_source
     assert 'index_path = template_dir / "index.html"' in routes_source
     assert 'BASE_DIR / "templates"' not in main_source
@@ -107,8 +107,8 @@ def test_fastapi_lifespan_is_delegated_to_runtime_package() -> None:
         PROJECT_ROOT / "runtime" / "application_lifecycle_runtime.py"
     ).read_text(encoding="utf-8")
 
-    assert "application_lifecycle_runtime = ApplicationLifecycleRuntime(" in main_source
-    assert "lifespan = application_lifecycle_runtime.lifespan" in main_source
+    assert "application_lifecycle_runtime = application_composition_runtime.application_lifecycle_runtime" in main_source
+    assert "lifespan = application_composition_runtime.lifespan" in main_source
     assert "async def lifespan(" not in main_source
     assert "class ApplicationLifecycleRuntime:" in lifecycle_source
     assert "background_task_supervisor.cancel_and_drain()" in lifecycle_source
