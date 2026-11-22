@@ -791,7 +791,8 @@ def test_main_delegates_market_event_normalization_to_runtime() -> None:
         ROOT / "runtime" / "market_application_ingestion_composition.py"
     ).read_text(encoding="utf-8")
     assert "return factory_cls(" in ingestion_composition_source
-    assert "create_market_background_services(self, MarketBackgroundServicesRuntime)" in application_source
+    assert "create_market_background_services(" in application_source
+    assert "self, MarketBackgroundServicesRuntime" in application_source
     assert '"queue_flow_conflict_reason": runtime.paper_queue_flow_conflict_reason' in ingestion_composition_source
     assert '"market_data_event_runtime": ingestion.market_data_event_runtime' in _compatibility_exports_source()
     assert '"process_market_event": market_app.process_market_event' in _compatibility_exports_source()
