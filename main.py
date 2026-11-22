@@ -462,7 +462,10 @@ _store_pending_bbo_candidate = market_application_runtime.store_pending_bbo_cand
 _resume_pending_bbo_candidate = market_application_runtime.resume_pending_bbo_candidate
 
 #  6️⃣  ФОНОВЫЕ ЦИКЛЫ ОБНОВЛЕНИЯ И СИНХРОНИЗАЦИИ ТАБЛИЦ
-market_background_services = market_application_runtime.market_background_servicesasync def background_broker_init():
+market_background_services = market_application_runtime.market_background_services
+
+
+async def background_broker_init():
     await market_background_services.background_broker_init()
 
 
