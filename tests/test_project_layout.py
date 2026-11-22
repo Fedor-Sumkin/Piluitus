@@ -99,3 +99,19 @@ def test_domain_packages_live_at_project_root() -> None:
 
     assert not (PROJECT_ROOT / "piluitus").exists()
 
+
+
+def test_fastapi_lifespan_is_delegated_to_runtime_package() -> None:
+    main_source = (PROJECT_ROOT / "main.py").read_text(encoding="utf-8")
+    lifecycle_source = (
+        PROJECT_ROOT / "runtime" / "application_lifecycle_runtime.py"
+    ).read_text(encoding="utf-8")
+
+    assert "application_lifecycle_runtime = ApplicationLifecycleRuntime(" in main_source
+    assert "lifespan = application_lifecycle_runtime.lifespan" in main_source
+    assert "async def lifespan(" not in main_source
+    assert "class ApplicationLifecycleRuntime:" in lifecycle_source
+    assert "background_task_supervisor.cancel_and_drain()" in lifecycle_source
+    assert "self.background_operations.drain()" in lifecycle_source
+    assert "self.paper_bbo_replay_recorder.close()" in lifecycle_source
+    assert "await self.ai_engine.close()" in lifecycle_source

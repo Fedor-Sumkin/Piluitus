@@ -49,6 +49,7 @@ from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory
 from runtime.market_event_normalizer import build_market_candidate_payload
 from runtime.market_data_event_runtime import MarketDataEventRuntime
 from runtime.market_background_services import MarketBackgroundServicesRuntime
+from runtime.application_lifecycle_runtime import ApplicationLifecycleRuntime
 from runtime.market_event_router import (
     MarketAuxiliaryEventRouter,
     PaperBBOReplayAdapter,
@@ -886,178 +887,36 @@ async def _start_tables_sync_loop():
 # --------------------------------------------------------------
 #  7️⃣  FastAPI LIFESPAN
 # --------------------------------------------------------------
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global bg_market_task, last_ai_verdicts_cache
-    background_task_supervisor = BackgroundTaskSupervisor(logger)
-    gross_exposure_pct = execution_engine.max_gross_exposure_pct * 100.0
-    single_position_pct = execution_engine.max_single_position_pct * 100.0
-    logger.info(
-        "🚀 Запуск PILUITUS v35.2 | депозит=%.2f ₽ | общий лимит активов=%.1f%% (%.2f ₽), "
-        "одна позиция=%.1f%% (%.2f ₽).",
-        DEPOSIT, gross_exposure_pct, DEPOSIT * gross_exposure_pct / 100.0,
-        single_position_pct, DEPOSIT * single_position_pct / 100.0,
-    )
-
-    try:
-        await db_manager.connect()
-        if getattr(execution_engine, "paper_mode", True):
-            # Every process start is a new PAPER measurement session. Remove only
-            # PAPER execution/risk journals; DBManager refuses to proceed if LIVE
-            # records are present in the shared store.
-            try:
-                reset_result = await db_manager.clear_paper_session()
-                paper_performance_tracker.clear()
-                scalping_shadow_tracker.clear()
-                paper_shadow_labels.clear()
-                risk_manager._balance_initialized = False
-                risk_manager.block_trading = False
-                risk_manager._blocked_date = None
-                risk_manager.total_session_pnl = 0.0
-                risk_manager.realized_pnl = 0.0
-                risk_manager.open_pnl = 0.0
-                risk_manager.current_equity = DEPOSIT
-                risk_manager.free_margin = DEPOSIT
-                risk_manager.high_water_mark = DEPOSIT
-                risk_manager.current_drawdown_pct = 0.0
-                risk_manager._drawdown_warning_active = False
-                risk_manager._loss_streak_count = 0
-                risk_manager._loss_pause_signature = None
-                risk_manager._cached_trading_allowed = None
-                risk_manager._last_risk_snapshot_monotonic = 0.0
-                logger.warning(
-                    "🧹 [PAPER SESSION START] previous PAPER execution/risk data cleared; "
-                    "fresh session_id=%s; storage=%s",
-                    getattr(execution_engine, "session_id", "unknown"),
-                    reset_result,
-                )
-            except Exception:
-                execution_engine._maintenance_active = True
-                execution_engine._maintenance_reason = (
-                    "Автоматическая очистка предыдущей PAPER-сессии не завершилась. "
-                    "Новые входы заблокированы до устранения причины."
-                )
-                logger.critical(
-                    "⛔ [PAPER SESSION START] reset failed; trading remains paused to avoid "
-                    "mixing old and new session statistics.",
-                    exc_info=True,
-                )
-        paper_bbo_replay_recorder.start(db_manager)
-        logger.info(
-            "[PAPER BBO REPLAY] recorder started; selected Top-N + open positions, "
-            "queue_limit=%d batch_size=%d storage_limit=%d",
-            paper_bbo_replay_recorder.queue_limit,
-            paper_bbo_replay_recorder.batch_size,
-            paper_bbo_replay_recorder.storage_limit,
-        )
-        await _restore_shadow_outcomes()
-        if not getattr(execution_engine, "paper_mode", True):
-            await _restore_paper_performance()
-        maintenance_state = await db_manager.get_json("piluitus:paper:maintenance")
-        if isinstance(maintenance_state, dict) and bool(maintenance_state.get("active")):
-            execution_engine._maintenance_active = True
-            execution_engine._maintenance_reason = str(maintenance_state.get("reason") or "PAPER-сессия приостановлена для обслуживания.")
-            logger.warning("⏸️ Восстановлена сохранённая пауза PAPER-сессии. Нажмите «Возобновить PAPER» на странице обслуживания.")
-    except Exception as exc:
-        logger.critical(f"❌ Критическая ошибка старта БД в Lifespan: {exc}")
-
-    # В v17 функция существовала, но не вызывалась при запуске: JSON мог не попасть в Redis.
-    try:
-        from ai.knowledge_parser import TechnicalKnowledgeParser
-        await TechnicalKnowledgeParser.warm_up_rag_cache(db_manager)
-    except Exception as rag_start_err:
-        logger.error("⚠️ Не удалось загрузить базу ai_market_knowledge.json в RAG: %s", rag_start_err, exc_info=True)
-
-    try:
-        # Normal PAPER startup archives prior-session positions during reset.
-        # This is a defensive fail-closed check for residual records if reset was
-        # interrupted or a nonstandard PAPER record escaped the reset inventory.
-        quarantined = await execution_engine.quarantine_unreconciled_paper_positions(db_manager)
-        if quarantined:
-            logger.warning("В старом PAPER-журнале найдено позиций для ручной проверки: %d", quarantined)
-    except Exception as stale_paper_err:
-        logger.error("Не удалось проверить старые PAPER-позиции: %s", stale_paper_err, exc_info=True)
-
-    try:
-        redis_inst = getattr(db_manager, "redis", getattr(db_manager, "_redis", None))
-        if redis_inst is not None:
-            cached_verdicts = await redis_inst.lrange("piluitus:verdicts:history", 0, MAX_CACHE_SIZE - 1)
-            if cached_verdicts:
-                last_ai_verdicts_cache = [json.loads(v) for v in cached_verdicts][::-1]
-                logger.info(f"📚 Из Redis успешно восстановлено {len(last_ai_verdicts_cache)} вердиктов.")
-    except Exception as redis_restore_err:
-        logger.error(f"⚠️ Не удалось восстановить историю вердиктов из Redis: {redis_restore_err}")
-
-    worker = MarketWorker(db=db_manager, ai=ai_engine, broker_client=broker)
-    async def _run_worker_safely():
-        try:
-            await worker.start_processing()
-        except Exception as e:
-            logger.critical(f"❌ КРИТИЧЕСКОЕ ПАДЕНИЕ MarketWorker В ЦИКЛЕ ТОРГОВЛИ: {e}", exc_info=True)
-
-    # Запускаем строго по одной асинхронной задаче на каждый воркер (дублирование удалено)
-    background_task_supervisor.spawn(_run_worker_safely(), name="market-worker")
-    background_task_supervisor.spawn(_finam_metadata_refresh_loop(), name="finam-metadata-refresh")
-    background_task_supervisor.spawn(_start_news_updater(), name="news-updater")
-    background_task_supervisor.spawn(_start_tables_sync_loop(), name="tables-sync")
-
-    from interface import tg_bot as tb
-    tb.global_broker_ref = broker
-    tb.global_execution_engine_ref = execution_engine
-
-    if tg_bot.bot and tg_bot.dp:
-        logger.info("🤖 Подключаем Telegram‑бот к API...")
-        bot: Bot = cast(Bot, tg_bot.bot)          
-        dp = tg_bot.dp                             
-
-        from interface.telegram_runtime import run_polling_with_retry
-
-        async def _start_bot_safely() -> None:
-            await run_polling_with_retry(
-                lambda: dp.start_polling(bot, skip_updates=True),
-                logger=logger,
-            )
-
-        background_task_supervisor.spawn(_start_bot_safely(), name="telegram-polling")
-        logger.info(
-            "🤖 Telegram polling запланирован; доступность API проверяется в фоновой задаче."
-        )
-    else:
-        logger.warning("⚠️ Токен Telegram не найден – режим управления отключён.")
-
-    bg_market_task = background_task_supervisor.spawn(background_broker_init(), name="broker-init-and-streams")
-
-    try:
-        yield
-    finally:
-        logger.info("🛑 Начинаем штатную остановку фоновых задач PILUITUS...")
-        await background_task_supervisor.cancel_and_drain()
-
-        # Producers are stopped; finish all retained verdict writes and order publications
-        # before closing the replay writer or the event loop.
-        try:
-            await _background_operations.drain()
-        except Exception as operation_drain_err:
-            logger.error(
-                "[BACKGROUND OPERATIONS] shutdown drain failed: %s",
-                operation_drain_err,
-                exc_info=True,
-            )
-
-        # Stop producers first (broker/market workers), then drain the replay writer.
-        try:
-            await paper_bbo_replay_recorder.close()
-            logger.info("[PAPER BBO REPLAY] shutdown drain: %s", paper_bbo_replay_recorder.status())
-        except Exception as replay_close_err:
-            logger.error("[PAPER BBO REPLAY] shutdown drain failed: %s", replay_close_err, exc_info=True)
-
-        _trade_flow_maybe_log(force=True)
-        try:
-            await ai_engine.close()
-        except Exception as close_err:
-            logger.warning("Ошибка закрытия AIEngine: %s", close_err, exc_info=True)
-        logger.info("🛑 Фоновые задачи остановлены; AIEngine закрыт.")
-
+application_lifecycle_runtime = ApplicationLifecycleRuntime(
+    logger=logger,
+    execution_engine=execution_engine,
+    deposit=DEPOSIT,
+    db_manager=db_manager,
+    paper_performance_tracker=paper_performance_tracker,
+    shadow_tracker=scalping_shadow_tracker,
+    paper_shadow_labels=paper_shadow_labels,
+    risk_manager=risk_manager,
+    paper_bbo_replay_recorder=paper_bbo_replay_recorder,
+    restore_shadow_outcomes=_restore_shadow_outcomes,
+    restore_paper_performance=_restore_paper_performance,
+    ai_engine=ai_engine,
+    quarantine_unreconciled_paper_positions=lambda: execution_engine.quarantine_unreconciled_paper_positions(db_manager),
+    max_cache_size=MAX_CACHE_SIZE,
+    get_verdict_cache=lambda: last_ai_verdicts_cache,
+    set_verdict_cache=lambda values: globals().__setitem__("last_ai_verdicts_cache", values),
+    worker_factory=lambda: MarketWorker(db=db_manager, ai=ai_engine, broker_client=broker),
+    finam_metadata_refresh_loop=_finam_metadata_refresh_loop,
+    start_news_updater=_start_news_updater,
+    start_tables_sync_loop=_start_tables_sync_loop,
+    telegram_bot_module=tg_bot,
+    broker=broker,
+    market_broker_init=background_broker_init,
+    set_market_task=lambda task: globals().__setitem__("bg_market_task", task),
+    background_operations=_background_operations,
+    trade_flow_maybe_log=_trade_flow_maybe_log,
+    task_supervisor_factory=BackgroundTaskSupervisor,
+)
+lifespan = application_lifecycle_runtime.lifespan
 
 app = FastAPI(title="PILUITUS v35.2 — AI Trading Core", lifespan=lifespan)
 
