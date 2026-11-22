@@ -16,39 +16,23 @@ from uuid import uuid4
 from types import SimpleNamespace
 from config import (
     Settings,
-    PROJECT_ROOT,
     TICKERS_TO_TRADE,
     FINAM_TRADE_LOT_SIZES,
     LOT_SIZES,
 )
-from risk.risk_limits import validate_daily_loss_limit
-
 # --- PILUITUS‑V3 modules ------------------------------------------------
-from storage.db_manager import DBManager
 from runtime.application_core_runtime import ApplicationCoreRuntime
 from runtime.application_shared_state_runtime import ApplicationSharedStateRuntime
+from runtime.application_composition_root_runtime import ApplicationCompositionRootRuntime
 from runtime.paper_session_composition_runtime import PaperSessionCompositionRuntime
 from storage.shadow_outcomes import SHADOW_OUTCOMES_STORAGE_LIMIT
-from runtime.paper_operations_runtime import PAPER_CLEAR_CONFIRMATION
-from runtime.application_composition_runtime import ApplicationCompositionRuntime
 from runtime.market_runtime_composition_runtime import MarketRuntimeCompositionRuntime
-from strategy.bbo_replay import (
-    BBO_REPLAY_STORAGE_KEY,
-    BBO_REPLAY_STORAGE_LIMIT,
-)
-from strategy.bbo_replay_simulator import replay_exit_batch, replay_exit_scenarios
-from strategy.paper_reconciliation import build_shadow_reconciliation
-from strategy.paper_execution_reconciliation import build_actual_vs_replay_reconciliation
-from strategy.shadow_validation import (
-    build_shadow_cost_sensitivity,
-    build_shadow_walk_forward_validation,
-)
+from strategy.bbo_replay import BBOReplayRecorder
 from strategy.paper_performance import (
     PAPER_CLOSED_TRADES_STORAGE_KEY,
     PAPER_CLOSED_TRADES_STORAGE_LIMIT,
     paper_performance_tracker,
 )
-from interface import tg_bot
 from ai.news_parser import MarketNewsParser
 
 # --------------------------------------------------------------
@@ -56,7 +40,6 @@ from ai.news_parser import MarketNewsParser
 # --------------------------------------------------------------
 load_dotenv()
 
-from monitoring.background_tasks import BackgroundTaskSupervisor
 from monitoring.logging_setup import logger, terminal_status
 
 
@@ -258,11 +241,6 @@ _start_tables_sync_loop = market_background_services._start_tables_sync_loop
 # --------------------------------------------------------------
 #  7️⃣  FASTAPI APPLICATION: ЕДИНЫЙ COMPOSITION ROOT
 # --------------------------------------------------------------
-BASE_DIR = PROJECT_ROOT
-TEMPLATE_DIR = BASE_DIR / "interface" / "templates"
-STATIC_DIR = BASE_DIR / "static"
-
-
 def _advance_paper_session_generation() -> None:
     global _paper_session_generation
     _paper_session_generation = (
@@ -270,94 +248,29 @@ def _advance_paper_session_generation() -> None:
     )
 
 
+def _set_verdict_cache(values: list[dict[str, Any]]) -> None:
+    globals().__setitem__("last_ai_verdicts_cache", values)
+
+
 _reset_balance_guard_signature = dashboard_application_runtime.reset_balance_guard_signature
 
-application_composition_runtime = ApplicationCompositionRuntime(
-    lifecycle_dependencies={
-        "logger": logger,
-        "execution_engine": execution_engine,
-        "deposit": DEPOSIT,
-        "db_manager": db_manager,
-        "paper_performance_tracker": paper_performance_tracker,
-        "shadow_tracker": scalping_shadow_tracker,
-        "paper_shadow_labels": paper_shadow_labels,
-        "risk_manager": risk_manager,
-        "paper_bbo_replay_recorder_provider": lambda: paper_bbo_replay_recorder,
-        "restore_shadow_outcomes": _restore_shadow_outcomes,
-        "restore_paper_performance": _restore_paper_performance,
-        "ai_engine": ai_engine,
-        "quarantine_unreconciled_paper_positions": lambda: execution_engine.quarantine_unreconciled_paper_positions(db_manager),
-        "max_cache_size": MAX_CACHE_SIZE,
-        "set_verdict_cache": lambda values: globals().__setitem__("last_ai_verdicts_cache", values),
-        "worker_factory": lambda: market_worker_factory.create(db_manager, ai_engine, broker),
-        "finam_metadata_refresh_loop": _finam_metadata_refresh_loop,
-        "start_news_updater": _start_news_updater,
-        "start_tables_sync_loop": _start_tables_sync_loop,
-        "telegram_bot_module": tg_bot,
-        "broker": broker,
-        "market_broker_init": background_broker_init,
-        "set_market_task": _set_market_task,
-        "background_operations": _background_operations,
-        "trade_flow_maybe_log": _trade_flow_maybe_log,
-        "task_supervisor_factory": BackgroundTaskSupervisor,
-    },
-    app_title="PILUITUS v35.2 — AI Trading Core",
-    dashboard_application_runtime=dashboard_application_runtime,
-    dashboard_route_dependencies={
-        "anomaly_queue": anomaly_queue,
-        "priority_queue_item_factory": priority_queue_item_factory,
-        "validate_daily_loss_limit": validate_daily_loss_limit,
-        "default_daily_loss_limit": Settings.DAILY_LOSS_LIMIT_PCT,
-        "template_dir": TEMPLATE_DIR,
-        "manager": manager,
-        "last_ai_verdicts_cache": last_ai_verdicts_cache,
-        "process_market_event": process_market_event,
-    },
-    paper_operations_dependencies={
-        "db_manager": db_manager,
-        "is_paper_trade": DBManager.is_paper_trade,
-        "execution_engine": execution_engine,
-        "risk_manager": risk_manager,
-        "screener": screener,
-        "paper_performance_tracker": paper_performance_tracker,
-        "shadow_tracker": scalping_shadow_tracker,
-        "paper_shadow_labels": paper_shadow_labels,
-        "paper_session_lock": _paper_session_lock,
-        "connection_manager": manager,
-        "get_open_positions": _get_dashboard_open_positions,
-        "refresh_balance": _refresh_dashboard_balance_snapshot,
-        "anomaly_queue": anomaly_queue,
-        "ai_candidate_deduplicator": _ai_candidate_deduplicator,
-        "last_ai_verdicts_cache": last_ai_verdicts_cache,
-        "trade_flow_counters": _trade_flow_counters,
-        "pending_bbo_candidates": _pending_bbo_candidates,
-        "pending_bbo_lock": _pending_bbo_lock,
-        "position_order_book_diagnostics": position_order_book_diagnostics,
-        "bbo_replay_storage_key": BBO_REPLAY_STORAGE_KEY,
-        "bbo_replay_storage_limit": BBO_REPLAY_STORAGE_LIMIT,
-        "paper_closed_trades_storage_limit": PAPER_CLOSED_TRADES_STORAGE_LIMIT,
-        "shadow_outcomes_storage_limit": SHADOW_OUTCOMES_STORAGE_LIMIT,
-        "lot_sizes": LOT_SIZES,
-        "parse_finite_float": market_runtime_composition.parse_finite_float,
-        "replay_exit_batch": replay_exit_batch,
-        "replay_exit_scenarios": replay_exit_scenarios,
-        "build_shadow_reconciliation": build_shadow_reconciliation,
-        "build_actual_vs_replay_reconciliation": build_actual_vs_replay_reconciliation,
-        "build_shadow_cost_sensitivity": build_shadow_cost_sensitivity,
-        "build_shadow_walk_forward_validation": build_shadow_walk_forward_validation,
-        "deposit": DEPOSIT,
-        "logger": logger,
-        "paper_clear_confirmation": PAPER_CLEAR_CONFIRMATION,
-        "monotonic": time_module.monotonic,
-    },
-    paper_operations_callbacks={
-        "advance_session_generation": _advance_paper_session_generation,
-        "reset_balance_guard_signature": _reset_balance_guard_signature,
-        "rotate_bbo_replay_session": _rotate_paper_bbo_replay_session,
-        "get_bbo_replay_session_id": lambda: paper_bbo_replay_recorder.session_id,
-    },
-    static_dir=STATIC_DIR,
+application_composition_root_runtime = ApplicationCompositionRootRuntime(
+    application_core_runtime=application_core_runtime,
+    application_shared_state_runtime=application_shared_state_runtime,
+    paper_session_composition_runtime=paper_session_composition_runtime,
+    market_runtime_composition=market_runtime_composition,
+    settings=Settings,
+    deposit=DEPOSIT,
+    logger=logger,
+    verdict_cache=last_ai_verdicts_cache,
+    max_cache_size=MAX_CACHE_SIZE,
+    set_verdict_cache=_set_verdict_cache,
+    set_market_task=_set_market_task,
+    advance_session_generation=_advance_paper_session_generation,
 ).create()
+application_composition_runtime = (
+    application_composition_root_runtime.application_composition_runtime
+)
 
 application_lifecycle_runtime = application_composition_runtime.application_lifecycle_runtime
 lifespan = application_composition_runtime.lifespan

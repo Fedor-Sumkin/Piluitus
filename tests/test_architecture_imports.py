@@ -646,35 +646,34 @@ def test_main_delegates_paper_research_and_reconciliation_apis_to_storage() -> N
     assert not set(route_methods) & legacy_handlers
 
 
-def test_main_uses_canonical_shadow_retention_limit() -> None:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
+def test_application_composition_root_uses_canonical_shadow_retention_limit() -> None:
+    root_source = (
+        ROOT / "runtime" / "application_composition_root_runtime.py"
+    ).read_text(encoding="utf-8")
     composition_source = (
         ROOT / "runtime" / "paper_operations_runtime.py"
     ).read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imported = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "storage.shadow_outcomes"
-        for alias in node.names
-    }
-    assert imported == {"SHADOW_OUTCOMES_STORAGE_LIMIT"}
-    assert '"shadow_outcomes_storage_limit": SHADOW_OUTCOMES_STORAGE_LIMIT' in source
+    assert "from storage.shadow_outcomes import SHADOW_OUTCOMES_STORAGE_LIMIT" in root_source
+    assert '"shadow_outcomes_storage_limit": SHADOW_OUTCOMES_STORAGE_LIMIT' in root_source
     assert 'shadow_outcomes_storage_limit=deps["shadow_outcomes_storage_limit"]' in composition_source
 
 
 
-def test_main_delegates_fastapi_application_assembly_to_composition_runtime() -> None:
+def test_main_delegates_fastapi_application_assembly_to_composition_runtimes() -> None:
     main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+    root_source = (
+        ROOT / "runtime" / "application_composition_root_runtime.py"
+    ).read_text(encoding="utf-8")
     composition_source = (
         ROOT / "runtime" / "application_composition_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "ApplicationCompositionRuntime(" in main_source
+    assert "ApplicationCompositionRootRuntime(" in main_source
+    assert "ApplicationCompositionRuntime(" not in main_source
     assert "ApplicationLifecycleRuntime(" not in main_source
     assert "FastAPI(" not in main_source
     assert "StaticFiles(" not in main_source
     assert "PaperOperationsRuntime(" not in main_source
+    assert "ApplicationCompositionRuntime(" in root_source
     assert "ApplicationLifecycleRuntime(" in composition_source
     assert "FastAPI(title=self.app_title, lifespan=lifecycle_runtime.lifespan)" in composition_source
     assert "dashboard_application_runtime.register_routes(" in composition_source
