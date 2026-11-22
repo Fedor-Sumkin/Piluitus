@@ -12,6 +12,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _application_process_runtime_source() -> str:
+    return (
+        ROOT / "runtime" / "application_process_runtime.py"
+    ).read_text(encoding="utf-8")
+
+
 def _compatibility_exports_source() -> str:
     return (
         ROOT / "runtime" / "application_compatibility_exports.py"
@@ -235,9 +241,13 @@ def test_main_delegates_runtime_logging_to_monitoring() -> None:
         "_ErrorLogFilter",
     } & local_classes
 
+    process_tree = ast.parse(
+        _application_process_runtime_source(),
+        filename="runtime/application_process_runtime.py",
+    )
     imported = {
         alias.name
-        for node in tree.body
+        for node in process_tree.body
         if isinstance(node, ast.ImportFrom)
         and node.module == "monitoring.logging_setup"
         for alias in node.names
@@ -456,7 +466,7 @@ def test_main_delegates_core_service_and_capital_composition_to_runtime() -> Non
     bootstrap_source = (
         ROOT / "runtime" / "application_runtime_bootstrap.py"
     ).read_text(encoding="utf-8")
-    assert "ApplicationRuntimeBootstrap(" in main_source
+    assert "ApplicationRuntimeBootstrap(" in _application_process_runtime_source()
     assert "ApplicationCoreRuntime(" in bootstrap_source
     for direct_constructor in (
         "DBManager()",
@@ -504,6 +514,7 @@ def test_main_delegates_shadow_outcome_persistence_to_storage() -> None:
         for alias in node.names
     }
     assert "from storage.shadow_outcomes import SHADOW_OUTCOMES_STORAGE_LIMIT" in bootstrap_source
+    assert "ApplicationProcessRuntime(" in source
 
     composition_imports = {
         alias.name
@@ -679,7 +690,7 @@ def test_main_delegates_fastapi_application_assembly_to_composition_runtimes() -
     bootstrap_source = (
         ROOT / "runtime" / "application_runtime_bootstrap.py"
     ).read_text(encoding="utf-8")
-    assert "ApplicationRuntimeBootstrap(" in main_source
+    assert "ApplicationRuntimeBootstrap(" in _application_process_runtime_source()
     assert "ApplicationCompositionRootRuntime(" in bootstrap_source
     assert "ApplicationCompositionRuntime(" not in main_source
     assert "ApplicationLifecycleRuntime(" not in main_source
