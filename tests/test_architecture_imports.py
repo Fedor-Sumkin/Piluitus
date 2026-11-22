@@ -678,6 +678,9 @@ def test_main_delegates_auxiliary_market_events_and_bbo_replay_to_runtime() -> N
 
 def test_main_delegates_candidate_admission_to_strategy_pipeline() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
+    composition_source = (
+        ROOT / "runtime" / "market_application_runtime.py"
+    ).read_text(encoding="utf-8")
     runtime_source = (
         ROOT / "runtime" / "market_data_event_runtime.py"
     ).read_text(encoding="utf-8")
@@ -688,7 +691,9 @@ def test_main_delegates_candidate_admission_to_strategy_pipeline() -> None:
         ROOT / "runtime" / "market_ingestion_runtime.py"
     ).read_text(encoding="utf-8")
     assert "MarketCandidatePipeline(" in factory_source
+    assert "MarketApplicationRuntime(" in source
     assert "market_candidate_pipeline = market_ingestion_components.market_candidate_pipeline" in source
+    assert "MarketIngestionRuntimeFactory(" in composition_source
     assert "self.candidate_pipeline.process_candidate(" in runtime_source
     assert "validate_atr_readiness" not in runtime_source
     assert "infer_candidate_direction" not in runtime_source
@@ -700,6 +705,9 @@ def test_main_delegates_candidate_admission_to_strategy_pipeline() -> None:
 
 def test_main_delegates_pending_bbo_candidate_lifecycle_to_strategy_runtime() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
+    composition_source = (
+        ROOT / "runtime" / "market_application_runtime.py"
+    ).read_text(encoding="utf-8")
     runtime_source = (
         ROOT / "strategy" / "market_data_runtime.py"
     ).read_text(encoding="utf-8")
@@ -713,20 +721,9 @@ def test_main_delegates_pending_bbo_candidate_lifecycle_to_strategy_runtime() ->
     ).read_text(encoding="utf-8")
     assert "self.pending_bbo_runtime.has_pending(ticker)" in event_runtime_source
     assert 'await self.pending_bbo_runtime.resume(ticker, trigger="QUOTES")' in event_runtime_source
-    assert "pending_bbo_count_provider=lambda: getattr(" in source
-    assert 'globals().get("pending_bbo_candidate_store")' in source
-
-    tree = ast.parse(source, filename="main.py")
-    wrapper = next(
-        node for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_resume_pending_bbo_candidate"
-    )
-    wrapper_source = ast.get_source_segment(source, wrapper) or ""
-    assert "await pending_bbo_runtime.resume(ticker, trigger=trigger)" in wrapper_source
-    assert "refresh_candidate_bbo_metrics" not in wrapper_source
-    assert "validate_entry_evidence" not in wrapper_source
-    assert "validate_atr_readiness" not in wrapper_source
+    assert "def store_pending_bbo_candidate(" in composition_source
+    assert "pending_bbo_candidate_store.store_candidate(" in composition_source
+    assert "_resume_pending_bbo_candidate = market_application_runtime.resume_pending_bbo_candidate" in source
 
     runtime_tree = ast.parse(
         runtime_source, filename="strategy/market_data_runtime.py"
@@ -760,11 +757,12 @@ def test_main_delegates_pending_bbo_candidate_lifecycle_to_strategy_runtime() ->
 
 
 def test_market_worker_delegates_order_execution_lifecycle_to_execution_package() -> None:
-    source = (ROOT / "main.py").read_text(encoding="utf-8")
+    composition_source = (
+        ROOT / "runtime" / "market_application_runtime.py"
+    ).read_text(encoding="utf-8")
     runtime_source = (
         ROOT / "execution" / "market_worker_execution_runtime.py"
     ).read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
     worker_source = (ROOT / "runtime" / "market_worker.py").read_text(encoding="utf-8")
     worker_tree = ast.parse(worker_source, filename="runtime/market_worker.py")
     worker_imports = {
@@ -775,10 +773,10 @@ def test_market_worker_delegates_order_execution_lifecycle_to_execution_package(
         for alias in node.names
     }
     assert worker_imports == {"MarketWorkerExecutionRuntime"}
-    assert "MarketWorkerFactory" in source
+    assert "MarketWorkerFactory(" in composition_source
     assert "self.execution_runtime = MarketWorkerExecutionRuntime(**execution_dependencies)" in worker_source
-    assert '"normalize_execution_fill": normalize_execution_fill' in source
-    assert '"publish_execution_outcome": publish_execution_outcome' in source
+    assert '"normalize_execution_fill": callbacks["normalize_execution_fill"]' in composition_source
+    assert '"publish_execution_outcome": callbacks["publish_execution_outcome"]' in composition_source
 
     worker = next(
         node for node in worker_tree.body
@@ -799,7 +797,6 @@ def test_market_worker_delegates_order_execution_lifecycle_to_execution_package(
     assert "candidate_is_expired(" in runtime_source
     assert "self.normalize_execution_fill(" in runtime_source
     assert "await self.publish_execution_outcome(" in runtime_source
-
 
 
 def test_main_delegates_market_verdict_publication_to_execution_package() -> None:
@@ -1063,21 +1060,13 @@ def test_main_delegates_paper_session_maintenance_to_storage_and_interface() -> 
 def test_main_delegates_background_market_services_to_runtime() -> None:
     root = Path(__file__).resolve().parents[1]
     source = (root / "main.py").read_text(encoding="utf-8")
+    composition_source = (
+        root / "runtime" / "market_application_runtime.py"
+    ).read_text(encoding="utf-8")
     runtime_source = (root / "runtime" / "market_background_services.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imported = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "runtime.market_background_services"
-        for alias in node.names
-    }
-    assert imported == {"MarketBackgroundServicesRuntime"}
-    assert "market_background_services = MarketBackgroundServicesRuntime(" in source
-    assert "await market_background_services.background_broker_init()" in source
-    assert "await market_background_services._finam_metadata_refresh_loop()" in source
-    assert "await market_background_services._start_news_updater()" in source
-    assert "await market_background_services._start_tables_sync_loop()" in source
+    assert "MarketBackgroundServicesRuntime(" in composition_source
+    assert "market_background_services = market_application_runtime.market_background_services" in source
+    assert "process_market_event=self.process_market_event" in composition_source
     for method in ("background_broker_init", "_finam_metadata_refresh_loop", "_start_news_updater", "_start_tables_sync_loop"):
         assert f"async def {method}(self" in runtime_source
     assert "asyncio.TaskGroup()" in runtime_source
@@ -1086,7 +1075,6 @@ def test_main_delegates_background_market_services_to_runtime() -> None:
     assert "RiskManager.update_finam_lot_sizes(" in runtime_source
     assert "await self.manager.broadcast(" in runtime_source
     assert "await self.refresh_dashboard_balance_snapshot(active_positions)" in runtime_source
-
 
 
 def test_main_delegates_dashboard_http_and_websocket_routes_to_interface() -> None:

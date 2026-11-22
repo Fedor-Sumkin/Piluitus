@@ -44,10 +44,8 @@ from execution.verdict_publisher import publish_market_verdict
 from risk.risk_manager import RiskManager
 from runtime.priority_queue import PriorityItem, PriorityQueueItemFactory
 from runtime.market_event_normalizer import build_market_candidate_payload
-from runtime.market_background_services import MarketBackgroundServicesRuntime
 from runtime.application_lifecycle_runtime import ApplicationLifecycleRuntime
-from runtime.market_worker import MarketWorkerFactory
-from runtime.market_ingestion_runtime import MarketIngestionRuntimeFactory
+from runtime.market_application_runtime import MarketApplicationRuntime
 from strategy.llm_context import attach_llm_rule_context
 from strategy.llm_response import build_llm_error_response, process_llm_response
 from strategy.post_llm_validation import validate_post_llm_entry
@@ -302,138 +300,6 @@ _log_scalping_shadow = market_observability_runtime.log_shadow_candidate
 _log_prefilter_blocked = market_observability_runtime.log_prefilter_blocked
 
 
-def _paper_queue_flow_conflict_reason(
-    direction: str, metrics: dict[str, Any]
-) -> str:
-    return paper_queue_flow_conflict_reason(
-        direction,
-        metrics,
-        paper_mode=bool(Settings.PAPER_TRADING),
-        enabled=os.getenv("PILUITUS_PAPER_QUEUE_FLOW_CONFLICT_GUARD", "1"),
-        conflict_detector=has_queue_trade_flow_conflict,
-        finite_float=finite_float,
-    )
-
-
-def _reserve_ai_ticker(
-    ticker: str,
-    direction: str = "NONE",
-    metrics: dict[str, Any] | None = None,
-) -> bool:
-    pattern = (
-        str((metrics or {}).get("bar_pattern_name") or "FLOW")
-        if isinstance(metrics, dict) else "FLOW"
-    )
-    return _ai_candidate_deduplicator.reserve(ticker, direction, pattern)
-
-
-def _release_ai_ticker(ticker: str) -> None:
-    _ai_candidate_deduplicator.release(ticker)
-
-
-async def _warmup_selected_m1_history(
-    tickers: tuple[str, ...] | list[str]
-) -> None:
-    await m1_history_warmup.warmup_selected_m1_history(tickers)
-
-
-def _schedule_m1_history_warmup(
-    tickers: tuple[str, ...] | list[str]
-) -> None:
-    m1_history_warmup.schedule(tickers)
-
-
-def _drop_pending_bbo_candidate(
-    ticker: str, expected: dict[str, Any] | None = None
-) -> bool:
-    return pending_bbo_runtime.drop(ticker, expected)
-
-
-def _cancel_pending_bbo_candidate(
-    ticker: str, expected: dict[str, Any] | None = None
-) -> bool:
-    return pending_bbo_runtime.cancel(ticker, expected)
-
-
-def _expire_pending_bbo_candidates(now: float | None = None) -> None:
-    pending_bbo_runtime.expire(now)
-
-
-def _store_pending_bbo_candidate(
-    ticker: str,
-    payload: dict[str, Any],
-    received_monotonic: object | None = None,
-) -> None:
-    pending_bbo_runtime.store_candidate(
-        ticker, payload, received_monotonic=received_monotonic
-    )
-
-
-async def _resume_pending_bbo_candidate(
-    ticker: str,
-    *,
-    trigger: str = "ORDER_BOOK",
-) -> None:
-    await pending_bbo_runtime.resume(ticker, trigger=trigger)
-
-
-
-# Market-ingestion state and its collaborating runtimes are composed as one unit.
-market_ingestion_components = MarketIngestionRuntimeFactory(
-    dependencies={
-        "broker": broker,
-        "screener": screener,
-        "execution_engine": execution_engine,
-        "db_manager": db_manager,
-        "anomaly_queue": anomaly_queue,
-        "queue_item_factory": priority_queue_item_factory,
-        "shadow_tracker": scalping_shadow_tracker,
-        "logger": logger,
-        "terminal_status": terminal_status,
-        "recorder_provider": lambda: paper_bbo_replay_recorder,
-        "session_generation_provider": lambda: _paper_session_generation,
-        "monotonic": time_module.monotonic,
-        "sleep": asyncio.sleep,
-        "environment": os.environ,
-    },
-    callbacks={
-        "trade_flow_increment": _trade_flow_inc,
-        "guard_reason_bucket": _guard_reason_bucket,
-        "record_position_order_book_event": _record_position_order_book_event,
-        "refresh_bbo_metrics": refresh_candidate_bbo_metrics,
-        "persist_shadow_outcomes": _persist_shadow_outcomes,
-        "resume_pending_bbo_candidate": _resume_pending_bbo_candidate,
-        "infer_candidate_direction": infer_candidate_direction,
-        "paper_mode_provider": lambda: bool(getattr(execution_engine, "paper_mode", False)),
-        "validate_entry_evidence": validate_entry_evidence,
-        "validate_atr_readiness": validate_atr_readiness,
-        "queue_flow_conflict_reason": _paper_queue_flow_conflict_reason,
-        "reserve_ai_ticker": _reserve_ai_ticker,
-        "release_ai_ticker": _release_ai_ticker,
-        "mark_shadow_llm_not_called": _mark_shadow_llm_not_called,
-        "log_shadow_candidate": _log_scalping_shadow,
-        "trade_flow_guard_block": _trade_flow_guard_block,
-        "log_prefilter_blocked": _log_prefilter_blocked,
-        "update_numpy_impulse_status": update_numpy_impulse_status,
-        "store_pending_bbo_candidate": _store_pending_bbo_candidate,
-        "build_candidate_payload": build_market_candidate_payload,
-        "classify_direction": classify_direction_evidence,
-        "schedule_m1_history_warmup": _schedule_m1_history_warmup,
-    },
-).create()
-
-_ai_candidate_deduplicator = market_ingestion_components.ai_candidate_deduplicator
-_AI_CANDIDATE_TTL_SEC = market_ingestion_components.ai_candidate_ttl_sec
-_pending_bbo_candidates = market_ingestion_components.pending_bbo_candidates
-_pending_bbo_lock = market_ingestion_components.pending_bbo_lock
-m1_history_warmup = market_ingestion_components.m1_history_warmup
-pending_bbo_candidate_store = market_ingestion_components.pending_bbo_candidate_store
-pending_bbo_runtime = market_ingestion_components.pending_bbo_runtime
-market_auxiliary_event_router = market_ingestion_components.market_auxiliary_event_router
-market_candidate_pipeline = market_ingestion_components.market_candidate_pipeline
-market_data_event_runtime = market_ingestion_components.market_data_event_runtime
-
-
 # Последний рассчитанный срез баланса для UI. Не изменяет внутреннюю риск-модель.
 _dashboard_balance_snapshot = {
     "equity": round(DEPOSIT, 2),
@@ -495,94 +361,108 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
 
 
 # --------------------------------------------------------------
-#  5️⃣  MARKET WORKER С ПРИОРИТЕТНЫМ ПЕРЕХВАТОМ И КОНТУРОМ RAG
-# --------------------------------------------------------------
-market_worker_factory = MarketWorkerFactory(
-    client_id=CLIENT_ID,
-    execution_runtime_dependencies={
+#  5️⃣  MARKET WORKER И ФОНОВЫЕ СЕРВИСЫ: ЕДИНЫЙ COMPOSITION ROOT
+market_application_runtime = MarketApplicationRuntime(
+    dependencies={
+        "broker": broker,
+        "screener": screener,
         "execution_engine": execution_engine,
+        "db_manager": db_manager,
+        "anomaly_queue": anomaly_queue,
+        "queue_item_factory": priority_queue_item_factory,
+        "shadow_tracker": scalping_shadow_tracker,
+        "logger": logger,
+        "terminal_status": terminal_status,
+        "recorder_provider": lambda: paper_bbo_replay_recorder,
+        "session_generation_provider": lambda: _paper_session_generation,
+        "environment": os.environ,
+        "client_id": CLIENT_ID,
+        "ai_engine": ai_engine,
         "risk_manager": risk_manager,
         "session_lock": _paper_session_lock,
-        "session_generation_provider": lambda: _paper_session_generation,
-        "candidate_is_expired": candidate_is_expired,
-        "candidate_ttl_sec": _AI_CANDIDATE_TTL_SEC,
+        "settings": Settings,
+        "background_operations": _background_operations,
+        "manager": manager,
+        "get_open_positions": _get_dashboard_open_positions,
+        "refresh_balance_snapshot": _refresh_dashboard_balance_snapshot,
+        "refresh_dashboard_balance_snapshot": _refresh_dashboard_balance_snapshot,
+        "verdict_cache": last_ai_verdicts_cache,
+        "max_cache_size": MAX_CACHE_SIZE,
+        "balance_snapshot": _dashboard_balance_snapshot,
+        "tickers": TICKERS_TO_TRADE,
+        "finam_trade_lot_sizes": FINAM_TRADE_LOT_SIZES,
+    },
+    callbacks={
         "trade_flow_increment": _trade_flow_inc,
-        "logger": logger,
-        "shadow_tracker": scalping_shadow_tracker,
+        "guard_reason_bucket": _guard_reason_bucket,
+        "record_position_order_book_event": _record_position_order_book_event,
+        "refresh_bbo_metrics": refresh_candidate_bbo_metrics,
+        "persist_shadow_outcomes": _persist_shadow_outcomes,
+        "infer_candidate_direction": infer_candidate_direction,
+        "paper_mode_provider": lambda: bool(getattr(execution_engine, "paper_mode", False)),
+        "validate_entry_evidence": validate_entry_evidence,
+        "validate_atr_readiness": validate_atr_readiness,
+        "mark_shadow_llm_not_called": _mark_shadow_llm_not_called,
+        "log_shadow_candidate": _log_scalping_shadow,
+        "trade_flow_guard_block": _trade_flow_guard_block,
+        "log_prefilter_blocked": _log_prefilter_blocked,
+        "update_numpy_impulse_status": update_numpy_impulse_status,
+        "build_candidate_payload": build_market_candidate_payload,
+        "classify_direction": classify_direction_evidence,
+        "candidate_is_expired": candidate_is_expired,
         "normalise_execution_status": normalise_execution_status,
         "nonnegative_int": nonnegative_int,
         "normalize_execution_fill": normalize_execution_fill,
-        "lot_sizes": FINAM_TRADE_LOT_SIZES,
         "publish_execution_outcome": publish_execution_outcome,
-        "verdict_cache": last_ai_verdicts_cache,
-        "get_open_positions": _get_dashboard_open_positions,
-        "refresh_balance_snapshot": _refresh_dashboard_balance_snapshot,
-        "manager": manager,
-    },
-    processing_runtime_dependencies={
-        "anomaly_queue": anomaly_queue,
-        "execution_engine": execution_engine,
-        "risk_manager": risk_manager,
-        "session_lock": _paper_session_lock,
-        "session_generation_provider": lambda: _paper_session_generation,
-        "candidate_is_expired": candidate_is_expired,
-        "candidate_ttl_sec": _AI_CANDIDATE_TTL_SEC,
-        "trade_flow_increment": _trade_flow_inc,
-        "logger": logger,
-        "settings": Settings,
         "validate_daily_loss_limit": validate_daily_loss_limit,
         "parse_finite_float": _parse_finite_float,
-        "background_operations": _background_operations,
         "log_trading_event": log_trading_event_to_file,
         "attach_llm_rule_context": attach_llm_rule_context,
         "build_llm_feature_snapshot": build_llm_feature_snapshot,
         "build_llm_error_response": build_llm_error_response,
         "process_llm_response": process_llm_response,
         "validate_post_llm_entry": validate_post_llm_entry,
-        "screener": screener,
-        "queue_flow_conflict_reason": _paper_queue_flow_conflict_reason,
         "prepare_entry_execution_plan": prepare_entry_execution_plan,
-        "lot_sizes": FINAM_TRADE_LOT_SIZES,
-        "trade_flow_guard_block": _trade_flow_guard_block,
         "finite_float": finite_float,
-        "nonnegative_int": nonnegative_int,
         "build_default_signal_reason": build_default_signal_reason,
         "build_verdict_explanation": build_verdict_explanation,
         "classify_local_evidence_diagnostic": classify_local_evidence_diagnostic,
         "build_pre_llm_risk_block_verdict": build_pre_llm_risk_block_verdict,
         "build_llm_verdict_record": build_llm_verdict_record,
         "link_shadow_candidate_verdict": link_shadow_candidate_verdict,
-        "shadow_tracker": scalping_shadow_tracker,
         "enrich_ai_analysis_with_verdict": enrich_ai_analysis_with_verdict,
-        "verdict_cache": last_ai_verdicts_cache,
-        "max_cache_size": MAX_CACHE_SIZE,
-        "manager": manager,
-        "balance_snapshot": _dashboard_balance_snapshot,
         "publish_market_verdict": publish_market_verdict,
-        "release_ai_ticker": _release_ai_ticker,
-        "paper_session_generation_lock": _paper_session_lock,
     },
-)
+).create()
 
-# --------------------------------------------------------------
+market_ingestion_components = market_application_runtime.ingestion_components
+market_worker_factory = market_application_runtime.market_worker_factory
+market_background_services = market_application_runtime.market_background_services
+_ai_candidate_deduplicator = market_ingestion_components.ai_candidate_deduplicator
+_AI_CANDIDATE_TTL_SEC = market_ingestion_components.ai_candidate_ttl_sec
+_pending_bbo_candidates = market_ingestion_components.pending_bbo_candidates
+_pending_bbo_lock = market_ingestion_components.pending_bbo_lock
+m1_history_warmup = market_ingestion_components.m1_history_warmup
+pending_bbo_candidate_store = market_ingestion_components.pending_bbo_candidate_store
+pending_bbo_runtime = market_ingestion_components.pending_bbo_runtime
+market_auxiliary_event_router = market_ingestion_components.market_auxiliary_event_router
+market_candidate_pipeline = market_ingestion_components.market_candidate_pipeline
+market_data_event_runtime = market_ingestion_components.market_data_event_runtime
+
+# Keep stable main-module helper names for callers and operator diagnostics.
+_paper_queue_flow_conflict_reason = market_application_runtime.paper_queue_flow_conflict_reason
+_reserve_ai_ticker = market_application_runtime.reserve_ai_ticker
+_release_ai_ticker = market_application_runtime.release_ai_ticker
+_warmup_selected_m1_history = market_application_runtime.warmup_selected_m1_history
+_schedule_m1_history_warmup = market_application_runtime.schedule_m1_history_warmup
+_drop_pending_bbo_candidate = market_application_runtime.drop_pending_bbo_candidate
+_cancel_pending_bbo_candidate = market_application_runtime.cancel_pending_bbo_candidate
+_expire_pending_bbo_candidates = market_application_runtime.expire_pending_bbo_candidates
+_store_pending_bbo_candidate = market_application_runtime.store_pending_bbo_candidate
+_resume_pending_bbo_candidate = market_application_runtime.resume_pending_bbo_candidate
+
 #  6️⃣  ФОНОВЫЕ ЦИКЛЫ ОБНОВЛЕНИЯ И СИНХРОНИЗАЦИИ ТАБЛИЦ
-# --------------------------------------------------------------
-market_background_services = MarketBackgroundServicesRuntime(
-    broker=broker,
-    execution_engine=execution_engine,
-    logger=logger,
-    tickers=TICKERS_TO_TRADE,
-    finam_trade_lot_sizes=FINAM_TRADE_LOT_SIZES,
-    screener=screener,
-    process_market_event=process_market_event,
-    db_manager=db_manager,
-    manager=manager,
-    get_dashboard_open_positions=_get_dashboard_open_positions,
-    refresh_dashboard_balance_snapshot=_refresh_dashboard_balance_snapshot,
-)
-
-
-async def background_broker_init():
+market_background_services = market_application_runtime.market_background_servicesasync def background_broker_init():
     await market_background_services.background_broker_init()
 
 
