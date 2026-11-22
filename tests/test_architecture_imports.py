@@ -1024,13 +1024,13 @@ def test_main_delegates_verdict_record_construction_and_enrichment_to_strategy()
     assert '"build_pre_llm_risk_block_verdict": build_pre_llm_risk_block_verdict' in composition_source
     assert '"build_llm_verdict_record": build_llm_verdict_record' in composition_source
     assert "verdict = self.build_pre_llm_risk_block_verdict(" in risk_source
-    assert "verdict_data = build_llm_verdict_record(" in runtime_source
-    assert "link_shadow_candidate_verdict(" in runtime_source
-    assert "enrich_ai_analysis_with_verdict(" in runtime_source
+    assert "verdict_data = build_llm_verdict_record(" in queue_source
+    assert "link_shadow_candidate_verdict(" in queue_source
+    assert "enrich_ai_analysis_with_verdict(" in queue_source
     assert "decision_source" in module_source
     assert "llm_reason_code_raw" in module_source
     assert "market_regime" in module_source
-    assert "scalping_shadow_tracker.attach_llm_verdict(" not in runtime_source
+    assert "scalping_shadow_tracker.attach_llm_verdict(" not in queue_source
 
 def test_market_worker_delegates_queue_and_llm_processing_to_runtime() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")

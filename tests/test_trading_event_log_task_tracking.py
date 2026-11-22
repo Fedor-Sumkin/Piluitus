@@ -12,7 +12,7 @@ def _main_source() -> tuple[str, ast.Module]:
 def test_critical_fire_and_forget_tasks_are_retained_and_drained():
     root = Path(__file__).resolve().parents[1]
     source, module = _main_source()
-    runtime_path = root / "runtime" / "market_worker_processing_runtime.py"
+    runtime_path = root / "runtime" / "market_worker_queue_processing_runtime.py"
     runtime_source = runtime_path.read_text(encoding="utf-8")
     runtime_module = ast.parse(runtime_source, filename=str(runtime_path))
 
@@ -90,7 +90,7 @@ def test_shutdown_drains_tracked_operations_after_producers_stop():
     assert '"background_operations": shared.background_operations' in root_source
     assert '"background_operations": shared.background_operations' in root_source
     assert "_background_operations.spawn(" in (
-        root / "runtime" / "market_worker_processing_runtime.py"
+        root / "runtime" / "market_worker_queue_processing_runtime.py"
     ).read_text(encoding="utf-8")
     assert "_spawn_tracked_operation" not in main_source
     assert "_drain_tracked_operations" not in main_source
