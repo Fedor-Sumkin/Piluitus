@@ -22,13 +22,12 @@ class ApplicationLifecycleRuntime:
         shadow_tracker: Any,
         paper_shadow_labels: list[dict[str, Any]],
         risk_manager: Any,
-        paper_bbo_replay_recorder: Any,
+        paper_bbo_replay_recorder_provider: Callable[[], Any],
         restore_shadow_outcomes: Callable[[], Any],
         restore_paper_performance: Callable[[], Any],
         ai_engine: Any,
         quarantine_unreconciled_paper_positions: Callable[[], Any],
         max_cache_size: int,
-        get_verdict_cache: Callable[[], list[dict[str, Any]]],
         set_verdict_cache: Callable[[list[dict[str, Any]]], None],
         worker_factory: Callable[[], Any],
         finam_metadata_refresh_loop: Callable[[], Any],
@@ -50,13 +49,12 @@ class ApplicationLifecycleRuntime:
         self.shadow_tracker = shadow_tracker
         self.paper_shadow_labels = paper_shadow_labels
         self.risk_manager = risk_manager
-        self.paper_bbo_replay_recorder = paper_bbo_replay_recorder
+        self.paper_bbo_replay_recorder_provider = paper_bbo_replay_recorder_provider
         self.restore_shadow_outcomes = restore_shadow_outcomes
         self.restore_paper_performance = restore_paper_performance
         self.ai_engine = ai_engine
         self.quarantine_unreconciled_paper_positions = quarantine_unreconciled_paper_positions
         self.max_cache_size = int(max_cache_size)
-        self.get_verdict_cache = get_verdict_cache
         self.set_verdict_cache = set_verdict_cache
         self.worker_factory = worker_factory
         self.finam_metadata_refresh_loop = finam_metadata_refresh_loop
@@ -127,13 +125,14 @@ class ApplicationLifecycleRuntime:
                         "mixing old and new session statistics.",
                         exc_info=True,
                     )
-            self.paper_bbo_replay_recorder.start(db_manager)
+            paper_bbo_replay_recorder = self.paper_bbo_replay_recorder_provider()
+            paper_bbo_replay_recorder.start(db_manager)
             logger.info(
                 "[PAPER BBO REPLAY] recorder started; selected Top-N + open positions, "
                 "queue_limit=%d batch_size=%d storage_limit=%d",
-                self.paper_bbo_replay_recorder.queue_limit,
-                self.paper_bbo_replay_recorder.batch_size,
-                self.paper_bbo_replay_recorder.storage_limit,
+                paper_bbo_replay_recorder.queue_limit,
+                paper_bbo_replay_recorder.batch_size,
+                paper_bbo_replay_recorder.storage_limit,
             )
             await self.restore_shadow_outcomes()
             if not getattr(execution_engine, "paper_mode", True):
@@ -223,8 +222,9 @@ class ApplicationLifecycleRuntime:
                 )
 
             try:
-                await self.paper_bbo_replay_recorder.close()
-                logger.info("[PAPER BBO REPLAY] shutdown drain: %s", self.paper_bbo_replay_recorder.status())
+                paper_bbo_replay_recorder = self.paper_bbo_replay_recorder_provider()
+                await paper_bbo_replay_recorder.close()
+                logger.info("[PAPER BBO REPLAY] shutdown drain: %s", paper_bbo_replay_recorder.status())
             except Exception as replay_close_err:
                 logger.error("[PAPER BBO REPLAY] shutdown drain failed: %s", replay_close_err, exc_info=True)
 
