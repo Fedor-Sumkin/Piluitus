@@ -572,6 +572,9 @@ def test_main_delegates_paper_research_and_reconciliation_apis_to_storage() -> N
 
 def test_main_uses_canonical_shadow_retention_limit() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
+    composition_source = (
+        ROOT / "runtime" / "paper_operations_runtime.py"
+    ).read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
     imported = {
         alias.name
@@ -581,7 +584,8 @@ def test_main_uses_canonical_shadow_retention_limit() -> None:
         for alias in node.names
     }
     assert {"ShadowOutcomePersistence", "SHADOW_OUTCOMES_STORAGE_LIMIT"} <= imported
-    assert "shadow_outcomes_storage_limit=SHADOW_OUTCOMES_STORAGE_LIMIT" in source
+    assert '"shadow_outcomes_storage_limit": SHADOW_OUTCOMES_STORAGE_LIMIT' in source
+    assert 'shadow_outcomes_storage_limit=deps["shadow_outcomes_storage_limit"]' in composition_source
 
 
 def test_lifespan_delegates_long_running_task_ownership_to_supervisor() -> None:
