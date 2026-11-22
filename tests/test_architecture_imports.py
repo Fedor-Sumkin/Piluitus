@@ -277,7 +277,7 @@ def test_application_shared_state_runtime_owns_background_operation_tracking() -
     shared_source = (
         ROOT / "runtime" / "application_shared_state_runtime.py"
     ).read_text(encoding="utf-8")
-    assert "_background_operations = application_shared_state_runtime.background_operations" in main_source
+    assert '"_background_operations": shared.background_operations' in _compatibility_exports_source()
     assert "from monitoring.background_tasks import BackgroundOperationTracker" in shared_source
     assert "background_operations = self.background_operations_factory(self.logger)" in shared_source
     assert "_tracked_operation_tasks" not in main_source
