@@ -112,10 +112,10 @@ from interface import tg_bot
 from interface.websocket_manager import ConnectionManager
 from ai.news_parser import MarketNewsParser
 from monitoring.trade_flow_diagnostics import (
-    TradeFlowCounters,
     bbo_resume_reason_bucket as _bbo_resume_reason_bucket,
     guard_reason_bucket as _guard_reason_bucket,
 )
+from monitoring.market_observability_runtime import MarketObservabilityRuntime
 
 # --------------------------------------------------------------
 #  ENVIRONMENT & INITIALIZATION
@@ -124,11 +124,6 @@ load_dotenv()
 
 from monitoring.background_tasks import BackgroundOperationTracker
 from monitoring.background_tasks import BackgroundTaskSupervisor
-from monitoring.position_order_book_diagnostics import PositionOrderBookDiagnostics
-from monitoring.shadow_scorecard_logger import StrategyShadowScorecardLogger
-from monitoring.trade_flow_report import TradeFlowReportLogger
-from monitoring.strategy_shadow_diagnostics import StrategyShadowDiagnostics
-from monitoring.prefilter_diagnostics import PrefilterBlockLogger
 from monitoring.logging_setup import (
     RUN_LOG_PATHS,
     logger,
@@ -136,8 +131,6 @@ from monitoring.logging_setup import (
     update_numpy_impulse_status,
 )
 from monitoring.trading_event_logger import log_trading_event_to_file
-
-prefilter_block_logger = PrefilterBlockLogger(logger)
 
 from portfolio.paper_accounting import (
     parse_finite_float as _parse_finite_float,
@@ -231,14 +224,33 @@ _paper_session_lock = asyncio.Lock()
 _paper_session_generation = 0
 bg_market_task = None
 
-# Диагностический накопитель; окно отчёта остаётся 60 секунд.
-_trade_flow_counters = TradeFlowCounters(time_module.monotonic())
 # Forward labels are research-only and bounded in memory; all observations are logged.
 scalping_shadow_tracker = ShadowForwardTracker()
 paper_bbo_replay_recorder = BBOReplayRecorder()
 execution_engine.bbo_replay_session_id = paper_bbo_replay_recorder.session_id
 execution_engine.paper_exit_event_recorder = paper_bbo_replay_recorder.record_exit_trigger
 paper_shadow_labels: list[dict[str, Any]] = []
+
+# One composition boundary owns the observational diagnostics used across runtimes.
+market_observability_runtime = MarketObservabilityRuntime(
+    logger=logger,
+    shadow_tracker=scalping_shadow_tracker,
+    execution_engine=execution_engine,
+    screener=screener,
+    parse_finite_float=_parse_finite_float,
+    guard_reason_bucket=_guard_reason_bucket,
+    evaluate_candidate=evaluate_scalping_candidate,
+    pending_bbo_count_provider=lambda: getattr(
+        globals().get("pending_bbo_candidate_store"), "count", lambda: 0
+    )(),
+    monotonic=time_module.monotonic,
+)
+_trade_flow_counters = market_observability_runtime.trade_flow_counters
+position_order_book_diagnostics = market_observability_runtime.position_order_book_diagnostics
+shadow_scorecard_logger = market_observability_runtime.shadow_scorecard_logger
+trade_flow_report_logger = market_observability_runtime.trade_flow_report_logger
+strategy_shadow_diagnostics = market_observability_runtime.strategy_shadow_diagnostics
+prefilter_block_logger = market_observability_runtime.prefilter_block_logger
 shadow_outcome_persistence = ShadowOutcomePersistence(
     db_manager, scalping_shadow_tracker, paper_shadow_labels, logger
 )
@@ -279,86 +291,15 @@ async def _restore_paper_performance() -> None:
     await paper_session_runtime.restore_paper_performance()
 
 
-# One outstanding AI event per ticker prevents repeated nearly identical
-# anomaly events from filling the queue while inference is still running.
-# Per-position ORDER_BOOK diagnostics are observational and owned by monitoring.
-position_order_book_diagnostics = PositionOrderBookDiagnostics(logger)
-shadow_scorecard_logger = StrategyShadowScorecardLogger(logger)
-trade_flow_report_logger = TradeFlowReportLogger(logger)
-
-
-def _record_position_order_book_event(ticker: str, result: dict[str, Any]) -> None:
-    position_order_book_diagnostics.record(
-        ticker, result, globals().get("execution_engine")
-    )
-
-
-def _log_open_position_bbo_diagnostics() -> None:
-    position_order_book_diagnostics.log_open_positions(
-        globals().get("execution_engine"),
-        globals().get("screener"),
-        _parse_finite_float,
-    )
-
-
-def _trade_flow_inc(key: str, amount: int = 1) -> None:
-    _trade_flow_counters.increment(key, amount)
-    _trade_flow_maybe_log()
-
-
-def _trade_flow_maybe_log(force: bool = False) -> None:
-    counts = _trade_flow_counters.snapshot_if_due(
-        now=time_module.monotonic(), interval_sec=60.0, force=force
-    )
-    if counts is None:
-        return
-
-    pending_bbo = pending_bbo_candidate_store.count()
-    trade_flow_report_logger.log(counts, pending_bbo=pending_bbo)
-    shadow_scorecard_logger.log(scalping_shadow_tracker)
-    _log_open_position_bbo_diagnostics()
-
-
-def _trade_flow_guard_block(reason: str) -> None:
-    _trade_flow_inc("guard_blocked")
-    lowered = str(reason or "").lower()
-    if "bid/ask" in lowered or "котировк" in lowered or "актуальн" in lowered:
-        bucket = "guard_quotes"
-    elif "спред" in lowered:
-        bucket = "guard_spread"
-    elif "размер лучшей заявки" in lowered or "сокращение" in lowered or "истории размера" in lowered:
-        bucket = "guard_size"
-    elif "всплеск" in lowered or "объём" in lowered or "объем" in lowered:
-        bucket = "guard_volume"
-    elif "импульс" in lowered or "vwap" in lowered or "цена не" in lowered:
-        bucket = "guard_direction"
-    elif "объяснение" in lowered or "текст" in lowered or "поврежд" in lowered or "неподтверждён" in lowered:
-        bucket = "guard_text"
-    else:
-        bucket = "guard_other"
-    _trade_flow_inc(bucket)
-
-
-strategy_shadow_diagnostics = StrategyShadowDiagnostics(
-    logger,
-    scalping_shadow_tracker,
-    _trade_flow_inc,
-    _guard_reason_bucket,
-    evaluate_scalping_candidate,
-)
-
-
-def _mark_shadow_llm_not_called(candidate_id: object, reason_code: str) -> None:
-    strategy_shadow_diagnostics.mark_llm_not_called(candidate_id, reason_code)
-
-
-def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -> dict[str, Any]:
-    return strategy_shadow_diagnostics.log_candidate(ticker, direction, metrics)
-
-
-def _log_prefilter_blocked(ticker: str, reason: str, *, interval_sec: float = 15.0) -> None:
-    """Rate-limit identical prefilter warnings per ticker and reason category."""
-    prefilter_block_logger.log(ticker, reason, interval_sec=interval_sec)
+# Preserve the callback names consumed by the market and worker runtimes.
+_record_position_order_book_event = market_observability_runtime.record_position_order_book_event
+_log_open_position_bbo_diagnostics = market_observability_runtime.log_open_position_bbo_diagnostics
+_trade_flow_inc = market_observability_runtime.increment_trade_flow
+_trade_flow_maybe_log = market_observability_runtime.maybe_log_trade_flow
+_trade_flow_guard_block = market_observability_runtime.guard_block
+_mark_shadow_llm_not_called = market_observability_runtime.mark_shadow_llm_not_called
+_log_scalping_shadow = market_observability_runtime.log_shadow_candidate
+_log_prefilter_blocked = market_observability_runtime.log_prefilter_blocked
 
 
 def _paper_queue_flow_conflict_reason(

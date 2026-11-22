@@ -139,7 +139,6 @@ def test_main_imports_reason_classifiers_from_monitoring() -> None:
         for alias in node.names
     }
     assert imports == {
-        "TradeFlowCounters": None,
         "bbo_resume_reason_bucket": "_bbo_resume_reason_bucket",
         "guard_reason_bucket": "_guard_reason_bucket",
     }
@@ -176,20 +175,25 @@ def test_bbo_resume_reason_bucket_preserves_diagnostic_categories() -> None:
 
 def test_main_delegates_trade_flow_state_to_monitoring() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
+    runtime_source = (
+        ROOT / "monitoring" / "market_observability_runtime.py"
+    ).read_text(encoding="utf-8")
     tree = ast.parse(source, filename="main.py")
-    imported = {
+    imports = {
         alias.name
         for node in tree.body
         if isinstance(node, ast.ImportFrom)
-        and node.module == "monitoring.trade_flow_diagnostics"
+        and node.module == "monitoring.market_observability_runtime"
         for alias in node.names
     }
-    assert "TradeFlowCounters" in imported
-    assert "_trade_flow_counters = TradeFlowCounters(time_module.monotonic())" in source
+    assert imports == {"MarketObservabilityRuntime"}
+    assert "market_observability_runtime = MarketObservabilityRuntime(" in source
+    assert "_trade_flow_counters = market_observability_runtime.trade_flow_counters" in source
+    assert "self.trade_flow_counters = TradeFlowCounters(monotonic())" in runtime_source
+    assert "self.trade_flow_counters.increment(key, amount)" in runtime_source
     assert "_trade_flow_lock" not in source
     assert "_trade_flow_counts" not in source
     assert "_trade_flow_last_log_at" not in source
-
 
 
 def test_main_reuses_extracted_websocket_manager() -> None:
@@ -288,104 +292,63 @@ def test_main_delegates_trading_event_journal_to_monitoring() -> None:
 def test_main_delegates_position_order_book_diagnostics_to_monitoring() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
     runtime_source = (
+        ROOT / "monitoring" / "market_observability_runtime.py"
+    ).read_text(encoding="utf-8")
+    maintenance_source = (
         ROOT / "storage" / "paper_session_maintenance_runtime.py"
     ).read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imports = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "monitoring.position_order_book_diagnostics"
-        for alias in node.names
-    }
-    assert "PositionOrderBookDiagnostics" in imports
-    assert "position_order_book_diagnostics = PositionOrderBookDiagnostics(logger)" in source
+    assert "position_order_book_diagnostics = market_observability_runtime.position_order_book_diagnostics" in source
+    assert "PositionOrderBookDiagnostics(" in runtime_source
+    assert "self.position_order_book_diagnostics.record(" in runtime_source
+    assert "position_order_book_diagnostics.clear()" in maintenance_source
     assert "_position_order_book_diag_lock" not in source
     assert "_position_order_book_diag:" not in source
-    assert "position_order_book_diagnostics.clear()" in runtime_source
-
 
 
 def test_main_delegates_prefilter_warning_rate_limiting_to_monitoring() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imports = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "monitoring.prefilter_diagnostics"
-        for alias in node.names
-    }
-    assert "PrefilterBlockLogger" in imports
-    assert "prefilter_block_logger = PrefilterBlockLogger(logger)" in source
+    runtime_source = (
+        ROOT / "monitoring" / "market_observability_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "prefilter_block_logger = market_observability_runtime.prefilter_block_logger" in source
+    assert "PrefilterBlockLogger(" in runtime_source
+    assert "self.prefilter_block_logger.log(" in runtime_source
     assert "_prefilter_last_logged" not in source
     assert "_prefilter_log_lock" not in source
 
 
-
 def test_main_delegates_strategy_shadow_scorecard_logging_to_monitoring() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imports = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "monitoring.shadow_scorecard_logger"
-        for alias in node.names
-    }
-    assert "StrategyShadowScorecardLogger" in imports
-    assert "shadow_scorecard_logger = StrategyShadowScorecardLogger(logger)" in source
-    assert "shadow_scorecard_logger.log(scalping_shadow_tracker)" in source
+    runtime_source = (
+        ROOT / "monitoring" / "market_observability_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "shadow_scorecard_logger = market_observability_runtime.shadow_scorecard_logger" in source
+    assert "StrategyShadowScorecardLogger(" in runtime_source
+    assert "self.shadow_scorecard_logger.log(self.shadow_tracker)" in runtime_source
     assert "scalping_shadow_tracker.statistics_snapshot()" not in source
 
 
 def test_main_delegates_trade_flow_report_formatting_to_monitoring() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imports = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "monitoring.trade_flow_report"
-        for alias in node.names
-    }
-    assert "TradeFlowReportLogger" in imports
-    assert "trade_flow_report_logger = TradeFlowReportLogger(logger)" in source
-    assert "trade_flow_report_logger.log(counts, pending_bbo=pending_bbo)" in source
-
+    runtime_source = (
+        ROOT / "monitoring" / "market_observability_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "trade_flow_report_logger = market_observability_runtime.trade_flow_report_logger" in source
+    assert "TradeFlowReportLogger(" in runtime_source
+    assert "self.trade_flow_report_logger.log(counts, pending_bbo=pending_bbo)" in runtime_source
 
 
 def test_main_delegates_strategy_shadow_events_to_monitoring() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
-    tree = ast.parse(source, filename="main.py")
-    imported = {
-        alias.name
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom)
-        and node.module == "monitoring.strategy_shadow_diagnostics"
-        for alias in node.names
-    }
-    assert imported == {"StrategyShadowDiagnostics"}
-    assert "strategy_shadow_diagnostics.mark_llm_not_called(candidate_id, reason_code)" in source
-    assert "strategy_shadow_diagnostics.log_candidate(ticker, direction, metrics)" in source
-    shadow_wrappers = [
-        node for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_log_scalping_shadow"
-    ]
-    assert len(shadow_wrappers) == 1
-    body = [
-        node for node in shadow_wrappers[0].body
-        if not (
-            isinstance(node, ast.Expr)
-            and isinstance(node.value, ast.Constant)
-            and isinstance(node.value.value, str)
-        )
-    ]
-    assert len(body) == 1 and isinstance(body[0], ast.Return)
-    assert ast.unparse(body[0].value) == (
-        "strategy_shadow_diagnostics.log_candidate(ticker, direction, metrics)"
-    )
-
+    runtime_source = (
+        ROOT / "monitoring" / "market_observability_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "strategy_shadow_diagnostics = market_observability_runtime.strategy_shadow_diagnostics" in source
+    assert "StrategyShadowDiagnostics(" in runtime_source
+    assert "self.strategy_shadow_diagnostics.mark_llm_not_called(" in runtime_source
+    assert "self.strategy_shadow_diagnostics.log_candidate(" in runtime_source
+    assert "_mark_shadow_llm_not_called = market_observability_runtime.mark_shadow_llm_not_called" in source
+    assert "_log_scalping_shadow = market_observability_runtime.log_shadow_candidate" in source
 
 
 def test_main_delegates_priority_queue_item_creation_to_runtime() -> None:
