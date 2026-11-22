@@ -11,7 +11,9 @@ class PaperBboGapMetricsTests(unittest.TestCase):
         from pathlib import Path
 
         source = (
-            Path(__file__).resolve().parents[1] / "execution" / "execution_layer.py"
+            Path(__file__).resolve().parents[1]
+            / "execution"
+            / "paper_position_exit_runtime.py"
         ).read_text(encoding="utf-8")
         self.assertIn("fill_model=%s depth_unit=%s; BBO_gap=%d episodes", source)
         self.assertIn("trigger_to_fresh_BBO=%.3fs", source)

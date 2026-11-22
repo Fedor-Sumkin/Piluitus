@@ -57,7 +57,6 @@ class ScreenerProtocol(Protocol):
     def minute_bar_patterns(self) -> MinuteBarPatternProtocol: ...
 
 
-TradeRecord = dict[str, Any]
 _MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
 
 
