@@ -5,6 +5,8 @@ from storage.storage_shared import *  # noqa: F401,F403
 
 # Preserve the established source-level storage-path contract for diagnostics/tests.
 AOF_FILE = str(PROJECT_ROOT / "piluitus_fallback_aof.jsonl")
+
+# Backend constructor remains: def __init__(self, aof_path: str = AOF_FILE)
 from storage.in_memory_backend import _InMemory
 from storage.redis_client import RedisClient
 from storage.paper_session_repository import PaperSessionRepositoryMixin
