@@ -4584,6 +4584,7 @@ async def clear_paper_session(payload: dict[str, object] = Body(...)):
         removed_memory_closed = len(execution_engine.closed_trades)
         removed_memory_performance = paper_performance_tracker.clear()
         removed_memory_shadow_pending = scalping_shadow_tracker.clear()
+        regime_adaptive_v2.clear()
         removed_memory_shadow_labels = len(paper_shadow_labels)
         paper_shadow_labels.clear()
         removed_memory_stale = len(execution_engine._unreconciled_paper_positions)
