@@ -20,10 +20,6 @@ class PaperPositionExitRuntimeMixin(
 ):
     """Compatibility facade retaining the historical exit-runtime API."""
 
-    # Keep the established diagnostic contract discoverable at this facade path:
-    # fill_model=%s depth_unit=%s; BBO_gap=%d episodes
-    # trigger_to_fresh_BBO=%.3fs
-
     def _capture_paper_exit_trigger(self, *args: Any, **kwargs: Any):
         return super()._capture_paper_exit_trigger(*args, **kwargs)
 
