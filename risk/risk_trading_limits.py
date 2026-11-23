@@ -1,0 +1,353 @@
+"""Daily loss, session and trade-admission limit evaluation mixin."""
+from __future__ import annotations
+
+from risk.risk_shared import *  # noqa: F401,F403
+
+
+class RiskTradingLimitsMixin:
+    async def is_trading_allowed(
+        self, db: DBManager, *, force_refresh: bool = False
+    ) -> bool:
+        """Apply daily loss, high-water drawdown and global loss-streak safeguards.
+
+        force_refresh is used at the final execution boundary so a candidate
+        approved before a new loss-streak lock cannot slip through a cached
+        pre-LLM risk decision.
+        """
+        risk_logger = logging.getLogger("Piluitus.RiskManager")
+        now = datetime.now(_MOSCOW_TZ).replace(tzinfo=None)
+        today = now.date()
+        now_monotonic = time.monotonic()
+
+        # Full journal scans are cached briefly to avoid one SCAN per market tick.
+        if (
+            not force_refresh
+            and self._cached_trading_allowed is not None
+            and now_monotonic - self._last_risk_snapshot_monotonic < 1.0
+            and self._blocked_date in (None, today)
+        ):
+            return self._cached_trading_allowed
+
+        def _cache_result(allowed: bool) -> bool:
+            self._cached_trading_allowed = allowed
+            self._last_risk_snapshot_monotonic = time.monotonic()
+            return allowed
+
+        if self._blocked_date is not None and self._blocked_date != today:
+            self.block_trading = False
+            self._blocked_date = None
+            self._loss_pause_signature = None
+            self._last_loss_streak_diagnostic_signature = None
+            risk_logger.warning(
+                "🌅 Новая торговая дата MSK: дневная блокировка и серия убытков текущей сессии "
+                "сбрасываются; долгосрочный HWM и накопленная просадка сохраняются."
+            )
+        if self.block_trading:
+            return _cache_result(False)
+
+        def _parse_trade_datetime(trade: dict) -> datetime | None:
+            for field in (
+                "exit_timestamp", "closed_at", "timestamp",
+                "entry_timestamp", "created_at",
+            ):
+                raw = trade.get(field)
+                if not raw:
+                    continue
+                try:
+                    parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                    if parsed.tzinfo is not None:
+                        parsed = parsed.astimezone(_MOSCOW_TZ).replace(tzinfo=None)
+                    # Naive legacy timestamps were produced by the trading process;
+                    # interpret them in Moscow exchange time, not the host PC timezone.
+                    return parsed
+                except (TypeError, ValueError, OverflowError):
+                    continue
+            return None
+
+        try:
+            redis_inst = getattr(db, "redis", getattr(db, "_redis", None))
+            if redis_inst is None:
+                raise RuntimeError("Redis/Memurai недоступен при проверке риска.")
+
+            if not self._balance_initialized:
+                await self._sync_configured_deposit(redis_inst)
+                self._balance_initialized = True
+
+            get_all_trades = getattr(db, "get_all_daily_trades", None)
+            if not callable(get_all_trades):
+                raise RuntimeError("DBManager не предоставляет полный индекс сделок.")
+            all_trade_rows = await get_all_trades()
+            if not isinstance(all_trade_rows, dict):
+                raise RuntimeError("Полный индекс сделок имеет некорректный формат.")
+
+            expected_mode = (
+                "PAPER"
+                if os.getenv("PAPER_TRADING", "True").strip().lower() in {"1", "true", "yes", "on"}
+                else "LIVE"
+            )
+            trades_by_id: dict[str, dict] = {}
+            for order_id, trade in all_trade_rows.items():
+                if not isinstance(trade, dict):
+                    continue
+                mode = str(trade.get("mode", "")).upper()
+                if mode and mode != expected_mode:
+                    continue
+                identity = str(trade.get("id") or order_id).strip()
+                if identity:
+                    trades_by_id[identity] = dict(trade)
+
+            # Merge bounded history only for legacy records absent from the per-order ledger.
+            history = await redis_inst.lrange("piluitus:trade_history", 0, -1)
+            for index, raw_trade in enumerate(history or []):
+                try:
+                    trade = json.loads(raw_trade) if isinstance(raw_trade, (str, bytes, bytearray)) else raw_trade
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    risk_logger.warning("Пропущена некорректная строка trade_history[%d].", index)
+                    continue
+                if not isinstance(trade, dict):
+                    continue
+                mode = str(trade.get("mode", "")).upper()
+                if mode and mode != expected_mode:
+                    continue
+                identity = str(trade.get("id") or trade.get("order_id") or "").strip()
+                if not identity:
+                    identity = "legacy:" + "|".join(
+                        str(trade.get(field, ""))
+                        for field in ("exit_timestamp", "ticker", "side", "entry_price", "exit_price", "pnl")
+                    )
+                trades_by_id.setdefault(identity, dict(trade))
+
+            closed_trades: list[tuple[datetime, dict]] = []
+            total_daily_pnl_rub = 0.0
+            total_realized_pnl_rub = 0.0
+            for trade in trades_by_id.values():
+                if str(trade.get("status", "")).upper() != "CLOSED":
+                    continue
+                try:
+                    trade_pnl = float(trade.get("pnl", 0.0) or 0.0)
+                except (TypeError, ValueError, OverflowError) as pnl_exc:
+                    raise RuntimeError("В закрытой сделке обнаружен некорректный PnL.") from pnl_exc
+                if not math.isfinite(trade_pnl):
+                    raise RuntimeError("В закрытой сделке обнаружен нечисловой PnL.")
+                total_realized_pnl_rub += trade_pnl
+                closed_at = _parse_trade_datetime(trade)
+                if closed_at is not None:
+                    closed_trades.append((closed_at, trade))
+                    if closed_at.date() == today:
+                        total_daily_pnl_rub += trade_pnl
+
+            journal = await db.get_active_positions()
+            total_open_pnl_rub = 0.0
+            if self.open_pnl_provider is None and isinstance(journal, dict):
+                for trade in journal.values():
+                    if not isinstance(trade, dict):
+                        continue
+                    position_pnl = float(trade.get("pnl", 0.0) or 0.0)
+                    if not math.isfinite(position_pnl):
+                        raise RuntimeError("Нечисловой плавающий PnL открытой позиции.")
+                    total_open_pnl_rub += position_pnl
+                    opened_at = _parse_trade_datetime(trade)
+                    if opened_at is None or opened_at.date() == today:
+                        total_daily_pnl_rub += position_pnl
+
+            if self.open_pnl_provider is not None:
+                try:
+                    open_pnl = float(self.open_pnl_provider())
+                    if not math.isfinite(open_pnl):
+                        raise ValueError("open PnL is not finite")
+                    total_open_pnl_rub += open_pnl
+                    total_daily_pnl_rub += open_pnl
+                except Exception as provider_exc:
+                    raise RuntimeError(f"Не удалось получить плавающий PnL: {provider_exc}") from provider_exc
+
+            self.realized_pnl = round(total_realized_pnl_rub, 2)
+            self.open_pnl = round(total_open_pnl_rub, 2)
+            self.total_session_pnl = round(total_realized_pnl_rub + total_open_pnl_rub, 2)
+            self.current_equity = round(self.initial_deposit + total_realized_pnl_rub + total_open_pnl_rub, 2)
+
+            if self.open_assets_cost_provider is not None:
+                try:
+                    assets_cost = float(self.open_assets_cost_provider())
+                    self.free_margin = (
+                        round(self.initial_deposit + self.realized_pnl - assets_cost, 2)
+                        if math.isfinite(assets_cost) and assets_cost >= 0.0 else 0.0
+                    )
+                except Exception as provider_exc:
+                    risk_logger.warning("Не удалось получить себестоимость открытых PAPER-позиций: %s", provider_exc)
+                    self.free_margin = 0.0
+            else:
+                self.free_margin = self.current_equity
+
+            await redis_inst.set(
+                "piluitus:risk:balance_state",
+                json.dumps({
+                    "equity": self.current_equity,
+                    "free_margin": self.free_margin,
+                    "pnl": self.total_session_pnl,
+                    "realized_pnl": self.realized_pnl,
+                    "open_pnl": self.open_pnl,
+                }),
+            )
+
+            hwm_key = f"piluitus:risk:high_water_mark:{expected_mode}"
+            raw_hwm = await redis_inst.get(hwm_key)
+            if raw_hwm is None:
+                # On first deployment, rebuild the realized equity peak from the
+                # full close sequence instead of treating current equity as the peak.
+                reconstructed_equity = float(self.initial_deposit)
+                reconstructed_high_water_mark = reconstructed_equity
+                for closed_at, closed_trade in sorted(closed_trades, key=lambda row: row[0]):
+                    historical_pnl = float(closed_trade.get("pnl", 0.0) or 0.0)
+                    reconstructed_equity += historical_pnl
+                    reconstructed_high_water_mark = max(
+                        reconstructed_high_water_mark, reconstructed_equity
+                    )
+                high_water_mark = max(
+                    reconstructed_high_water_mark, self.current_equity
+                )
+                risk_logger.info(
+                    "[EQUITY DRAWDOWN] HWM впервые восстановлен из полного журнала: %.2f ₽.",
+                    high_water_mark,
+                )
+            else:
+                high_water_mark = float(raw_hwm)
+                if not math.isfinite(high_water_mark) or high_water_mark <= 0.0:
+                    raise RuntimeError("Некорректный equity high-water mark.")
+            high_water_mark = max(high_water_mark, self.current_equity)
+            self.high_water_mark = round(high_water_mark, 2)
+            self.current_drawdown_pct = max(0.0, (high_water_mark - self.current_equity) / high_water_mark)
+            await redis_inst.set(hwm_key, f"{self.high_water_mark:.2f}")
+
+            if self.current_drawdown_pct >= self.drawdown_warning_pct:
+                if not self._drawdown_warning_active:
+                    risk_logger.warning(
+                        "⚠️ [EQUITY DRAWDOWN] Просадка от HWM %.2f ₽ достигла %.2f%% "
+                        "(equity=%.2f ₽, порог=%.2f%%).",
+                        self.high_water_mark, self.current_drawdown_pct * 100.0,
+                        self.current_equity, self.drawdown_warning_pct * 100.0,
+                    )
+                self._drawdown_warning_active = True
+            else:
+                self._drawdown_warning_active = False
+
+            if self.current_drawdown_pct >= self.max_drawdown_pct:
+                risk_logger.critical(
+                    "🛑 [EQUITY DRAWDOWN GUARD] Просадка %.2f%% от HWM достигла лимита %.2f%%; "
+                    "новые входы заблокированы, открытые позиции продолжают сопровождаться.",
+                    self.current_drawdown_pct * 100.0, self.max_drawdown_pct * 100.0,
+                )
+                return _cache_result(False)
+
+            closed_trades.sort(key=lambda row: row[0])
+            # Consecutive-loss pauses are scoped to the current Moscow trading
+            # date. Older losses remain in realized PnL and HWM drawdown, but a
+            # Friday streak must not automatically pause Monday's first entry.
+            session_closed_trades = [
+                row for row in closed_trades if row[0].date() == today
+            ]
+            loss_streak = 0
+            latest_loss_at: datetime | None = None
+            recent_loss_rows: list[tuple[datetime, dict]] = []
+            for closed_at, trade in reversed(session_closed_trades):
+                pnl = float(trade.get("pnl", 0.0) or 0.0)
+                if pnl >= 0.0:
+                    break
+                loss_streak += 1
+                recent_loss_rows.append((closed_at, trade))
+                if latest_loss_at is None:
+                    latest_loss_at = closed_at
+            self._loss_streak_count = loss_streak
+
+            # Keep the pause durations unchanged, but scope the consecutive-loss
+            # trigger to this Moscow trading date and audit the exact source trades.
+            diagnostic_signature = (
+                f"{today.isoformat()}:{expected_mode}:{loss_streak}:"
+                f"{latest_loss_at.isoformat() if latest_loss_at is not None else 'none'}"
+            )
+            if diagnostic_signature != self._last_loss_streak_diagnostic_signature:
+                recent_details = []
+                for closed_at, trade in recent_loss_rows[:7]:
+                    recent_details.append(
+                        f"{str(trade.get('ticker') or '?').upper()}/"
+                        f"{str(trade.get('side') or '?').upper()}:"
+                        f"{float(trade.get('pnl', 0.0) or 0.0):+.2f}₽@"
+                        f"{closed_at.isoformat(timespec='seconds')}"
+                        f"[mode={str(trade.get('mode') or 'LEGACY_UNTAGGED').upper()},"
+                        f"id={str(trade.get('id') or trade.get('order_id') or '?')[:16]}]"
+                    )
+                risk_logger.info(
+                    "[SESSION LOSS STREAK AUDIT] session_date=%s mode=%s; consecutive_losses=%d; "
+                    "latest_loss=%s; recent_losses_newest_first=%s; "
+                    "historical_drawdown_uses_full_closed_journal=true",
+                    today.isoformat(), expected_mode, loss_streak,
+                    latest_loss_at.isoformat(timespec="seconds") if latest_loss_at else "нет",
+                    " | ".join(recent_details) if recent_details else "нет",
+                )
+                self._last_loss_streak_diagnostic_signature = diagnostic_signature
+
+            if loss_streak >= self.loss_streak_hard_stop:
+                signature = f"{today.isoformat()}:{expected_mode}:{loss_streak}:{latest_loss_at.isoformat() if latest_loss_at else 'none'}"
+                if signature != self._loss_pause_signature:
+                    risk_logger.critical(
+                        "🛑 [SESSION LOSS HARD STOP] session_date=%s mode=%s; "
+                        "%d последовательных убыточных сделок (порог=%d). "
+                        "Новые входы заблокированы до следующей торговой даты MSK.",
+                        today.isoformat(), expected_mode, loss_streak,
+                        self.loss_streak_hard_stop,
+                    )
+                    self._loss_pause_signature = signature
+                self.block_trading = True
+                self._blocked_date = today
+                return _cache_result(False)
+
+            pause_sec = (
+                self.loss_streak_5_pause_sec if loss_streak >= 5
+                else self.loss_streak_3_pause_sec if loss_streak >= 3
+                else 0
+            )
+            if pause_sec > 0 and latest_loss_at is not None:
+                pause_until = latest_loss_at + timedelta(seconds=pause_sec)
+                if now < pause_until:
+                    signature = f"{today.isoformat()}:{loss_streak}:{latest_loss_at.isoformat()}:{pause_sec}"
+                    if signature != self._loss_pause_signature:
+                        risk_logger.critical(
+                            "🧊 [SESSION LOSS STREAK] session_date=%s mode=%s; %d убыточных сделок подряд "
+                            "в текущей торговой сессии; последний убыток=%s; "
+                            "новые входы на паузе ещё %.0f сек.",
+                            today.isoformat(), expected_mode, loss_streak,
+                            latest_loss_at.isoformat(timespec="seconds"),
+                            max(0.0, (pause_until - now).total_seconds()),
+                        )
+                        self._loss_pause_signature = signature
+                    return _cache_result(False)
+            self._loss_pause_signature = None
+
+            max_allowed_loss_money = self.initial_deposit * self.daily_loss_limit
+            if total_daily_pnl_rub < 0.0 and abs(total_daily_pnl_rub) >= max_allowed_loss_money:
+                risk_logger.critical(
+                    "🛑 [РИСК МЕНЕДЖЕР] Достигнут дневной лимит убытка: PnL=%.2f ₽, "
+                    "лимит=-%.2f ₽. Новые входы заблокированы до следующей даты.",
+                    total_daily_pnl_rub, max_allowed_loss_money,
+                )
+                self.block_trading = True
+                self._blocked_date = today
+                return _cache_result(False)
+
+            risk_logger.debug(
+                "[MONEY MANAGEMENT] equity=%.2f ₽ HWM=%.2f ₽ drawdown=%.2f%% "
+                "realized=%.2f ₽ open=%.2f ₽ daily=%.2f ₽ loss_streak=%d.",
+                self.current_equity, self.high_water_mark,
+                self.current_drawdown_pct * 100.0, self.realized_pnl,
+                self.open_pnl, total_daily_pnl_rub, self._loss_streak_count,
+            )
+            return _cache_result(True)
+
+        except Exception as exc:
+            risk_logger.critical(
+                "Ошибка проверки Money Management/полного журнала: %s. "
+                "Новые входы заблокированы (fail-closed).",
+                exc, exc_info=True,
+            )
+            self.block_trading = True
+            self._blocked_date = today
+            return _cache_result(False)
