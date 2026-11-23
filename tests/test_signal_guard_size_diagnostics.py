@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from signal_guard import validate_signal_evidence
+from strategy.signal_guard import validate_entry_evidence, validate_signal_evidence
 
 
 class SignalGuardSizeDiagnosticsTests(unittest.TestCase):
@@ -63,6 +63,54 @@ class SignalGuardSizeDiagnosticsTests(unittest.TestCase):
         ok, reason = validate_signal_evidence("SELL", metrics)
         self.assertTrue(ok, reason)
         self.assertIn("наблюдение размера отсутствует", reason)
+
+    @staticmethod
+    def paper_metrics() -> dict:
+        return {
+            "price_change_pct": 0.12,
+            "price_vs_vwap_pct": 0.08,
+            "volume_spike": 2.0,
+            "spread_pct": 0.05,
+            "spread_available": 1.0,
+            "bid_ask_available": 1.0,
+            "bid": 100.0,
+            "ask": 100.05,
+            "bid_quote_age_sec": 0.2,
+            "ask_quote_age_sec": 0.2,
+            "bbo_max_age_sec": 2.0,
+            "trade_data_mode": 1.0,
+            "trade_data_ready": 1.0,
+            "trade_metrics_age_sec": 0.5,
+            "bar_atr": 0.5,
+            "bar_atr_pct": 0.5,
+            "bar_atr_periods": 14.0,
+            "bar_atr_age_sec": 5.0,
+            "bar_count": 30.0,
+            "bar_trend_up": 0.0,
+            "bar_trend_down": 1.0,
+            "bar_pattern_confirmed": 0.0,
+            "order_book_valid": 1.0,
+            "order_book_age_sec": 0.2,
+        }
+
+    def test_paper_entry_blocks_confirmed_opposite_closed_m1_trend(self) -> None:
+        ok, reason = validate_entry_evidence(
+            "BUY", self.paper_metrics(), paper_mode=True
+        )
+        self.assertFalse(ok)
+        self.assertIn("M1", reason)
+
+    def test_live_entry_does_not_apply_paper_only_m1_trend_gate(self) -> None:
+        ok, reason = validate_entry_evidence(
+            "BUY", self.paper_metrics(), paper_mode=False
+        )
+        self.assertTrue(ok, reason)
+
+    def test_unwarmed_m1_trend_is_unknown_not_a_paper_hard_block(self) -> None:
+        metrics = self.paper_metrics()
+        metrics["bar_count"] = 10.0
+        ok, reason = validate_entry_evidence("BUY", metrics, paper_mode=True)
+        self.assertTrue(ok, reason)
 
     def test_conflicting_fresh_m1_pattern_blocks_candidate(self) -> None:
         import time
