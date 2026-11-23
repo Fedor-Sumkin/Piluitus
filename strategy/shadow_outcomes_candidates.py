@@ -59,7 +59,7 @@ class ShadowCandidateMixin:
             atr_reference_samples=len(prior_atr),
         )
         shadow_v2 = evaluate_regime_adaptive_shadow_candidate(
-            side, metrics, shadow_result, market_context
+            side, shadow_result, market_context
         )
         entry_economics = estimate_entry_economics(
             side=side, bid=entry_bid, ask=entry_ask,

@@ -126,8 +126,10 @@ class ShadowWalkForwardValidationTests(unittest.TestCase):
         self.assertTrue(any("|llm_model_decision=" in key for key in decision_groups))
         shadow_groups = report["out_of_sample_by_horizon_side_shadow_comparison"]
         self.assertTrue(shadow_groups)
-        self.assertTrue(any("|shadow_eligible=" in key for key in shadow_groups))
-        self.assertTrue(any("|shadow_v2_eligible=" in key for key in shadow_groups))
+        self.assertTrue(any("|shadow_eligible=TRUE|" in key for key in shadow_groups))
+        self.assertTrue(any("|shadow_eligible=FALSE|" in key for key in shadow_groups))
+        self.assertTrue(any("|shadow_v2_eligible=TRUE" in key for key in shadow_groups))
+        self.assertTrue(any("|shadow_v2_eligible=FALSE" in key for key in shadow_groups))
         first_fold_shadow = report["folds"][0]["test_by_horizon_side_shadow_comparison"]
         self.assertTrue(first_fold_shadow)
 

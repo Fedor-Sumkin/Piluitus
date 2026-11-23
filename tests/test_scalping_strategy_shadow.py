@@ -226,7 +226,7 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
             "liquidity_regime": "LOW_LIQUIDITY",
             "volatility_regime": "HIGH_VOLATILITY",
         }
-        v2 = evaluate_regime_adaptive_shadow_candidate("BUY", metrics, base, context)
+        v2 = evaluate_regime_adaptive_shadow_candidate("BUY", base, context)
 
         self.assertEqual(base["mode"], "SHADOW_ONLY")
         self.assertEqual(v2["variant"], "REGIME_ADAPTIVE_V2")
@@ -250,7 +250,7 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
             "volatility_regime": "NORMAL_VOLATILITY",
         }
         v2 = evaluate_regime_adaptive_shadow_candidate(
-            "BUY", metrics, base, range_context
+            "BUY", base, range_context
         )
         self.assertEqual(v2["score"], base["score"])
         self.assertEqual(v2["eligible"], base["eligible"])
@@ -259,7 +259,7 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
         blocked = dict(base)
         blocked["hard_blocks"] = ["test_integrity_block"]
         blocked_v2 = evaluate_regime_adaptive_shadow_candidate(
-            "BUY", metrics, blocked, range_context
+            "BUY", blocked, range_context
         )
         self.assertFalse(blocked_v2["eligible"])
         self.assertEqual(blocked_v2["hard_blocks"], ["test_integrity_block"])

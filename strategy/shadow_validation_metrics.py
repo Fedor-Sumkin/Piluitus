@@ -25,10 +25,15 @@ def _metrics_by_horizon_side_dimensions(
             continue
         key = f"{int(horizon)}s|{side}"
         for dimension in dimensions:
+            raw_value = row.get(dimension)
             if dimension == "llm_confidence":
-                value = _confidence_band(row.get(dimension))
+                value = _confidence_band(raw_value)
+            elif raw_value is None or str(raw_value).strip() == "":
+                value = "UNKNOWN"
             else:
-                value = str(row.get(dimension) or "UNKNOWN").strip().upper() or "UNKNOWN"
+                # Preserve boolean False as a real cohort rather than collapsing it
+                # into UNKNOWN through Python's truth-value fallback semantics.
+                value = str(raw_value).strip().upper()
             key += f"|{dimension}={value}"
         groups[key].append(row)
         group_candidates[key].add(identifier)

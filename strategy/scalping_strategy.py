@@ -74,7 +74,6 @@ def has_queue_trade_flow_conflict(direction: str, metrics: Mapping[str, Any] | N
 
 def evaluate_regime_adaptive_shadow_candidate(
     direction: str,
-    metrics: Mapping[str, Any] | None,
     base_result: Mapping[str, Any] | None,
     market_context: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
