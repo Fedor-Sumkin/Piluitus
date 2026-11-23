@@ -13,6 +13,7 @@ from exchange.finam_shared import (
 from exchange.finam_helpers import FinamHelpersMixin
 from exchange.finam_accounts import FinamAccountMixin
 from exchange.finam_assets import FinamAssetMixin
+from exchange.finam_payload_parsers import FinamPayloadParserMixin
 from exchange.finam_market_data import FinamMarketDataMixin
 from exchange.finam_order_book import FinamOrderBookMixin
 from exchange.finam_orders import FinamOrdersMixin
@@ -22,6 +23,7 @@ class FinamBrokerClient(
     FinamHelpersMixin,
     FinamAccountMixin,
     FinamAssetMixin,
+    FinamPayloadParserMixin,
     FinamMarketDataMixin,
     FinamOrderBookMixin,
     FinamOrdersMixin,
