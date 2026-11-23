@@ -6,6 +6,11 @@ from types import SimpleNamespace
 
 from runtime import market_application_runtime as module
 
+from strategy.market_data_runtime import (
+    PendingBBOCandidateRuntime,
+    PendingBBOCandidateStore,
+)
+
 
 class _Deduplicator:
     def __init__(self) -> None:
@@ -46,6 +51,10 @@ class _PendingRuntime:
         self.cancelled = []
         self.expired = []
         self.resumed = []
+        self.stored = []
+
+    def store_candidate(self, ticker, payload, *, received_monotonic=None):
+        self.stored.append((ticker, payload, received_monotonic))
 
     def drop(self, ticker, expected=None):
         self.dropped.append((ticker, expected))
@@ -180,7 +189,7 @@ def test_market_application_runtime_preserves_ingestion_callback_behavior(monkey
     assert runtime.ingestion_components.ai_candidate_deduplicator.released == ["SBER"]
 
     runtime.store_pending_bbo_candidate("SBER", {"price": 100.0}, 12.0)
-    assert runtime.ingestion_components.pending_bbo_candidate_store.stored == [
+    assert runtime.ingestion_components.pending_bbo_runtime.stored == [
         ("SBER", {"price": 100.0}, 12.0)
     ]
     runtime.drop_pending_bbo_candidate("SBER")
@@ -193,3 +202,58 @@ def test_market_application_runtime_preserves_ingestion_callback_behavior(monkey
     event = {"type": "QUOTES", "ticker": "SBER"}
     asyncio.run(runtime.process_market_event(event))
     assert runtime.ingestion_components.market_data_event_runtime.events == [event]
+
+def test_store_pending_bbo_candidate_uses_real_runtime_and_store_interfaces():
+    logger = SimpleNamespace(
+        info=lambda *args, **kwargs: None,
+        debug=lambda *args, **kwargs: None,
+    )
+    store = PendingBBOCandidateStore(
+        ttl_sec=1.5,
+        trade_flow_increment=lambda *args: None,
+        logger=logger,
+        monotonic=lambda: 100.0,
+    )
+    pending_runtime = PendingBBOCandidateRuntime(
+        store=store,
+        screener=object(),
+        execution_engine=object(),
+        anomaly_queue=object(),
+        queue_item_factory=object(),
+        refresh_bbo_metrics=lambda *args, **kwargs: (False, "not used"),
+        infer_candidate_direction=lambda metrics: None,
+        paper_mode_provider=lambda: True,
+        validate_entry_evidence=lambda *args, **kwargs: (False, "not used"),
+        validate_atr_readiness=lambda metrics: (False, "not used"),
+        queue_flow_conflict_reason=lambda *args: "",
+        reserve_ai_ticker=lambda *args: True,
+        release_ai_ticker=lambda ticker: None,
+        mark_shadow_llm_not_called=lambda *args: None,
+        log_shadow_candidate=lambda *args: {},
+        trade_flow_increment=lambda *args: None,
+        guard_reason_bucket=lambda reason: "quotes",
+        trade_flow_guard_block=lambda reason: None,
+        log_prefilter_blocked=lambda *args, **kwargs: None,
+        update_numpy_impulse_status=lambda ticker: None,
+        session_generation_provider=lambda: 1,
+        logger=logger,
+        monotonic=lambda: 100.0,
+    )
+    runtime = module.MarketApplicationRuntime(dependencies={}, callbacks={})
+    runtime.ingestion_components = SimpleNamespace(
+        pending_bbo_runtime=pending_runtime
+    )
+    payload = {
+        "candidate_direction": "BUY",
+        "metrics": {"bid": 100.0, "ask": 100.1},
+    }
+
+    runtime.store_pending_bbo_candidate(
+        " gazp@tqbr ", payload, received_monotonic=99.0
+    )
+
+    stored = store.get("GAZP")
+    assert stored is not None
+    assert stored["payload"] is payload
+    assert stored["created_at"] == 100.0
+    assert store.count() == 1

@@ -113,7 +113,7 @@ class MarketApplicationRuntime:
         payload: dict[str, Any],
         received_monotonic: object | None = None,
     ) -> None:
-        self._require_ingestion().pending_bbo_candidate_store.store_candidate(
+        self._require_ingestion().pending_bbo_runtime.store_candidate(
             ticker, payload, received_monotonic=received_monotonic
         )
 
