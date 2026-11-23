@@ -15,10 +15,10 @@ def guard_reason_bucket(reason: object) -> str:
         return "quotes"
     if "спред" in lowered:
         return "spread"
-    if "m1" in lowered or "минутн" in lowered or "закрытыми свечами" in lowered:
-        return "m1"
     if "atr" in lowered or "m1-диапазон" in lowered or "m1-истори" in lowered:
         return "atr"
+    if "m1" in lowered or "минутн" in lowered or "закрытыми свечами" in lowered:
+        return "m1"
     if "размер лучшей заявки" in lowered or "сокращение" in lowered or "истории размера" in lowered:
         return "size"
     if "всплеск" in lowered or "объём" in lowered or "объем" in lowered:
