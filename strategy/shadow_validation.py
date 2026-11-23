@@ -198,13 +198,21 @@ def _metrics_by_regime(
 def _metrics_by_strategy_variant(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Compare V1 and V2 eligibility cohorts on the same held-out executable labels."""
     output: dict[str, Any] = {}
-    for variant, field in (("V1", "shadow_eligible"), ("V2", "v2_eligible")):
+    for variant, field, score_field in (
+        ("V1", "shadow_eligible", "score"),
+        ("V2", "v2_eligible", "v2_score"),
+    ):
         cohorts: dict[str, list[dict[str, Any]]] = {
             "eligible": [], "ineligible": [],
         }
         cohort_ids: dict[str, set[str]] = {
             "eligible": set(), "ineligible": set(),
         }
+        cohort_scores: dict[str, list[float]] = {
+            "eligible": [], "ineligible": [],
+        }
+        penalty_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        penalty_ids: dict[str, set[str]] = defaultdict(set)
         unknown = 0
         for row in rows:
             value = row.get(field)
@@ -215,9 +223,33 @@ def _metrics_by_strategy_variant(rows: list[dict[str, Any]]) -> dict[str, Any]:
             cohort = "eligible" if value else "ineligible"
             cohorts[cohort].append(row)
             cohort_ids[cohort].add(identifier)
+            score_value = _finite(row.get(score_field))
+            if score_value is not None:
+                cohort_scores[cohort].append(score_value)
+            if variant == "V2":
+                penalties = row.get("v2_penalties")
+                if isinstance(penalties, Mapping):
+                    for penalty, amount in penalties.items():
+                        if (_finite(amount) or 0.0) > 0.0:
+                            key = str(penalty)
+                            penalty_rows[key].append(row)
+                            penalty_ids[key].add(identifier)
         output[variant] = {
             "eligible": _summarize(cohorts["eligible"], cohort_ids["eligible"]),
             "ineligible": _summarize(cohorts["ineligible"], cohort_ids["ineligible"]),
+            "mean_score_eligible": (
+                round(sum(cohort_scores["eligible"]) / len(cohort_scores["eligible"]), 3)
+                if cohort_scores["eligible"] else None
+            ),
+            "mean_score_ineligible": (
+                round(sum(cohort_scores["ineligible"]) / len(cohort_scores["ineligible"]), 3)
+                if cohort_scores["ineligible"] else None
+            ),
+            "score_observations": sum(len(values) for values in cohort_scores.values()),
+            "by_penalty": {
+                key: _summarize(penalty_rows[key], penalty_ids[key])
+                for key in sorted(penalty_rows)
+            },
             "unknown_labels": unknown,
         }
     return output
