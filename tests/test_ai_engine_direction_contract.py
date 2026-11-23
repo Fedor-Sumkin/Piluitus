@@ -186,7 +186,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             "bar_pattern_direction_code": -1.0,
             "_bar_pattern_signal_at_monotonic": time.monotonic() - 20.0,
         }
-        with patch.dict(os.environ, {"PILUITUS_PATTERN_SIGNAL_MAX_AGE_SEC": "15"}):
+        with patch("strategy.signal_guard.MAX_BAR_PATTERN_SIGNAL_AGE_SEC", 15.0):
             self.assertEqual(AIEngine._m1_evidence_state(metrics, "BUY"), "ALIGNED")
 
     def test_m1_pattern_without_signal_timestamp_is_not_fresh(self) -> None:
