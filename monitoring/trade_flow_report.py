@@ -44,7 +44,7 @@ class TradeFlowReportLogger:
             "llm_contract_retry", "llm_contract_retry_recovered", "llm_contract_retry_failed",
             "orders_opened_buy", "orders_opened_sell", "guard_blocked",
             "guard_quotes", "guard_spread", "guard_volume", "guard_direction", "guard_size",
-            "guard_text", "guard_other", "confidence_blocked", "risk_blocked", "zero_lot",
+            "guard_m1", "guard_text", "guard_other", "confidence_blocked", "risk_blocked", "zero_lot",
             "strategy_shadow_evaluated", "strategy_shadow_pass", "strategy_shadow_reject",
             "shadow_block_bbo_unavailable", "shadow_block_bbo_stale",
             "shadow_block_order_book_not_confirmed", "shadow_block_atr_not_ready",
@@ -83,7 +83,8 @@ class TradeFlowReportLogger:
             "recovered=%(llm_contract_retry_recovered)d,failed=%(llm_contract_retry_failed)d); "
             "открыто(BUY=%(orders_opened_buy)d,SELL=%(orders_opened_sell)d); "
             "Guard=%(guard_blocked)d (BBO=%(guard_quotes)d, спред=%(guard_spread)d, объём=%(guard_volume)d, "
-            "направление=%(guard_direction)d, размер=%(guard_size)d, текст=%(guard_text)d, прочее=%(guard_other)d); "
+            "направление=%(guard_direction)d, размер=%(guard_size)d, M1=%(guard_m1)d, "
+            "текст=%(guard_text)d, прочее=%(guard_other)d); "
             "ORDER_BOOK: принятых_состояний=%(orderbook_updates)d, затронуто_сторон_BBO=%(orderbook_side_touches)d, "
             "heartbeat_без_движения_BBO=%(orderbook_heartbeats)d, некорректных_состояний=%(orderbook_invalid)d, "
             "событий_не_по_порядку=%(orderbook_out_of_order)d, ошибок_обработки=%(orderbook_unusable)d; "
