@@ -38,11 +38,16 @@ class RiskTradingLimitsMixin:
             self._blocked_date = None
             self._loss_pause_signature = None
             self._last_loss_streak_diagnostic_signature = None
+            self._trading_block_reason = None
+            self._loss_streak_pause_until = None
+            self._loss_streak_count = 0
             risk_logger.warning(
                 "🌅 Новая торговая дата MSK: дневная блокировка и серия убытков текущей сессии "
                 "сбрасываются; долгосрочный HWM и накопленная просадка сохраняются."
             )
         if self.block_trading:
+            if not getattr(self, "_trading_block_reason", None):
+                self._trading_block_reason = "RISK_GUARD"
             return _cache_result(False)
 
         def _parse_trade_datetime(trade: dict) -> datetime | None:
@@ -231,6 +236,7 @@ class RiskTradingLimitsMixin:
                 self._drawdown_warning_active = False
 
             if self.current_drawdown_pct >= self.max_drawdown_pct:
+                self._trading_block_reason = "EQUITY_DRAWDOWN"
                 risk_logger.critical(
                     "🛑 [EQUITY DRAWDOWN GUARD] Просадка %.2f%% от HWM достигла лимита %.2f%%; "
                     "новые входы заблокированы, открытые позиции продолжают сопровождаться.",
@@ -286,6 +292,8 @@ class RiskTradingLimitsMixin:
                 self._last_loss_streak_diagnostic_signature = diagnostic_signature
 
             if loss_streak >= self.loss_streak_hard_stop:
+                self._trading_block_reason = "LOSS_STREAK_HARD_STOP"
+                self._loss_streak_pause_until = None
                 signature = f"{today.isoformat()}:{expected_mode}:{loss_streak}:{latest_loss_at.isoformat() if latest_loss_at else 'none'}"
                 if signature != self._loss_pause_signature:
                     risk_logger.critical(
@@ -308,6 +316,8 @@ class RiskTradingLimitsMixin:
             if pause_sec > 0 and latest_loss_at is not None:
                 pause_until = latest_loss_at + timedelta(seconds=pause_sec)
                 if now < pause_until:
+                    self._trading_block_reason = "LOSS_STREAK_PAUSE"
+                    self._loss_streak_pause_until = pause_until
                     signature = f"{today.isoformat()}:{loss_streak}:{latest_loss_at.isoformat()}:{pause_sec}"
                     if signature != self._loss_pause_signature:
                         risk_logger.critical(
@@ -321,9 +331,13 @@ class RiskTradingLimitsMixin:
                         self._loss_pause_signature = signature
                     return _cache_result(False)
             self._loss_pause_signature = None
+            self._loss_streak_pause_until = None
+            if getattr(self, "_trading_block_reason", None) == "LOSS_STREAK_PAUSE":
+                self._trading_block_reason = None
 
             max_allowed_loss_money = self.initial_deposit * self.daily_loss_limit
             if total_daily_pnl_rub < 0.0 and abs(total_daily_pnl_rub) >= max_allowed_loss_money:
+                self._trading_block_reason = "DAILY_LOSS_LIMIT"
                 risk_logger.critical(
                     "🛑 [РИСК МЕНЕДЖЕР] Достигнут дневной лимит убытка: PnL=%.2f ₽, "
                     "лимит=-%.2f ₽. Новые входы заблокированы до следующей даты.",
@@ -340,6 +354,8 @@ class RiskTradingLimitsMixin:
                 self.current_drawdown_pct * 100.0, self.realized_pnl,
                 self.open_pnl, total_daily_pnl_rub, self._loss_streak_count,
             )
+            self._trading_block_reason = None
+            self._loss_streak_pause_until = None
             return _cache_result(True)
 
         except Exception as exc:
@@ -350,4 +366,6 @@ class RiskTradingLimitsMixin:
             )
             self.block_trading = True
             self._blocked_date = today
+            self._trading_block_reason = "RISK_CHECK_ERROR"
+            self._loss_streak_pause_until = None
             return _cache_result(False)

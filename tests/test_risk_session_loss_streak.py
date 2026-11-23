@@ -108,6 +108,29 @@ class SessionLossStreakTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(refreshed)
         self.assertTrue(manager.block_trading)
 
+    async def test_three_losses_trigger_timed_pause_without_hard_stopping(self):
+        now = datetime(2026, 11, 10, 12, 0, tzinfo=MSK)
+        trades = {
+            f"TODAY_{i}": closed_loss(
+                f"TODAY_{i}", now - timedelta(minutes=3 - i)
+            )
+            for i in range(3)
+        }
+        manager = RiskManager(
+            initial_deposit=20000.0,
+            loss_streak_3_pause_sec=600,
+            loss_streak_5_pause_sec=1800,
+        )
+
+        with frozen_risk_clock(now), patch.dict(os.environ, {"PAPER_TRADING": "True"}):
+            allowed = await manager.is_trading_allowed(FakeDB(trades))
+
+        self.assertFalse(allowed)
+        self.assertFalse(manager.block_trading)
+        self.assertEqual(manager._loss_streak_count, 3)
+        self.assertEqual(manager._trading_block_reason, "LOSS_STREAK_PAUSE")
+        self.assertGreater(manager._loss_streak_pause_until, now.replace(tzinfo=None))
+
     async def test_five_losses_in_current_session_still_trigger_pause(self):
         now = datetime(2026, 11, 10, 12, 0, tzinfo=MSK)
         trades = {
@@ -133,6 +156,8 @@ class SessionLossStreakTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(manager._loss_streak_count, 5)
         self.assertTrue(manager.block_trading)
         self.assertEqual(manager._blocked_date, now.date())
+        self.assertEqual(manager._trading_block_reason, "LOSS_STREAK_HARD_STOP")
+        self.assertIsNone(manager._loss_streak_pause_until)
         self.assertFalse(allowed_again)
         self.assertTrue(manager.block_trading)
 

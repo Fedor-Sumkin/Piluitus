@@ -21,6 +21,11 @@ class FinamClientModuleBoundaryTests(unittest.TestCase):
         ):
             self.assertTrue(issubclass(FinamBrokerClient, mixin))
 
+    def test_market_connection_state_starts_disconnected(self):
+        client = FinamBrokerClient(token="test-token")
+        self.assertFalse(client.is_ws_running)
+        self.assertFalse(client._market_stream_connected)
+
     def test_historical_gateway_api_remains_available(self):
         for name in (
             "connect", "get_account", "discover_accounts", "get_asset",

@@ -25,6 +25,7 @@ def create_dashboard_router(
     execution_engine: Any,
     last_ai_verdicts_cache: list[dict[str, Any]],
     process_market_event: Callable[[Any], Any],
+    get_trading_status: Callable[[], dict[str, Any]],
 ) -> APIRouter:
     """Bind dashboard endpoints to application services without owning their state."""
     router = APIRouter()
@@ -118,6 +119,7 @@ def create_dashboard_router(
                     history_exc,
                 )
 
+            last_status_payload = get_trading_status()
             await websocket.send_json({
                 "type": "INIT_DATA",
                 "portfolio": {},
@@ -126,10 +128,23 @@ def create_dashboard_router(
                 "verdicts_history": verdicts_for_client,
                 "active_positions": initial_positions,
                 "closed_trades": raw_closed[-30:] if isinstance(raw_closed, list) else [],
+                "trading_status": last_status_payload,
             })
 
             while True:
-                data = await websocket.receive_text()
+                try:
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    # The browser may be silent; server-side status refresh must
+                    # not depend on client-side polling messages.
+                    current_status = get_trading_status()
+                    if current_status != last_status_payload:
+                        await websocket.send_json({
+                            "type": "TRADING_STATUS",
+                            "status": current_status,
+                        })
+                        last_status_payload = current_status
+                    continue
                 message = json.loads(data)
 
                 if isinstance(message, list):

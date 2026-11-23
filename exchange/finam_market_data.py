@@ -73,6 +73,7 @@ class FinamMarketDataMixin:
         )
 
         self.is_ws_running = True
+        self._market_stream_connected = False
         backoff = 1
         refresh_token_before_retry = False
 
@@ -133,6 +134,7 @@ class FinamMarketDataMixin:
                             )
                             if event_name == "HANDSHAKE_SUCCESS":
                                 logger.info("✅ Finam WS: авторизация успешна (HANDSHAKE_SUCCESS)")
+                                self._market_stream_connected = True
                                 break
                             logger.info("Событие Finam WS до подписки: %s", event_info)
                             if event_name == "CONNECTION_CLOSED":
@@ -1167,8 +1169,10 @@ class FinamMarketDataMixin:
                         raise RuntimeError("Finam WebSocket завершил поток без команды остановки.")
 
             except asyncio.CancelledError:
+                self._market_stream_connected = False
                 raise
             except Exception as exc:
+                self._market_stream_connected = False
                 if not self.is_ws_running:
                     break
 
@@ -1221,3 +1225,4 @@ class FinamMarketDataMixin:
 
     async def stop_market_data_stream(self):
         self.is_ws_running = False
+        self._market_stream_connected = False

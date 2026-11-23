@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from interface.dashboard_routes import create_dashboard_router
+from monitoring.trading_status import build_trading_status_snapshot
 from portfolio.dashboard_runtime import DashboardRuntime
 
 
@@ -97,6 +98,14 @@ class DashboardApplicationRuntime:
         self._publish_balance_snapshot()
         return dict(self.balance_snapshot)
 
+    def get_trading_status(self) -> dict[str, Any]:
+        """Return the latest read-only risk/market status for the dashboard."""
+        self._require_created()
+        return build_trading_status_snapshot(
+            risk_manager=self.risk_manager,
+            execution_engine=self.execution_engine,
+        )
+
     def reset_balance_guard_signature(self) -> None:
         self._require_created()
         self.dashboard_runtime.reset_balance_guard_signature()
@@ -130,6 +139,7 @@ class DashboardApplicationRuntime:
             execution_engine=self.execution_engine,
             last_ai_verdicts_cache=last_ai_verdicts_cache,
             process_market_event=process_market_event,
+            get_trading_status=self.get_trading_status,
         )
         app.include_router(router)
         self.dashboard_router = router

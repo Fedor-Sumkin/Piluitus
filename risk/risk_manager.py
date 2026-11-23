@@ -49,6 +49,8 @@ class RiskManager(
         self._drawdown_warning_active = False
         self._loss_streak_count = 0
         self._loss_pause_signature: str | None = None
+        self._trading_block_reason: str | None = None
+        self._loss_streak_pause_until: datetime | None = None
         self._last_loss_streak_diagnostic_signature: str | None = None
         self._last_risk_snapshot_monotonic = 0.0
         self._cached_trading_allowed: bool | None = None

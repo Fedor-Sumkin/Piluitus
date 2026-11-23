@@ -54,6 +54,7 @@ class FinamBrokerClient(
         self.account_details: dict[str, dict[str, Any]] = {}
         self.client: Any = None
         self.is_ws_running = False
+        self._market_stream_connected = False
         # Local level maps for ORDER_BOOK deltas.
         self._order_book_state: dict[str, dict[str, Any]] = {}
         # Last parser outcome distinguishes a valid delta with no BBO change

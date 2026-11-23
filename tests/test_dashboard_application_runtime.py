@@ -161,6 +161,8 @@ def test_dashboard_application_registers_router_with_all_existing_dependencies(m
     assert captured["refresh_dashboard_balance_snapshot"] == runtime.refresh_balance_snapshot
     assert captured["last_ai_verdicts_cache"] is inputs["last_ai_verdicts_cache"]
     assert captured["process_market_event"] is inputs["process_market_event"]
+    assert captured["get_trading_status"] == runtime.get_trading_status
+    assert runtime.get_trading_status()["status"] == "CONNECTING"
 
 
 def test_dashboard_application_rejects_use_before_create(monkeypatch):
