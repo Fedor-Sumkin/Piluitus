@@ -55,6 +55,7 @@ from candidate_recovery import (
 )
 from scalping_strategy import evaluate_scalping_candidate, has_queue_trade_flow_conflict
 from shadow_outcomes import ShadowForwardTracker
+from strategy.regime_adaptive_v2 import RegimeAdaptiveV2
 from strategy.bbo_replay import (
     BBOReplayRecorder,
     BBO_REPLAY_STORAGE_KEY,
@@ -879,6 +880,7 @@ _trade_flow_counts: dict[str, int] = {}
 _trade_flow_last_log_at = time_module.monotonic()
 # Forward labels are research-only and bounded in memory; all observations are logged.
 scalping_shadow_tracker = ShadowForwardTracker()
+regime_adaptive_v2 = RegimeAdaptiveV2()
 paper_bbo_replay_recorder = BBOReplayRecorder()
 execution_engine.bbo_replay_session_id = paper_bbo_replay_recorder.session_id
 execution_engine.paper_exit_event_recorder = paper_bbo_replay_recorder.record_exit_trigger
@@ -983,6 +985,7 @@ async def _restore_shadow_outcomes() -> None:
     paper_shadow_labels.clear()
     if getattr(execution_engine, "paper_mode", True):
         discarded_pending = scalping_shadow_tracker.clear()
+        regime_adaptive_v2.clear()
         logger.info(
             "[STRATEGY SHADOW SESSION RESET] active_session=%s labels=0 pending_discarded=%d "
             "historical_journal_retained=true historical_labels_loaded=false",
@@ -1362,6 +1365,31 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         ineligible["average_valid_bbo_observations"], ineligible["average_bbo_observation_span_sec"],
         scalping_shadow_tracker.pending_count(),
     )
+    v2_scorecard = shadow.get("strategy_v2", {})
+    v2_eligible = v2_scorecard.get("eligible", {})
+    v2_ineligible = v2_scorecard.get("ineligible", {})
+    logger.info(
+        "[STRATEGY SHADOW V2 SCORECARD] eligible=%d/%d positive=%.1f%% avg_net=%+.5f%%; "
+        "ineligible=%d/%d positive=%.1f%% avg_net=%+.5f%%; unknown=%d",
+        int(v2_eligible.get("ok", 0)), int(v2_eligible.get("labels", 0)),
+        float(v2_eligible.get("positive_rate_pct", 0.0)),
+        float(v2_eligible.get("average_net_return_pct", 0.0)),
+        int(v2_ineligible.get("ok", 0)), int(v2_ineligible.get("labels", 0)),
+        float(v2_ineligible.get("positive_rate_pct", 0.0)),
+        float(v2_ineligible.get("average_net_return_pct", 0.0)),
+        int(v2_scorecard.get("unknown_labels", 0)),
+    )
+    v2_segments = v2_scorecard.get("segments", {})
+    for key, row in sorted(
+        ((key, row) for key, row in v2_segments.items() if int(row.get("labels", 0)) >= 3),
+        key=lambda item: int(item[1].get("labels", 0)), reverse=True,
+    )[:5]:
+        logger.info(
+            "[STRATEGY SHADOW V2 SEGMENT] %s labels=%d ok=%d positive=%.1f%% avg_net=%+.5f%%",
+            key, int(row.get("labels", 0)), int(row.get("ok", 0)),
+            float(row.get("positive_rate_pct", 0.0)),
+            float(row.get("average_net_return_pct", 0.0)),
+        )
     segments = shadow.get("segments", {})
     for side in ("BUY", "SELL"):
         row = segments.get(f"side={side}")
@@ -1475,6 +1503,12 @@ def _log_prefilter_blocked(ticker: str, reason: str, *, interval_sec: float = 15
 def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -> dict[str, Any]:
     """Log a research-only strategy score; it never changes the baseline order path."""
     result = evaluate_scalping_candidate(direction, metrics)
+    # V2 is a parallel research score only. The active baseline result and order
+    # path are left untouched; V2 inherits V1 hard blocks and its threshold.
+    v2_metrics = dict(metrics)
+    v2_metrics.setdefault("ticker", ticker)
+    v2_result = regime_adaptive_v2.evaluate(direction, v2_metrics, result)
+    result["regime_adaptive_v2"] = v2_result
     observation_id = scalping_shadow_tracker.record_candidate(ticker, direction, metrics, result)
     result["candidate_id"] = observation_id
     _trade_flow_inc("strategy_shadow_evaluated")
@@ -1510,6 +1544,17 @@ def _log_scalping_shadow(ticker: str, direction: str, metrics: dict[str, Any]) -
         ) or "-"
     else:
         component_text = "-"
+    logger.info(
+        "[STRATEGY SHADOW V2] %s id=%s eligible=%s score=%.1f/%.1f penalty=%.1f "
+        "liquidity=%s volatility=%s m1_fresh=%s penalties=%s hard_blocks=%s",
+        ticker, observation_id or "-", bool(v2_result.get("eligible")),
+        float(v2_result.get("v2_score", 0.0)), float(v2_result.get("threshold", 85.0)),
+        float(v2_result.get("total_penalty", 0.0)),
+        v2_result.get("liquidity_regime"), v2_result.get("volatility_regime"),
+        v2_result.get("m1_freshness"),
+        ",".join(v2_result.get("penalty_reasons", [])) or "-",
+        ",".join(v2_result.get("hard_blocks", [])) or "-",
+    )
     logger.info(
         "🧪 [STRATEGY SHADOW] %s id=%s side=%s eligible=%s score=%.1f/%.0f regime=%s "
         "queue_now=%s queue_5s=%s trade_flow_30s=%s OFI_5s=%s/%s spread_ATR=%s components=%s hard_blocks=%s reasons=%s",
@@ -3807,6 +3852,7 @@ async def lifespan(app: FastAPI):
                 reset_result = await db_manager.clear_paper_session()
                 paper_performance_tracker.clear()
                 scalping_shadow_tracker.clear()
+                regime_adaptive_v2.clear()
                 paper_shadow_labels.clear()
                 risk_manager._balance_initialized = False
                 risk_manager.block_trading = False
