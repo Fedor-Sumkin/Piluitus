@@ -254,6 +254,6 @@ def test_store_pending_bbo_candidate_uses_real_runtime_and_store_interfaces():
 
     stored = store.get("GAZP")
     assert stored is not None
-    assert stored["payload"] is payload
+    assert stored["payload"] == payload
     assert stored["created_at"] == 100.0
     assert store.count() == 1

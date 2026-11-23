@@ -879,7 +879,7 @@ def test_main_delegates_pending_bbo_candidate_lifecycle_to_strategy_runtime() ->
     assert "self.pending_bbo_runtime.has_pending(ticker)" in event_runtime_source
     assert 'await self.pending_bbo_runtime.resume(ticker, trigger="QUOTES")' in event_runtime_source
     assert "def store_pending_bbo_candidate(" in composition_source
-    assert "pending_bbo_candidate_store.store_candidate(" in composition_source
+    assert "pending_bbo_runtime.store_candidate(" in composition_source
     assert '"_resume_pending_bbo_candidate": market_app.resume_pending_bbo_candidate' in _compatibility_exports_source()
 
     runtime_tree = ast.parse(
