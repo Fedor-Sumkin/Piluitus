@@ -996,6 +996,18 @@ def test_main_delegates_verdict_record_construction_and_enrichment_to_strategy()
     verdict_source = (
         ROOT / "runtime" / "market_worker_verdict_construction_runtime.py"
     ).read_text(encoding="utf-8")
+    diagnostics_source = (
+        ROOT / "runtime" / "market_worker_verdict_diagnostics_runtime.py"
+    ).read_text(encoding="utf-8")
+    record_source = (
+        ROOT / "runtime" / "market_worker_verdict_record_runtime.py"
+    ).read_text(encoding="utf-8")
+    shadow_source = (
+        ROOT / "runtime" / "market_worker_verdict_shadow_runtime.py"
+    ).read_text(encoding="utf-8")
+    event_logging_source = (
+        ROOT / "runtime" / "market_worker_verdict_event_logging_runtime.py"
+    ).read_text(encoding="utf-8")
     risk_source = (
         ROOT / "runtime" / "market_worker_risk_verdict_runtime.py"
     ).read_text(encoding="utf-8")
@@ -1024,13 +1036,18 @@ def test_main_delegates_verdict_record_construction_and_enrichment_to_strategy()
     assert '"build_pre_llm_risk_block_verdict": build_pre_llm_risk_block_verdict' in composition_source
     assert '"build_llm_verdict_record": build_llm_verdict_record' in composition_source
     assert "verdict = self.build_pre_llm_risk_block_verdict(" in risk_source
-    assert "verdict_data = self.build_llm_verdict_record(" in verdict_source
-    assert "self.link_shadow_candidate_verdict(" in verdict_source
-    assert "self.enrich_ai_analysis_with_verdict(" in verdict_source
+    assert "self.build_default_signal_reason(" in diagnostics_source
+    assert "self.build_verdict_explanation(" in diagnostics_source
+    assert "self.classify_local_evidence_diagnostic(" in diagnostics_source
+    assert "return self.build_llm_verdict_record(" in record_source
+    assert "self.link_shadow_candidate_verdict(" in shadow_source
+    assert "self.enrich_ai_analysis_with_verdict(" in shadow_source
+    assert "self.background_operations.spawn(" in event_logging_source
+    assert "def _build_candidate_verdict(" in verdict_source
     assert "decision_source" in module_source
     assert "llm_reason_code_raw" in module_source
     assert "market_regime" in module_source
-    assert "scalping_shadow_tracker.attach_llm_verdict(" not in verdict_source
+    assert "scalping_shadow_tracker.attach_llm_verdict(" not in shadow_source
 
 def test_market_worker_delegates_queue_and_llm_processing_to_runtime() -> None:
     source = (ROOT / "main.py").read_text(encoding="utf-8")
