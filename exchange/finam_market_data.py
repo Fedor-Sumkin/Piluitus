@@ -1,6 +1,7 @@
 """Finam WebSocket market-data stream lifecycle and event dispatch mixin."""
 from __future__ import annotations
 
+from exchange.finam_stream_session import wait_for_finam_handshake, send_quote_subscription_batches
 from exchange.finam_stream_setup import (
     build_quote_batches, build_quote_subscription_plan, resolve_websocket_header_argument,
 )
@@ -68,65 +69,14 @@ class FinamMarketDataMixin:
                         getattr(websockets, "__version__", "unknown"),
                     )
 
-                    handshake_deadline = asyncio.get_running_loop().time() + 10.0
-                    while True:
-                        remaining = handshake_deadline - asyncio.get_running_loop().time()
-                        if remaining <= 0:
-                            raise TimeoutError(
-                                "Finam WebSocket не прислал HANDSHAKE_SUCCESS в течение 10 секунд."
-                            )
-                        raw_handshake = await asyncio.wait_for(ws.recv(), timeout=remaining)
-                        try:
-                            handshake_message = json.loads(raw_handshake)
-                        except (TypeError, json.JSONDecodeError):
-                            logger.warning("Finam WS прислал не-JSON сообщение до handshake.")
-                            continue
-
-                        if not isinstance(handshake_message, dict):
-                            continue
-
-                        handshake_type = str(handshake_message.get("type", "")).upper()
-                        if handshake_type == "ERROR":
-                            error_info = handshake_message.get("error_info", handshake_message)
-                            raise RuntimeError(f"Finam отклонил WebSocket handshake: {error_info}")
-
-                        if handshake_type == "EVENT":
-                            event_info = handshake_message.get("event_info") or {}
-                            event_name = (
-                                str(event_info.get("event", "")).upper()
-                                if isinstance(event_info, dict) else ""
-                            )
-                            if event_name == "HANDSHAKE_SUCCESS":
-                                logger.info("✅ Finam WS: авторизация успешна (HANDSHAKE_SUCCESS)")
-                                self._market_stream_connected = True
-                                break
-                            logger.info("Событие Finam WS до подписки: %s", event_info)
-                            if event_name == "CONNECTION_CLOSED":
-                                raise RuntimeError(
-                                    f"Finam закрыл соединение во время handshake: {event_info}"
-                                )
+                    await wait_for_finam_handshake(ws, logger)
+                    self._market_stream_connected = True
 
                     # Отправляем несколько SUBSCRIBE на одном сокете.
                     # Документация Finam допускает несколько подписок на одном соединении.
-                    for batch_number, symbol_batch in enumerate(batches, start=1):
-                        request = {
-                            "action": "SUBSCRIBE",
-                            "type": "QUOTES",
-                            "data": {"symbols": symbol_batch},
-                            "token": self.jwt_token,
-                        }
-                        await ws.send(json.dumps(request, ensure_ascii=False))
-                        logger.info(
-                            "Подписка QUOTES отправлена: пакет %d/%d, символов %d (%s%s).",
-                            batch_number,
-                            len(batches),
-                            len(symbol_batch),
-                            ", ".join(symbol_batch[:3]),
-                            "…" if len(symbol_batch) > 3 else "",
-                        )
-                        # Небольшой интервал, чтобы не отправлять все команды одним всплеском.
-                        if batch_number < len(batches):
-                            await asyncio.sleep(0.05)
+                    await send_quote_subscription_batches(
+                        ws, self.jwt_token, batches, logger
+                    )
 
                     logger.info(
                         "Все %d запросов подписки отправлены; ожидаем поток котировок.",
