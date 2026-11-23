@@ -195,6 +195,34 @@ def _metrics_by_regime(
     }
 
 
+def _metrics_by_strategy_variant(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Compare V1 and V2 eligibility cohorts on the same held-out executable labels."""
+    output: dict[str, Any] = {}
+    for variant, field in (("V1", "shadow_eligible"), ("V2", "v2_eligible")):
+        cohorts: dict[str, list[dict[str, Any]]] = {
+            "eligible": [], "ineligible": [],
+        }
+        cohort_ids: dict[str, set[str]] = {
+            "eligible": set(), "ineligible": set(),
+        }
+        unknown = 0
+        for row in rows:
+            value = row.get(field)
+            identifier = str(row.get("candidate_id") or "").strip()
+            if not identifier or not isinstance(value, bool):
+                unknown += 1
+                continue
+            cohort = "eligible" if value else "ineligible"
+            cohorts[cohort].append(row)
+            cohort_ids[cohort].add(identifier)
+        output[variant] = {
+            "eligible": _summarize(cohorts["eligible"], cohort_ids["eligible"]),
+            "ineligible": _summarize(cohorts["ineligible"], cohort_ids["ineligible"]),
+            "unknown_labels": unknown,
+        }
+    return output
+
+
 def build_shadow_walk_forward_validation(
     labels: Any,
     *,
@@ -330,6 +358,8 @@ def build_shadow_walk_forward_validation(
             "test_candidates": len(test_ids),
             "train_by_horizon_side": _metrics_by_horizon_side(train_rows, train_candidates),
             "test_by_horizon_side": _metrics_by_horizon_side(test_rows, test_ids),
+            "train_by_strategy_variant": _metrics_by_strategy_variant(train_rows),
+            "test_by_strategy_variant": _metrics_by_strategy_variant(test_rows),
             "test_by_horizon_side_confidence": _metrics_by_horizon_side_dimensions(
                 test_rows, ("llm_confidence",)
             ),
@@ -364,6 +394,7 @@ def build_shadow_walk_forward_validation(
         "return_basis": "net_executable_return_pct; only result=OK rows enter return metrics",
         "folds": fold_results,
         "out_of_sample_by_horizon_side": _metrics_by_horizon_side(all_test_rows, all_test_ids),
+        "out_of_sample_by_strategy_variant": _metrics_by_strategy_variant(all_test_rows),
         "out_of_sample_by_horizon_side_confidence": _metrics_by_horizon_side_dimensions(
             all_test_rows, ("llm_confidence",)
         ),
