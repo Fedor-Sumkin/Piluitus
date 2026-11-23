@@ -92,10 +92,10 @@ class RegimeAdaptiveV2Tests(unittest.TestCase):
     def test_v2_does_not_lower_the_v1_threshold(self):
         with patch("strategy.regime_adaptive_v2.time.monotonic", return_value=100.0):
             result = self.evaluator.evaluate(
-                "BUY", self.metrics(), {**self.baseline, "threshold": 90.0}
+                "BUY", self.metrics(), {**self.baseline, "score": 88.0, "threshold": 90.0}
             )
         self.assertEqual(result["threshold"], 90.0)
-        self.assertTrue(result["eligible"] is False)
+        self.assertFalse(result["eligible"])
 
 
 if __name__ == "__main__":
