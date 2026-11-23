@@ -94,11 +94,25 @@ class SignalGuardSizeDiagnosticsTests(unittest.TestCase):
         }
 
     def test_paper_entry_blocks_confirmed_opposite_closed_m1_trend(self) -> None:
-        ok, reason = validate_entry_evidence(
-            "BUY", self.paper_metrics(), paper_mode=True
-        )
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"PILUITUS_PAPER_M1_OPPOSITE_GATE": "true"}):
+            ok, reason = validate_entry_evidence(
+                "BUY", self.paper_metrics(), paper_mode=True
+            )
         self.assertFalse(ok)
         self.assertIn("M1", reason)
+
+    def test_paper_m1_gate_can_be_disabled_for_controlled_ab(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        with patch.dict(os.environ, {"PILUITUS_PAPER_M1_OPPOSITE_GATE": "false"}):
+            ok, reason = validate_entry_evidence(
+                "BUY", self.paper_metrics(), paper_mode=True
+            )
+        self.assertTrue(ok, reason)
 
     def test_live_entry_does_not_apply_paper_only_m1_trend_gate(self) -> None:
         ok, reason = validate_entry_evidence(
