@@ -162,11 +162,43 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertEqual(status, "RECLASSIFIED")
 
     def test_fresh_opposite_closed_m1_pattern_is_a_contradiction(self) -> None:
+        import time
         metrics = {
             "bar_count": 6, "bar_atr_periods": 5, "bar_atr_age_sec": 2.0,
-            "bar_pattern_confirmed": 1.0, "bar_pattern_direction_code": -1.0,
+            "bar_pattern_confirmed": 1.0,
+            "bar_pattern_name": "M1_RANGE_BREAKOUT_SELL",
+            "bar_breakout_down": 1.0,
+            "bar_pattern_direction_code": -1.0,
+            "_bar_pattern_signal_at_monotonic": time.monotonic() - 1.0,
         }
         self.assertEqual(AIEngine._m1_evidence_state(metrics, "BUY"), "OPPOSITE")
+
+    def test_stale_opposite_m1_pattern_falls_back_to_closed_bar_trend(self) -> None:
+        import time
+        from unittest.mock import patch
+
+        metrics = {
+            "bar_count": 30, "bar_atr_periods": 14, "bar_atr_age_sec": 5.0,
+            "bar_trend_up": 1.0, "bar_trend_down": 0.0,
+            "bar_pattern_confirmed": 1.0,
+            "bar_pattern_name": "M1_RANGE_BREAKOUT_SELL",
+            "bar_breakout_down": 1.0,
+            "bar_pattern_direction_code": -1.0,
+            "_bar_pattern_signal_at_monotonic": time.monotonic() - 20.0,
+        }
+        with patch("strategy.signal_guard.MAX_BAR_PATTERN_SIGNAL_AGE_SEC", 15.0):
+            self.assertEqual(AIEngine._m1_evidence_state(metrics, "BUY"), "ALIGNED")
+
+    def test_m1_pattern_without_signal_timestamp_is_not_fresh(self) -> None:
+        metrics = {
+            "bar_count": 30, "bar_atr_periods": 14, "bar_atr_age_sec": 5.0,
+            "bar_trend_up": 0.0, "bar_trend_down": 0.0,
+            "bar_pattern_confirmed": 1.0,
+            "bar_pattern_name": "M1_RANGE_BREAKOUT_SELL",
+            "bar_breakout_down": 1.0,
+            "bar_pattern_direction_code": -1.0,
+        }
+        self.assertEqual(AIEngine._m1_evidence_state(metrics, "BUY"), "NEUTRAL")
 
     def test_fresh_opposite_m1_is_the_only_m1_contradiction(self) -> None:
         metrics = {
@@ -288,6 +320,13 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         )
         self.assertEqual(reason, "APPROVED")
         self.assertEqual(status, "RECLASSIFIED")
+
+    def test_approved_verdict_without_optional_reason_is_defaulted_not_mismatch(self) -> None:
+        reason, status = AIEngine._validate_model_reason_code(
+            "APPROVE", "NOT_PROVIDED", "BUY", {"spread_pct": 0.1}
+        )
+        self.assertEqual(reason, "APPROVED")
+        self.assertEqual(status, "INFERRED")
 
     def test_prompt_includes_derived_spread_to_atr_ratio_and_m1_state(self) -> None:
         prompt = AIEngine._build_live_prompt(

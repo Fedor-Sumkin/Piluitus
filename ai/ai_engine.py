@@ -10,7 +10,7 @@ from httpx import AsyncClient, HTTPStatusError
 from config import Settings
 import httpx
 from ai.rag_prompt_utils import normalise_rag_context, select_prompt_rules
-from strategy.signal_guard import classify_direction_evidence
+from strategy.signal_guard import classify_direction_evidence, classify_m1_evidence_state
 
 log = logging.getLogger("Piluitus.AIEngine")
 thought_log = logging.getLogger("Piluitus.EvolutionThoughts")
@@ -618,40 +618,8 @@ class AIEngine:
 
     @classmethod
     def _m1_evidence_state(cls, metrics: object, candidate_direction: str) -> str:
-        """Classify M1 as aligned/opposite/neutral/unavailable using fresh closed bars only."""
-        direction = str(candidate_direction or "").strip().upper()
-        if direction not in {"BUY", "SELL"} or not isinstance(metrics, dict):
-            return "UNAVAILABLE"
-        bar_count = cls._metric_number(metrics, "bar_count", 0.0)
-        atr_periods = cls._metric_number(metrics, "bar_atr_periods", 0.0)
-        atr_age = cls._metric_number(metrics, "bar_atr_age_sec", math.nan)
-        if not math.isfinite(atr_age) or atr_age < 0.0 or atr_age > 180.0 or atr_periods < 5.0:
-            return "UNAVAILABLE"
-        pattern_confirmed = cls._metric_number(metrics, "bar_pattern_confirmed", 0.0) >= 0.5
-        pattern_direction = cls._metric_number(metrics, "bar_pattern_direction_code", 0.0)
-        if pattern_confirmed and pattern_direction in {-1.0, 1.0}:
-            matching = (direction == "BUY" and pattern_direction > 0.0) or (
-                direction == "SELL" and pattern_direction < 0.0
-            )
-            return "ALIGNED" if matching else "OPPOSITE"
-        # EMA9/EMA21 are not meaningful until 21 contiguous closed M1 bars exist.
-        if bar_count < 21.0:
-            return "UNAVAILABLE"
-        trend_up = cls._metric_number(metrics, "bar_trend_up", 0.0) >= 0.5
-        trend_down = cls._metric_number(metrics, "bar_trend_down", 0.0) >= 0.5
-        if trend_up and trend_down:
-            return "UNAVAILABLE"
-        if direction == "BUY":
-            if trend_down:
-                return "OPPOSITE"
-            if trend_up:
-                return "ALIGNED"
-        else:
-            if trend_up:
-                return "OPPOSITE"
-            if trend_down:
-                return "ALIGNED"
-        return "NEUTRAL"
+        """Use the same fresh-pattern/closed-trend classification as the PAPER gate."""
+        return classify_m1_evidence_state(metrics, candidate_direction)
 
     @staticmethod
     def _max_spread_to_atr_ratio() -> float:
@@ -774,6 +742,10 @@ class AIEngine:
         replacement = reason
         if decision == "APPROVE":
             replacement = "APPROVED"
+            # reason_code is optional in the response contract. A missing code
+            # is a defaulted diagnostic value, not a model/evidence mismatch.
+            if reason == "NOT_PROVIDED":
+                return replacement, "INFERRED"
         elif decision == "HOLD":
             if reason in {"NOT_PROVIDED", "HOLD_UNCLEAR"}:
                 inferred = cls._infer_hold_reason_code(candidate_direction, prepared)

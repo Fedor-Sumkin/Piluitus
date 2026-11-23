@@ -17,6 +17,7 @@ def test_trade_flow_report_preserves_candidate_and_llm_metrics(caplog) -> None:
         "prefilter_pass_sell": 1,
         "llm_calls": 3,
         "orders_opened_buy": 1,
+        "guard_m1": 2,
     }
 
     with caplog.at_level(logging.INFO, logger="trade-flow-report-test"):
@@ -29,6 +30,7 @@ def test_trade_flow_report_preserves_candidate_and_llm_metrics(caplog) -> None:
     assert "до_LLM(BUY=2,SELL=1;доля=75.0%)" in message
     assert "LLM=3" in message
     assert "открыто(BUY=1,SELL=0)" in message
+    assert "M1=2" in message
     assert "pending_now=4" in message
 
 

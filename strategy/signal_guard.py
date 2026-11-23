@@ -65,6 +65,46 @@ def _fresh_bar_pattern_direction(metrics: dict[str, Any]) -> str | None:
         return "SELL"
     return None
 
+def fresh_bar_pattern_direction(metrics: dict[str, Any]) -> str | None:
+    """Expose the same freshness-checked M1 pattern used by the entry guard."""
+    if not isinstance(metrics, dict):
+        return None
+    return _fresh_bar_pattern_direction(metrics)
+
+
+def classify_m1_evidence_state(metrics: object, direction: str) -> str:
+    """Classify only confirmed fresh M1 patterns or a warmed closed-bar EMA trend."""
+    side = str(direction or "").strip().upper()
+    if side not in {"BUY", "SELL"} or not isinstance(metrics, dict):
+        return "UNAVAILABLE"
+
+    atr_periods = _num(metrics, "bar_atr_periods", 0.0)
+    atr_age = _num(metrics, "bar_atr_age_sec", -1.0)
+    if atr_periods < 5.0 or atr_age < 0.0 or atr_age > 180.0:
+        return "UNAVAILABLE"
+
+    pattern_direction = _fresh_bar_pattern_direction(metrics)
+    if pattern_direction is not None:
+        return "ALIGNED" if pattern_direction == side else "OPPOSITE"
+
+    if _num(metrics, "bar_count", 0.0) < 21.0:
+        return "UNAVAILABLE"
+    trend_up = _num(metrics, "bar_trend_up", 0.0) >= 0.5
+    trend_down = _num(metrics, "bar_trend_down", 0.0) >= 0.5
+    if trend_up and trend_down:
+        return "UNAVAILABLE"
+    if side == "BUY":
+        if trend_down:
+            return "OPPOSITE"
+        if trend_up:
+            return "ALIGNED"
+    else:
+        if trend_up:
+            return "OPPOSITE"
+        if trend_down:
+            return "ALIGNED"
+    return "NEUTRAL"
+
 
 def validate_atr_readiness(metrics: dict[str, Any]) -> tuple[bool, str]:
     """Check that a valid completed-M1 ATR exists before spending an LLM call."""
@@ -489,6 +529,16 @@ def validate_entry_evidence(
     if not ok:
         return ok, reason
     if paper_mode:
+        m1_gate_enabled = str(
+            os.getenv("PILUITUS_PAPER_M1_OPPOSITE_GATE", "true")
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if m1_gate_enabled:
+            m1_state = classify_m1_evidence_state(metrics, decision)
+            if m1_state == "OPPOSITE":
+                return False, (
+                    "PAPER-вход заблокирован: подтверждённый закрытыми M1-свечами "
+                    f"тренд/паттерн противоречит направлению {str(decision).upper()}."
+                )
         market_ok, market_reason = validate_paper_market_quality(decision, metrics)
         if not market_ok:
             return False, market_reason
