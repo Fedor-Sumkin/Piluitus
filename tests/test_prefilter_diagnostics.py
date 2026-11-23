@@ -50,3 +50,13 @@ def test_prefilter_logger_keeps_tickers_and_categories_independent(caplog) -> No
         assert limiter.log("SBER", "Размер лучшей заявки недостаточен")
 
     assert len([record for record in caplog.records if record.name == logger.name]) == 3
+
+
+def test_m1_conflict_guard_has_a_separate_diagnostic_bucket() -> None:
+    from monitoring.trade_flow_diagnostics import guard_reason_bucket
+
+    reason = (
+        "PAPER-вход заблокирован: подтверждённый закрытыми M1-свечами "
+        "тренд/паттерн противоречит направлению BUY."
+    )
+    assert guard_reason_bucket(reason) == "m1"
