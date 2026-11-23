@@ -65,6 +65,12 @@ def _fresh_bar_pattern_direction(metrics: dict[str, Any]) -> str | None:
         return "SELL"
     return None
 
+def fresh_bar_pattern_direction(metrics: dict[str, Any]) -> str | None:
+    """Expose the same freshness-checked M1 pattern used by the entry guard."""
+    if not isinstance(metrics, dict):
+        return None
+    return _fresh_bar_pattern_direction(metrics)
+
 
 def validate_atr_readiness(metrics: dict[str, Any]) -> tuple[bool, str]:
     """Check that a valid completed-M1 ATR exists before spending an LLM call."""
