@@ -141,6 +141,37 @@ class ShadowWalkForwardValidationTests(unittest.TestCase):
         self.assertEqual(coverage["rows_without_valid_net_return"], 1)
         self.assertEqual(coverage["valid_labels"], 4)
 
+    def test_walk_forward_compares_v1_and_v2_on_the_same_oos_candidates(self):
+        rows = self.labels(30)
+        for row in rows:
+            index = int(str(row["candidate_id"]).split("-")[-1])
+            row["shadow_eligible"] = index % 2 == 0
+            row["v2_eligible"] = index % 3 == 0
+            row["v2_score"] = 92.0 - (12.0 if index % 3 else 0.0)
+
+        report = build_shadow_walk_forward_validation(rows, folds=5)
+        self.assertTrue(report["available"])
+        comparison = report["out_of_sample_by_strategy_variant"]
+        self.assertEqual(set(comparison), {"V1", "V2"})
+        self.assertEqual(comparison["V1"]["unknown_labels"], 0)
+        self.assertEqual(comparison["V2"]["unknown_labels"], 0)
+        self.assertGreater(comparison["V1"]["eligible"]["valid_labels"], 0)
+        self.assertGreater(comparison["V2"]["ineligible"]["valid_labels"], 0)
+        first_fold = report["folds"][0]
+        self.assertIn("V1", first_fold["test_by_strategy_variant"])
+        self.assertIn("V2", first_fold["test_by_strategy_variant"])
+
+    def test_missing_variant_boolean_is_unknown_but_explicit_false_is_ineligible(self):
+        rows = self.labels(12)
+        for row in rows:
+            row["shadow_eligible"] = False
+            row["v2_eligible"] = False
+        rows[0].pop("v2_eligible")
+        report = build_shadow_walk_forward_validation(rows, folds=3)
+        comparison = report["out_of_sample_by_strategy_variant"]
+        self.assertGreater(comparison["V2"]["unknown_labels"], 0)
+        self.assertGreater(comparison["V2"]["ineligible"]["valid_labels"], 0)
+
     def test_invalid_parameters_are_rejected(self):
         self.assertEqual(
             build_shadow_walk_forward_validation(self.labels(), folds=2)["reason"],
