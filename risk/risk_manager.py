@@ -1,4 +1,4 @@
-"""Stable RiskManager facade composed from focused risk-policy mixins."""
+"""Stable RiskManager facade with dependency-injected trading-limit clock."""
 from __future__ import annotations
 
 from risk.risk_shared import *  # noqa: F401,F403
@@ -56,3 +56,12 @@ class RiskManager(
         self._blocked_date: date | None = None
         self.open_pnl_provider: Callable[[], float] | None = None
         self.open_assets_cost_provider: Callable[[], float] | None = None
+
+    async def is_trading_allowed(
+        self, db: DBManager, *, force_refresh: bool = False
+    ) -> bool:
+        # Resolve datetime through the historical public module namespace so
+        # frozen-clock tests and operational harnesses keep their patch seam.
+        return await self._is_trading_allowed_impl(
+            db, force_refresh=force_refresh, datetime_type=datetime
+        )

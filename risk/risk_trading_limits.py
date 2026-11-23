@@ -5,8 +5,8 @@ from risk.risk_shared import *  # noqa: F401,F403
 
 
 class RiskTradingLimitsMixin:
-    async def is_trading_allowed(
-        self, db: DBManager, *, force_refresh: bool = False
+    async def _is_trading_allowed_impl(
+        self, db: DBManager, *, force_refresh: bool = False, datetime_type=datetime
     ) -> bool:
         """Apply daily loss, high-water drawdown and global loss-streak safeguards.
 
@@ -15,7 +15,7 @@ class RiskTradingLimitsMixin:
         pre-LLM risk decision.
         """
         risk_logger = logging.getLogger("Piluitus.RiskManager")
-        now = datetime.now(_MOSCOW_TZ).replace(tzinfo=None)
+        now = datetime_type.now(_MOSCOW_TZ).replace(tzinfo=None)
         today = now.date()
         now_monotonic = time.monotonic()
 
@@ -54,7 +54,7 @@ class RiskTradingLimitsMixin:
                 if not raw:
                     continue
                 try:
-                    parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+                    parsed = datetime_type.fromisoformat(str(raw).replace("Z", "+00:00"))
                     if parsed.tzinfo is not None:
                         parsed = parsed.astimezone(_MOSCOW_TZ).replace(tzinfo=None)
                     # Naive legacy timestamps were produced by the trading process;
