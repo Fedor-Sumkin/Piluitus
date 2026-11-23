@@ -30,10 +30,10 @@ class FinamHelpersMixin:
             redacted = {}
             for key, item in value.items():
                 key_text = str(key).lower()
-                redacted[key] = "<redacted>" if any(word in key_text for word in secret_words) else FinamBrokerClient._redact_for_log(item)
+                redacted[key] = "<redacted>" if any(word in key_text for word in secret_words) else FinamHelpersMixin._redact_for_log(item)
             return redacted
         if isinstance(value, list):
-            return [FinamBrokerClient._redact_for_log(item) for item in value[:20]]
+            return [FinamHelpersMixin._redact_for_log(item) for item in value[:20]]
         return value
 
     @staticmethod
@@ -45,7 +45,7 @@ class FinamHelpersMixin:
             payload = response.text or ""
         if isinstance(payload, (dict, list)):
             rendered = json.dumps(
-                FinamBrokerClient._redact_for_log(payload),
+                FinamHelpersMixin._redact_for_log(payload),
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
