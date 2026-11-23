@@ -72,6 +72,84 @@ def has_queue_trade_flow_conflict(direction: str, metrics: Mapping[str, Any] | N
     return signed_queue >= 0.10 and signed_flow <= -0.10
 
 
+def evaluate_regime_adaptive_shadow_candidate(
+    direction: str,
+    metrics: Mapping[str, Any] | None,
+    base_result: Mapping[str, Any] | None,
+    market_context: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Score a second, research-only variant using point-in-time market context.
+
+    V2 deliberately retains every V1 hard block and the same eligibility
+    threshold. It only applies transparent penalties to conditions that were
+    weak cohorts in PAPER shadow analysis. The weights are experimental
+    hypotheses, not fitted probabilities, and must not be used for execution.
+    """
+    side = str(direction or "").strip().upper()
+    base = base_result if isinstance(base_result, Mapping) else {}
+    context = market_context if isinstance(market_context, Mapping) else {}
+    raw_reasons = base.get("reasons", [])
+    reasons = list(raw_reasons) if isinstance(raw_reasons, (list, tuple)) else []
+    raw_blocks = base.get("hard_blocks", [])
+    hard_blocks = [
+        str(item) for item in raw_blocks if str(item).strip()
+    ] if isinstance(raw_blocks, (list, tuple, set)) else []
+    try:
+        base_score = float(base.get("score", 0.0))
+    except (TypeError, ValueError, OverflowError):
+        base_score = 0.0
+    if not math.isfinite(base_score):
+        base_score = 0.0
+    base_score = min(100.0, max(0.0, base_score))
+    try:
+        threshold = float(base.get("threshold", 85.0))
+    except (TypeError, ValueError, OverflowError):
+        threshold = 85.0
+    if not math.isfinite(threshold):
+        threshold = 85.0
+    threshold = min(100.0, max(0.0, threshold))
+
+    adjustments: dict[str, float] = {}
+    liquidity = str(context.get("liquidity_regime") or "LIQUIDITY_UNAVAILABLE").upper()
+    volatility = str(context.get("volatility_regime") or "VOLATILITY_UNCLASSIFIED").upper()
+    market_regime = str(context.get("market_regime") or "INSUFFICIENT_DATA").upper()
+    directional_regime = str(context.get("directional_regime") or "DIRECTION_UNAVAILABLE").upper()
+    fresh_matching_pattern = "fresh_matching_m1_pattern" in reasons
+
+    if liquidity == "LOW_LIQUIDITY":
+        adjustments["low_liquidity"] = -12.0
+    if volatility == "HIGH_VOLATILITY":
+        adjustments["high_volatility"] = -8.0
+    trend_context = (
+        market_regime == "TREND"
+        or directional_regime in {"TREND_UP", "TREND_DOWN"}
+    )
+    if trend_context and not fresh_matching_pattern:
+        adjustments["trend_without_fresh_m1_pattern"] = -8.0
+
+    adjusted_score = min(100.0, max(0.0, base_score + sum(adjustments.values())))
+    available = isinstance(base_result, Mapping)
+    eligible = bool(
+        available and side in {"BUY", "SELL"} and not hard_blocks
+        and adjusted_score >= threshold
+    )
+    result_reasons = [f"{name}:{value:+.1f}" for name, value in adjustments.items()]
+    return {
+        "schema_version": 1,
+        "variant": "REGIME_ADAPTIVE_V2",
+        "mode": "SHADOW_ONLY",
+        "side": side,
+        "base_score": round(base_score, 2),
+        "score": round(adjusted_score, 2),
+        "score_delta": round(adjusted_score - base_score, 2),
+        "threshold": round(threshold, 2),
+        "eligible": eligible,
+        "hard_blocks": hard_blocks if available else ["base_shadow_result_unavailable"],
+        "adjustments": adjustments,
+        "reasons": result_reasons,
+    }
+
+
 def evaluate_scalping_candidate(
     direction: str,
     metrics: Mapping[str, Any] | None,

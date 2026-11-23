@@ -28,6 +28,9 @@ class ShadowWalkForwardValidationTests(unittest.TestCase):
                     "liquidity_regime": "LOW_LIQUIDITY" if index % 4 == 0 else "NORMAL_OR_UNKNOWN",
                     "directional_regime": "TREND_UP" if index % 2 else "RANGE_OR_MIXED",
                     "llm_confidence": 80.0 + (index % 20),
+                    "shadow_eligible": index % 2 == 0,
+                    "shadow_v2_eligible": index % 3 == 0,
+                    "shadow_v2_score": 72.0 + (index % 25),
                     "llm_model_decision": "APPROVE" if index % 2 else "HOLD",
                     "result": "OK",
                     "label_quality": "ON_TIME",
@@ -121,6 +124,12 @@ class ShadowWalkForwardValidationTests(unittest.TestCase):
             sample["positive_rate_wilson_95_pct"][1],
         )
         self.assertTrue(any("|llm_model_decision=" in key for key in decision_groups))
+        shadow_groups = report["out_of_sample_by_horizon_side_shadow_comparison"]
+        self.assertTrue(shadow_groups)
+        self.assertTrue(any("|shadow_eligible=" in key for key in shadow_groups))
+        self.assertTrue(any("|shadow_v2_eligible=" in key for key in shadow_groups))
+        first_fold_shadow = report["folds"][0]["test_by_horizon_side_shadow_comparison"]
+        self.assertTrue(first_fold_shadow)
 
 
     def test_unusable_labels_are_reported_as_coverage_not_returns(self):

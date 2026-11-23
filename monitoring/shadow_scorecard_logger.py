@@ -69,6 +69,7 @@ class StrategyShadowScorecardLogger:
             "market_regime_ofi_alignment_5s=", "market_regime_signal_confluence=",
             "llm_model_decision=", "llm_final_decision=", "llm_signal_status=",
             "llm_execution_status=", "llm_confidence_bucket=",
+            "shadow_v2_eligibility=", "shadow_v2_score_band=",
         ):
             grouped = [
                 (key, row) for key, row in segments.items()

@@ -199,6 +199,15 @@ class ShadowOutcomeStatisticsMixin:
             f"horizon_llm_execution={horizon}s|{str(label.get('llm_execution_status') or 'NOT_LINKED')}",
             *(f"hard_block={reason}" for reason in label.get("hard_blocks", [])),
         )
+        v2_eligible = label.get("shadow_v2_eligible")
+        if isinstance(v2_eligible, bool):
+            v2_state = "ELIGIBLE" if v2_eligible else "INELIGIBLE"
+            v2_keys = [f"shadow_v2_eligibility={v2_state}"]
+            v2_score = _number(label, "shadow_v2_score", math.nan)
+            if math.isfinite(v2_score):
+                v2_keys.append(f"shadow_v2_score_band={self._score_band(v2_score)}")
+            segment_keys = tuple(v2_keys) + segment_keys
+
         for key in segment_keys:
             if key not in self._segment_stats:
                 if len(self._segment_stats) >= self.max_segment_groups:

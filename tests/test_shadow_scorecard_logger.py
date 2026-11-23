@@ -69,6 +69,7 @@ def test_scorecard_logger_reports_side_and_qualified_ticker_segments(caplog) -> 
         "ticker=GAZP": _row(labels=4, ok=4),
         "ticker=VTBR": _row(labels=3, ok=3),
         "regime=TREND": _row(labels=3, ok=3),
+        "shadow_v2_eligibility=ELIGIBLE": _row(labels=3, ok=3),
     }
     reporter = StrategyShadowScorecardLogger(logging.getLogger("shadow-scorecard-segments"))
 
@@ -78,6 +79,7 @@ def test_scorecard_logger_reports_side_and_qualified_ticker_segments(caplog) -> 
     assert "[STRATEGY SHADOW SIDE] side=BUY" in caplog.text
     assert "[STRATEGY SHADOW TICKER] ticker=SBER" in caplog.text
     assert "[STRATEGY SHADOW SEGMENT] regime=TREND" in caplog.text
+    assert "[STRATEGY SHADOW SEGMENT] shadow_v2_eligibility=ELIGIBLE" in caplog.text
 
 
 def test_scorecard_logger_omits_unqualified_tickers_and_segments(caplog) -> None:

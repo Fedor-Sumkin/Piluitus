@@ -415,6 +415,12 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(len(labels), 1)
         label = labels[0]
         self.assertEqual(label["market_regime"], "TREND")
+        self.assertEqual(label["shadow_v2_variant"], "REGIME_ADAPTIVE_V2")
+        self.assertEqual(label["shadow_v2_score"], 82.0)
+        self.assertFalse(label["shadow_v2_eligible"])
+        self.assertEqual(label["shadow_v2_adjustments"], {
+            "trend_without_fresh_m1_pattern": -8.0,
+        })
         self.assertEqual(label["directional_regime"], "TREND_UP")
         self.assertEqual(label["volatility_regime"], "VOLATILITY_UNCLASSIFIED")
         self.assertGreater(label["minimum_favorable_move_pct"], 0.0)
@@ -422,6 +428,8 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(label["entry_economics"]["cost_model_status"], "CONFIGURED")
         segments = tracker.statistics_snapshot()["segments"]
         self.assertEqual(segments["market_regime=TREND"]["ok"], 1)
+        self.assertEqual(segments["shadow_v2_eligibility=INELIGIBLE"]["ok"], 1)
+        self.assertEqual(segments["shadow_v2_score_band=80-89"]["ok"], 1)
         self.assertEqual(segments["directional_regime=TREND_UP"]["ok"], 1)
         self.assertEqual(segments["cost_to_atr_bucket=0.25-0.50"]["ok"], 1)
         self.assertEqual(

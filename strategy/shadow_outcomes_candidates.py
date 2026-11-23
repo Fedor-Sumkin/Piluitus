@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from strategy.market_context import classify_market_regime, estimate_entry_economics
+from strategy.scalping_strategy import evaluate_regime_adaptive_shadow_candidate
 
 from .shadow_outcomes_primitives import (
     _MOSCOW_TZ,
@@ -57,6 +58,9 @@ class ShadowCandidateMixin:
             atr_reference_pct=atr_reference,
             atr_reference_samples=len(prior_atr),
         )
+        shadow_v2 = evaluate_regime_adaptive_shadow_candidate(
+            side, metrics, shadow_result, market_context
+        )
         entry_economics = estimate_entry_economics(
             side=side, bid=entry_bid, ask=entry_ask,
             commission_pct_per_side=commission_pct,
@@ -88,6 +92,11 @@ class ShadowCandidateMixin:
             "slippage_bps": slippage_bps,
             "score": _number(shadow_result, "score"),
             "shadow_eligible": bool(shadow_result.get("eligible", False)),
+            "shadow_v2_variant": str(shadow_v2["variant"]),
+            "shadow_v2_score": float(shadow_v2["score"]),
+            "shadow_v2_eligible": bool(shadow_v2["eligible"]),
+            "shadow_v2_adjustments": dict(shadow_v2["adjustments"]),
+            "shadow_v2_reasons": list(shadow_v2["reasons"]),
             "regime": str(shadow_result.get("regime") or "UNKNOWN"),
             **market_context,
             "entry_economics": entry_economics,
@@ -173,10 +182,12 @@ class ShadowCandidateMixin:
             )
         logger.info(
             "[STRATEGY SHADOW SAMPLE] id=%s ticker=%s side=%s score=%.1f eligible=%s "
-            "entry=%s entry_fill=%.6f commission=%.4f%%/side slippage=%.2fbps "
+            "v2_score=%.1f v2_eligible=%s entry=%s entry_fill=%.6f "
+            "commission=%.4f%%/side slippage=%.2fbps "
             "trades60=%d flow30=%s spread_ATR=%s market_regime=%s "
             "min_favorable_move=%s cost_to_ATR=%s",
             candidate_id, symbol, side, row["score"], row["shadow_eligible"],
+            row["shadow_v2_score"], row["shadow_v2_eligible"],
             "ASK" if side == "BUY" else "BID", entry_fill, commission_pct, slippage_bps,
             row["trade_count_60s"],
             f'{row["trade_flow_imbalance_30s"]:+.3f}' if math.isfinite(row["trade_flow_imbalance_30s"]) else "NA",

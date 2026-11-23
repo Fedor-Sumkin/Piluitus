@@ -157,6 +157,9 @@ def build_shadow_walk_forward_validation(
             "test_by_horizon_side_decision_confidence": _metrics_by_horizon_side_dimensions(
                 test_rows, ("llm_model_decision", "llm_confidence")
             ),
+            "test_by_horizon_side_shadow_comparison": _metrics_by_horizon_side_dimensions(
+                test_rows, ("shadow_eligible", "shadow_v2_eligible")
+            ),
             "train_by_horizon_side_market_regime": _metrics_by_regime(
                 train_rows, train_candidates, "market_regime", include_horizon_side=True
             ),
@@ -191,6 +194,9 @@ def build_shadow_walk_forward_validation(
         "out_of_sample_by_horizon_side_decision_confidence": _metrics_by_horizon_side_dimensions(
             all_test_rows, ("llm_model_decision", "llm_confidence")
         ),
+        "out_of_sample_by_horizon_side_shadow_comparison": _metrics_by_horizon_side_dimensions(
+            all_test_rows, ("shadow_eligible", "shadow_v2_eligible")
+        ),
         "out_of_sample_by_horizon_side_market_regime": _metrics_by_regime(
             all_test_rows, all_test_ids, "market_regime", include_horizon_side=True
         ),
@@ -207,6 +213,7 @@ def build_shadow_walk_forward_validation(
             "Descriptive temporal validation only; no model is fitted and no thresholds are selected. "
             "Forward labels overlap within a candidate, so candidate IDs—not horizon rows—are the "
             "sampling unit. Results below 30 valid labels are insufficient for conclusions. "
+            "REGIME_ADAPTIVE_V2 is a research-only parallel score; it does not affect execution. "
             "This is not a substitute for an untouched final holdout or multiple-testing controls."
         ),
     }

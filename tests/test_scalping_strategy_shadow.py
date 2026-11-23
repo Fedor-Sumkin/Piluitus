@@ -5,7 +5,11 @@ import time
 import unittest
 from unittest.mock import patch
 
-from scalping_strategy import evaluate_scalping_candidate, has_queue_trade_flow_conflict
+from scalping_strategy import (
+    evaluate_regime_adaptive_shadow_candidate,
+    evaluate_scalping_candidate,
+    has_queue_trade_flow_conflict,
+)
 
 
 def strong_buy_metrics() -> dict[str, float | str]:
@@ -211,6 +215,54 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
         self.assertFalse(result["eligible"])
         self.assertIn("trade_flow_unavailable_or_stale", result["hard_blocks"])
 
+
+
+    def test_regime_adaptive_v2_penalizes_observed_risk_cohorts_without_changing_v1(self):
+        metrics = strong_buy_metrics()
+        base = evaluate_scalping_candidate("BUY", metrics)
+        context = {
+            "market_regime": "TREND",
+            "directional_regime": "TREND_UP",
+            "liquidity_regime": "LOW_LIQUIDITY",
+            "volatility_regime": "HIGH_VOLATILITY",
+        }
+        v2 = evaluate_regime_adaptive_shadow_candidate("BUY", metrics, base, context)
+
+        self.assertEqual(base["mode"], "SHADOW_ONLY")
+        self.assertEqual(v2["variant"], "REGIME_ADAPTIVE_V2")
+        self.assertEqual(v2["mode"], "SHADOW_ONLY")
+        self.assertEqual(v2["score_delta"], -28.0)
+        self.assertEqual(v2["adjustments"], {
+            "low_liquidity": -12.0,
+            "high_volatility": -8.0,
+            "trend_without_fresh_m1_pattern": -8.0,
+        })
+        self.assertFalse(v2["eligible"])
+        self.assertEqual(base, evaluate_scalping_candidate("BUY", metrics))
+
+    def test_regime_adaptive_v2_preserves_v1_hard_blocks_and_does_not_add_range_bonus(self):
+        metrics = strong_buy_metrics()
+        base = evaluate_scalping_candidate("BUY", metrics)
+        range_context = {
+            "market_regime": "RANGE_OR_MIXED",
+            "directional_regime": "RANGE_OR_MIXED",
+            "liquidity_regime": "NORMAL_OR_UNKNOWN",
+            "volatility_regime": "NORMAL_VOLATILITY",
+        }
+        v2 = evaluate_regime_adaptive_shadow_candidate(
+            "BUY", metrics, base, range_context
+        )
+        self.assertEqual(v2["score"], base["score"])
+        self.assertEqual(v2["eligible"], base["eligible"])
+        self.assertEqual(v2["adjustments"], {})
+
+        blocked = dict(base)
+        blocked["hard_blocks"] = ["test_integrity_block"]
+        blocked_v2 = evaluate_regime_adaptive_shadow_candidate(
+            "BUY", metrics, blocked, range_context
+        )
+        self.assertFalse(blocked_v2["eligible"])
+        self.assertEqual(blocked_v2["hard_blocks"], ["test_integrity_block"])
 
 if __name__ == "__main__":
     unittest.main()
