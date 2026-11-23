@@ -169,7 +169,10 @@ class ShadowWalkForwardValidationTests(unittest.TestCase):
         for row in rows:
             row["shadow_eligible"] = False
             row["v2_eligible"] = False
-        rows[0].pop("v2_eligible")
+        # The first chronological block is the walk-forward seed/training history
+        # and is intentionally excluded from aggregated out-of-sample metrics.
+        # Remove the field from a candidate in a later test block instead.
+        rows[-1].pop("v2_eligible")
         report = build_shadow_walk_forward_validation(rows, folds=3)
         comparison = report["out_of_sample_by_strategy_variant"]
         self.assertGreater(comparison["V2"]["unknown_labels"], 0)
