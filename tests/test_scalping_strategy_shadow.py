@@ -219,6 +219,8 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
 
     def test_regime_adaptive_v2_penalizes_observed_risk_cohorts_without_changing_v1(self):
         metrics = strong_buy_metrics()
+        metrics["bar_pattern_confirmed"] = 0.0
+        metrics["bar_pattern_name"] = ""
         base = evaluate_scalping_candidate("BUY", metrics)
         context = {
             "market_regime": "TREND",
