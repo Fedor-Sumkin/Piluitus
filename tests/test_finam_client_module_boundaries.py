@@ -9,6 +9,9 @@ from exchange.finam_accounts import FinamAccountMixin
 from exchange.finam_assets import FinamAssetMixin
 from exchange.finam_market_data import FinamMarketDataMixin
 from exchange.finam_payload_parsers import FinamPayloadParserMixin
+from exchange.finam_quote_parser import FinamQuoteParserMixin
+from exchange.finam_trade_parser import FinamTradeParserMixin
+from exchange.finam_order_book_parser import FinamOrderBookParserMixin
 from exchange.finam_order_book import FinamOrderBookMixin
 from exchange.finam_orders import FinamOrdersMixin
 
@@ -17,7 +20,8 @@ class FinamClientModuleBoundaryTests(unittest.TestCase):
     def test_public_client_composes_all_gateway_responsibilities(self):
         for mixin in (
             FinamHelpersMixin, FinamAccountMixin, FinamAssetMixin,
-            FinamPayloadParserMixin, FinamMarketDataMixin, FinamOrderBookMixin, FinamOrdersMixin,
+            FinamPayloadParserMixin, FinamQuoteParserMixin, FinamTradeParserMixin,
+            FinamOrderBookParserMixin, FinamMarketDataMixin, FinamOrderBookMixin, FinamOrdersMixin,
         ):
             self.assertTrue(issubclass(FinamBrokerClient, mixin))
 

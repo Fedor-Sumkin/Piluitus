@@ -1,6 +1,12 @@
 """Finam WebSocket market-data stream lifecycle and event dispatch mixin."""
 from __future__ import annotations
 
+from exchange.finam_stream_setup import (
+    build_quote_batches, build_quote_subscription_plan, resolve_websocket_header_argument,
+)
+from exchange.finam_stream_support import (
+    FinamOrderBookSymbolDiagnostics, FinamPositionSnapshotRefresher, FinamQueueOverflowTracker,
+)
 from exchange.finam_shared import (
     asyncio, logging, math, datetime, timezone, timedelta, url_quote,
     Callable, Iterable, Any, json, inspect, os, re, time, websockets, httpx,
@@ -22,50 +28,8 @@ class FinamMarketDataMixin:
         if not self.jwt_token:
             raise RuntimeError("Сначала вызовите broker.connect() для получения JWT.")
 
-        try:
-            connect_parameters = inspect.signature(websockets.connect).parameters
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError(
-                "Не удалось определить API установленного пакета websockets. "
-                "Обновите пакет командой: python -m pip install -U websockets"
-            ) from exc
-
-        if "additional_headers" in connect_parameters:
-            header_argument = "additional_headers"
-        elif "extra_headers" in connect_parameters:
-            header_argument = "extra_headers"
-        else:
-            raise RuntimeError(
-                "Установленная версия websockets не поддерживает дополнительные HTTP-заголовки. "
-                "Выполните: python -m pip install -U websockets"
-            )
-
-        # Нормализуем MIC и удаляем дубликаты, чтобы не тратить лимит символов.
-        symbols = []
-        seen = set()
-        for raw_ticker in tickers:
-            symbol = str(raw_ticker).strip()
-            if not symbol:
-                continue
-            if "@" not in symbol:
-                symbol = f"{symbol}@MISX"
-            if symbol not in seen:
-                seen.add(symbol)
-                symbols.append(symbol)
-
-        if not symbols:
-            raise ValueError("Список TICKERS_TO_TRADE пуст: нечего подписывать на Finam QUOTES.")
-
-        try:
-            batch_size = int(os.getenv("FINAM_WS_SYMBOL_BATCH_SIZE", "10"))
-        except ValueError as exc:
-            raise ValueError(
-                "FINAM_WS_SYMBOL_BATCH_SIZE должен быть целым числом, например 10."
-            ) from exc
-        if batch_size < 1:
-            raise ValueError("FINAM_WS_SYMBOL_BATCH_SIZE должен быть не меньше 1.")
-
-        batches = [symbols[i:i + batch_size] for i in range(0, len(symbols), batch_size)]
+        header_argument = resolve_websocket_header_argument(websockets.connect)
+        symbols, batch_size, batches = build_quote_subscription_plan(tickers)
         logger.info(
             "Подготовлено %d уникальных инструментов Finam; подписка будет отправлена "
             "%d запросами по не более %d символов.",
@@ -185,34 +149,7 @@ class FinamMarketDataMixin:
                     enqueued_order_book_events = 0
                     enqueued_bbo_side_updates = 0
                     first_data_logged = False
-                    queue_overflow_counts = {
-                        "ORDER_BOOK": 0, "INSTRUMENT_TRADE": 0, "QUOTES": 0,
-                    }
-                    queue_overflow_last_log = 0.0
-                    queue_overflow_last_ticker = "-"
-
-                    def _record_queue_overflow(event_kind: str, ticker: object) -> None:
-                        nonlocal queue_overflow_last_log, queue_overflow_last_ticker
-                        queue_overflow_counts[event_kind] = queue_overflow_counts.get(event_kind, 0) + 1
-                        queue_overflow_last_ticker = str(ticker or "-")
-                        now = time.monotonic()
-                        if now - queue_overflow_last_log < 5.0:
-                            return
-                        total_dropped = sum(queue_overflow_counts.values())
-                        logger.warning(
-                            "[FINAM QUEUE OVERFLOW] за последние %.1fс: всего=%d, "
-                            "ORDER_BOOK=%d, INSTRUMENT_TRADE=%d, QUOTES=%d; последний тикер=%s. "
-                            "Поток не успевает обрабатываться потребителем; события теряются.",
-                            max(0.0, now - queue_overflow_last_log) if queue_overflow_last_log else 5.0,
-                            total_dropped,
-                            queue_overflow_counts["ORDER_BOOK"],
-                            queue_overflow_counts["INSTRUMENT_TRADE"],
-                            queue_overflow_counts["QUOTES"],
-                            queue_overflow_last_ticker,
-                        )
-                        for key in queue_overflow_counts:
-                            queue_overflow_counts[key] = 0
-                        queue_overflow_last_log = now
+                    queue_overflow_tracker = FinamQueueOverflowTracker()
                     first_order_book_logged = False
                     first_trade_logged = False
                     instrument_trade_messages = 0
@@ -247,26 +184,11 @@ class FinamMarketDataMixin:
                     except (TypeError, ValueError, OverflowError):
                         trade_subscription_sync_sec, trade_subscription_top_n = 5.0, 15
                         trade_subscription_min_hold_sec, trade_subscription_max_overbook = 60.0, 5
-                    order_book_symbol_diag: dict[str, dict[str, Any]] = {}
+                    order_book_symbol_diagnostics = FinamOrderBookSymbolDiagnostics()
                     last_open_position_symbols: set[str] = set()
                     order_book_unattributed_messages = 0
                     order_book_unattributed_sample = ""
                     order_book_parser_sample = ""
-
-                    def _order_book_symbol_stats(ticker: str) -> dict[str, Any]:
-                        return order_book_symbol_diag.setdefault(ticker, {
-                            "window_wire": 0,
-                            "window_parse_no_update": 0,
-                            "window_parse_out_of_order": 0,
-                            "window_parse_unrecognized": 0,
-                            "window_snapshot_wait": 0,
-                            "window_parsed": 0,
-                            "window_queued": 0,
-                            "window_dropped": 0,
-                            "last_wire_monotonic": 0.0,
-                            "last_parsed_monotonic": 0.0,
-                            "last_queued_monotonic": 0.0,
-                        })
 
                     last_order_book_sync = 0.0
                     last_order_book_diag = asyncio.get_running_loop().time()
@@ -295,14 +217,9 @@ class FinamMarketDataMixin:
                         position_rest_refresh_interval_sec,
                     )
 
-                    async def _refresh_position_snapshot(symbol: str) -> None:
-                        ticker = symbol.split("@", 1)[0].strip().upper()
-                        try:
-                            await self.refresh_order_book_snapshot(ticker, queue)
-                        except Exception as refresh_exc:
-                            logger.warning("Finam REST BBO refresh %s failed: %s", ticker, refresh_exc)
-                        finally:
-                            position_snapshot_inflight.discard(ticker)
+                    position_snapshot_refresher = FinamPositionSnapshotRefresher(
+                        self, queue, position_snapshot_inflight
+                    )
                     last_no_data_warning_at = 0.0
                     try:
                         order_book_refresh_sec = max(1.0, float(os.getenv("FINAM_ORDER_BOOK_REFRESH_SEC", "1")))
@@ -510,7 +427,7 @@ class FinamMarketDataMixin:
                                     ):
                                         position_snapshot_inflight.add(position_ticker)
                                         position_snapshot_last_at[position_ticker] = now_loop
-                                        asyncio.create_task(_refresh_position_snapshot(position_symbol))
+                                        asyncio.create_task(position_snapshot_refresher.refresh(position_symbol))
 
                                 # Keep a small subscription overlap during Top-N rotation.
                                 # It avoids tearing down a recently warmed book because of a
@@ -609,7 +526,7 @@ class FinamMarketDataMixin:
                             position_gaps: list[str] = []
                             for ticker in sorted(last_open_position_symbols):
                                 symbol = f"{ticker}@MISX"
-                                stats = _order_book_symbol_stats(ticker)
+                                stats = order_book_symbol_diagnostics.for_ticker(ticker)
                                 subscribe_requested = symbol in order_book_subscribed
                                 subscribed_since = order_book_subscribed_since.get(symbol, 0.0)
                                 last_wire = float(stats.get("last_wire_monotonic", 0.0) or 0.0)
@@ -722,7 +639,7 @@ class FinamMarketDataMixin:
                             order_book_parser_sample = ""
                             # Keep every symbol's window counters on the same 60-second
                             # boundary, including symbols that become positions later.
-                            for symbol_stats in order_book_symbol_diag.values():
+                            for symbol_stats in order_book_symbol_diagnostics.values():
                                 for key in (
                                     "window_wire", "window_parse_no_update",
                                     "window_parse_out_of_order", "window_parse_unrecognized",
@@ -898,7 +815,7 @@ class FinamMarketDataMixin:
                                     + json.dumps(safe_payload, ensure_ascii=False, default=str)[:1000]
                                 )
                             for observed_ticker in observed_tickers:
-                                symbol_stats = _order_book_symbol_stats(observed_ticker)
+                                symbol_stats = order_book_symbol_diagnostics.for_ticker(observed_ticker)
                                 symbol_stats["window_wire"] += 1
                                 symbol_stats["last_wire_monotonic"] = message_received_monotonic
                                 if observed_ticker not in update_tickers:
@@ -946,7 +863,7 @@ class FinamMarketDataMixin:
                                     first_order_book_logged = True
                             for book_update in book_updates:
                                 book_ticker = str(book_update.get("ticker") or "").strip().upper().split("@")[0]
-                                symbol_stats = _order_book_symbol_stats(book_ticker) if book_ticker else None
+                                symbol_stats = order_book_symbol_diagnostics.for_ticker(book_ticker) if book_ticker else None
                                 if symbol_stats is not None:
                                     symbol_stats["window_parsed"] += 1
                                     symbol_stats["last_parsed_monotonic"] = message_received_monotonic
@@ -1077,7 +994,7 @@ class FinamMarketDataMixin:
                                         order_book_queue_dropped += 1
                                         if symbol_stats is not None:
                                             symbol_stats["window_dropped"] += 1
-                                        _record_queue_overflow("ORDER_BOOK", book_update.get("ticker"))
+                                        queue_overflow_tracker.record("ORDER_BOOK", book_update.get("ticker"))
                             continue
 
                         if subscription_type in {"INSTRUMENT_TRADES", "INSTRUMENT_TRADE"}:
@@ -1140,7 +1057,7 @@ class FinamMarketDataMixin:
                                 if _coalesce_queued_market_event(queue, tick):
                                     quote_events_coalesced += 1
                                 else:
-                                    _record_queue_overflow("QUOTES", tick.get("ticker"))
+                                    queue_overflow_tracker.record("QUOTES", tick.get("ticker"))
                                 continue
 
                             enqueued_quotes += 1
@@ -1180,10 +1097,7 @@ class FinamMarketDataMixin:
                     if batch_size > 1:
                         previous_size = batch_size
                         batch_size = max(1, batch_size // 2)
-                        batches = [
-                            symbols[i:i + batch_size]
-                            for i in range(0, len(symbols), batch_size)
-                        ]
+                        batches = build_quote_batches(symbols, batch_size)
                         backoff = 1
                         logger.warning(
                             "Finam отклонил размер пакета %d. Уменьшаем до %d и повторяем подписку.",
