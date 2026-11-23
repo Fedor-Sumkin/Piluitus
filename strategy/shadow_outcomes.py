@@ -90,6 +90,13 @@ class ShadowForwardTracker:
         # Bounded cross-sections let PAPER research compare direction, ticker,
         # market regime, score band, horizon and Moscow trading hour.
         self._segment_stats: dict[str, dict[str, float | int]] = {}
+        # V2 has independent outcome buckets; V1 remains the unchanged baseline.
+        self._v2_label_stats: dict[str, dict[str, float | int]] = {
+            "eligible": self._new_stats_bucket(),
+            "ineligible": self._new_stats_bucket(),
+        }
+        self._v2_segment_stats: dict[str, dict[str, float | int]] = {}
+        self._v2_unknown_labels = 0
         # Per-ticker ATR reference uses only earlier candidate snapshots.
         self._atr_history: dict[str, deque[float]] = {}
 
@@ -103,6 +110,12 @@ class ShadowForwardTracker:
             "ineligible": self._new_stats_bucket(),
         }
         self._segment_stats.clear()
+        self._v2_label_stats = {
+            "eligible": self._new_stats_bucket(),
+            "ineligible": self._new_stats_bucket(),
+        }
+        self._v2_segment_stats.clear()
+        self._v2_unknown_labels = 0
         self._atr_history.clear()
         return discarded_pending
 
@@ -152,6 +165,34 @@ class ShadowForwardTracker:
         lower = 90 if value >= 90 else int(value // 10) * 10
         upper = 100 if lower == 90 else lower + 9
         return f"{lower:02d}-{upper:02d}"
+
+    @staticmethod
+    def _v2_label_fields(row: Mapping[str, Any]) -> dict[str, Any]:
+        v2 = row.get("regime_adaptive_v2")
+        if not isinstance(v2, Mapping):
+            return {
+                "v2_score": None, "v2_eligible": None, "v2_threshold": None,
+                "v2_penalties": {}, "v2_penalty_reasons": [],
+                "v2_liquidity_regime": "UNKNOWN",
+                "v2_volatility_regime": "UNKNOWN",
+                "v2_directional_regime": "UNKNOWN",
+                "v2_m1_freshness": "UNKNOWN",
+            }
+        penalties = v2.get("penalties", {})
+        reasons = v2.get("penalty_reasons", [])
+        m1_freshness = v2.get("m1_freshness")
+        return {
+            "v2_score": _number(v2, "v2_score", math.nan),
+            "v2_eligible": v2.get("eligible") if isinstance(v2.get("eligible"), bool) else None,
+            "v2_threshold": _number(v2, "threshold", math.nan),
+            "v2_penalties": dict(penalties) if isinstance(penalties, Mapping) else {},
+            "v2_penalty_reasons": [str(item) for item in reasons[:8]]
+                if isinstance(reasons, (list, tuple)) else [],
+            "v2_liquidity_regime": str(v2.get("liquidity_regime") or "UNKNOWN"),
+            "v2_volatility_regime": str(v2.get("volatility_regime") or "UNKNOWN"),
+            "v2_directional_regime": str(v2.get("directional_regime") or "UNKNOWN"),
+            "v2_m1_freshness": m1_freshness if isinstance(m1_freshness, bool) else "UNKNOWN",
+        }
 
     @staticmethod
     def _fresh_bbo(metrics: Mapping[str, Any]) -> tuple[bool, dict[str, Any]]:
@@ -248,6 +289,10 @@ class ShadowForwardTracker:
             "slippage_bps": slippage_bps,
             "score": _number(shadow_result, "score"),
             "shadow_eligible": bool(shadow_result.get("eligible", False)),
+            "regime_adaptive_v2": (
+                dict(shadow_result.get("regime_adaptive_v2"))
+                if isinstance(shadow_result.get("regime_adaptive_v2"), Mapping) else None
+            ),
             "regime": str(shadow_result.get("regime") or "UNKNOWN"),
             **market_context,
             "entry_economics": entry_economics,
@@ -556,6 +601,7 @@ class ShadowForwardTracker:
                     label = {
                         "candidate_id": row["candidate_id"],
                         **self._llm_label_fields(row),
+                        **self._v2_label_fields(row),
                         **self._excursion_label_fields(row),
                         "ticker": symbol,
                         "side": side,
@@ -638,6 +684,7 @@ class ShadowForwardTracker:
                     label = {
                         "candidate_id": row["candidate_id"],
                         **self._llm_label_fields(row),
+                        **self._v2_label_fields(row),
                         **self._excursion_label_fields(row),
                         "ticker": symbol,
                         "side": side,
@@ -753,6 +800,35 @@ class ShadowForwardTracker:
         self._accumulate_stats(
             self._label_stats["eligible" if eligible else "ineligible"], label
         )
+        v2_eligible = label.get("v2_eligible")
+        v2_score = _number(label, "v2_score", math.nan)
+        if isinstance(v2_eligible, bool) and math.isfinite(v2_score):
+            self._accumulate_stats(
+                self._v2_label_stats["eligible" if v2_eligible else "ineligible"], label
+            )
+            v2_score_band = self._score_band(v2_score)
+            v2_keys = [
+                f"v2_score_band={v2_score_band}",
+                f"v2_liquidity_regime={str(label.get('v2_liquidity_regime') or 'UNKNOWN')}",
+                f"v2_volatility_regime={str(label.get('v2_volatility_regime') or 'UNKNOWN')}",
+                f"v2_m1_freshness={str(label.get('v2_m1_freshness') or 'UNKNOWN')}",
+                f"v2_eligibility={'eligible' if v2_eligible else 'ineligible'}",
+            ]
+            penalties = label.get("v2_penalties")
+            if isinstance(penalties, Mapping):
+                v2_keys.extend(
+                    f"v2_penalty={str(key)}"
+                    for key, value in penalties.items()
+                    if _number({"v": value}, "v", 0.0) > 0.0
+                )
+            for key in v2_keys:
+                if key not in self._v2_segment_stats:
+                    if len(self._v2_segment_stats) >= 300:
+                        continue
+                    self._v2_segment_stats[key] = self._new_stats_bucket()
+                self._accumulate_stats(self._v2_segment_stats[key], label)
+        else:
+            self._v2_unknown_labels += 1
         side = str(label.get("side") or "UNKNOWN").upper()
         ticker = str(label.get("ticker") or "UNKNOWN").upper()
         regime = str(label.get("regime") or "UNKNOWN")
@@ -962,6 +1038,14 @@ class ShadowForwardTracker:
         }
         snapshot["segments"] = {
             key: summarize(values) for key, values in self._segment_stats.items()
+        }
+        snapshot["strategy_v2"] = {
+            "eligible": summarize(self._v2_label_stats["eligible"]),
+            "ineligible": summarize(self._v2_label_stats["ineligible"]),
+            "segments": {
+                key: summarize(values) for key, values in self._v2_segment_stats.items()
+            },
+            "unknown_labels": self._v2_unknown_labels,
         }
         # Expose the primary horizons directly for compact diagnostic comparisons.
         snapshot["by_horizon"] = {
