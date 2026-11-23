@@ -148,6 +148,7 @@ class ShadowWalkForwardValidationTests(unittest.TestCase):
             row["shadow_eligible"] = index % 2 == 0
             row["v2_eligible"] = index % 3 == 0
             row["v2_score"] = 92.0 - (12.0 if index % 3 else 0.0)
+            row["v2_penalties"] = {"LOW_LIQUIDITY": 12.0} if index % 3 else {}
 
         report = build_shadow_walk_forward_validation(rows, folds=5)
         self.assertTrue(report["available"])
@@ -157,6 +158,8 @@ class ShadowWalkForwardValidationTests(unittest.TestCase):
         self.assertEqual(comparison["V2"]["unknown_labels"], 0)
         self.assertGreater(comparison["V1"]["eligible"]["valid_labels"], 0)
         self.assertGreater(comparison["V2"]["ineligible"]["valid_labels"], 0)
+        self.assertIsNotNone(comparison["V2"]["mean_score_eligible"])
+        self.assertIn("LOW_LIQUIDITY", comparison["V2"]["by_penalty"])
         first_fold = report["folds"][0]
         self.assertIn("V1", first_fold["test_by_strategy_variant"])
         self.assertIn("V2", first_fold["test_by_strategy_variant"])
