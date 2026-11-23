@@ -3,7 +3,7 @@ from pathlib import Path
 
 
 def test_paper_entry_preserves_original_position_size_without_exit_scope_variables():
-    source_path = Path(__file__).resolve().parents[1] / "execution" / "execution_layer.py"
+    source_path = Path(__file__).resolve().parents[1] / "execution" / "execution_order_runtime.py"
     module = ast.parse(source_path.read_text(encoding="utf-8"))
 
     trade_log = next(
