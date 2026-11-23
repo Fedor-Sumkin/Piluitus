@@ -127,31 +127,10 @@ class ExecutionMarketSessionMixin:
         }
 
     @staticmethod
-    def _entry_cutoff_minutes() -> float:
-        value = _finite_or_default(os.getenv("PILUITUS_ENTRY_CUTOFF_MINUTES", "5"), 5.0)
-        return min(30.0, max(0.0, value))
-
-    @staticmethod
     def _entry_hard_cutoff_msk(now: datetime) -> datetime | None:
         """Return the configured hard cutoff for new entries on this Moscow date."""
         raw = str(os.getenv("PILUITUS_ENTRY_HARD_CUTOFF_MSK", getattr(
             Settings, "ENTRY_HARD_CUTOFF_MSK", "22:00"
-        )) or "22:00").strip()
-        try:
-            clock = datetime_time.fromisoformat(raw)
-        except (TypeError, ValueError):
-            logger.error(
-                "[ENTRY HARD CUTOFF CONFIG] invalid PILUITUS_ENTRY_HARD_CUTOFF_MSK=%r; "
-                "using safe default 22:00 MSK", raw
-            )
-            clock = datetime_time(22, 0)
-        return datetime.combine(now.date(), clock, tzinfo=_MOSCOW_TZ)
-
-    async def _market_session_status(self, ticker: str) -> dict[str, Any]:
-        """Read the current instrument-specific Finam schedule in Moscow time."""
-        getter = getattr(self.broker, "get_asset_schedule", None)
-        if not callable(getter):
-            return {"known": False, "is_open": False, "entry_allowed": False, "reason": "schedule_api_unavailable"}
         try:
             result = getter(ticker)
             payload = await result if inspect.isawaitable(result) else result
@@ -168,81 +147,6 @@ class ExecutionMarketSessionMixin:
         for raw_session in payload.get("sessions", []):
             if not isinstance(raw_session, Mapping):
                 continue
-            interval_obj = raw_session.get("interval")
-            if not isinstance(interval_obj, Mapping):
-                continue
-            start = _parse_schedule_datetime(interval_obj.get("start_time"), now.date())
-            end = _parse_schedule_datetime(interval_obj.get("end_time"), now.date())
-            if start is None or end is None or end <= start:
-                continue
-            if start.date() <= now.date() <= end.date():
-                parsed_windows.append((start, end, str(raw_session.get("type") or "unknown")))
-
-        if payload.get("sessions") and not parsed_windows:
-            return {
-                "known": False, "is_open": False, "entry_allowed": False,
-                "reason": "schedule_intervals_unparseable_or_not_for_today",
-            }
-        if not parsed_windows:
-            return {
-                "known": True, "is_open": False, "entry_allowed": False,
-                "reason": "no_sessions_today", "session_type": "",
-            }
-
-        active = [(start, end, kind) for start, end, kind in parsed_windows if start <= now < end]
-        if active:
-            start, provider_end, kind = min(active, key=lambda item: item[1])
-            hard_cutoff = self._entry_hard_cutoff_msk(now)
-            effective_end = min(provider_end, hard_cutoff) if hard_cutoff is not None else provider_end
-            seconds_to_close = max(0.0, (effective_end - now).total_seconds())
-            cutoff_minutes = self._entry_cutoff_minutes()
-            allowed = seconds_to_close > cutoff_minutes * 60.0
-            hard_cutoff_reached = hard_cutoff is not None and now >= hard_cutoff
-            reason = (
-                "hard_entry_cutoff_reached" if hard_cutoff_reached
-                else "active_session" if allowed
-                else "entry_cutoff_reached"
-            )
-            return {
-                "known": True, "is_open": True, "entry_allowed": allowed,
-                "reason": reason, "session_type": kind,
-                "session_start": start.isoformat(),
-                "session_end": provider_end.isoformat(),
-                "entry_hard_cutoff": hard_cutoff.isoformat() if hard_cutoff else None,
-                "seconds_to_close": seconds_to_close,
-                "cutoff_minutes": cutoff_minutes,
-            }
-
-        future = [(start, end, kind) for start, end, kind in parsed_windows if start > now]
-        next_start = min(future, key=lambda item: item[0])[0] if future else None
-        return {
-            "known": True, "is_open": False, "entry_allowed": False,
-            "reason": "between_or_outside_sessions",
-            "next_session_start": next_start.isoformat() if next_start else None,
-            "session_type": "",
-        }
-
-    async def _check_entry_session(self, ticker: str) -> tuple[bool, str, dict[str, Any]]:
-        """Fail closed unless Finam confirms an active instrument session away from close."""
-        state = await self._market_session_status(ticker)
-        if not state.get("known"):
-            return False, f"расписание Finam недоступно/не распознано ({state.get('reason', 'unknown')})", state
-        if not state.get("is_open"):
-            next_start = state.get("next_session_start")
-            suffix = f"; следующая сессия={next_start}" if next_start else ""
-            return False, f"торги по инструменту сейчас закрыты ({state.get('reason')}){suffix}", state
-        if not state.get("entry_allowed"):
-            seconds = _finite_or_default(state.get("seconds_to_close"), 0.0)
-            cutoff = self._entry_cutoff_minutes()
-            return False, f"до закрытия сессии {seconds / 60.0:.2f} мин; защитный интервал={cutoff:.1f} мин", state
-        seconds = _finite_or_default(state.get("seconds_to_close"), 0.0)
-        return True, f"сессия={state.get('session_type')}; до закрытия {seconds / 60.0:.1f} мин", state
-
-    def _paper_entry_bbo_diagnostic(self, ticker: str) -> str:
-        """Describe why the current two-sided BBO is not executable."""
-        if self.screener is None:
-            return "screener=отсутствует"
-        try:
             quote = self.screener.quotes.get(ticker)
             if not isinstance(quote, Mapping):
                 return "quote=отсутствует"

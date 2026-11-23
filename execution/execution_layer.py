@@ -217,3 +217,234 @@ class BaseExecutionEngine(
                 )
         else:
             logger.warning("🔥 РЕЖИМ АГЕНТА: [LIVE TRADING] — Работа на реальном счёте Finam!")
+
+    # These policy boundary methods intentionally remain on this facade.
+    # Existing integrations patch execution.execution_layer dependencies
+    # (datetime, time, FINAM_TRADE_LOT_SIZES) in tests and operational harnesses.
+
+    async def _reserve_order_size(
+        self, ticker: str, requested_lots: int, price: float, db: DBManager, *,
+        side: str, stop_loss: float
+    ) -> tuple[int, str]:
+        """Atomically reserve notional exposure and aggregate downside-to-stop budget."""
+        async with self._portfolio_lock:
+            if self._maintenance_active:
+                return 0, self._maintenance_reason or "PAPER-торговля приостановлена для обслуживания сессии."
+            now = time.monotonic()
+            cooldown_key = (str(ticker).strip().upper().split("@")[0], str(side).strip().upper())
+            capital_cooldowns = getattr(self, "_capital_reject_cooldowns", None)
+            if not isinstance(capital_cooldowns, dict):
+                capital_cooldowns = {}
+                self._capital_reject_cooldowns = capital_cooldowns
+            cooldown_until = self._ticker_cooldowns.get(cooldown_key, 0.0)
+            if cooldown_until > now:
+                remaining = cooldown_until - now
+                return 0, f"STOP_LOSS cooldown для {cooldown_key[1]} ещё {remaining:.0f} сек."
+            self._ticker_cooldowns.pop(cooldown_key, None)
+
+            if self.paper_mode:
+                capital_retry_until = capital_cooldowns.get(cooldown_key, 0.0)
+                if capital_retry_until > now:
+                    return 0, (
+                        f"PAPER capital retry cooldown для {cooldown_key[1]} ещё "
+                        f"{capital_retry_until - now:.0f} сек.; повторная проверка будет позже."
+                    )
+                capital_cooldowns.pop(cooldown_key, None)
+
+            if ticker in self._opening_tickers:
+                return 0, "По тикеру уже создаётся позиция."
+
+            if self.paper_mode:
+                if self._unreconciled_paper_positions:
+                    return 0, (
+                        f"Есть {len(self._unreconciled_paper_positions)} старых PAPER-позиций в STALE_REVIEW; "
+                        "сначала сверьте/очистите их журнал. Новые входы заблокированы."
+                    )
+                positions = self.paper_positions
+            else:
+                try:
+                    positions = await db.get_active_positions()
+                except Exception as exc:
+                    logger.error("Не удалось проверить существующую экспозицию для LIVE-ордера %s: %s", ticker, exc)
+                    return 0, "Не удалось проверить текущую экспозицию; ордер заблокирован."
+
+            active_values = list(positions.values()) if isinstance(positions, dict) else []
+            for item in active_values:
+                if not isinstance(item, dict) or str(item.get("status", "OPEN")).upper() != "OPEN":
+                    continue
+                existing_ticker = str(item.get("ticker", "")).strip().upper().split("@")[0]
+                if existing_ticker == ticker:
+                    return 0, "По тикеру уже есть открытая позиция."
+
+            open_notional = self._gross_exposure(positions)
+            if not math.isfinite(open_notional):
+                return 0, "Не удалось достоверно определить себестоимость всех открытых позиций; новый ордер заблокирован."
+            open_stop_risk = self._open_stop_risk(positions)
+            if not math.isfinite(open_stop_risk):
+                return 0, "Не удалось достоверно определить суммарный риск открытых стопов; новый ордер заблокирован."
+
+            normalized_ticker = str(ticker or "").strip().upper().split("@", 1)[0]
+            raw_lot_size = FINAM_TRADE_LOT_SIZES.get(normalized_ticker)
+            try:
+                lot_size = int(raw_lot_size)
+            except (TypeError, ValueError, OverflowError):
+                lot_size = 0
+            if lot_size <= 0:
+                return 0, (
+                    f"{'биржевой lot_size' if self.paper_mode else 'Finam account trade_lot_size'} для {normalized_ticker} не подтверждён; "
+                    "резервирование нового ордера заблокировано."
+                )
+            notional_per_lot = price * lot_size
+            if notional_per_lot <= 0 or not math.isfinite(notional_per_lot):
+                return 0, "Некорректная стоимость лота."
+            stop_distance = price - stop_loss if side == "BUY" else stop_loss - price
+            if not math.isfinite(stop_distance) or stop_distance <= 0:
+                return 0, "Некорректный стоп-уровень: риск нового ордера не рассчитан."
+            risk_per_lot = self._stop_risk_with_costs(
+                price, stop_loss, lot_size, side
+            )
+            if not math.isfinite(risk_per_lot) or risk_per_lot <= 0.0:
+                return 0, "Не удалось достоверно рассчитать риск лота с учётом издержек."
+
+            already_reserved = sum(self._reserved_notional.values())
+            already_reserved_risk = sum(self._reserved_stop_risk.values())
+            gross_cap = self.initial_capital * self.max_gross_exposure_pct
+            single_cap = self.initial_capital * self.max_single_position_pct
+            stop_risk_cap = self.initial_capital * self.max_open_stop_risk_pct
+            headroom = max(0.0, min(gross_cap - open_notional - already_reserved, single_cap))
+            risk_headroom = max(0.0, stop_risk_cap - open_stop_risk - already_reserved_risk)
+            affordable_lots = int(math.floor((headroom + 1e-9) / notional_per_lot))
+            risk_lots = int(math.floor((risk_headroom + 1e-9) / risk_per_lot))
+            approved_lots = min(int(requested_lots), affordable_lots, risk_lots)
+            if approved_lots <= 0:
+                if self.paper_mode:
+                    try:
+                        retry_cooldown_sec = float(
+                            os.getenv("PILUITUS_PAPER_CAPITAL_REJECT_COOLDOWN_SEC", "10")
+                        )
+                    except (TypeError, ValueError, OverflowError):
+                        retry_cooldown_sec = 10.0
+                    if not math.isfinite(retry_cooldown_sec):
+                        retry_cooldown_sec = 10.0
+                    retry_cooldown_sec = min(120.0, max(0.0, retry_cooldown_sec))
+                    if retry_cooldown_sec > 0.0:
+                        capital_cooldowns[cooldown_key] = now + retry_cooldown_sec
+                return 0, (
+                    f"Лимиты портфеля: капитал доступен {headroom:.2f} ₽ "
+                    f"(экспозиция {open_notional:.2f}/{gross_cap:.2f} ₽), "
+                    f"риск до стопов доступен {risk_headroom:.2f} ₽ "
+                    f"(открытый риск {open_stop_risk:.2f}/{stop_risk_cap:.2f} ₽), "
+                    f"лот {notional_per_lot:.2f} ₽, риск лота {risk_per_lot:.2f} ₽."
+                )
+
+            notional_reserved = approved_lots * notional_per_lot
+            risk_reserved = approved_lots * risk_per_lot
+            self._opening_tickers.add(ticker)
+            self._reserved_notional[ticker] = notional_reserved
+            self._reserved_stop_risk[ticker] = risk_reserved
+            return approved_lots, (
+                f"notional={notional_reserved:.2f} ₽; gross_before={open_notional:.2f} ₽; "
+                f"gross_cap={gross_cap:.2f} ₽; single_cap={single_cap:.2f} ₽; "
+                f"open_stop_risk={open_stop_risk:.2f}/{stop_risk_cap:.2f} ₽; "
+                f"new_stop_risk={risk_reserved:.2f} ₽"
+            )
+
+    # ------------------------------------------------------------------
+    # 2️⃣  ATR‑стоп (Синхронизирован с динамическим кэшем LOT_SIZES)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _entry_cutoff_minutes() -> float:
+        value = _finite_or_default(os.getenv("PILUITUS_ENTRY_CUTOFF_MINUTES", "5"), 5.0)
+        return min(30.0, max(0.0, value))
+
+    @staticmethod
+    def _entry_hard_cutoff_msk(now: datetime) -> datetime | None:
+        """Return the configured hard cutoff for new entries on this Moscow date."""
+        raw = str(os.getenv("PILUITUS_ENTRY_HARD_CUTOFF_MSK", getattr(
+            Settings, "ENTRY_HARD_CUTOFF_MSK", "22:00"
+        )) or "22:00").strip()
+        try:
+            clock = datetime_time.fromisoformat(raw)
+        except (TypeError, ValueError):
+            logger.error(
+                "[ENTRY HARD CUTOFF CONFIG] invalid PILUITUS_ENTRY_HARD_CUTOFF_MSK=%r; "
+                "using safe default 22:00 MSK", raw
+            )
+            clock = datetime_time(22, 0)
+        return datetime.combine(now.date(), clock, tzinfo=_MOSCOW_TZ)
+
+    async def _market_session_status(self, ticker: str) -> dict[str, Any]:
+        """Read the current instrument-specific Finam schedule in Moscow time."""
+        getter = getattr(self.broker, "get_asset_schedule", None)
+        if not callable(getter):
+            return {"known": False, "is_open": False, "entry_allowed": False, "reason": "schedule_api_unavailable"}
+        try:
+            result = getter(ticker)
+            payload = await result if inspect.isawaitable(result) else result
+        except Exception as exc:
+            return {
+                "known": False, "is_open": False, "entry_allowed": False,
+                "reason": f"schedule_request_failed:{type(exc).__name__}",
+            }
+        if not isinstance(payload, Mapping) or not isinstance(payload.get("sessions"), list):
+            return {"known": False, "is_open": False, "entry_allowed": False, "reason": "schedule_missing_or_invalid"}
+
+        now = datetime.now(_MOSCOW_TZ)
+        parsed_windows: list[tuple[datetime, datetime, str]] = []
+        for raw_session in payload.get("sessions", []):
+            if not isinstance(raw_session, Mapping):
+                continue
+            interval_obj = raw_session.get("interval")
+            if not isinstance(interval_obj, Mapping):
+                continue
+            start = _parse_schedule_datetime(interval_obj.get("start_time"), now.date())
+            end = _parse_schedule_datetime(interval_obj.get("end_time"), now.date())
+            if start is None or end is None or end <= start:
+                continue
+            if start.date() <= now.date() <= end.date():
+                parsed_windows.append((start, end, str(raw_session.get("type") or "unknown")))
+
+        if payload.get("sessions") and not parsed_windows:
+            return {
+                "known": False, "is_open": False, "entry_allowed": False,
+                "reason": "schedule_intervals_unparseable_or_not_for_today",
+            }
+        if not parsed_windows:
+            return {
+                "known": True, "is_open": False, "entry_allowed": False,
+                "reason": "no_sessions_today", "session_type": "",
+            }
+
+        active = [(start, end, kind) for start, end, kind in parsed_windows if start <= now < end]
+        if active:
+            start, provider_end, kind = min(active, key=lambda item: item[1])
+            hard_cutoff = self._entry_hard_cutoff_msk(now)
+            effective_end = min(provider_end, hard_cutoff) if hard_cutoff is not None else provider_end
+            seconds_to_close = max(0.0, (effective_end - now).total_seconds())
+            cutoff_minutes = self._entry_cutoff_minutes()
+            allowed = seconds_to_close > cutoff_minutes * 60.0
+            hard_cutoff_reached = hard_cutoff is not None and now >= hard_cutoff
+            reason = (
+                "hard_entry_cutoff_reached" if hard_cutoff_reached
+                else "active_session" if allowed
+                else "entry_cutoff_reached"
+            )
+            return {
+                "known": True, "is_open": True, "entry_allowed": allowed,
+                "reason": reason, "session_type": kind,
+                "session_start": start.isoformat(),
+                "session_end": provider_end.isoformat(),
+                "entry_hard_cutoff": hard_cutoff.isoformat() if hard_cutoff else None,
+                "seconds_to_close": seconds_to_close,
+                "cutoff_minutes": cutoff_minutes,
+            }
+
+        future = [(start, end, kind) for start, end, kind in parsed_windows if start > now]
+        next_start = min(future, key=lambda item: item[0])[0] if future else None
+        return {
+            "known": True, "is_open": False, "entry_allowed": False,
+            "reason": "between_or_outside_sessions",
+            "next_session_start": next_start.isoformat() if next_start else None,
+            "session_type": "",
+        }
