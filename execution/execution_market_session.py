@@ -1,4 +1,4 @@
-"""Executable quote freshness and market-session validation mixin."""
+"""Executable quote freshness and provider session validation mixin."""
 from __future__ import annotations
 
 from execution.execution_shared import *  # noqa: F401,F403
@@ -126,27 +126,27 @@ class ExecutionMarketSessionMixin:
             "age_sec": float(chosen["ask_age_sec"] if side == "BUY" else chosen["bid_age_sec"]),
         }
 
-    @staticmethod
-    def _entry_hard_cutoff_msk(now: datetime) -> datetime | None:
-        """Return the configured hard cutoff for new entries on this Moscow date."""
-        raw = str(os.getenv("PILUITUS_ENTRY_HARD_CUTOFF_MSK", getattr(
-            Settings, "ENTRY_HARD_CUTOFF_MSK", "22:00"
-        try:
-            result = getter(ticker)
-            payload = await result if inspect.isawaitable(result) else result
-        except Exception as exc:
-            return {
-                "known": False, "is_open": False, "entry_allowed": False,
-                "reason": f"schedule_request_failed:{type(exc).__name__}",
-            }
-        if not isinstance(payload, Mapping) or not isinstance(payload.get("sessions"), list):
-            return {"known": False, "is_open": False, "entry_allowed": False, "reason": "schedule_missing_or_invalid"}
+    async def _check_entry_session(self, ticker: str) -> tuple[bool, str, dict[str, Any]]:
+        """Fail closed unless Finam confirms an active instrument session away from close."""
+        state = await self._market_session_status(ticker)
+        if not state.get("known"):
+            return False, f"расписание Finam недоступно/не распознано ({state.get('reason', 'unknown')})", state
+        if not state.get("is_open"):
+            next_start = state.get("next_session_start")
+            suffix = f"; следующая сессия={next_start}" if next_start else ""
+            return False, f"торги по инструменту сейчас закрыты ({state.get('reason')}){suffix}", state
+        if not state.get("entry_allowed"):
+            seconds = _finite_or_default(state.get("seconds_to_close"), 0.0)
+            cutoff = self._entry_cutoff_minutes()
+            return False, f"до закрытия сессии {seconds / 60.0:.2f} мин; защитный интервал={cutoff:.1f} мин", state
+        seconds = _finite_or_default(state.get("seconds_to_close"), 0.0)
+        return True, f"сессия={state.get('session_type')}; до закрытия {seconds / 60.0:.1f} мин", state
 
-        now = datetime.now(_MOSCOW_TZ)
-        parsed_windows: list[tuple[datetime, datetime, str]] = []
-        for raw_session in payload.get("sessions", []):
-            if not isinstance(raw_session, Mapping):
-                continue
+    def _paper_entry_bbo_diagnostic(self, ticker: str) -> str:
+        """Describe why the current two-sided BBO is not executable."""
+        if self.screener is None:
+            return "screener=отсутствует"
+        try:
             quote = self.screener.quotes.get(ticker)
             if not isinstance(quote, Mapping):
                 return "quote=отсутствует"

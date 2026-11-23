@@ -218,10 +218,8 @@ class BaseExecutionEngine(
         else:
             logger.warning("🔥 РЕЖИМ АГЕНТА: [LIVE TRADING] — Работа на реальном счёте Finam!")
 
-    # These policy boundary methods intentionally remain on this facade.
-    # Existing integrations patch execution.execution_layer dependencies
-    # (datetime, time, FINAM_TRADE_LOT_SIZES) in tests and operational harnesses.
-
+    # Dependency-sensitive policy boundaries intentionally stay on this public
+    # facade so historical patch targets remain effective for test harnesses.
     async def _reserve_order_size(
         self, ticker: str, requested_lots: int, price: float, db: DBManager, *,
         side: str, stop_loss: float
