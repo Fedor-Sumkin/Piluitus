@@ -15,6 +15,10 @@ def test_critical_fire_and_forget_tasks_are_retained_and_drained():
     runtime_paths = [
         root / "runtime" / "market_worker_candidate_admission_runtime.py",
         root / "runtime" / "market_worker_verdict_construction_runtime.py",
+        root / "runtime" / "market_worker_verdict_diagnostics_runtime.py",
+        root / "runtime" / "market_worker_verdict_record_runtime.py",
+        root / "runtime" / "market_worker_verdict_shadow_runtime.py",
+        root / "runtime" / "market_worker_verdict_event_logging_runtime.py",
         root / "runtime" / "market_worker_verdict_publication_runtime.py",
     ]
     runtime_sources = [path.read_text(encoding="utf-8") for path in runtime_paths]
@@ -100,6 +104,10 @@ def test_shutdown_drains_tracked_operations_after_producers_stop():
     tracked_runtime_sources = [
         (root / "runtime" / "market_worker_candidate_admission_runtime.py").read_text(encoding="utf-8"),
         (root / "runtime" / "market_worker_verdict_construction_runtime.py").read_text(encoding="utf-8"),
+        (root / "runtime" / "market_worker_verdict_diagnostics_runtime.py").read_text(encoding="utf-8"),
+        (root / "runtime" / "market_worker_verdict_record_runtime.py").read_text(encoding="utf-8"),
+        (root / "runtime" / "market_worker_verdict_shadow_runtime.py").read_text(encoding="utf-8"),
+        (root / "runtime" / "market_worker_verdict_event_logging_runtime.py").read_text(encoding="utf-8"),
         (root / "runtime" / "market_worker_verdict_publication_runtime.py").read_text(encoding="utf-8"),
     ]
     assert any("self.background_operations.spawn(" in source for source in tracked_runtime_sources)

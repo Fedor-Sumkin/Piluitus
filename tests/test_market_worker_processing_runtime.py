@@ -246,3 +246,98 @@ def test_queue_processor_runs_candidate_phases_in_order_and_acknowledges() -> No
         assert queue.empty()
 
     asyncio.run(scenario())
+
+
+def test_verdict_construction_keeps_all_subphases_in_original_order() -> None:
+    runtime, *_rest = _runtime()
+    calls = []
+
+    def build_signal_reason(**_kwargs):
+        calls.append("diagnostic_reason")
+        return "LOCAL_REASON"
+
+    def build_explanation(*_args):
+        calls.append("diagnostic_explanation")
+        return "TACTIC", "CRITIC"
+
+    def classify_diagnostic(**_kwargs):
+        calls.append("diagnostic_classification")
+        return "LOCAL_GUARD"
+
+    def build_record(**kwargs):
+        calls.append("record")
+        assert kwargs["signal_reason"] == "LOCAL_REASON"
+        assert kwargs["tactic_text"] == "TACTIC"
+        return {"signal_status": "APPROVED"}
+
+    def link_shadow(*_args, **_kwargs):
+        calls.append("shadow_link")
+
+    def enrich_analysis(*_args, **_kwargs):
+        calls.append("analysis_enrichment")
+
+    def log_event(**_kwargs):
+        calls.append("event_log")
+
+        async def completed():
+            return None
+
+        return completed()
+
+    runtime.build_default_signal_reason = build_signal_reason
+    runtime.build_verdict_explanation = build_explanation
+    runtime.classify_local_evidence_diagnostic = classify_diagnostic
+    runtime.build_llm_verdict_record = build_record
+    runtime.link_shadow_candidate_verdict = link_shadow
+    runtime.enrich_ai_analysis_with_verdict = enrich_analysis
+    runtime.log_trading_event = log_event
+
+    state = {
+        "event_payload": {"shadow_candidate_id": "shadow-1"},
+        "ticker": "SBER",
+        "price": 100.0,
+        "metrics": {"direction_evidence_state": "READY"},
+        "llm_input_features": {"spread": 0.1},
+        "ai_analysis": {},
+        "request_error": False,
+        "request_error_type": "",
+        "model_decision": "BUY",
+        "candidate_direction": "BUY",
+        "model_reason_code": "MOMENTUM",
+        "candidate_decision": "BUY",
+        "model_contract_violation": False,
+        "decision": "BUY",
+        "confidence_valid": True,
+        "confidence": 80.0,
+        "candidate_confidence": 80.0,
+        "evidence": {"source": "local"},
+        "block_reason": "",
+        "post_llm_features": {},
+        "post_llm_evidence_validation": "VALID",
+        "post_llm_evidence_reason": "",
+        "post_llm_refresh": {},
+        "verdict_id": "verdict-1",
+        "signal_reason": "",
+        "execution_status": "PENDING",
+        "execution_message": "",
+        "requested_lots": 1,
+        "requested_notional": 100.0,
+    }
+
+    runtime._build_candidate_verdict(state)
+
+    assert calls == [
+        "diagnostic_reason",
+        "diagnostic_explanation",
+        "diagnostic_classification",
+        "record",
+        "shadow_link",
+        "analysis_enrichment",
+        "event_log",
+    ]
+    assert state["signal_status"] == "APPROVED"
+    assert state["shadow_candidate_id"] == "shadow-1"
+    assert state["verdict_data"] == {"signal_status": "APPROVED"}
+    assert state["tactic_text"] == "TACTIC"
+    assert state["critic_text"] == "CRITIC"
+    assert state["local_evidence_diagnostic"] == "LOCAL_GUARD"
