@@ -126,7 +126,7 @@ def build_trading_status_snapshot(
         "mode": mode,
         "market_connected": market_connected,
         "market_stream_running": stream_running,
-        "trading_allowed": risk_allowed is True and market_connected,
+        "trading_allowed": status == "ACTIVE",
         "loss_streak": loss_streak,
         "loss_streak_limit": loss_limit,
         "block_reason": reason or None,

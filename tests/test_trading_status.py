@@ -59,6 +59,20 @@ def test_status_reports_hard_stop_after_configured_loss_streak():
     assert "до следующей торговой даты" in status["message"]
 
 
+def test_status_never_reports_new_entries_allowed_when_a_stop_flag_wins_a_stale_cache_race():
+    risk, engine = _runtime(
+        allowed=True,
+        connected=True,
+        block_trading=True,
+        _trading_block_reason="LOSS_STREAK_HARD_STOP",
+    )
+
+    status = build_trading_status_snapshot(risk_manager=risk, execution_engine=engine)
+
+    assert status["status"] == "STOPPED"
+    assert status["trading_allowed"] is False
+
+
 def test_status_reports_timed_loss_streak_pause_and_countdown():
     pause_until = datetime.now(MSK).replace(tzinfo=None) + timedelta(minutes=5)
     risk, engine = _runtime(
