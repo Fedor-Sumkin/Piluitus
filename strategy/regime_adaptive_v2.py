@@ -132,11 +132,16 @@ class RegimeAdaptiveV2:
         atr_pct = _finite(metrics.get("bar_atr_pct"))
         atr_value = _finite(metrics.get("bar_atr"))
         atr_periods = _finite(metrics.get("bar_atr_periods"))
-        if (
+        try:
+            min_atr_periods = min(14, max(2, int(os.getenv("PILUITUS_ATR_MIN_PERIODS", "5"))))
+        except (TypeError, ValueError, OverflowError):
+            min_atr_periods = 5
+        atr_added = bool(
             ticker and atr_pct is not None and atr_pct > 0.0
             and atr_value is not None and atr_value > 0.0
-            and atr_periods is not None and atr_periods >= 5.0
-        ):
+            and atr_periods is not None and atr_periods >= min_atr_periods
+        )
+        if atr_added:
             history.append(atr_pct)
 
         return {
@@ -155,11 +160,7 @@ class RegimeAdaptiveV2:
             "volatility_regime": volatility,
             "directional_regime": str(context.get("directional_regime") or "UNKNOWN"),
             "m1_freshness": m1_fresh,
-            "atr_reference_samples_before_candidate": max(0, len(history) - (
-                1 if ticker and atr_pct is not None and atr_pct > 0.0
-                and atr_value is not None and atr_value > 0.0
-                and atr_periods is not None and atr_periods >= 5.0 else 0
-            )),
+            "atr_reference_samples_before_candidate": max(0, len(history) - int(atr_added)),
             "reasons": penalty_reasons,
             "mode": "SHADOW_ONLY",
         }
