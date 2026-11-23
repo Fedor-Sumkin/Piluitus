@@ -10,7 +10,7 @@ from httpx import AsyncClient, HTTPStatusError
 from config import Settings
 import httpx
 from ai.rag_prompt_utils import normalise_rag_context, select_prompt_rules
-from strategy.signal_guard import classify_direction_evidence
+from strategy.signal_guard import classify_direction_evidence, fresh_bar_pattern_direction
 
 log = logging.getLogger("Piluitus.AIEngine")
 thought_log = logging.getLogger("Piluitus.EvolutionThoughts")
@@ -627,13 +627,12 @@ class AIEngine:
         atr_age = cls._metric_number(metrics, "bar_atr_age_sec", math.nan)
         if not math.isfinite(atr_age) or atr_age < 0.0 or atr_age > 180.0 or atr_periods < 5.0:
             return "UNAVAILABLE"
-        pattern_confirmed = cls._metric_number(metrics, "bar_pattern_confirmed", 0.0) >= 0.5
-        pattern_direction = cls._metric_number(metrics, "bar_pattern_direction_code", 0.0)
-        if pattern_confirmed and pattern_direction in {-1.0, 1.0}:
-            matching = (direction == "BUY" and pattern_direction > 0.0) or (
-                direction == "SELL" and pattern_direction < 0.0
-            )
-            return "ALIGNED" if matching else "OPPOSITE"
+        # Reuse the entry guard's pattern validation: confirmation alone is
+        # insufficient unless the named trigger, direction flag and timestamp
+        # are all valid and within the configured freshness window.
+        pattern_direction = fresh_bar_pattern_direction(metrics)
+        if pattern_direction is not None:
+            return "ALIGNED" if pattern_direction == direction else "OPPOSITE"
         # EMA9/EMA21 are not meaningful until 21 contiguous closed M1 bars exist.
         if bar_count < 21.0:
             return "UNAVAILABLE"
@@ -774,6 +773,10 @@ class AIEngine:
         replacement = reason
         if decision == "APPROVE":
             replacement = "APPROVED"
+            # reason_code is optional in the response contract. A missing code
+            # is a defaulted diagnostic value, not a model/evidence mismatch.
+            if reason == "NOT_PROVIDED":
+                return replacement, "INFERRED"
         elif decision == "HOLD":
             if reason in {"NOT_PROVIDED", "HOLD_UNCLEAR"}:
                 inferred = cls._infer_hold_reason_code(candidate_direction, prepared)
