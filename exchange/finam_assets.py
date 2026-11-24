@@ -242,10 +242,10 @@ class FinamAssetMixin:
         if not normalized:
             return None
         symbol = f"{normalized}@MISX"
-        # Finam validates account_id on GetAsset. PAPER supplies a separately
-        # discovered read-only metadata context; it never populates the LIVE
-        # execution account field and is never used for order placement.
-        account = str(account_id or self.metadata_account_id or "").strip()
+        # GetAsset accepts an optional account context. Never inherit a
+        # discovered/stale account implicitly: PAPER needs instrument specs only;
+        # LIVE callers pass their account explicitly.
+        account = str(account_id or "").strip()
         params = {"account_id": account} if account and account != "UNKNOWN_ACCOUNT" else None
         url = f"{self.base_url}/v1/assets/{url_quote(symbol, safe='@')}"
         request_jwt = self.jwt_token

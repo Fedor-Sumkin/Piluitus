@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from execution.execution_shared import *  # noqa: F401,F403
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 
 
 class ExecutionPositionRiskMixin:
@@ -223,6 +224,56 @@ class ExecutionPositionRiskMixin:
             total += position_risk
         return round(total, 2)
 
+    @staticmethod
+    def _price_tick_rule(ticker: str, price: float) -> tuple[float, float]:
+        """Return the applicable tick and grid origin for a fixed or tiered price rule."""
+        normalized = str(ticker or "").strip().upper().split("@", 1)[0]
+        metadata = ASSET_METADATA.get(normalized, {})
+        if not isinstance(metadata, Mapping):
+            return 0.0, 0.0
+        fixed_tick = _finite_or_default(metadata.get("price_tick"), 0.0)
+        if math.isfinite(fixed_tick) and fixed_tick > 0.0:
+            return fixed_tick, 0.0
+        rule = metadata.get("price_step")
+        if not isinstance(rule, Mapping):
+            return 0.0, 0.0
+        threshold = _finite_or_default(rule.get("threshold_price"), 0.0)
+        below_step = _finite_or_default(rule.get("step"), 0.0)
+        above_step = _finite_or_default(rule.get("step_from_threshold"), 0.0)
+        if threshold <= 0.0 or below_step <= 0.0 or above_step <= 0.0:
+            return 0.0, 0.0
+        if price < threshold:
+            return below_step, 0.0
+        return above_step, threshold
+
+    @classmethod
+    def _round_price_to_valid_tick(cls, ticker: str, price: float, rounding) -> float:
+        """Round directionally to a valid tick, rechecking when rounding crosses a band."""
+        candidate = _finite_or_default(price, 0.0)
+        if candidate <= 0.0:
+            return 0.0
+        metadata = ASSET_METADATA.get(str(ticker or "").strip().upper().split("@", 1)[0], {})
+        decimals = int(_finite_or_default(metadata.get("decimals"), 8)) if isinstance(metadata, Mapping) else 8
+        for _ in range(4):
+            tick, origin = cls._price_tick_rule(ticker, candidate)
+            if not math.isfinite(tick) or tick <= 0.0:
+                return 0.0
+            try:
+                tick_decimal = Decimal(str(tick))
+                origin_decimal = Decimal(str(origin))
+                price_decimal = Decimal(str(candidate))
+                units = ((price_decimal - origin_decimal) / tick_decimal).to_integral_value(
+                    rounding=rounding
+                )
+                rounded_value = float(origin_decimal + units * tick_decimal)
+            except (ArithmeticError, TypeError, ValueError, OverflowError):
+                return 0.0
+            next_tick, _ = cls._price_tick_rule(ticker, rounded_value)
+            if math.isclose(next_tick, tick, rel_tol=1e-12, abs_tol=1e-12):
+                return round(rounded_value, max(0, min(10, decimals)))
+            candidate = rounded_value
+        return 0.0
+
     def calculate_atr_stop(
         self,
         ticker: str,
@@ -323,17 +374,16 @@ class ExecutionPositionRiskMixin:
             sl = price + stop_distance
             tp = price - target_distance
 
-        # Round protective levels to the actual Finam price tick. Directional
-        # rounding never moves a stop closer to the entry price.
-        metadata = ASSET_METADATA.get(str(ticker or "").strip().upper(), {})
-        tick = _finite_or_default(metadata.get("price_tick"), 0.0) if isinstance(metadata, Mapping) else 0.0
-        decimals = int(_finite_or_default(metadata.get("decimals"), 4)) if isinstance(metadata, Mapping) else 4
-        if tick > 0.0 and math.isfinite(tick):
-            if side == "BUY":
-                sl = math.floor((sl / tick) + 1e-10) * tick
-                tp = math.ceil((tp / tick) - 1e-10) * tick
-            else:
-                sl = math.ceil((sl / tick) - 1e-10) * tick
-                tp = math.floor((tp / tick) + 1e-10) * tick
-            return round(sl, max(0, min(8, decimals))), round(tp, max(0, min(8, decimals)))
-        return round(sl, 4), round(tp, 4)
+        # Use Finam's confirmed fixed or price-tiered tick rule. If metadata is
+        # unavailable, do not fabricate a 4-decimal price that may be rejected.
+        sl_rounding = ROUND_FLOOR if side == "BUY" else ROUND_CEILING
+        tp_rounding = ROUND_CEILING if side == "BUY" else ROUND_FLOOR
+        rounded_sl = self._round_price_to_valid_tick(ticker, sl, sl_rounding)
+        rounded_tp = self._round_price_to_valid_tick(ticker, tp, tp_rounding)
+        if rounded_sl <= 0.0 or rounded_tp <= 0.0:
+            return 0.0, 0.0
+        if side == "BUY" and not (rounded_sl < price < rounded_tp):
+            return 0.0, 0.0
+        if side == "SELL" and not (rounded_tp < price < rounded_sl):
+            return 0.0, 0.0
+        return rounded_sl, rounded_tp

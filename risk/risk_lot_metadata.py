@@ -13,14 +13,14 @@ class RiskLotMetadataMixin:
         if not LOT_SIZES and not TICKERS_TO_TRADE:
             risk_logger.error("❌ Список инструментов пуст: Finam metadata refresh невозможен.")
             return
-        if finam_broker_client is None or not (
-            callable(getattr(finam_broker_client, "get_asset", None))
-            or callable(getattr(finam_broker_client, "get_moex_asset", None))
-        ):
+        asset_method = getattr(finam_broker_client, "get_asset", None) if finam_broker_client is not None else None
+        if finam_broker_client is None or not callable(asset_method):
             risk_logger.error(
-                "Exchange asset metadata source unavailable: exchange lot cannot be confirmed; new entries remain blocked."
+                "Finam GetAsset metadata source unavailable; confirmed tick rules are preserved "
+                "and entries without valid price-step metadata remain blocked."
             )
             return
+
         params_method = getattr(finam_broker_client, "get_asset_params", None)
         account_id = str(getattr(finam_broker_client, "account_id", "") or "").strip()
         account_id_source = str(
@@ -49,34 +49,8 @@ class RiskLotMetadataMixin:
                 "⛔ [FINAM METADATA] account_id was not resolved from the authenticated "
                 "Finam session; LIVE GetAssetParams is skipped and LIVE entries remain blocked."
             )
-        metadata_account_id = str(
-            getattr(finam_broker_client, "metadata_account_id", "") or ""
-        ).strip()
-        moex_asset_method = getattr(finam_broker_client, "get_moex_asset", None)
-        use_moex_iss = is_paper and callable(moex_asset_method)
-        if is_paper and not use_moex_iss:
-            # Compatibility for test doubles/older clients only. Production PAPER
-            # uses public MOEX ISS and never discovers or borrows a Finam account.
-            metadata_discover = getattr(finam_broker_client, "discover_metadata_account_id", None)
-            if callable(metadata_discover) and not metadata_account_id:
-                try:
-                    metadata_account_id = str(await metadata_discover() or "").strip()
-                except Exception as exc:
-                    risk_logger.warning(
-                        "[FINAM METADATA] legacy read-only context discovery failed: %s",
-                        type(exc).__name__,
-                    )
-                if not metadata_account_id:
-                    risk_logger.warning(
-                        "⛔ [FINAM METADATA] no public MOEX ISS client is available and Finam "
-                        "GetAsset requires an authorized account context; previously confirmed "
-                        "exchange lots are preserved and unknown lots remain blocked."
-                    )
-                    return
-        asset_method = moex_asset_method if use_moex_iss else getattr(finam_broker_client, "get_asset", None)
-        metadata_source_label = "MOEX_ISS_TQBR" if use_moex_iss else "FINAM_GET_ASSET"
-        if not callable(asset_method):
-            risk_logger.warning("📐 [ASSET METADATA] Exchange metadata method unavailable; static tick-size metadata retained.")
+
+        metadata_source_label = "FINAM_GET_ASSET"
         if not is_paper and not callable(params_method):
             risk_logger.error(
                 "Finam GetAssetParams unavailable; no account-specific lot values will authorize LIVE orders."
@@ -87,11 +61,8 @@ class RiskLotMetadataMixin:
         # 200 requests/minute limit applies only to Finam REST endpoints.
         semaphore = asyncio.Semaphore(6)
         request_lock = asyncio.Lock()
-        interval_env = (
-            "PILUITUS_MOEX_ISS_REQUEST_INTERVAL_SEC"
-            if use_moex_iss else "FINAM_METADATA_REQUEST_INTERVAL_SEC"
-        )
-        interval_default = "0.50" if use_moex_iss else "0.36"
+        interval_env = "FINAM_METADATA_REQUEST_INTERVAL_SEC"
+        interval_default = "0.36"
         try:
             request_interval_sec = float(os.getenv(interval_env, interval_default))
         except (TypeError, ValueError, OverflowError):
@@ -110,8 +81,8 @@ class RiskLotMetadataMixin:
                 if wait_sec > 0.0:
                     await asyncio.sleep(wait_sec)
                 next_request_at = time.monotonic() + request_interval_sec
-            # PAPER has no brokerage account. Never inherit an account ID from
-            # the client when requesting public exchange instrument metadata.
+            # GetAsset is account-independent for instrument specifications.
+            # PAPER omits account_id; LIVE passes its explicitly resolved account.
             if is_paper:
                 return await method(ticker)
             return await method(ticker, account_id=account_id)
@@ -188,30 +159,63 @@ class RiskLotMetadataMixin:
                     return None
                 return value
 
-            lot_raw = None
             if isinstance(asset_data, dict):
                 try:
                     decimals_raw = scalar(field(asset_data, "decimals"))
                     min_step_raw = scalar(field(asset_data, "min_step", "minStep"))
                     decimals = int(decimals_raw) if decimals_raw is not None else -1
-                    min_step = int(float(min_step_raw or 0))
-                    lot_raw = scalar(field(asset_data, "lot_size", "lotSize"))
-                    exchange_lot = float(lot_raw or 0)
+                    min_step = int(min_step_raw) if min_step_raw is not None else 0
                     mic = str(scalar(field(asset_data, "mic", "exchange_mic")) or "").strip().upper()
                     symbol = str(scalar(field(asset_data, "symbol", "ticker")) or "")
                     asset_mic = mic or ("MISX" if symbol.upper().endswith("@MISX") else "UNSPECIFIED")
-                    asset_market_ok = mic in {"", "MISX"} and (not symbol or "@" not in symbol or symbol.upper().endswith("@MISX"))
-                    if decimals >= 0 and min_step > 0 and asset_market_ok:
+                    asset_market_ok = (
+                        mic in {"", "MISX"}
+                        and (not symbol or "@" not in symbol or symbol.upper().endswith("@MISX"))
+                    )
+
+                    price_step_raw = field(asset_data, "price_step", "priceStep")
+                    price_step_data = field(price_step_raw, "price_step", "priceStep") or price_step_raw
+                    dynamic_rule = None
+                    if price_step_data is not None:
+                        threshold_raw = scalar(field(price_step_data, "threshold_price", "thresholdPrice"))
+                        below_raw = scalar(field(price_step_data, "step"))
+                        above_raw = scalar(field(price_step_data, "step_from_threshold", "stepFromThreshold"))
+                        try:
+                            threshold = float(threshold_raw)
+                            below_step = float(below_raw)
+                            above_step = float(above_raw)
+                            if (
+                                math.isfinite(threshold) and threshold > 0.0
+                                and math.isfinite(below_step) and below_step > 0.0
+                                and math.isfinite(above_step) and above_step > 0.0
+                            ):
+                                dynamic_rule = {
+                                    "threshold_price": threshold,
+                                    "step": below_step,
+                                    "step_from_threshold": above_step,
+                                }
+                        except (TypeError, ValueError, OverflowError):
+                            dynamic_rule = None
+
+                    fixed_tick = (
+                        min_step / (10 ** decimals)
+                        if 0 <= decimals <= 10 and min_step > 0 else 0.0
+                    )
+                    metadata_valid = (
+                        0 <= decimals <= 10
+                        and asset_market_ok
+                        and (fixed_tick > 0.0 or dynamic_rule is not None)
+                    )
+                    if metadata_valid:
                         ASSET_METADATA[normalized] = {
                             "symbol": symbol or f"{normalized}@MISX",
                             "decimals": decimals,
                             "min_step": min_step,
-                            "price_tick": min_step / (10 ** decimals),
-                            "lot_size": exchange_lot,
+                            "price_tick": fixed_tick,
+                            "price_step": dynamic_rule,
+                            "lot_size": int(LOT_SIZES.get(normalized, 0) or 0),
                             "quote_currency": str(scalar(field(asset_data, "quote_currency", "quoteCurrency")) or ""),
-                            "metadata_source": str(
-                                scalar(field(asset_data, "metadata_source")) or metadata_source_label
-                            ),
+                            "metadata_source": metadata_source_label,
                         }
                         updated_metadata += 1
                     else:
@@ -222,30 +226,22 @@ class RiskLotMetadataMixin:
                 failed_metadata += 1
 
             if is_paper:
-                # Preserve a previously confirmed exchange lot during transient
-                # metadata failures; never replace it with a static guessed value.
+                # LOTSIZE is maintained in the project's static exchange-lot dictionary.
+                # It is intentionally independent from Finam metadata and account trade_lot_size.
                 try:
-                    lot_value = float(exchange_lot)
-                    paper_lot = int(lot_value)
-                    if asset_market_ok and math.isfinite(lot_value) and lot_value > 0 and lot_value == paper_lot:
-                        FINAM_TRADE_LOT_SIZES[normalized] = paper_lot
-                        updated_lots += 1
-                    else:
-                        failed_lots += 1
-                        if len(paper_lot_failure_examples) < 8:
-                            payload_type = type(asset_payload).__name__
-                            payload_keys = ",".join(sorted(asset_payload.keys())) if isinstance(asset_payload, dict) else "-"
-                            if asset_payload is None:
-                                reason = f"{metadata_source_label} returned empty response"
-                            elif not isinstance(asset_data, dict):
-                                reason = f"unsupported payload type={payload_type}"
-                            elif not asset_market_ok:
-                                reason = f"exchange not confirmed ({asset_mic})"
-                            else:
-                                reason = f"invalid/missing lot_size={lot_raw!r}; keys={payload_keys}"
-                            paper_lot_failure_examples.append(f"{normalized}:{reason}")
+                    static_lot = int(LOT_SIZES.get(normalized, 0) or 0)
                 except (TypeError, ValueError, OverflowError):
+                    static_lot = 0
+                if static_lot > 0:
+                    FINAM_TRADE_LOT_SIZES[normalized] = static_lot
+                    updated_lots += 1
+                else:
+                    FINAM_TRADE_LOT_SIZES.pop(normalized, None)
                     failed_lots += 1
+                    if len(paper_lot_failure_examples) < 8:
+                        paper_lot_failure_examples.append(
+                            f"{normalized}:LOT_SIZES dictionary has no valid exchange lot"
+                        )
             elif isinstance(params_payload, dict):
                 raw = params_payload.get("trade_lot_size")
                 tradable_raw = params_payload.get("is_tradable")
@@ -290,11 +286,8 @@ class RiskLotMetadataMixin:
             "PAPER lot failure examples=%s.",
             "PAPER" if is_paper else "LIVE",
             (
-                "public_MOEX_ISS_TQBR"
-                if use_moex_iss else (
-                    f"read_only_metadata:{bool(metadata_account_id)}"
-                    if is_paper else f"{account_id_source}:{bool(account_id)}"
-                )
+                "Finam_GetAsset_no_account"
+                if is_paper else f"{account_id_source}:{bool(account_id)}"
             ),
             updated_lots, len(symbols_to_refresh), failed_lots, blocked_not_tradable,
             updated_metadata, len(symbols_to_refresh), failed_metadata,
