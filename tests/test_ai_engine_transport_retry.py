@@ -134,6 +134,37 @@ class AIEngineTransportRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(engine._transport_failure_count, 0)
         self.assertEqual(engine._transport_open_until, 0.0)
 
+    async def test_transport_concurrency_is_measured_without_throttling(self) -> None:
+        engine = self._engine([])
+        both_started = asyncio.Event()
+        release = asyncio.Event()
+        started = 0
+
+        async def delayed_post(*args, **kwargs):
+            nonlocal started
+            started += 1
+            if started == 2:
+                both_started.set()
+            await release.wait()
+            return self._response()
+
+        engine.client.post = AsyncMock(side_effect=delayed_post)
+        first = asyncio.create_task(
+            engine._post_with_retry(engine.api_path, json={"model": "test-model"}, retries=0)
+        )
+        second = asyncio.create_task(
+            engine._post_with_retry(engine.api_path, json={"model": "test-model"}, retries=0)
+        )
+        await asyncio.wait_for(both_started.wait(), timeout=1.0)
+        self.assertEqual(engine._transport_inflight_count, 2)
+        release.set()
+        responses = await asyncio.gather(first, second)
+
+        self.assertEqual([response.status_code for response in responses], [200, 200])
+        self.assertEqual(engine._transport_peak_inflight, 2)
+        self.assertEqual(engine._transport_inflight_count, 0)
+        self.assertEqual(engine.client.post.await_count, 2)
+
     async def test_caller_cancellation_is_not_retried_or_swallowed(self) -> None:
         engine = self._engine([asyncio.CancelledError()])
         with self.assertRaises(asyncio.CancelledError):
@@ -142,6 +173,7 @@ class AIEngineTransportRetryTests(unittest.IsolatedAsyncioTestCase):
                 json={"model": "test-model"},
             )
         self.assertEqual(engine.client.post.await_count, 1)
+        self.assertEqual(engine._transport_inflight_count, 0)
 
     def test_effective_generation_budget_is_clamped_to_short_contract_range(self) -> None:
         with patch.object(Settings, "VLLM_MAX_TOKENS", 1280):
