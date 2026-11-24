@@ -134,7 +134,7 @@ def make_runtime(
         refresh_bbo_metrics=callbacks["refresh"],
         infer_candidate_direction=callbacks["infer"],
         paper_mode_provider=lambda: engine.paper_mode,
-        validate_entry_evidence=callbacks["evidence"],
+        validate_pre_llm_entry_evidence=callbacks["evidence"],
         validate_atr_readiness=callbacks["atr"],
         queue_flow_conflict_reason=callbacks["conflict"],
         reserve_ai_ticker=lambda ticker, side, received_metrics: (
@@ -325,14 +325,14 @@ def test_direction_change_cancels_candidate():
     assert "direction_prefilter_skipped" in counter_keys(state)
 
 
-def test_queue_flow_conflict_blocks_candidate_before_entry_validation():
+def test_queue_flow_conflict_is_deferred_and_candidate_reaches_llm_queue():
     state = make_runtime(conflict="queue/flow contradiction")
 
     resume(state)
 
-    assert state["not_called"] == [("shadow-1", "QUEUE_TRADE_FLOW_CONFLICT")]
-    assert state["guard_blocks"] == ["queue/flow contradiction"]
-    assert state["blocked_logs"][0][0] == ("SBER", "queue/flow contradiction")
+    assert state["queue"].items
+    assert state["not_called"] == []
+    assert state["guard_blocks"] == []
     assert state["store"].count() == 0
 
 
@@ -348,7 +348,7 @@ def test_transient_quote_evidence_failure_keeps_candidate_waiting():
 
 
 def test_non_quote_evidence_failure_cancels_candidate():
-    state = make_runtime(evidence=(False, "spread above local limit"))
+    state = make_runtime(evidence=(False, "candidate metrics malformed"))
 
     resume(state)
 

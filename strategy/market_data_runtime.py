@@ -273,7 +273,7 @@ class PendingBBOCandidateRuntime:
         refresh_bbo_metrics: Callable[..., tuple[bool, str]],
         infer_candidate_direction: Callable[[dict[str, Any]], str | None],
         paper_mode_provider: Callable[[], bool],
-        validate_entry_evidence: Callable[..., tuple[bool, str]],
+        validate_pre_llm_entry_evidence: Callable[..., tuple[bool, str]],
         validate_atr_readiness: Callable[[dict[str, Any]], tuple[bool, str]],
         queue_flow_conflict_reason: Callable[[str, dict[str, Any]], str],
         reserve_ai_ticker: Callable[[str, str, dict[str, Any]], bool],
@@ -297,7 +297,7 @@ class PendingBBOCandidateRuntime:
         self.refresh_bbo_metrics = refresh_bbo_metrics
         self.infer_candidate_direction = infer_candidate_direction
         self.paper_mode_provider = paper_mode_provider
-        self.validate_entry_evidence = validate_entry_evidence
+        self.validate_pre_llm_entry_evidence = validate_pre_llm_entry_evidence
         self.validate_atr_readiness = validate_atr_readiness
         self.queue_flow_conflict_reason = queue_flow_conflict_reason
         self.reserve_ai_ticker = reserve_ai_ticker
@@ -449,18 +449,9 @@ class PendingBBOCandidateRuntime:
             shadow_result = self.log_shadow_candidate(key, direction, metrics)
             payload["shadow_candidate_id"] = shadow_result.get("candidate_id")
 
-        queue_flow_reason = self.queue_flow_conflict_reason(direction, metrics)
-        if queue_flow_reason:
-            self.mark_shadow_llm_not_called(
-                payload.get("shadow_candidate_id"), "QUEUE_TRADE_FLOW_CONFLICT"
-            )
-            self.trade_flow_increment("bbo_resume_evidence_blocked")
-            self.trade_flow_guard_block(queue_flow_reason)
-            self.log_prefilter_blocked(key, queue_flow_reason)
-            self.cancel(key, pending)
-            return
-
-        evidence_ok, evidence_reason = self.validate_entry_evidence(
+        # Recovered candidates follow the same narrow pre-LLM policy as fresh candidates.
+        # Queue/flow contradictions and strategic quality gates run after LLM evaluation.
+        evidence_ok, evidence_reason = self.validate_pre_llm_entry_evidence(
             direction,
             metrics,
             paper_mode=self.paper_mode_provider(),
