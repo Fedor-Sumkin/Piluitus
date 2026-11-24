@@ -155,8 +155,9 @@ class Settings:
     )
     # Таймаут одной попытки vLLM; AIEngine выполняет один ограниченный сетевой повтор.
     VLLM_TIMEOUT: int = int(os.getenv("VLLM_TIMEOUT", "30"))
-    # Короткий JSON-контракт: эффективный max_tokens ограничен диапазоном 384..768.
-    VLLM_MAX_TOKENS: int = int(os.getenv("VLLM_MAX_TOKENS", "768"))
+    # DeepSeek-R1 needs completion headroom for reasoning plus a short JSON verdict.
+    # The transport layer clamps this to 384..1024 tokens.
+    VLLM_MAX_TOKENS: int = int(os.getenv("VLLM_MAX_TOKENS", "1024"))
     # Consecutive vLLM connection failures open an exponential backoff circuit.
     VLLM_CONNECT_BACKOFF_BASE_SEC: float = max(
         1.0, float(os.getenv("PILUITUS_VLLM_CONNECT_BACKOFF_BASE_SEC", "5"))

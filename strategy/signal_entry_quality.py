@@ -149,12 +149,13 @@ def validate_pre_llm_entry_evidence(
     *,
     paper_mode: bool = False,
 ) -> tuple[bool, str]:
-    """Admit a directional candidate to LLM only with a coherent, fresh two-sided BBO.
+    """Admit only fresh BBO and avoid spending LLM calls on hard M1 contradictions.
 
-    Strategy-quality rules (M1, volume, flow alignment, spread/ATR, round-trip
-    economics and PAPER SELL quality) remain in validate_entry_evidence after
-    the model has evaluated the selected instrument. This is a data-integrity
-    gate only; it never authorizes execution.
+    The confirmed-opposite M1 rule is checked here and again by
+    validate_entry_evidence after the model. Moving the same deterministic rule
+    earlier saves inference time without changing which entries can execute.
+    Volume, flow, spread/ATR, round-trip economics and PAPER SELL quality remain
+    post-LLM checks. This gate never authorizes execution.
     """
     side = str(decision or "").strip().upper()
     if side not in {"BUY", "SELL"} or not isinstance(metrics, dict):
@@ -190,6 +191,12 @@ def validate_pre_llm_entry_evidence(
         return False, (
             f"BBO устарел или не подтверждён: возраст Bid={bid_text}, Ask={ask_text}; "
             f"лимит={max_age:.2f}s."
+        )
+
+    if paper_mode and classify_m1_evidence_state(metrics, side) == "OPPOSITE":
+        return False, (
+            "PAPER-вход заблокирован: подтверждённый закрытыми M1-свечами "
+            f"тренд/паттерн противоречит направлению {side}."
         )
 
     return True, (

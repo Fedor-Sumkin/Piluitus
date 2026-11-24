@@ -2,16 +2,38 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 
 class MarketWorkerQueueProcessingMixin:
     """Own queue acquisition, priority commands, ACK and ticker reservation cleanup."""
 
-    async def start_processing(self) -> None:
-        """Run the single queue consumer used by the application lifespan."""
-        self.logger.info("🤖 ИИ‑конвейер воркеров Piluitus v35.2 успешно запущен.")
+    @staticmethod
+    def _processing_worker_count() -> int:
+        """Return a small bounded consumer count for fresh candidate throughput."""
+        try:
+            configured = int(os.getenv("PILUITUS_LLM_WORKERS", "2"))
+        except (TypeError, ValueError, OverflowError):
+            configured = 2
+        return min(4, max(1, configured))
+
+    async def _run_queue_consumer(self) -> None:
         while True:
             await self.process_next_item()
+
+    async def start_processing(self) -> None:
+        """Run bounded consumers so recent candidates are not starved in FIFO."""
+        worker_count = self._processing_worker_count()
+        self.logger.info(
+            "🤖 ИИ‑конвейер воркеров Piluitus v35.2 запущен: queue_consumers=%d.",
+            worker_count,
+        )
+        async with asyncio.TaskGroup() as task_group:
+            for worker_index in range(worker_count):
+                task_group.create_task(
+                    self._run_queue_consumer(),
+                    name=f"piluitus-market-worker-{worker_index + 1}",
+                )
 
     async def process_next_item(self) -> None:
         """Process one item, delegating each market candidate phase in sequence."""

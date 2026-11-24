@@ -340,7 +340,11 @@ class FinamAssetMetadataTests(unittest.TestCase):
             LOT_SIZES["TESTMETA"] = 1
             ASSET_METADATA.pop("TESTMETA", None)
             with patch.dict("os.environ", {"FINAM_METADATA_REQUEST_INTERVAL_SEC": "0"}):
-                asyncio.run(RiskManager.update_finam_lot_sizes(_FinamOnly(), paper_mode=True))
+                with self.assertLogs("Piluitus.Main", level="INFO") as summary_logs:
+                    asyncio.run(RiskManager.update_finam_lot_sizes(_FinamOnly(), paper_mode=True))
+            summary = "\n".join(summary_logs.output)
+            self.assertIn("[FINAM METADATA SUMMARY]", summary)
+            self.assertRegex(summary, r"tick-size=\d+/\d+")
             self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 1)
             self.assertEqual(ASSET_METADATA["TESTMETA"]["metadata_source"], "FINAM_GET_ASSET")
             self.assertEqual(ASSET_METADATA["TESTMETA"]["price_tick"], 0.05)

@@ -334,8 +334,8 @@ class RiskLotMetadataMixin:
 
         symbols_to_refresh = list(dict.fromkeys(list(LOT_SIZES) + list(TICKERS_TO_TRADE)))
         await asyncio.gather(*(refresh_one(ticker) for ticker in symbols_to_refresh))
-        risk_logger.info(
-            "📦 [FINAM METADATA] mode=%s account_context=%s; "
+        logging.getLogger("Piluitus.Main").info(
+            "📦 [FINAM METADATA SUMMARY] mode=%s account_context=%s; "
             "lot multiplier confirmed=%d/%d; unavailable=%d (new entries blocked); "
             "not_tradable_or_unconfirmed=%d; tick-size=%d/%d; metadata unavailable=%d (static tick-size retained); "
             "PAPER lot failure examples=%s.",

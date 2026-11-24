@@ -143,8 +143,10 @@ class AIEngineTransportRetryTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(engine.client.post.await_count, 1)
 
-    def test_effective_generation_budget_is_clamped_to_short_contract_range(self) -> None:
+    def test_effective_generation_budget_allows_deepseek_reasoning_headroom(self) -> None:
         with patch.object(Settings, "VLLM_MAX_TOKENS", 1280):
+            self.assertEqual(AIEngine._effective_max_tokens(), 1024)
+        with patch.object(Settings, "VLLM_MAX_TOKENS", 768):
             self.assertEqual(AIEngine._effective_max_tokens(), 768)
         with patch.object(Settings, "VLLM_MAX_TOKENS", 512):
             self.assertEqual(AIEngine._effective_max_tokens(), 512)

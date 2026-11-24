@@ -248,6 +248,43 @@ def test_queue_processor_runs_candidate_phases_in_order_and_acknowledges() -> No
     asyncio.run(scenario())
 
 
+def test_start_processing_runs_two_bounded_queue_consumers(monkeypatch):
+    async def scenario():
+        monkeypatch.setenv("PILUITUS_LLM_WORKERS", "2")
+        runtime, *_rest = _runtime()
+        started = asyncio.Event()
+        entered = 0
+
+        async def blocked_consumer():
+            nonlocal entered
+            entered += 1
+            if entered >= 2:
+                started.set()
+            await asyncio.Future()
+
+        runtime.process_next_item = blocked_consumer
+        task = asyncio.create_task(runtime.start_processing())
+        await asyncio.wait_for(started.wait(), timeout=0.5)
+        assert entered == 2
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("start_processing should propagate cancellation")
+
+    asyncio.run(scenario())
+
+
+def test_processing_worker_count_is_bounded(monkeypatch):
+    runtime, *_rest = _runtime()
+    monkeypatch.setenv("PILUITUS_LLM_WORKERS", "99")
+    assert runtime._processing_worker_count() == 4
+    monkeypatch.setenv("PILUITUS_LLM_WORKERS", "invalid")
+    assert runtime._processing_worker_count() == 2
+
+
 def test_verdict_construction_keeps_all_subphases_in_original_order() -> None:
     runtime, *_rest = _runtime()
     calls = []

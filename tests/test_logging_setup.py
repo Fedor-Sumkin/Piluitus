@@ -51,6 +51,9 @@ def test_log_filters_route_diagnostics_session_events_and_errors() -> None:
     error = _record("execution failed", level=logging.ERROR)
 
     assert logging_setup._DiagnosticLogFilter().filter(diagnostic) is True
+    metadata_summary = _record("[FINAM METADATA SUMMARY] tick-size=88/88")
+    assert logging_setup._DiagnosticLogFilter().filter(metadata_summary) is True
+    assert logging_setup._SessionLogFilter().filter(metadata_summary) is False
     assert logging_setup._SessionLogFilter().filter(diagnostic) is False
     assert logging_setup._SessionLogFilter().filter(session) is True
     assert logging_setup._DiagnosticLogFilter().filter(session) is False

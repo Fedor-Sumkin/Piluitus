@@ -170,6 +170,7 @@ class _DiagnosticLogFilter(logging.Filter):
     """Keep high-volume market/telemetry diagnostics out of the session narrative."""
 
     _markers = (
+        "[FINAM METADATA SUMMARY]",
         "[TRADE FLOW 60s]",
         "[ORDER_BOOK 60s]",
         "[OPEN POSITION BBO 60s]",

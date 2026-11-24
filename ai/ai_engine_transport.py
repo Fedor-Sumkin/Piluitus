@@ -29,7 +29,7 @@ class AIEngineTransportMixin:
     def _effective_max_tokens() -> int:
         """Keep the short APPROVE/HOLD response within a bounded generation budget."""
         try:
-            return max(384, min(768, int(getattr(Settings, "VLLM_MAX_TOKENS", 768))))
+            return max(384, min(1024, int(getattr(Settings, "VLLM_MAX_TOKENS", 1024))))
         except (TypeError, ValueError, OverflowError):
             return 768
 
