@@ -380,8 +380,8 @@ class ExecutionPositionRiskMixin:
 
         # Use Finam's confirmed fixed or price-tiered tick rule. If metadata is
         # unavailable, do not fabricate a price that may be rejected.
-        sl_tick, _ = self._price_tick_rule(ticker, sl)
-        tp_tick, _ = self._price_tick_rule(ticker, tp)
+        sl_tick, _ = ExecutionPositionRiskMixin._price_tick_rule(ticker, sl)
+        tp_tick, _ = ExecutionPositionRiskMixin._price_tick_rule(ticker, tp)
         if (
             not math.isfinite(sl_tick) or sl_tick <= 0.0
             or not math.isfinite(tp_tick) or tp_tick <= 0.0
