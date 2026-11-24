@@ -41,9 +41,9 @@ class FinamAccountMixin:
     async def discover_metadata_account_id(self) -> str | None:
         """Resolve a session-authorized account ID for read-only GetAsset metadata.
 
-        Finam currently requires account_id on GetAsset. PAPER remains an internal
-        pseudo-account: this ID is used only as a REST metadata query context and is
-        never copied into self.account_id or used for order routing.
+        GetAsset accepts account-independent instrument metadata requests. This
+        compatibility helper remains available for explicitly scoped callers, but
+        PAPER metadata refresh does not require or discover an account ID.
         """
         async with self._metadata_account_discovery_lock:
             if self.metadata_account_id:

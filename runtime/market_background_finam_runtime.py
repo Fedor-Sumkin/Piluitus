@@ -160,23 +160,16 @@ class MarketBackgroundFinamMixin:
                 1 for ticker in self.tickers
                 if int(self.finam_trade_lot_sizes.get(str(ticker).strip().upper(), 0) or 0) > 0
             )
-            # Retry account-context discovery sooner than the full metadata
-            # refresh interval if the session did not provide a read-only ID.
-            retry_delay = refresh_sec
             if paper_mode:
-                metadata_account_id = str(
-                    getattr(self.broker, "metadata_account_id", "") or ""
-                ).strip()
-                if not metadata_account_id:
-                    retry_delay = account_retry_sec
                 self.logger.info(
                     "📦 [FINAM METADATA WORKER] static LOTSIZE available=%d/%d; "
-                    "Finam MINSTEP refresh attempted; metadata_context=%s; next refresh in %.0fs.",
-                    confirmed, len(self.tickers), bool(metadata_account_id), retry_delay,
+                    "Finam GetAsset MINSTEP refresh uses account-independent metadata; "
+                    "next refresh in %.0fs.",
+                    confirmed, len(self.tickers), refresh_sec,
                 )
             elif confirmed:
                 self.logger.info(
                     "📦 [FINAM METADATA WORKER] confirmed account lots=%d/%d; next refresh in %.0fs.",
                     confirmed, len(self.tickers), refresh_sec,
                 )
-            await asyncio.sleep(retry_delay)
+            await asyncio.sleep(refresh_sec)
