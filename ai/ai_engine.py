@@ -1100,71 +1100,6 @@ class AIEngine:
         if candidate_direction not in {"BUY", "SELL"}:
             candidate_direction = "NONE"
         
-        translation_map = {
-            "volume_spike": "Всплеск_объема",
-            "std_dev": "Стандартное_отклонение",
-            "vwap": "Средневзвешенная_цена_VWAP",
-            "sma": "Простая_скользящая_средняя_SMA",
-            "volatility": "Волатильность_актива",
-            "mean_price": "Средняя_цена_окна",
-            "bid": "Лучшая_покупка_Bid",
-            "ask": "Лучшая_продажа_Ask",
-            "bid_size": "Объём_лучшего_Bid",
-            "ask_size": "Объём_лучшего_Ask",
-            "day_volume": "Накопленный_объём_сессии",
-            "funnel_score": "Рейтинг_кандидата_0_100",
-            "funnel_rank": "Место_в_рейтинге_кандидатов",
-            "volatility_pct": "Краткосрочная_волатильность_проц",
-            "momentum_pct": "Модуль_движения_цены_проц",
-            "price_change_pct": "Подписанное_изменение_цены_за_окно_проц",
-            "price_vs_vwap_pct": "Отклонение_цены_от_VWAP_со_знаком_проц",
-            "bid_size_drop_pct": "Сокращение_размера_лучшего_Bid_проц",
-            "ask_size_drop_pct": "Сокращение_размера_лучшего_Ask_проц",
-            "bid_size_drop_age_sec": "Возраст_сокращения_Bid_сек",
-            "ask_size_drop_age_sec": "Возраст_сокращения_Ask_сек",
-            "top_bid_history_samples": "Число_предыдущих_валидных_замеров_Bid",
-            "top_ask_history_samples": "Число_предыдущих_валидных_замеров_Ask",
-            "bid_size_available": "Размер_лучшего_Bid_доступен",
-            "ask_size_available": "Размер_лучшего_Ask_доступен",
-            "bid_ask_available": "Текущие_BidAsk_доступны",
-            "spread_pct": "Спред_проц",
-            "spread_available": "BidAsk_доступен",
-            "bar_count": "Число_закрытых_минутных_баров",
-            "bar_pattern_confirmed": "Минутный_паттерн_подтверждён",
-            "bar_pattern_direction_code": "Направление_минутного_паттерна_1_BUY_-1_SELL",
-            "bar_breakout_up": "Пробой_максимума_5_баров_BUY",
-            "bar_breakout_down": "Пробой_минимума_5_баров_SELL",
-            "bar_pullback_buy": "EMA9_EMA21_откат_BUY",
-            "bar_pullback_sell": "EMA9_EMA21_откат_SELL",
-            "bar_trend_up": "EMA9_выше_EMA21",
-            "bar_trend_down": "EMA9_ниже_EMA21",
-            "bar_ema9": "Минутная_EMA9",
-            "bar_ema21": "Минутная_EMA21",
-            "bar_atr_pct": "Минутная_ATR_проц",
-            "bar_body_ratio": "Доля_тела_сигнального_бара",
-            "bar_close_position": "Положение_close_в_диапазоне_0_низ_1_верх",
-            "bar_signal_gap_atr": "Расстояние_текущей_цены_от_сигнала_в_ATR",
-            "bar_pattern_name": "Имя_измеренного_минутного_паттерна"
-        }
-        
-        metrics_dict = payload.get("metrics", {})
-        metric_items = []
-        if isinstance(metrics_dict, dict):
-            for k, v in metrics_dict.items():
-                # Internal monotonic timestamp is used by SIGNAL GUARD only; do not
-                # expose implementation details to the LLM or waste prompt tokens.
-                if str(k).startswith("_"):
-                    continue
-                rus_key = translation_map.get(str(k).lower(), str(k))
-                if isinstance(v, float):
-                    value_text = f"{v:.5g}"
-                elif isinstance(v, int):
-                    value_text = str(v)
-                else:
-                    value_text = str(v)
-                metric_items.append(f"{rus_key}: {value_text}")
-                
-        metrics_str = ", ".join(metric_items) if metric_items else "нет active метрик"
         rag_str = self._normalise_rag_context(payload.get("rag_context", []))
 
         if not rag_str.strip():
@@ -1390,18 +1325,23 @@ class AIEngine:
                     retry_resp = await self._post_with_retry(
                         self.api_path,
                         json=retry_body,
+                        retries=0,
                         retry_timeouts=False,
                     )
                     if retry_resp.status_code in (400, 422):
                         retry_detail = self._http_error_detail(retry_resp)
                         if self._is_response_format_error(retry_detail):
                             retry_body.pop("response_format", None)
-                            retry_resp = await self._post_with_retry(self.api_path, json=retry_body, retry_timeouts=False)
+                            retry_resp = await self._post_with_retry(
+                                self.api_path, json=retry_body, retries=0, retry_timeouts=False
+                            )
                     if retry_resp.status_code in (400, 422):
                         retry_detail = self._http_error_detail(retry_resp)
                         if self._is_sampling_parameter_error(retry_detail) and "temperature" in retry_body:
                             retry_body.pop("temperature", None)
-                            retry_resp = await self._post_with_retry(self.api_path, json=retry_body, retry_timeouts=False)
+                            retry_resp = await self._post_with_retry(
+                                self.api_path, json=retry_body, retries=0, retry_timeouts=False
+                            )
                     if retry_resp.status_code >= 400:
                         raise RuntimeError(
                             f"contract-retry HTTP {retry_resp.status_code}: "
