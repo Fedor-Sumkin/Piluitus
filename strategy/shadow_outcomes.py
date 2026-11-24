@@ -913,13 +913,17 @@ class ShadowForwardTracker:
             f"side_cost_to_atr_bucket={side}|{cost_to_atr_bucket}",
             f"score_band={score_band}",
             *(
-                f"component={name}|{_component_score_bucket(_number(component_points, name))}"
+                key
                 for component_points in (
                     label.get("component_points")
                     if isinstance(label.get("component_points"), Mapping) else {},
                 )
                 for name in _COMPONENT_NAMES
                 if math.isfinite(_number(component_points, name, math.nan))
+                for key in (
+                    f"component={name}|{_component_score_bucket(_number(component_points, name))}",
+                    f"horizon_component={horizon}s|{name}|{_component_score_bucket(_number(component_points, name))}",
+                )
             ),
             f"horizon={horizon}s",
             f"hour_msk={hour_msk}",
