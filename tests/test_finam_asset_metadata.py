@@ -46,7 +46,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
         self.assertEqual(client.account_id, "")
         self.assertEqual(client.metadata_account_id_source, "session_details_first_authorized_account")
 
-    def test_get_asset_does_not_inherit_metadata_or_execution_account_context(self):
+    def test_get_asset_uses_read_only_metadata_context_not_execution_account(self):
         captured = {}
 
         class _Response:
@@ -82,20 +82,18 @@ class FinamAssetMetadataTests(unittest.TestCase):
             payload = asyncio.run(client.get_asset("VTBR"))
 
         self.assertEqual(payload["lot_size"]["value"], "10")
-        self.assertIsNone(captured["params"])
+        self.assertEqual(captured["params"], {"account_id": "READONLY-ACCOUNT-1234"})
         self.assertEqual(client.account_id, "STALE-EXECUTION-ACCOUNT")
 
-    def test_paper_metadata_refresh_uses_finam_get_asset_without_account_context(self):
+    def test_paper_metadata_refresh_keeps_static_lots_when_read_only_context_is_unavailable(self):
         class _NoMetadataContext:
             calls = 0
-            account_ids = []
 
             async def discover_metadata_account_id(self):
-                raise AssertionError("PAPER must not discover a metadata account")
+                raise AssertionError("No read-only metadata account is available")
 
             async def get_asset(self, ticker: str, account_id: str | None = None):
                 self.calls += 1
-                self.account_ids.append(account_id)
                 return None
 
         stub = _NoMetadataContext()
@@ -106,8 +104,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
             FINAM_TRADE_LOT_SIZES.pop("TESTMETA", None)
             with patch.dict("os.environ", {"FINAM_METADATA_REQUEST_INTERVAL_SEC": "0"}):
                 asyncio.run(RiskManager.update_finam_lot_sizes(stub, paper_mode=True))
-            self.assertGreater(stub.calls, 0)
-            self.assertTrue(all(account_id is None for account_id in stub.account_ids))
+            self.assertEqual(stub.calls, 0)
             self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 3)
         finally:
             if old_lot is None:
@@ -245,6 +242,8 @@ class FinamAssetMetadataTests(unittest.TestCase):
 
     def test_paper_uses_finam_get_asset_and_static_lot_dictionary(self):
         class _FinamOnly(_FinamMetadataStub):
+            metadata_account_id = "READONLY-ACCOUNT-1234"
+
             async def get_moex_asset(self, ticker: str):
                 raise AssertionError("PAPER must not call MOEX ISS")
 

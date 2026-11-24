@@ -242,10 +242,10 @@ class FinamAssetMixin:
         if not normalized:
             return None
         symbol = f"{normalized}@MISX"
-        # GetAsset accepts an optional account context. Never inherit a
-        # discovered/stale account implicitly: PAPER needs instrument specs only;
-        # LIVE callers pass their account explicitly.
-        account = str(account_id or "").strip()
+        # GetAsset may require an authorized read-only account context. PAPER
+        # uses only metadata_account_id; LIVE passes its execution account explicitly.
+        # Never fall back to self.account_id implicitly.
+        account = str(account_id or self.metadata_account_id or "").strip()
         params = {"account_id": account} if account and account != "UNKNOWN_ACCOUNT" else None
         url = f"{self.base_url}/v1/assets/{url_quote(symbol, safe='@')}"
         request_jwt = self.jwt_token
