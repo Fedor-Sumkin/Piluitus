@@ -31,6 +31,7 @@ class _FinamMetadataStub:
         return None
 
 
+# PAPER GetAsset tick metadata is fetched with an isolated read-only context.
 class FinamAssetMetadataTests(unittest.TestCase):
     def test_metadata_account_discovery_uses_session_id_without_setting_execution_account(self):
         client = FinamBrokerClient(token="test-token")
