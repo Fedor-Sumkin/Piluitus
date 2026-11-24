@@ -1161,7 +1161,7 @@ class AIEngine:
                             error_detail,
                         )
                         active_body.pop("response_format", None)
-                        resp = await self.client.post(self.api_path, json=active_body)
+                        resp = await self._post_with_retry(self.api_path, json=active_body)
 
                 if resp.status_code in (400, 422):
                     error_detail = self._http_error_detail(resp)
