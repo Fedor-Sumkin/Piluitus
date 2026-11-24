@@ -285,6 +285,43 @@ def test_processing_worker_count_is_bounded(monkeypatch):
     assert runtime._processing_worker_count() == 2
 
 
+def test_approved_execution_uses_post_llm_refresh_timestamp_for_final_ttl():
+    async def scenario():
+        runtime, *_rest = _runtime()
+        captured = {}
+        spawned = []
+
+        async def execute_and_publish(**kwargs):
+            captured.update(kwargs)
+
+        class _TaskSpawner:
+            def spawn(self, coroutine, *, name):
+                spawned.append(asyncio.create_task(coroutine))
+
+        runtime.execute_and_publish = execute_and_publish
+        runtime.background_operations = _TaskSpawner()
+        state = {
+            "event_payload": {"paper_session_generation": 3},
+            "ticker": "SBER",
+            "price": 100.0,
+            "ai_analysis": {},
+            "verdict_data": {"ticker": "SBER"},
+            "execution_status": "PENDING",
+            "requested_lots": 1,
+            "decision": "BUY",
+            "shadow_candidate_id": "shadow-1",
+            "verdict_id": "verdict-1",
+            "execution_evidence_at_monotonic": 123.456,
+        }
+
+        await runtime._publish_candidate_verdict(state)
+        await asyncio.gather(*spawned)
+
+        assert captured["candidate_created_monotonic"] == 123.456
+
+    asyncio.run(scenario())
+
+
 def test_verdict_construction_keeps_all_subphases_in_original_order() -> None:
     runtime, *_rest = _runtime()
     calls = []

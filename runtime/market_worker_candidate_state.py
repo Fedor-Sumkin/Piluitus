@@ -10,6 +10,7 @@ class MarketWorkerCandidateState(TypedDict, total=False):
     price: Any
     metrics: dict[str, Any]
     candidate_direction_for_diag: str
+    execution_evidence_at_monotonic: float | None
     llm_input_features: dict[str, Any]
     ai_analysis: dict[str, Any]
     request_error: bool

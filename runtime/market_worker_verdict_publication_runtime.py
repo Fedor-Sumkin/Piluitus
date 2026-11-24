@@ -18,6 +18,7 @@ class MarketWorkerVerdictPublicationMixin:
         decision = state["decision"]
         shadow_candidate_id = state["shadow_candidate_id"]
         verdict_id = state["verdict_id"]
+        execution_evidence_at_monotonic = state.get("execution_evidence_at_monotonic")
         async with self.paper_session_generation_lock:
             if (
                 getattr(self.execution_engine, "_maintenance_active", False)
@@ -45,7 +46,9 @@ class MarketWorkerVerdictPublicationMixin:
                         price=price,
                         ai_analysis=dict(ai_analysis),
                         session_generation=int(event_payload.get("paper_session_generation", -1)),
-                        candidate_created_monotonic=event_payload.get("candidate_created_monotonic"),
+                        # Queue age was checked before LLM; execution TTL starts from the
+                        # fresh BBO/trade snapshot that passed the post-LLM gates.
+                        candidate_created_monotonic=execution_evidence_at_monotonic,
                         shadow_candidate_id=shadow_candidate_id or None,
                     ),
                     name=f"paper-execution:{ticker}:{verdict_id}",

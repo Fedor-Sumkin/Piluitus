@@ -134,8 +134,30 @@ class MarketWorkerLlmCandidateMixin:
         requested_notional = entry_plan["requested_notional"]
         lot_multiplier = entry_plan["lot_multiplier"]
 
+        execution_evidence_at_monotonic = None
+        if (
+            decision in {"BUY", "SELL"}
+            and valid_evidence
+            and post_llm_evidence_validation == "PASS"
+            and post_llm_refresh.get("bbo_refresh_status") == "PASS"
+        ):
+            trade_mode = self.parse_finite_float(metrics.get("trade_data_mode")) or 0.0
+            trade_refresh_status = str(
+                post_llm_refresh.get("trade_refresh_status") or "NOT_REQUIRED"
+            ).upper()
+            trade_refresh_valid = (
+                trade_refresh_status == "PASS"
+                if trade_mode >= 0.5 else trade_refresh_status in {"PASS", "NOT_REQUIRED"}
+            )
+            refreshed_at = self.parse_finite_float(
+                post_llm_refresh.get("refreshed_at_monotonic")
+            )
+            if trade_refresh_valid and refreshed_at is not None and refreshed_at > 0.0:
+                execution_evidence_at_monotonic = refreshed_at
+
         state.update({
             "price": price, "ai_analysis": ai_analysis,
+            "execution_evidence_at_monotonic": execution_evidence_at_monotonic,
             "request_error": request_error, "request_error_type": request_error_type,
             "model_decision": model_decision, "candidate_direction": candidate_direction,
             "model_reason_code": model_reason_code, "candidate_decision": candidate_decision,
