@@ -190,6 +190,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
         old_metadata = ASSET_METADATA.get("TESTMETA")
         try:
             LOT_SIZES["TESTMETA"] = 1
+            FINAM_TRADE_LOT_SIZES.pop("TESTMETA", None)
             ASSET_METADATA.pop("TESTMETA", None)
             with patch.dict("os.environ", {"FINAM_METADATA_REQUEST_INTERVAL_SEC": "0"}):
                 asyncio.run(RiskManager.update_finam_lot_sizes(_VariableStep(), paper_mode=True))
@@ -437,7 +438,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
             self.assertEqual(stub.calls, 0)
             self.assertEqual(stub.discovery_calls, 0)
             self.assertIsNone(stub.assert_no_account_id)
-            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 1)
+            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 7)
         finally:
             if old_lot is None:
                 LOT_SIZES.pop("TESTMETA", None)
