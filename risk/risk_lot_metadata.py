@@ -117,7 +117,10 @@ class RiskLotMetadataMixin:
                 exchange_lot = 0.0
                 asset_market_ok = False
                 asset_mic = ""
-                if callable(asset_method):
+                # PAPER may query GetAsset only with an explicitly resolved
+                # read-only metadata context. Never fall back to a stale execution
+                # account or issue one request per symbol when that context is absent.
+                if callable(asset_method) and (not is_paper or metadata_account_id):
                     try:
                         asset_payload = await call_limited(asset_method, normalized)
                     except Exception as exc:
