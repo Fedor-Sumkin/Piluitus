@@ -151,6 +151,29 @@ class AIEngineTransportRetryTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(Settings, "VLLM_MAX_TOKENS", 128):
             self.assertEqual(AIEngine._effective_max_tokens(), 384)
 
+    async def test_response_format_compatibility_retry_uses_bounded_transport(self) -> None:
+        unsupported = httpx.Response(
+            400,
+            json={"error": {"message": "response_format json_object is not supported"}},
+            request=httpx.Request("POST", "http://localhost/v1/chat/completions"),
+        )
+        engine = self._engine([])
+        engine._post_with_retry = AsyncMock(side_effect=[unsupported, self._response()])
+        payload = {
+            "ticker": "SBER",
+            "price": 100.0,
+            "volume": 500,
+            "candidate_direction": "BUY",
+            "metrics": {},
+        }
+
+        result = await engine.analyze_market_anomaly(payload)
+
+        self.assertEqual(engine._post_with_retry.await_count, 2)
+        self.assertEqual(engine.client.post.await_count, 0)
+        self.assertEqual(result["final_decision"], "HOLD")
+        self.assertFalse(result["request_error"])
+
 
 if __name__ == "__main__":
     unittest.main()
