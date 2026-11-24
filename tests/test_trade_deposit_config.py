@@ -22,6 +22,7 @@ class TradeDepositConfigTests(unittest.TestCase):
 
     def test_default_capital_is_40000(self):
         self.assertEqual(_resolve_trade_deposit(None, None), (40000.0, "default"))
+        self.assertEqual(_resolve_trade_deposit("", ""), (40000.0, "default"))
 
     def test_execution_fallback_uses_canonical_setting_not_legacy_environment(self):
         with patch("execution.execution_layer.Settings.TRADE_DEPOSIT", 40000.0):
