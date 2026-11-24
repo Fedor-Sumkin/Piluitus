@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Any
 
+from config import Settings
 from strategy.market_context import classify_market_regime, estimate_entry_economics
 from uuid import uuid4
 
@@ -37,16 +38,32 @@ def _number(metrics: Mapping[str, Any], key: str, default: float = 0.0) -> float
 
 
 def _cost_settings() -> tuple[float, float]:
+    """Use the same conservative commission default as PAPER execution.
+
+    Explicit environment values remain authoritative, including zero for
+    deliberate sensitivity tests. When a variable is absent or malformed,
+    fall back to the canonical Settings value rather than silently labelling
+    shadow outcomes with a zero commission.
+    """
+    default_commission = float(getattr(Settings, "PAPER_COMMISSION_PCT", 0.0354))
     try:
-        commission_pct = min(1.0, max(0.0, float(os.getenv("PILUITUS_PAPER_COMMISSION_PCT", "0"))))
+        raw_commission = os.getenv("PILUITUS_PAPER_COMMISSION_PCT")
+        commission_pct = min(
+            1.0,
+            max(0.0, float(raw_commission)) if raw_commission is not None else default_commission,
+        )
     except (TypeError, ValueError, OverflowError):
-        commission_pct = 0.0
+        commission_pct = default_commission
     try:
-        slippage_bps = min(100.0, max(0.0, float(os.getenv("PILUITUS_PAPER_SLIPPAGE_BPS", "0"))))
+        raw_slippage = os.getenv("PILUITUS_PAPER_SLIPPAGE_BPS")
+        slippage_bps = min(
+            100.0,
+            max(0.0, float(raw_slippage)) if raw_slippage is not None else 0.0,
+        )
     except (TypeError, ValueError, OverflowError):
         slippage_bps = 0.0
     if not math.isfinite(commission_pct):
-        commission_pct = 0.0
+        commission_pct = default_commission
     if not math.isfinite(slippage_bps):
         slippage_bps = 0.0
     return commission_pct, slippage_bps
