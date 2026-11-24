@@ -117,7 +117,7 @@ class RiskLotMetadataMixin:
                 exchange_lot = 0.0
                 asset_market_ok = False
                 asset_mic = ""
-                if callable(asset_method) and (not is_paper or metadata_account_id):
+                if callable(asset_method):
                     try:
                         asset_payload = await call_limited(asset_method, normalized)
                     except Exception as exc:
@@ -252,10 +252,26 @@ class RiskLotMetadataMixin:
                 except (TypeError, ValueError, OverflowError):
                     static_lot = 0
                 if static_lot > 0:
-                    FINAM_TRADE_LOT_SIZES[normalized] = static_lot
-                    updated_lots += 1
+                    # LOT_SIZES is the canonical PAPER exchange-lot dictionary.
+                    # Preserve an already confirmed runtime value during refresh.
+                    existing_lot = FINAM_TRADE_LOT_SIZES.get(normalized)
+                    try:
+                        existing_lot = int(existing_lot or 0)
+                    except (TypeError, ValueError, OverflowError):
+                        existing_lot = 0
+                    if existing_lot <= 0:
+                        FINAM_TRADE_LOT_SIZES[normalized] = static_lot
+                        updated_lots += 1
                 else:
-                    FINAM_TRADE_LOT_SIZES.pop(normalized, None)
+                    # A missing static value must not erase a confirmed value
+                    # during a transient provider outage.
+                    existing_lot = FINAM_TRADE_LOT_SIZES.get(normalized)
+                    try:
+                        existing_lot = int(existing_lot or 0)
+                    except (TypeError, ValueError, OverflowError):
+                        existing_lot = 0
+                    if existing_lot <= 0:
+                        FINAM_TRADE_LOT_SIZES.pop(normalized, None)
                     failed_lots += 1
                     if len(paper_lot_failure_examples) < 8:
                         paper_lot_failure_examples.append(
