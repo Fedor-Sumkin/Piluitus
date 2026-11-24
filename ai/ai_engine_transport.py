@@ -27,11 +27,11 @@ from ai.ai_engine_shared import (
 class AIEngineTransportMixin:
     @staticmethod
     def _effective_max_tokens() -> int:
-        """Keep the short APPROVE/HOLD response within a bounded generation budget."""
+        """Keep the APPROVE/HOLD response within a bounded generation budget."""
         try:
             return max(384, min(1024, int(getattr(Settings, "VLLM_MAX_TOKENS", 1024))))
         except (TypeError, ValueError, OverflowError):
-            return 768
+            return 1024
 
     @staticmethod
     def _request_timeout_seconds() -> float:
