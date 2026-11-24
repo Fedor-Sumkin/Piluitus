@@ -1057,18 +1057,12 @@ class HFTMemoryScreener:
                 # captured socket receive time. A level timestamp may be old
                 # simply because that resting price has not changed recently.
                 bid_confirmation_at = min(received_at, bid_ordering_time)
-                quote["last_bid_confirmed_seen"] = max(
-                    float(quote.get("last_bid_confirmed_seen", 0.0) or 0.0),
-                    bid_confirmation_at,
-                )
+                quote["last_bid_confirmed_seen"] = bid_confirmation_at
             elif current_bid <= 0.0:
                 quote["last_bid_confirmed_seen"] = 0.0
             if current_ask > 0.0 and accept_ask_update:
                 ask_confirmation_at = min(received_at, ask_ordering_time)
-                quote["last_ask_confirmed_seen"] = max(
-                    float(quote.get("last_ask_confirmed_seen", 0.0) or 0.0),
-                    ask_confirmation_at,
-                )
+                quote["last_ask_confirmed_seen"] = ask_confirmation_at
             elif current_ask <= 0.0:
                 quote["last_ask_confirmed_seen"] = 0.0
             bid_confirmed = float(quote.get("last_bid_confirmed_seen", 0.0) or 0.0)
@@ -1135,12 +1129,12 @@ class HFTMemoryScreener:
                     current_bid, new_bid_size, current_ask, new_ask_size,
                 )
                 if delta is not None and (
-                    not ofi_history or book_seen_at > float(ofi_history[-1][0])
+                    not ofi_history or effective_book_seen_at > float(ofi_history[-1][0])
                 ):
                     average_depth = (
                         old_bid_size + old_ask_size + new_bid_size + new_ask_size
                     ) / 4.0
-                    ofi_history.append((book_seen_at, delta, average_depth))
+                    ofi_history.append((effective_book_seen_at, delta, average_depth))
             return {
                 "updated": True,
                 "valid": True,

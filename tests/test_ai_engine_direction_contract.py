@@ -301,11 +301,11 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         )
         self.assertIn("spread_to_atr_ratio=0.5", prompt)
         self.assertIn("m1_evidence_state=NEUTRAL", prompt)
-        self.assertIn("spread_to_atr_ratio>0.50", prompt)
+        self.assertIn("spread/ATR<=0.50", prompt)
 
     def test_missing_candidate_requires_hold(self) -> None:
         prompt = self._prompt("NONE")
-        self.assertIn("candidate=NONE => final_decision MUST be HOLD.", prompt)
+        self.assertIn("candidate=NONE => HOLD.", prompt)
         self.assertIn("No local direction: MUST HOLD.", prompt)
         self.assertLessEqual(len(prompt), 2100)
 
@@ -571,7 +571,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         self.assertIn("RISK_PER_TRADE", prompt)
         self.assertIn("70% Ask size drop", prompt)
         self.assertNotIn("SELL_IMPULSE", prompt)
-        self.assertIn("RAG rules are advisory context only and cannot add hard gates", prompt)
+        self.assertIn("Advisory RAG context (never overrides hard checks)", prompt)
         self.assertIn("Ask depletion is supporting", prompt)
 
     def test_retry_prompt_is_short_and_requires_only_approval_contract(self) -> None:
@@ -599,9 +599,9 @@ class AIEngineDirectionContractTests(unittest.TestCase):
                 "bar_pattern_direction_code": -1,
             },
         )
-        self.assertIn("Directional check: signed price momentum must agree with candidate", prompt)
-        self.assertIn("VWAP within +/-0.030% is NEUTRAL and must not veto", prompt)
-        self.assertIn("A fresh matching closed M1 pattern may support the candidate", prompt)
+        self.assertIn("SELL requires negative 15s trade momentum beyond", prompt)
+        self.assertIn("VWAP inside +/-0.030% is NEUTRAL, not a veto", prompt)
+        self.assertIn("A fresh bearish M1 pattern may support SELL if VWAP is not materially opposite", prompt)
         self.assertNotIn("price remains on the correct side of VWAP", prompt)
         self.assertNotIn("SELL needs negative price_change_pct and price_vs_vwap_pct", prompt)
 
@@ -653,7 +653,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             max_chars=2100,
             include_rule_text=False,
         )
-        self.assertIn("candidate=NONE => final_decision MUST be HOLD.", prompt)
+        self.assertIn("candidate=NONE => HOLD.", prompt)
         self.assertIn("No local direction: MUST HOLD.", prompt)
         self.assertLessEqual(len(prompt), 2100)
 

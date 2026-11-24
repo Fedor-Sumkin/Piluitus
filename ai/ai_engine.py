@@ -948,6 +948,7 @@ class AIEngine:
             f"Entry requires trade_data_ready=1, trade age<=5s, volume_spike>=1.5, fresh BBO, spread<=0.5%, "
             f"spread/ATR<={spread_to_atr_limit:.2f}; missing ratio=insufficient; HOLD_WIDE_SPREAD needs measured violation. "
             f"{quote_depletion_rule} "
+            "Trade volumes are raw provider volume units; do not convert to shares/lots. "
             "trade_flow_imbalance_30s is aggressor BUY-minus-SELL volume (-1..+1); "
             "queue_imbalance_5s is time-weighted best Bid-vs-Ask size (-1..+1; positive supports BUY); "
             "ofi_5s is depth-normalized best-quote order-flow pressure (positive supports BUY, negative SELL). "

@@ -492,6 +492,7 @@ def validate_entry_evidence(
         market_ok, market_reason = validate_paper_market_quality(decision, metrics)
         if not market_ok:
             return False, market_reason
+        reason = f"{reason} {market_reason}".strip()
     if str(decision or "").strip().upper() == "SELL" and paper_mode:
         sell_ok, sell_reason = validate_paper_sell_quality(metrics, paper_mode=True)
         if not sell_ok:

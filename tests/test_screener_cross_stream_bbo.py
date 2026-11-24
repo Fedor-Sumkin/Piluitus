@@ -49,6 +49,8 @@ class ScreenerCrossStreamBboTests(unittest.TestCase):
         self.assertEqual(quote["last_order_book_seen"], 10.0)
         self.assertEqual(quote["last_bid_confirmed_seen"], 10.0)
         self.assertEqual(quote["last_ask_confirmed_seen"], 10.0)
+        self.assertTrue(quote["ofi_history"])
+        self.assertEqual(quote["ofi_history"][-1][0], 10.0)
         self.assertFalse(rejected.get("updated"))
         self.assertTrue(rejected.get("out_of_order"))
         self.assertEqual(quote["bid"], 100.05)
