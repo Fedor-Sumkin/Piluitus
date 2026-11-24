@@ -1346,13 +1346,16 @@ class AIEngine:
             }
         
         inference_latency = time.time() - start_inference_time
+        parse_started = time.perf_counter()
         processed = await asyncio.to_thread(self._cpu_intensive_processing, raw)
+        parse_latency_ms = (time.perf_counter() - parse_started) * 1000.0
 
         # One bounded repair attempt for malformed or contract-invalid model output.
         retry_attempted = False
         retry_recovered = False
         retry_failed = False
         retry_error_detail = ""
+        retry_latency = 0.0
         active_prompt_fingerprint = prompt_fingerprint
         active_prompt_chars = len(user_prompt)
         if processed.get("error_type") == "text_parsing" or processed.get("model_contract_violation"):
@@ -1381,7 +1384,7 @@ class AIEngine:
                 if isinstance(processed.get("usage"), dict) else None,
                 retry_body["max_tokens"], len(retry_prompt), retry_prompt_fingerprint,
             )
-            retry_started = time.time()
+            retry_started = time.perf_counter()
             try:
                 async with asyncio.timeout(request_timeout + 0.5):
                     retry_resp = await self._post_with_retry(
@@ -1406,7 +1409,7 @@ class AIEngine:
                         )
                     retry_raw = retry_resp.json()
                 retry_processed = await asyncio.to_thread(self._cpu_intensive_processing, retry_raw)
-                retry_latency = time.time() - retry_started
+                retry_latency = time.perf_counter() - retry_started
                 retry_valid = (
                     retry_processed.get("error_type") != "text_parsing"
                     and not retry_processed.get("model_contract_violation", False)
@@ -1449,12 +1452,16 @@ class AIEngine:
                 processed["first_contract_error"] = first_error
 
         inference_latency = time.time() - start_inference_time
+        usage = processed.get("usage") if isinstance(processed.get("usage"), dict) else {}
         log.info(
-            "[vLLM RAW LATENCY] ticker=%s total=%.3fs max_tokens=%d retry=%s finish_reason=%s completion_tokens=%s",
-            ticker, inference_latency, configured_max_tokens, retry_attempted,
-            processed.get("finish_reason", "stop"),
-            (processed.get("usage") or {}).get("completion_tokens")
-            if isinstance(processed.get("usage"), dict) else None,
+            "[vLLM RAW LATENCY] ticker=%s total=%.3fs parse_ms=%.1f contract_retry_ms=%.1f "
+            "prompt_chars=%d prompt_tokens=%s max_tokens=%d retry=%s finish_reason=%s "
+            "completion_tokens=%s peak_inflight=%d",
+            ticker, inference_latency, parse_latency_ms, retry_latency * 1000.0,
+            active_prompt_chars, usage.get("prompt_tokens"), configured_max_tokens,
+            retry_attempted, processed.get("finish_reason", "stop"),
+            usage.get("completion_tokens"),
+            int(getattr(self, "_transport_peak_inflight", 0) or 0),
         )
 
         if processed.get("error_type") == "text_parsing":
