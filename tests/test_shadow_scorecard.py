@@ -93,6 +93,7 @@ class ShadowScorecardTests(unittest.TestCase):
         self.assertEqual(segments["component=direction|gt_20"]["ok"], 1)
         self.assertEqual(segments["component=queue_imbalance|gt_10_le_20"]["ok"], 1)
         self.assertEqual(segments["component=volume|zero"]["ok"], 1)
+        self.assertEqual(segments["horizon_component=60s|direction|gt_20"]["ok"], 1)
 
     def test_clear_resets_pending_labels_and_session_aggregates(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
