@@ -83,6 +83,9 @@ class ShadowOutcomeStateMixin:
             unavailable_reason = "SPREAD_UNAVAILABLE"
         else:
             spread_pct = _number(metrics, "spread_pct", math.nan)
+            if not math.isfinite(spread_pct) and bid > 0.0 and ask >= bid:
+                midpoint = (bid + ask) / 2.0
+                spread_pct = (ask - bid) / midpoint * 100.0 if midpoint > 0.0 else math.nan
             unavailable_reason = (
                 "INVALID_SPREAD"
                 if not math.isfinite(spread_pct) or spread_pct < 0.0
@@ -97,6 +100,6 @@ class ShadowOutcomeStateMixin:
             "max_age_sec": max_age,
             "bid_ask_available": _number(metrics, "bid_ask_available", math.nan),
             "spread_available": _number(metrics, "spread_available", math.nan),
-            "spread_pct": _number(metrics, "spread_pct", math.nan),
+            "spread_pct": spread_pct,
             "unavailable_reason": unavailable_reason,
         }

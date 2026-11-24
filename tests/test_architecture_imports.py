@@ -855,7 +855,7 @@ def test_main_delegates_candidate_admission_to_strategy_pipeline() -> None:
     assert "validate_atr_readiness" not in runtime_source
     assert "infer_candidate_direction" not in runtime_source
     assert "self.infer_direction(metrics)" in pipeline_source
-    assert "validate_entry_evidence" in pipeline_source
+    assert "validate_pre_llm_entry_evidence" in pipeline_source
     assert "validate_atr_readiness" in pipeline_source
     assert "anomaly_queue.put_nowait" in pipeline_source
 
