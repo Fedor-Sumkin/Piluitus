@@ -236,6 +236,7 @@ class InstrumentTradePositionMonitorTests(unittest.IsolatedAsyncioTestCase):
         fake_screener.push_trade.return_value = {"accepted": True}
         fake_engine = Mock()
         fake_engine.paper_mode = True
+        fake_engine._maintenance_active = False
         fake_engine.paper_positions = {"SBER": {"status": "OPEN"}}
         fake_db = object()
         try:
@@ -275,6 +276,7 @@ class InstrumentTradePositionMonitorTests(unittest.IsolatedAsyncioTestCase):
         fake_screener.push_trade.return_value = {"accepted": True}
         fake_engine = Mock()
         fake_engine.paper_mode = True
+        fake_engine._maintenance_active = False
         fake_engine.paper_positions = {}
         fake_db = object()
         try:

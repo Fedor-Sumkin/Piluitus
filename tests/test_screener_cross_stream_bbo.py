@@ -31,6 +31,13 @@ class ScreenerCrossStreamBboTests(unittest.TestCase):
                 bid_timestamp=9.99, ask_timestamp=9.99,
                 order_book_timestamp=9.99, received_monotonic=10.02,
             ))
+            rejected = asyncio.run(screener.push_order_book(
+                "TESTBBO", 100.06, 100.16, 12.0, 14.0,
+                bid_present=True, ask_present=True,
+                bid_size_present=True, ask_size_present=True,
+                bid_timestamp=9.97, ask_timestamp=9.97,
+                order_book_timestamp=9.97, received_monotonic=10.03,
+            ))
 
         self.assertTrue(first.get("updated"))
         self.assertTrue(second.get("updated"))
@@ -42,6 +49,10 @@ class ScreenerCrossStreamBboTests(unittest.TestCase):
         self.assertEqual(quote["last_order_book_seen"], 10.0)
         self.assertEqual(quote["last_bid_confirmed_seen"], 10.0)
         self.assertEqual(quote["last_ask_confirmed_seen"], 10.0)
+        self.assertFalse(rejected.get("updated"))
+        self.assertTrue(rejected.get("out_of_order"))
+        self.assertEqual(quote["bid"], 100.05)
+        self.assertEqual(quote["ask"], 100.15)
 
     def test_later_received_order_book_confirms_after_slight_cross_stream_timestamp_skew(self):
         screener = HFTMemoryScreener(top_n=1, min_samples=3)
