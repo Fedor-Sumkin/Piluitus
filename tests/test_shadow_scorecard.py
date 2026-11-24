@@ -95,6 +95,38 @@ class ShadowScorecardTests(unittest.TestCase):
         self.assertEqual(segments["component=volume|zero"]["ok"], 1)
         self.assertEqual(segments["horizon_component=60s|direction|gt_20"]["ok"], 1)
 
+    def test_late_labels_preserve_component_points_for_coverage_segments(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,), max_label_lag_sec=30.0)
+        metrics = {
+            "bid": 100.0, "ask": 100.1,
+            "bid_quote_age_sec": 0.1, "ask_quote_age_sec": 0.1,
+            "bbo_max_age_sec": 2.0, "bid_ask_available": 1,
+            "spread_available": 1, "spread_pct": 0.1,
+        }
+        components = {
+            "direction": 25.0, "m1_pattern": 12.0,
+            "queue_imbalance": -3.0, "trade_flow_confirmation": 0.0,
+            "volume": 7.0, "spread_vs_atr": 8.0, "freshness": 10.0,
+        }
+        with patch("shadow_outcomes.time.monotonic", side_effect=(1000.0, 1091.0)):
+            tracker.record_candidate(
+                "TEST", "BUY", metrics,
+                {
+                    "eligible": False, "score": 59.0, "regime": "TRANSITION_OR_RANGE",
+                    "components": components,
+                },
+            )
+            labels = tracker.observe_market_tick("TEST", {
+                **metrics, "bid": 100.2, "ask": 100.3,
+            })
+
+        self.assertEqual(len(labels), 1)
+        self.assertEqual(labels[0]["result"], "LABEL_LATE")
+        self.assertEqual(labels[0]["component_points"], components)
+        segments = tracker.statistics_snapshot()["segments"]
+        self.assertEqual(segments["component=direction|gt_20"]["late"], 1)
+        self.assertEqual(segments["horizon_component=60s|queue_imbalance|negative"]["late"], 1)
+
     def test_clear_resets_pending_labels_and_session_aggregates(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
         metrics = {
