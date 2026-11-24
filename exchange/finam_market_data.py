@@ -239,18 +239,10 @@ class FinamMarketDataMixin:
                                 # Trade flow is required only for active Top-15 and open
                                 # positions. Keep a bounded overlap while symbols rotate.
                                 trade_wanted = set(normalized_selected[:trade_subscription_top_n]) | position_symbols
-                                obsolete_trade = trade_subscribed - trade_wanted
-                                protected_trade = {
-                                    symbol for symbol in obsolete_trade
-                                    if now_loop - trade_subscribed_since.get(symbol, 0.0) < trade_subscription_min_hold_sec
-                                }
-                                if len(protected_trade) > trade_subscription_max_overbook:
-                                    protected_trade = set(sorted(
-                                        protected_trade,
-                                        key=lambda item: trade_subscribed_since.get(item, 0.0),
-                                        reverse=True,
-                                    )[:trade_subscription_max_overbook])
-                                effective_trade_wanted = trade_wanted | protected_trade
+                                effective_trade_wanted, protected_trade = retain_subscription_overlap(
+                                    trade_subscribed, trade_wanted, trade_subscribed_since, now_loop,
+                                    trade_subscription_min_hold_sec, trade_subscription_max_overbook,
+                                )
                                 trade_sync_due = now_loop - last_trade_subscription_sync >= trade_subscription_sync_sec
                                 if effective_trade_wanted != trade_subscribed or trade_sync_due:
                                     removed_trade = trade_subscribed - effective_trade_wanted

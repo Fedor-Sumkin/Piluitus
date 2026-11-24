@@ -107,3 +107,56 @@ class FinamStreamSetupTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FinamSubscriptionControlTests(unittest.TestCase):
+    def test_overlap_keeps_only_newest_obsolete_symbols_within_cap(self):
+        from exchange.finam_subscription_control import retain_subscription_overlap
+
+        current = {"A@MISX", "B@MISX", "C@MISX"}
+        since = {"A@MISX": 10.0, "B@MISX": 20.0, "C@MISX": 30.0}
+        effective, protected = retain_subscription_overlap(
+            current, {"D@MISX"}, since, now=35.0, min_hold_sec=60.0, max_overbook=2
+        )
+        self.assertEqual(protected, {"B@MISX", "C@MISX"})
+        self.assertEqual(effective, {"B@MISX", "C@MISX", "D@MISX"})
+
+    def test_overlap_drops_expired_and_unwanted_subscriptions(self):
+        from exchange.finam_subscription_control import retain_subscription_overlap
+
+        effective, protected = retain_subscription_overlap(
+            {"A", "B"}, {"B", "C"}, {"A": 0.0, "B": 0.0}, 100.0, 10.0, 5
+        )
+        self.assertEqual(protected, set())
+        self.assertEqual(effective, {"B", "C"})
+
+    def test_symbol_subscription_command_preserves_provider_payload(self):
+        import asyncio
+        import json
+        from exchange.finam_subscription_control import send_finam_subscription
+
+        class Socket:
+            def __init__(self): self.sent = []
+            async def send(self, payload): self.sent.append(json.loads(payload))
+
+        socket = Socket()
+        asyncio.run(send_finam_subscription(socket, "jwt", "ORDER_BOOK", "SUBSCRIBE", "SBER@MISX"))
+        self.assertEqual(socket.sent, [{
+            "action": "SUBSCRIBE", "type": "ORDER_BOOK",
+            "data": {"symbol": "SBER@MISX"}, "token": "jwt",
+        }])
+
+    def test_resubscribe_sends_unsubscribe_before_subscribe(self):
+        import asyncio
+        import json
+        from exchange.finam_subscription_control import resubscribe_finam_symbol
+
+        class Socket:
+            def __init__(self): self.sent = []
+            async def send(self, payload): self.sent.append(json.loads(payload))
+
+        socket = Socket()
+        asyncio.run(resubscribe_finam_symbol(
+            socket, "jwt", "INSTRUMENT_TRADES", "SBER@MISX", delay_sec=0
+        ))
+        self.assertEqual([item["action"] for item in socket.sent], ["UNSUBSCRIBE", "SUBSCRIBE"])
