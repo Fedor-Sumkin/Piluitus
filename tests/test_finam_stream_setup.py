@@ -160,3 +160,11 @@ class FinamSubscriptionControlTests(unittest.TestCase):
             socket, "jwt", "INSTRUMENT_TRADES", "SBER@MISX", delay_sec=0
         ))
         self.assertEqual([item["action"] for item in socket.sent], ["UNSUBSCRIBE", "SUBSCRIBE"])
+
+
+class FinamMarketDataImportRegressionTests(unittest.TestCase):
+    def test_market_data_mixin_imports_subscription_overlap_policy(self):
+        from exchange.finam_market_data import retain_subscription_overlap as imported_policy
+        from exchange.finam_subscription_control import retain_subscription_overlap as source_policy
+
+        self.assertIs(imported_policy, source_policy)

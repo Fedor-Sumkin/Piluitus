@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from exchange.finam_stream_session import wait_for_finam_handshake, send_quote_subscription_batches
+from exchange.finam_subscription_control import retain_subscription_overlap
 from exchange.finam_stream_setup import (
     build_quote_batches, build_quote_subscription_plan, resolve_websocket_header_argument,
 )
