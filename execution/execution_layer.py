@@ -267,11 +267,19 @@ class BaseExecutionEngine:
         self.paper_mode = bool(getattr(Settings, "PAPER_TRADING", PAPER_TRADING))
 
         try:
-            self.initial_capital = max(0.0, float(
+            requested_capital = float(
                 initial_capital if initial_capital is not None else Settings.TRADE_DEPOSIT
-            ))
-        except (TypeError, ValueError):
-            self.initial_capital = 100000.0
+            )
+            if not math.isfinite(requested_capital) or requested_capital < 0.0:
+                raise ValueError("initial_capital must be finite and non-negative")
+            self.initial_capital = requested_capital
+        except (TypeError, ValueError, OverflowError):
+            # Invalid overrides must fall back to the one canonical configured
+            # deposit, never to a larger hard-coded legacy balance.
+            canonical_capital = _finite_or_default(
+                getattr(Settings, "TRADE_DEPOSIT", 40000.0), 40000.0
+            )
+            self.initial_capital = max(0.0, canonical_capital)
         # Default committed capital is 10%; hard ceiling remains 15% of deposit.
         # Clamp explicitly configured legacy values (1.0 / 0.20) to ensure
         # stale .env settings cannot silently restore aggressive exposure.
