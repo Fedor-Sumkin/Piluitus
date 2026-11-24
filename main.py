@@ -1384,6 +1384,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         )
     for prefix in (
         "regime=", "market_regime=", "volatility_regime=", "liquidity_regime=",
+        "component=", "horizon_component=",
         "directional_regime=", "cost_to_atr_bucket=", "score_band=", "horizon=",
         "hour_msk=", "hard_block=", "ofi_alignment_5s=", "side_ofi_alignment_5s=",
         "spread_atr_bucket=", "trade_count_bucket=", "flow_alignment=", "side_flow_alignment=",
