@@ -31,6 +31,14 @@ class TradeDepositConfigTests(unittest.TestCase):
                     engine = BaseExecutionEngine(initial_capital=invalid)
                     self.assertEqual(engine.initial_capital, 40000.0)
 
+    def test_risk_manager_default_deposit_is_40000(self):
+        from risk_manager import RiskManager
+
+        manager = RiskManager()
+        self.assertEqual(manager.initial_deposit, 40000.0)
+        self.assertEqual(manager.current_equity, 40000.0)
+        self.assertEqual(manager.free_margin, 40000.0)
+
     def test_execution_fallback_uses_canonical_setting_not_legacy_environment(self):
         with patch("execution.execution_layer.Settings.TRADE_DEPOSIT", 40000.0):
             with patch.dict(os.environ, {"TRADING_DEPOSIT": "40000"}):
