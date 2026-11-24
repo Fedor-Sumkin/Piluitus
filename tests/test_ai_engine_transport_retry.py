@@ -172,7 +172,7 @@ class AIEngineTransportRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(engine._post_with_retry.await_count, 2)
         self.assertEqual(engine.client.post.await_count, 0)
         self.assertEqual(result["final_decision"], "HOLD")
-        self.assertFalse(result["request_error"])
+        self.assertFalse(result["model_contract_violation"])
 
 
 if __name__ == "__main__":
