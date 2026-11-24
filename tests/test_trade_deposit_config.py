@@ -24,6 +24,13 @@ class TradeDepositConfigTests(unittest.TestCase):
         self.assertEqual(_resolve_trade_deposit(None, None), (40000.0, "default"))
         self.assertEqual(_resolve_trade_deposit("", ""), (40000.0, "default"))
 
+    def test_invalid_execution_capital_falls_back_to_canonical_40000(self):
+        with patch("execution.execution_layer.Settings.TRADE_DEPOSIT", 40000.0):
+            for invalid in ("not-a-number", float("nan"), float("inf")):
+                with self.subTest(invalid=invalid):
+                    engine = BaseExecutionEngine(initial_capital=invalid)
+                    self.assertEqual(engine.initial_capital, 40000.0)
+
     def test_execution_fallback_uses_canonical_setting_not_legacy_environment(self):
         with patch("execution.execution_layer.Settings.TRADE_DEPOSIT", 40000.0):
             with patch.dict(os.environ, {"TRADING_DEPOSIT": "40000"}):
