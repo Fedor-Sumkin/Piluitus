@@ -183,6 +183,51 @@ class AIEngineTransportRetryTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(Settings, "VLLM_MAX_TOKENS", 128):
             self.assertEqual(AIEngine._effective_max_tokens(), 384)
 
+    async def test_contract_repair_and_compatibility_fallback_are_single_attempts(self) -> None:
+        malformed = self._response("not-json")
+        unsupported = httpx.Response(
+            400,
+            json={"error": {"message": "response_format json_object is not supported"}},
+            request=httpx.Request("POST", "http://localhost/v1/chat/completions"),
+        )
+        recovered = self._response(
+            '{"final_decision":"HOLD","confidence_score":0.7,"reason_code":"HOLD_UNCLEAR"}'
+        )
+        engine = self._engine([])
+        engine._post_with_retry = AsyncMock(side_effect=[malformed, unsupported, recovered])
+        parsed = [
+            {
+                "error_type": "text_parsing",
+                "contract_error_type": "invalid_json",
+                "exc": "invalid JSON",
+                "finish_reason": "stop",
+            },
+            {
+                "final_decision": "HOLD",
+                "model_decision": "HOLD",
+                "model_reason_code": "HOLD_UNCLEAR",
+                "confidence_score": 0.7,
+            },
+        ]
+        with patch.object(engine, "_cpu_intensive_processing", side_effect=parsed):
+            result = await engine.analyze_market_anomaly({
+                "ticker": "SBER",
+                "price": 100.0,
+                "volume": 100,
+                "candidate_direction": "BUY",
+                "metrics": {},
+            })
+
+        self.assertEqual(engine._post_with_retry.await_count, 3)
+        # Primary request keeps the default bounded retry. Repair and its
+        # compatibility fallback must never multiply the recovery latency.
+        self.assertNotIn("retries", engine._post_with_retry.await_args_list[0].kwargs)
+        for call in engine._post_with_retry.await_args_list[1:]:
+            self.assertEqual(call.kwargs["retries"], 0)
+            self.assertFalse(call.kwargs["retry_timeouts"])
+        self.assertEqual(result["final_decision"], "HOLD")
+        self.assertTrue(result["contract_retry_recovered"])
+
     async def test_response_format_compatibility_retry_uses_bounded_transport(self) -> None:
         unsupported = httpx.Response(
             400,
