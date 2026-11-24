@@ -411,7 +411,8 @@ class ExecutionPositionRiskMixin:
         ask: float = 0.0,
     ) -> tuple[float, float]:
         """Backward-compatible SL/TP interface for existing callers."""
-        stop_loss, take_profit, _ = self.calculate_atr_stop_with_diagnostics(
+        stop_loss, take_profit, _ = ExecutionPositionRiskMixin.calculate_atr_stop_with_diagnostics(
+            self,
             ticker,
             current_price,
             side,

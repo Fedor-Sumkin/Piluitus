@@ -467,6 +467,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
 
         stub = _NoExecutionAccount()
         stub.account_id = "STALE-BROKER-ACCOUNT"
+        stub.metadata_account_id = ""
         old_lot = LOT_SIZES.get("TESTMETA")
         old_trade_lot = FINAM_TRADE_LOT_SIZES.get("TESTMETA")
         try:
