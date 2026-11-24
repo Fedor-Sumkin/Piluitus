@@ -148,7 +148,7 @@ class RiskManager:
         self,
         max_risk_per_trade=0.005,
         daily_loss_limit=0.015,
-        initial_deposit=100000.0,
+        initial_deposit=40000.0,
         drawdown_warning_pct=0.03,
         max_drawdown_pct=0.05,
         loss_streak_3_pause_sec=600,
