@@ -265,6 +265,8 @@ class ShadowForwardTracker:
         created_at_utc = datetime.now(timezone.utc)
         created_at_msk = created_at_utc.astimezone(_MOSCOW_TZ)
         candidate_id = uuid4().hex[:16]
+        raw_components = shadow_result.get("components", {})
+        component_source = raw_components if isinstance(raw_components, Mapping) else {}
         row = {
             "candidate_id": candidate_id,
             "ticker": symbol,
