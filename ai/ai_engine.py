@@ -1099,7 +1099,10 @@ class AIEngine:
         candidate_direction = str(payload.get("candidate_direction", "NONE")).upper()
         if candidate_direction not in {"BUY", "SELL"}:
             candidate_direction = "NONE"
-        
+
+        raw_metrics = payload.get("metrics", {})
+        metrics_dict = raw_metrics if isinstance(raw_metrics, dict) else {}
+
         rag_str = self._normalise_rag_context(payload.get("rag_context", []))
 
         if not rag_str.strip():
