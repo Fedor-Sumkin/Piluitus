@@ -1,1 +1,0 @@
-2026-11-24 14:41:57,606 [ERROR] [RUN=20261124_141623_16508_df39a0a1] Piluitus.FinamGateway: Finam WebSocket отключён/не подключён (close_code=1006): sent 1011 (internal error) keepalive ping timeout; no close frame received. Повтор через 1 сек.
