@@ -31,7 +31,7 @@ class _FinamMetadataStub:
         return None
 
 
-# PAPER GetAsset obtains instrument tick metadata without an account_id.
+# PAPER GetAsset uses a session-authorized read-only metadata account.
 class FinamAssetMetadataTests(unittest.TestCase):
     def test_metadata_account_discovery_uses_session_id_without_setting_execution_account(self):
         client = FinamBrokerClient(token="test-token")
@@ -125,18 +125,18 @@ class FinamAssetMetadataTests(unittest.TestCase):
 
         self.assertEqual(captured["params"], {"account_id": "EXPLICIT-ACCOUNT"})
 
-    def test_paper_metadata_refresh_uses_finam_get_asset_without_account_context(self):
-        class _NoMetadataContext:
+    def test_paper_metadata_refresh_uses_session_authorized_metadata_context(self):
+        class _MetadataContext:
             calls = []
 
             async def discover_metadata_account_id(self):
-                raise AssertionError("PAPER must not discover an account for GetAsset")
+                return "READONLY-METADATA-ACCOUNT"
 
             async def get_asset(self, ticker: str, account_id: str | None = None):
                 self.calls.append((ticker, account_id))
                 return None
 
-        stub = _NoMetadataContext()
+        stub = _MetadataContext()
         old_lot = LOT_SIZES.get("TESTMETA")
         old_trade_lot = FINAM_TRADE_LOT_SIZES.get("TESTMETA")
         try:
@@ -144,7 +144,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
             FINAM_TRADE_LOT_SIZES.pop("TESTMETA", None)
             with patch.dict("os.environ", {"FINAM_METADATA_REQUEST_INTERVAL_SEC": "0"}):
                 asyncio.run(RiskManager.update_finam_lot_sizes(stub, paper_mode=True))
-            self.assertIn(("TESTMETA", None), stub.calls)
+            self.assertIn(("TESTMETA", "READONLY-METADATA-ACCOUNT"), stub.calls)
             self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 3)
         finally:
             if old_lot is None:
@@ -206,7 +206,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
             # Finam GetAsset uses a separate read-only metadata context.
             metadata_account_id = "READONLY-ACCOUNT-1234"
 
-            async def get_asset(self, ticker: str):
+            async def get_asset(self, ticker: str, account_id: str | None = None):
                 if ticker != "TESTMETA":
                     return None
                 return {
@@ -292,7 +292,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
                 raise AssertionError("PAPER must not call MOEX ISS")
 
             async def discover_metadata_account_id(self):
-                raise AssertionError("PAPER must not discover a Finam account")
+                return self.metadata_account_id
 
         old_lot = LOT_SIZES.get("TESTMETA")
         old_trade_lot = FINAM_TRADE_LOT_SIZES.get("TESTMETA")
@@ -446,22 +446,26 @@ class FinamAssetMetadataTests(unittest.TestCase):
                 FINAM_TRADE_LOT_SIZES["TESTMETA"] = old_trade_lot
 
     def test_paper_mode_uses_exchange_lot_without_finam_account(self):
-        class _NoAccount(_FinamMetadataStub):
+        class _NoExecutionAccount(_FinamMetadataStub):
             calls = 0
             discovery_calls = 0
+            metadata_discovery_calls = 0
             asset_calls = []
             async def get_asset(self, ticker: str, account_id: str | None = None):
                 self.asset_calls.append((ticker, account_id))
-                self.assert_no_account_id = account_id
+                self.assert_metadata_account_id = account_id
                 return await super().get_asset(ticker, account_id)
+            async def discover_metadata_account_id(self):
+                self.metadata_discovery_calls += 1
+                return "READONLY-METADATA-ACCOUNT"
             async def discover_accounts(self):
                 self.discovery_calls += 1
-                raise AssertionError("PAPER must not discover a Finam brokerage account")
+                raise AssertionError("PAPER must not discover an execution account")
             async def get_asset_params(self, ticker: str, account_id: str | None = None):
                 self.calls += 1
                 raise AssertionError("PAPER must not request account-specific parameters")
 
-        stub = _NoAccount()
+        stub = _NoExecutionAccount()
         stub.account_id = "STALE-BROKER-ACCOUNT"
         old_lot = LOT_SIZES.get("TESTMETA")
         old_trade_lot = FINAM_TRADE_LOT_SIZES.get("TESTMETA")
@@ -476,8 +480,9 @@ class FinamAssetMetadataTests(unittest.TestCase):
                 asyncio.run(RiskManager.update_finam_lot_sizes(stub, paper_mode=True))
             self.assertEqual(stub.calls, 0)
             self.assertEqual(stub.discovery_calls, 0)
-            self.assertIsNone(stub.assert_no_account_id)
-            self.assertIn(("TESTMETA", None), stub.asset_calls)
+            self.assertEqual(stub.assert_metadata_account_id, "READONLY-METADATA-ACCOUNT")
+            self.assertIn(("TESTMETA", "READONLY-METADATA-ACCOUNT"), stub.asset_calls)
+            self.assertEqual(stub.metadata_discovery_calls, 1)
             self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 7)
         finally:
             if old_lot is None:
@@ -530,7 +535,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
         class _ObjectPayload:
             metadata_account_id = "READONLY-ACCOUNT-1234"
 
-            async def get_asset(self, ticker: str):
+            async def get_asset(self, ticker: str, account_id: str | None = None):
                 if ticker != "TESTMETA":
                     return None
                 return SimpleNamespace(asset=SimpleNamespace(
@@ -563,7 +568,9 @@ class FinamAssetMetadataTests(unittest.TestCase):
 
     def test_paper_transient_metadata_failure_preserves_last_confirmed_exchange_lot(self):
         class _Unavailable:
-            async def get_asset(self, ticker: str):
+            metadata_account_id = "READONLY-ACCOUNT-1234"
+
+            async def get_asset(self, ticker: str, account_id: str | None = None):
                 return None
 
         old_lot = LOT_SIZES.get("TESTMETA")

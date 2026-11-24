@@ -231,20 +231,21 @@ class ExecutionPositionRiskMixin:
         metadata = ASSET_METADATA.get(normalized, {})
         if not isinstance(metadata, Mapping):
             return 0.0, 0.0
+        # A tiered Finam price_step rule is more specific than a fallback
+        # fixed min_step and must take precedence when both are supplied.
+        rule = metadata.get("price_step")
+        if isinstance(rule, Mapping):
+            threshold = _finite_or_default(rule.get("threshold_price"), 0.0)
+            below_step = _finite_or_default(rule.get("step"), 0.0)
+            above_step = _finite_or_default(rule.get("step_from_threshold"), 0.0)
+            if threshold > 0.0 and below_step > 0.0 and above_step > 0.0:
+                if price < threshold:
+                    return below_step, 0.0
+                return above_step, threshold
         fixed_tick = _finite_or_default(metadata.get("price_tick"), 0.0)
         if math.isfinite(fixed_tick) and fixed_tick > 0.0:
             return fixed_tick, 0.0
-        rule = metadata.get("price_step")
-        if not isinstance(rule, Mapping):
-            return 0.0, 0.0
-        threshold = _finite_or_default(rule.get("threshold_price"), 0.0)
-        below_step = _finite_or_default(rule.get("step"), 0.0)
-        above_step = _finite_or_default(rule.get("step_from_threshold"), 0.0)
-        if threshold <= 0.0 or below_step <= 0.0 or above_step <= 0.0:
-            return 0.0, 0.0
-        if price < threshold:
-            return below_step, 0.0
-        return above_step, threshold
+        return 0.0, 0.0
 
     @classmethod
     def _round_price_to_valid_tick(cls, ticker: str, price: float, rounding) -> float:
@@ -277,7 +278,7 @@ class ExecutionPositionRiskMixin:
             candidate = rounded_value
         return 0.0
 
-    def calculate_atr_stop(
+    def calculate_atr_stop_with_diagnostics(
         self,
         ticker: str,
         current_price: float,
@@ -287,7 +288,7 @@ class ExecutionPositionRiskMixin:
         atr_periods: int | None = None,
         bid: float = 0.0,
         ask: float = 0.0,
-    ) -> tuple[float, float]:
+    ) -> tuple[float, float, str]:
         """Build SL/TP from measured M1 true-range ATR, spread and a safety floor.
 
         ATR is read from completed one-minute OHLC bars (not a short tick-price
@@ -298,9 +299,9 @@ class ExecutionPositionRiskMixin:
         try:
             price = float(current_price)
         except (TypeError, ValueError):
-            return 0.0, 0.0
+            return 0.0, 0.0, "INVALID_ENTRY_PRICE"
         if not math.isfinite(price) or price <= 0.0 or side not in {"BUY", "SELL"}:
-            return 0.0, 0.0
+            return 0.0, 0.0, "INVALID_ENTRY_PRICE"
 
         period = 14
         try:
@@ -325,7 +326,7 @@ class ExecutionPositionRiskMixin:
             atr, periods = 0.0, 0
 
         if not math.isfinite(atr) or atr <= 0.0 or periods < min_periods:
-            return 0.0, 0.0
+            return 0.0, 0.0, "ATR_HISTORY_UNAVAILABLE"
 
         try:
             atr_multiplier = float(os.getenv("ATR_MULTIPLIER", "1.5"))
@@ -378,15 +379,45 @@ class ExecutionPositionRiskMixin:
             tp = price - target_distance
 
         # Use Finam's confirmed fixed or price-tiered tick rule. If metadata is
-        # unavailable, do not fabricate a 4-decimal price that may be rejected.
+        # unavailable, do not fabricate a price that may be rejected.
+        sl_tick, _ = self._price_tick_rule(ticker, sl)
+        tp_tick, _ = self._price_tick_rule(ticker, tp)
+        if (
+            not math.isfinite(sl_tick) or sl_tick <= 0.0
+            or not math.isfinite(tp_tick) or tp_tick <= 0.0
+        ):
+            return 0.0, 0.0, "PRICE_TICK_METADATA_UNAVAILABLE"
         sl_rounding = ROUND_FLOOR if side == "BUY" else ROUND_CEILING
         tp_rounding = ROUND_CEILING if side == "BUY" else ROUND_FLOOR
         rounded_sl = ExecutionPositionRiskMixin._round_price_to_valid_tick(ticker, sl, sl_rounding)
         rounded_tp = ExecutionPositionRiskMixin._round_price_to_valid_tick(ticker, tp, tp_rounding)
         if rounded_sl <= 0.0 or rounded_tp <= 0.0:
-            return 0.0, 0.0
+            return 0.0, 0.0, "PRICE_TICK_ROUNDING_FAILED"
         if side == "BUY" and not (rounded_sl < price < rounded_tp):
-            return 0.0, 0.0
+            return 0.0, 0.0, "INVALID_STOP_TARGET_GEOMETRY"
         if side == "SELL" and not (rounded_tp < price < rounded_sl):
-            return 0.0, 0.0
-        return rounded_sl, rounded_tp
+            return 0.0, 0.0, "INVALID_STOP_TARGET_GEOMETRY"
+        return rounded_sl, rounded_tp, "OK"
+
+    def calculate_atr_stop(
+        self,
+        ticker: str,
+        current_price: float,
+        side: str,
+        *,
+        atr_value: float | None = None,
+        atr_periods: int | None = None,
+        bid: float = 0.0,
+        ask: float = 0.0,
+    ) -> tuple[float, float]:
+        """Backward-compatible SL/TP interface for existing callers."""
+        stop_loss, take_profit, _ = self.calculate_atr_stop_with_diagnostics(
+            ticker,
+            current_price,
+            side,
+            atr_value=atr_value,
+            atr_periods=atr_periods,
+            bid=bid,
+            ask=ask,
+        )
+        return stop_loss, take_profit

@@ -62,8 +62,10 @@ class FinamMarketDataMixin:
                     self.ws_endpoint,
                     **header_kwargs,
                     ping_interval=20,
-                    ping_timeout=10,
-                    open_timeout=10,
+                    # Finam bursts and brief network jitter can exceed the old
+                    # 10s pong window; avoid unnecessary reconnect cycles.
+                    ping_timeout=30,
+                    open_timeout=15,
                 ) as ws:
                     logger.info(
                         "TCP/TLS WebSocket Finam установлен; ожидаем HANDSHAKE_SUCCESS (websockets %s).",
@@ -83,15 +85,17 @@ class FinamMarketDataMixin:
                         "Все %d запросов подписки отправлены; ожидаем поток котировок.",
                         len(batches),
                     )
-                    backoff = 1
+                    # Keep retry backoff until a connection has remained healthy
+                    # for a sustained interval; quick reconnects must not restart
+                    # the retry loop at one second.
 
+                    connected_at = asyncio.get_running_loop().time()
                     # Enable strict trade-data mode before the first QUOTES event.
                     # Actual INSTRUMENT_TRADES subscriptions follow live Top-15 plus
                     # open positions, avoiding 88 unnecessary high-rate streams.
                     if screener is not None:
                         screener.enable_trade_data_mode()
                     logger.info("📈 Finam INSTRUMENT_TRADES: dynamic Top-15/position subscriptions enabled; QUOTES.lastSize excluded from trade volume.")
-                    backoff = 1
 
                     # Диагностические счётчики: отправка SUBSCRIBE сама по себе не
                     # означает, что сервер уже прислал полезные данные.
@@ -1051,6 +1055,12 @@ class FinamMarketDataMixin:
                     self.is_ws_running = False
                     break
 
+                connected_duration = (
+                    asyncio.get_running_loop().time() - connected_at
+                    if "connected_at" in locals() else 0.0
+                )
+                if connected_duration >= 60.0:
+                    backoff = 1
                 close_code = _websocket_close_code(exc)
                 if _websocket_disconnect_log_level(exc) == logging.INFO:
                     logger.info(
@@ -1071,6 +1081,8 @@ class FinamMarketDataMixin:
                 refresh_token_before_retry = True
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30)
+                if "connected_at" in locals():
+                    del connected_at
 
     async def stop_market_data_stream(self):
         self.is_ws_running = False

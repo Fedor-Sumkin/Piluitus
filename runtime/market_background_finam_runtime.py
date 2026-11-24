@@ -117,10 +117,13 @@ class MarketBackgroundFinamMixin:
                 continue
             paper_mode = bool(getattr(self.execution_engine, "paper_mode", True))
             account_id = str(getattr(self.broker, "account_id", "") or "").strip()
+            metadata_account_id = str(
+                getattr(self.broker, "metadata_account_id", "") or ""
+            ).strip()
             if paper_mode:
                 self.logger.info(
                     "[FINAM METADATA WORKER] PAPER LOTSIZE source=LOT_SIZES; "
-                    "Finam GetAsset without account_id refreshes MINSTEP/DECIMALS."
+                    "GetAsset MINSTEP/DECIMALS uses a separate session-authorized metadata context."
                 )
             elif not account_id:
                 discover = getattr(self.broker, "discover_accounts", None)
@@ -157,13 +160,19 @@ class MarketBackgroundFinamMixin:
                 1 for ticker in self.tickers
                 if int(self.finam_trade_lot_sizes.get(str(ticker).strip().upper(), 0) or 0) > 0
             )
-            # Refresh the configured instrument universe at a bounded interval.
+            # Retry account-context discovery sooner than the full metadata
+            # refresh interval if the session did not provide a read-only ID.
             retry_delay = refresh_sec
             if paper_mode:
+                metadata_account_id = str(
+                    getattr(self.broker, "metadata_account_id", "") or ""
+                ).strip()
+                if not metadata_account_id:
+                    retry_delay = account_retry_sec
                 self.logger.info(
                     "📦 [FINAM METADATA WORKER] static LOTSIZE available=%d/%d; "
-                    "Finam MINSTEP refresh attempted; next refresh in %.0fs.",
-                    confirmed, len(self.tickers), refresh_sec,
+                    "Finam MINSTEP refresh attempted; metadata_context=%s; next refresh in %.0fs.",
+                    confirmed, len(self.tickers), bool(metadata_account_id), retry_delay,
                 )
             elif confirmed:
                 self.logger.info(

@@ -141,20 +141,60 @@ def test_confidence_gate_blocks_without_changing_atr_or_sizing(
     assert not risk.calls
 
 
-def test_invalid_atr_protection_blocks_before_risk_sizing():
+def test_stop_calculation_failure_is_not_mislabeled_as_missing_atr_history():
     result, values, counters, _, logger, execution, risk = _prepare(
         execution_engine=_Execution(stops=(0.0, 120.0)),
-        min_atr_periods_raw="invalid",
     )
     assert result["decision"] == "BUY"
     assert result["execution_status"] == "BLOCKED"
     assert result["requested_lots"] == 0
-    assert "5/5" in result["execution_message"]
+    assert "STOP_TARGET_CALCULATION_FAILED" in result["execution_message"]
     assert values["ai_analysis"]["atr_entry_ready"] is False
-    assert counters == ["atr_history_blocked"]
+    assert values["ai_analysis"]["stop_protection_status"] == "BLOCKED"
+    assert values["ai_analysis"]["stop_protection_reason"] == "STOP_TARGET_CALCULATION_FAILED"
+    assert counters == ["stop_protection_blocked"]
     assert len(execution.stop_calls) == 1
     assert not risk.calls
     assert len(logger.warnings) == 2
+
+
+class _DiagnosticExecution(_Execution):
+    def __init__(self, stops=(0.0, 0.0), reason="ATR_HISTORY_UNAVAILABLE"):
+        super().__init__(stops=stops)
+        self.reason = reason
+
+    def calculate_atr_stop_with_diagnostics(self, *args, **kwargs):
+        self.stop_calls.append((args, kwargs))
+        return self.stops[0], self.stops[1], self.reason
+
+
+@pytest.mark.parametrize(
+    ("reason", "expected_counter", "expected_message"),
+    [
+        (
+            "ATR_HISTORY_UNAVAILABLE",
+            "atr_history_blocked",
+            "Недостаточно закрытых M1-диапазонов",
+        ),
+        (
+            "PRICE_TICK_METADATA_UNAVAILABLE",
+            "price_tick_metadata_blocked",
+            "Нет подтверждённого Finam MINSTEP/price_step",
+        ),
+    ],
+)
+def test_sl_tp_diagnostics_identify_the_actual_blocking_layer(
+    reason, expected_counter, expected_message
+):
+    result, values, counters, _, _, execution, risk = _prepare(
+        execution_engine=_DiagnosticExecution(reason=reason),
+    )
+    assert result["execution_status"] == "BLOCKED"
+    assert expected_message in result["execution_message"]
+    assert values["ai_analysis"]["stop_protection_reason"] == reason
+    assert counters == [expected_counter]
+    assert len(execution.stop_calls) == 1
+    assert not risk.calls
 
 
 @pytest.mark.parametrize(

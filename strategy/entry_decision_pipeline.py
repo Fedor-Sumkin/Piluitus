@@ -104,27 +104,68 @@ def _prepare_atr_protected_size(
     entry_spread_pct = (finite_float(metrics.get("spread_pct")) or 0.0) if entry_bbo_available else 0.0
     entry_bbo_age_sec = (finite_float(metrics.get("bbo_age_sec")) or 0.0) if entry_bbo_available else 0.0
 
-    stop_loss, take_profit = execution_engine.calculate_atr_stop(
-        ticker,
-        price,
-        decision,
-        atr_value=atr_value,
-        atr_periods=atr_periods,
-        bid=entry_bid,
-        ask=entry_ask,
+    diagnostic_stop_builder = getattr(
+        execution_engine, "calculate_atr_stop_with_diagnostics", None
     )
+    if callable(diagnostic_stop_builder):
+        stop_loss, take_profit, protection_reason = diagnostic_stop_builder(
+            ticker,
+            price,
+            decision,
+            atr_value=atr_value,
+            atr_periods=atr_periods,
+            bid=entry_bid,
+            ask=entry_ask,
+        )
+    else:
+        stop_loss, take_profit = execution_engine.calculate_atr_stop(
+            ticker,
+            price,
+            decision,
+            atr_value=atr_value,
+            atr_periods=atr_periods,
+            bid=entry_bid,
+            ask=entry_ask,
+        )
+        min_atr_periods = _minimum_atr_periods(min_atr_periods_raw)
+        protection_reason = (
+            "ATR_HISTORY_UNAVAILABLE"
+            if atr_value <= 0.0 or atr_periods < min_atr_periods
+            else "STOP_TARGET_CALCULATION_FAILED"
+        )
     if stop_loss <= 0.0 or take_profit <= 0.0:
         min_atr_periods = _minimum_atr_periods(min_atr_periods_raw)
-        message = (
-            f"Недостаточно закрытых M1-диапазонов для ATR: "
-            f"{atr_periods}/{min_atr_periods}; новая позиция не открыта."
-        )
-        increment_counter("atr_history_blocked")
         ai_analysis["atr_entry_ready"] = False
-        logger.warning("Сигнал %s по %s заблокирован после LLM: %s", decision, ticker, message)
+        ai_analysis["stop_protection_status"] = "BLOCKED"
+        ai_analysis["stop_protection_reason"] = protection_reason
+        if protection_reason == "ATR_HISTORY_UNAVAILABLE":
+            message = (
+                f"Недостаточно закрытых M1-диапазонов для ATR: "
+                f"{atr_periods}/{min_atr_periods}, ATR={atr_value:.8f}; "
+                "новая позиция не открыта."
+            )
+            increment_counter("atr_history_blocked")
+        elif protection_reason == "PRICE_TICK_METADATA_UNAVAILABLE":
+            message = (
+                f"Нет подтверждённого Finam MINSTEP/price_step для {ticker}; "
+                "SL/TP не сформированы, новая позиция не открыта."
+            )
+            increment_counter("price_tick_metadata_blocked")
+        else:
+            message = (
+                f"Не удалось сформировать допустимые SL/TP для {ticker}: "
+                f"{protection_reason}; новая позиция не открыта."
+            )
+            increment_counter("stop_protection_blocked")
+        logger.warning(
+            "Сигнал %s по %s заблокирован после LLM: %s",
+            decision, ticker, message,
+        )
         return "BLOCKED", message, 0, 0.0
 
     ai_analysis["atr_entry_ready"] = True
+    ai_analysis["stop_protection_status"] = "READY"
+    ai_analysis["stop_protection_reason"] = "OK"
     ai_analysis["stop_loss"] = stop_loss
     ai_analysis["take_profit"] = take_profit
     ai_analysis["atr_at_entry"] = atr_value
