@@ -170,6 +170,10 @@ class AIEngineTransportRetryTests(unittest.IsolatedAsyncioTestCase):
         result = await engine.analyze_market_anomaly(payload)
 
         self.assertEqual(engine._post_with_retry.await_count, 2)
+        # The initial request keeps its bounded transport retry; a compatibility
+        # fallback is a single attempt so it cannot multiply candidate latency.
+        self.assertNotIn("retries", engine._post_with_retry.await_args_list[0].kwargs)
+        self.assertEqual(engine._post_with_retry.await_args_list[1].kwargs["retries"], 0)
         self.assertEqual(engine.client.post.await_count, 0)
         self.assertEqual(result["final_decision"], "HOLD")
         self.assertFalse(result["model_contract_violation"])
