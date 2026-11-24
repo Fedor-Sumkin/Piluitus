@@ -74,6 +74,10 @@ class AIEngine:
         self._transport_failure_count = 0
         self._transport_open_until = 0.0
         self._transport_state_lock = asyncio.Lock()
+        # Observe real request concurrency before introducing any artificial cap.
+        self._transport_inflight_count = 0
+        self._transport_peak_inflight = 0
+        self._transport_inflight_lock = asyncio.Lock()
         
         limits = httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=30.0)
         timeout = httpx.Timeout(connect=5.0, read=45.0, write=10.0, pool=10.0)
@@ -135,6 +139,31 @@ class AIEngine:
             self._transport_failure_count = 0
             self._transport_open_until = 0.0
 
+    async def _transport_request_started(self) -> int:
+        """Track active HTTP calls for diagnostics; this does not throttle requests."""
+        lock = getattr(self, "_transport_inflight_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._transport_inflight_lock = lock
+        async with lock:
+            current = int(getattr(self, "_transport_inflight_count", 0) or 0) + 1
+            self._transport_inflight_count = current
+            self._transport_peak_inflight = max(
+                int(getattr(self, "_transport_peak_inflight", 0) or 0), current
+            )
+            return current
+
+    async def _transport_request_finished(self) -> int:
+        """Decrement active HTTP calls and return the remaining count."""
+        lock = getattr(self, "_transport_inflight_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._transport_inflight_lock = lock
+        async with lock:
+            current = max(0, int(getattr(self, "_transport_inflight_count", 0) or 0) - 1)
+            self._transport_inflight_count = current
+            return current
+
     async def _post_with_retry(
         self,
         path: str,
@@ -143,7 +172,7 @@ class AIEngine:
         retries: int = 1,
         retry_timeouts: bool = True,
     ) -> httpx.Response:
-        """Retry one transient failure; back off after a confirmed connection outage."""
+        """Retry one transient failure; measure each HTTP attempt and active concurrency."""
         retry_after = await self._transport_circuit_retry_after()
         if retry_after > 0.0:
             raise VLLMCircuitOpenError(retry_after)
@@ -151,6 +180,10 @@ class AIEngine:
         timeout_seconds = self._request_timeout_seconds()
         retry_limit = max(0, min(1, int(retries)))
         for attempt in range(retry_limit + 1):
+            await self._transport_request_started()
+            attempt_started = time.perf_counter()
+            response = None
+            error_type = None
             try:
                 async with asyncio.timeout(timeout_seconds):
                     response = await self.client.post(
@@ -161,6 +194,7 @@ class AIEngine:
                 await self._record_transport_success()
                 return response
             except (httpx.TimeoutException, TimeoutError) as exc:
+                error_type = type(exc).__name__
                 if attempt >= retry_limit or not retry_timeouts:
                     log.error(
                         "[vLLM TIMEOUT] Запрос не завершился за %.1fs; attempts=%d/%d; retry_timeouts=%s",
@@ -173,6 +207,7 @@ class AIEngine:
                 )
                 await asyncio.sleep(0.4)
             except httpx.TransportError as exc:
+                error_type = type(exc).__name__
                 if attempt >= retry_limit:
                     if isinstance(exc, httpx.ConnectError):
                         backoff = await self._record_transport_failure()
@@ -192,6 +227,17 @@ class AIEngine:
                     type(exc).__name__,
                 )
                 await asyncio.sleep(0.4)
+            finally:
+                elapsed_ms = (time.perf_counter() - attempt_started) * 1000.0
+                remaining = await self._transport_request_finished()
+                log.debug(
+                    "[vLLM TRANSPORT] status=%s attempt=%d/%d elapsed_ms=%.1f "
+                    "inflight=%d peak_inflight=%d error=%s",
+                    response.status_code if response is not None else "-",
+                    attempt + 1, retry_limit + 1, elapsed_ms, remaining,
+                    int(getattr(self, "_transport_peak_inflight", 0) or 0),
+                    error_type or "-",
+                )
         raise RuntimeError("vLLM retry loop exited unexpectedly")
 
     def _clean_text(self, text: str) -> str:
