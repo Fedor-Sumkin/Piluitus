@@ -165,6 +165,9 @@ class FinamAssetMetadataTests(unittest.TestCase):
 
     def test_paper_parses_finam_variable_price_step_without_moex(self):
         class _VariableStep:
+            # Finam GetAsset uses a separate read-only metadata context.
+            metadata_account_id = "READONLY-ACCOUNT-1234"
+
             async def get_asset(self, ticker: str):
                 if ticker != "TESTMETA":
                     return None
