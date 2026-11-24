@@ -14,7 +14,7 @@ load_dotenv(dotenv_path=ENV_PATH)   # .env необязателен – если
 def _resolve_trade_deposit(
     canonical_raw: str | None,
     legacy_raw: str | None,
-    default: float = 400000.0,
+    default: float = 40000.0,
 ) -> tuple[float, str]:
     """Resolve one authoritative start-capital value and reject conflicting aliases."""
     canonical = str(canonical_raw).strip() if canonical_raw is not None else ""
