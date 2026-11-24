@@ -23,6 +23,26 @@ from uuid import uuid4
 logger = logging.getLogger("Piluitus.StrategyShadow")
 _MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
 
+_COMPONENT_NAMES = (
+    "direction", "m1_pattern", "queue_imbalance",
+    "trade_flow_confirmation", "volume", "spread_vs_atr", "freshness",
+)
+
+
+def _component_score_bucket(value: float) -> str:
+    """Map a component contribution to a bounded, interpretable score band."""
+    if value < 0.0:
+        return "negative"
+    if value == 0.0:
+        return "zero"
+    if value <= 5.0:
+        return "gt_0_le_5"
+    if value <= 10.0:
+        return "gt_5_le_10"
+    if value <= 20.0:
+        return "gt_10_le_20"
+    return "gt_20"
+
 
 def _number(metrics: Mapping[str, Any], key: str, default: float = 0.0) -> float:
     value = metrics.get(key, default)
@@ -264,6 +284,11 @@ class ShadowForwardTracker:
             "commission_pct_per_side": commission_pct,
             "slippage_bps": slippage_bps,
             "score": _number(shadow_result, "score"),
+            "component_points": {
+                name: round(_number(component_source, name, math.nan), 3)
+                for name in _COMPONENT_NAMES
+                if math.isfinite(_number(component_source, name, math.nan))
+            },
             "shadow_eligible": bool(shadow_result.get("eligible", False)),
             "regime": str(shadow_result.get("regime") or "UNKNOWN"),
             **market_context,
@@ -597,6 +622,7 @@ class ShadowForwardTracker:
                         "gross_executable_return_pct": round(gross_pct, 6),
                         "net_executable_return_pct": round(net_pct, 6),
                         "score": row["score"],
+                        "component_points": dict(row.get("component_points") or {}),
                         "shadow_eligible": row["shadow_eligible"],
                         "regime": row["regime"],
                         "market_regime": row.get("market_regime", "UNKNOWN"),
@@ -884,6 +910,15 @@ class ShadowForwardTracker:
             f"side_market_regime={side}|{market_regime}",
             f"side_cost_to_atr_bucket={side}|{cost_to_atr_bucket}",
             f"score_band={score_band}",
+            *(
+                f"component={name}|{_component_score_bucket(_number(component_points, name))}"
+                for component_points in (
+                    label.get("component_points")
+                    if isinstance(label.get("component_points"), Mapping) else {},
+                )
+                for name in _COMPONENT_NAMES
+                if math.isfinite(_number(component_points, name, math.nan))
+            ),
             f"horizon={horizon}s",
             f"hour_msk={hour_msk}",
             f"spread_atr_bucket={spread_atr_bucket}",
