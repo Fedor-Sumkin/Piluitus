@@ -9,6 +9,40 @@ from screener_funnel import HFTMemoryScreener
 
 
 class ScreenerCrossStreamBboTests(unittest.TestCase):
+    def test_small_order_book_timestamp_regression_does_not_age_or_reject_position_bbo(self):
+        screener = HFTMemoryScreener(top_n=1, min_samples=3)
+        screener.set_universe(["TESTBBO"])
+
+        with patch("screener_funnel.time.monotonic", return_value=10.02), patch(
+            "screener_funnel._event_timestamp_to_monotonic",
+            side_effect=lambda value, received: float(value) if value is not None else received,
+        ):
+            first = asyncio.run(screener.push_order_book(
+                "TESTBBO", 100.0, 100.1, 10.0, 12.0,
+                bid_present=True, ask_present=True,
+                bid_size_present=True, ask_size_present=True,
+                bid_timestamp=10.0, ask_timestamp=10.0,
+                order_book_timestamp=10.0, received_monotonic=10.0,
+            ))
+            second = asyncio.run(screener.push_order_book(
+                "TESTBBO", 100.05, 100.15, 11.0, 13.0,
+                bid_present=True, ask_present=True,
+                bid_size_present=True, ask_size_present=True,
+                bid_timestamp=9.99, ask_timestamp=9.99,
+                order_book_timestamp=9.99, received_monotonic=10.02,
+            ))
+
+        self.assertTrue(first.get("updated"))
+        self.assertTrue(second.get("updated"))
+        self.assertTrue(second.get("valid"))
+        quote = screener.quotes["TESTBBO"]
+        self.assertEqual(quote["bid"], 100.05)
+        self.assertEqual(quote["ask"], 100.15)
+        self.assertEqual(quote["last_order_book_event_seen"], 10.0)
+        self.assertEqual(quote["last_order_book_seen"], 10.0)
+        self.assertEqual(quote["last_bid_confirmed_seen"], 10.0)
+        self.assertEqual(quote["last_ask_confirmed_seen"], 10.0)
+
     def test_later_received_order_book_confirms_after_slight_cross_stream_timestamp_skew(self):
         screener = HFTMemoryScreener(top_n=1, min_samples=3)
         screener.set_universe(["TESTBBO"])

@@ -222,5 +222,81 @@ class TradeFlowMetricsTests(unittest.TestCase):
         self.assertIs(state_before["current"], current_before)
 
 
+
+
+class InstrumentTradePositionMonitorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_accepted_finam_trade_print_is_forwarded_to_open_paper_position_monitor(self):
+        from unittest.mock import Mock
+        import main as app_main
+
+        original_screener = app_main.screener
+        original_engine = app_main.execution_engine
+        original_db = app_main.db_manager
+        fake_screener = Mock()
+        fake_screener.push_trade.return_value = {"accepted": True}
+        fake_engine = Mock()
+        fake_engine.paper_mode = True
+        fake_engine.paper_positions = {"SBER": {"status": "OPEN"}}
+        fake_db = object()
+        try:
+            app_main.screener = fake_screener
+            app_main.execution_engine = fake_engine
+            app_main.db_manager = fake_db
+            await app_main.process_market_event({
+                "event_type": "INSTRUMENT_TRADE",
+                "ticker": "SBER",
+                "price": 100.25,
+                "size": 5.0,
+                "trade_id": "paper-exit-trigger-test",
+                "side": "SIDE_SELL",
+                "timestamp": "2026-11-24T12:00:00+03:00",
+                "received_monotonic": 123.0,
+            })
+        finally:
+            app_main.screener = original_screener
+            app_main.execution_engine = original_engine
+            app_main.db_manager = original_db
+
+        fake_engine.schedule_paper_position_monitor.assert_called_once_with(
+            "SBER", 100.25, fake_db,
+            event_source="LAST_TRADE",
+            event_timestamp="2026-11-24T12:00:00+03:00",
+        )
+        fake_screener.push_trade.assert_called_once()
+
+    async def test_accepted_trade_for_flat_ticker_does_not_schedule_position_monitor(self):
+        from unittest.mock import Mock
+        import main as app_main
+
+        original_screener = app_main.screener
+        original_engine = app_main.execution_engine
+        original_db = app_main.db_manager
+        fake_screener = Mock()
+        fake_screener.push_trade.return_value = {"accepted": True}
+        fake_engine = Mock()
+        fake_engine.paper_mode = True
+        fake_engine.paper_positions = {}
+        fake_db = object()
+        try:
+            app_main.screener = fake_screener
+            app_main.execution_engine = fake_engine
+            app_main.db_manager = fake_db
+            await app_main.process_market_event({
+                "event_type": "INSTRUMENT_TRADE",
+                "ticker": "SBER",
+                "price": 100.25,
+                "size": 5.0,
+                "trade_id": "flat-ticker-test",
+                "side": "SIDE_BUY",
+                "timestamp": "2026-11-24T12:00:00+03:00",
+            })
+        finally:
+            app_main.screener = original_screener
+            app_main.execution_engine = original_engine
+            app_main.db_manager = original_db
+
+        fake_engine.schedule_paper_position_monitor.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

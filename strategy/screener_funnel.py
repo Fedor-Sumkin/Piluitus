@@ -20,6 +20,9 @@ import numpy as np
 from minute_bar_patterns import MinuteBarPatternEngine
 
 logger = logging.getLogger("Piluitus.Screener")
+# Keep aligned with exchange.finam_client: tolerate small provider-clock jitter,
+# but never accept a materially older ORDER_BOOK delta.
+_ORDER_BOOK_EVENT_REORDER_TOLERANCE_SEC = 0.020
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -874,9 +877,11 @@ class HFTMemoryScreener:
             # complete reconstructed state. Level timestamps describe when an
             # individual price level changed and must not age the whole book.
             book_seen_at = _event_timestamp_to_monotonic(order_book_timestamp, received_at)
-            confirmation_seen_at = min(received_at, book_seen_at)
             prior_book_event = float(quote.get("last_order_book_event_seen", 0.0) or 0.0)
-            accept_book_event = prior_book_event <= 0.0 or book_seen_at + 0.001 >= prior_book_event
+            accept_book_event = (
+                prior_book_event <= 0.0
+                or book_seen_at + _ORDER_BOOK_EVENT_REORDER_TOLERANCE_SEC >= prior_book_event
+            )
             if not accept_book_event:
                 return {
                     "updated": False,
@@ -885,9 +890,15 @@ class HFTMemoryScreener:
                     "bbo_side_updated": False,
                 }
 
-            quote["last_order_book_event_seen"] = max(prior_book_event, book_seen_at)
-            quote["last_order_book_seen"] = book_seen_at
-            quote["last_order_book_received"] = received_at
+            # Tolerated provider-clock jitter may update the current book, but
+            # must never rewind executable quote freshness or stream watermarks.
+            effective_book_seen_at = max(prior_book_event, book_seen_at)
+            confirmation_seen_at = min(received_at, effective_book_seen_at)
+            quote["last_order_book_event_seen"] = effective_book_seen_at
+            quote["last_order_book_seen"] = effective_book_seen_at
+            quote["last_order_book_received"] = max(
+                float(quote.get("last_order_book_received", 0.0) or 0.0), received_at
+            )
             old_bid = float(quote.get("bid", 0.0) or 0.0)
             old_ask = float(quote.get("ask", 0.0) or 0.0)
             old_bid_size = float(quote.get("bid_size", 0.0) or 0.0)
@@ -905,13 +916,19 @@ class HFTMemoryScreener:
             # Without it, fall back to the captured socket-ingress monotonic time.
             # Per-level timestamps are diagnostic timestamps of the last change
             # at that price; they must never be used as the message ordering clock.
-            bid_ordering_time = book_seen_at
-            ask_ordering_time = book_seen_at
+            bid_ordering_time = max(prior_bid_event, book_seen_at)
+            ask_ordering_time = max(prior_ask_event, book_seen_at)
             accept_bid_event = bool(
-                bid_state_present and (prior_bid_event <= 0.0 or bid_ordering_time + 0.001 >= prior_bid_event)
+                bid_state_present and (
+                    prior_bid_event <= 0.0
+                    or book_seen_at + _ORDER_BOOK_EVENT_REORDER_TOLERANCE_SEC >= prior_bid_event
+                )
             )
             accept_ask_event = bool(
-                ask_state_present and (prior_ask_event <= 0.0 or ask_ordering_time + 0.001 >= prior_ask_event)
+                ask_state_present and (
+                    prior_ask_event <= 0.0
+                    or book_seen_at + _ORDER_BOOK_EVENT_REORDER_TOLERANCE_SEC >= prior_ask_event
+                )
             )
             if accept_bid_event:
                 quote["last_bid_book_event_seen"] = max(prior_bid_event, bid_ordering_time)
@@ -944,7 +961,7 @@ class HFTMemoryScreener:
                     if bid_present:
                         quote["last_bid_seen"] = max(
                             float(quote.get("last_bid_seen", 0.0) or 0.0),
-                            bid_seen_at if bid_seen_at > 0.0 else book_seen_at,
+                            bid_seen_at if bid_seen_at > 0.0 else bid_ordering_time,
                         )
                 if ask_state_present and accept_ask_update:
                     quote["ask"] = candidate_ask
@@ -953,7 +970,7 @@ class HFTMemoryScreener:
                     if ask_present:
                         quote["last_ask_seen"] = max(
                             float(quote.get("last_ask_seen", 0.0) or 0.0),
-                            ask_seen_at if ask_seen_at > 0.0 else book_seen_at,
+                            ask_seen_at if ask_seen_at > 0.0 else ask_ordering_time,
                         )
                 quote["last_bid_confirmed_seen"] = 0.0
                 quote["last_ask_confirmed_seen"] = 0.0
@@ -1022,7 +1039,7 @@ class HFTMemoryScreener:
                 if bid_present:
                     quote["last_bid_seen"] = max(
                         float(quote.get("last_bid_seen", 0.0) or 0.0),
-                        bid_seen_at if bid_seen_at > 0.0 else book_seen_at,
+                        bid_seen_at if bid_seen_at > 0.0 else bid_ordering_time,
                     )
             if accept_ask_update:
                 quote["last_ask_source_received_seen"] = received_at
@@ -1030,7 +1047,7 @@ class HFTMemoryScreener:
                 if ask_present:
                     quote["last_ask_seen"] = max(
                         float(quote.get("last_ask_seen", 0.0) or 0.0),
-                        ask_seen_at if ask_seen_at > 0.0 else book_seen_at,
+                        ask_seen_at if ask_seen_at > 0.0 else ask_ordering_time,
                     )
             # A coherent, in-order delta confirms both sides of the maintained
             # book even if neither best level changed. Record this book's actual
@@ -1039,13 +1056,19 @@ class HFTMemoryScreener:
                 # When the envelope clock is absent, `book_seen_at` is the
                 # captured socket receive time. A level timestamp may be old
                 # simply because that resting price has not changed recently.
-                bid_confirmation_at = book_seen_at
-                quote["last_bid_confirmed_seen"] = bid_confirmation_at
+                bid_confirmation_at = min(received_at, bid_ordering_time)
+                quote["last_bid_confirmed_seen"] = max(
+                    float(quote.get("last_bid_confirmed_seen", 0.0) or 0.0),
+                    bid_confirmation_at,
+                )
             elif current_bid <= 0.0:
                 quote["last_bid_confirmed_seen"] = 0.0
             if current_ask > 0.0 and accept_ask_update:
-                ask_confirmation_at = book_seen_at
-                quote["last_ask_confirmed_seen"] = ask_confirmation_at
+                ask_confirmation_at = min(received_at, ask_ordering_time)
+                quote["last_ask_confirmed_seen"] = max(
+                    float(quote.get("last_ask_confirmed_seen", 0.0) or 0.0),
+                    ask_confirmation_at,
+                )
             elif current_ask <= 0.0:
                 quote["last_ask_confirmed_seen"] = 0.0
             bid_confirmed = float(quote.get("last_bid_confirmed_seen", 0.0) or 0.0)
@@ -1057,13 +1080,13 @@ class HFTMemoryScreener:
             if bid_size_present and accept_bid_update:
                 quote["last_bid_size_event_seen"] = max(
                     float(quote.get("last_bid_size_event_seen", 0.0) or 0.0),
-                    bid_seen_at if bid_seen_at > 0.0 else book_seen_at,
+                    bid_seen_at if bid_seen_at > 0.0 else bid_ordering_time,
                 )
                 self._observe_top_size(quote, "bid", float(bid_size), confirmation_seen_at)
             if ask_size_present and accept_ask_update:
                 quote["last_ask_size_event_seen"] = max(
                     float(quote.get("last_ask_size_event_seen", 0.0) or 0.0),
-                    ask_seen_at if ask_seen_at > 0.0 else book_seen_at,
+                    ask_seen_at if ask_seen_at > 0.0 else ask_ordering_time,
                 )
                 self._observe_top_size(quote, "ask", float(ask_size), confirmation_seen_at)
             # The parser emits the complete depth on each heartbeat. Refresh the
@@ -1088,8 +1111,8 @@ class HFTMemoryScreener:
             if bid_queue_size > 0.0 and ask_queue_size > 0.0:
                 queue_total = bid_queue_size + ask_queue_size
                 queue_value = (bid_queue_size - ask_queue_size) / queue_total
-                if not queue_history or book_seen_at > float(queue_history[-1][0]):
-                    queue_history.append((book_seen_at, queue_value))
+                if not queue_history or effective_book_seen_at > float(queue_history[-1][0]):
+                    queue_history.append((effective_book_seen_at, queue_value))
             else:
                 queue_history.clear()
 

@@ -2194,6 +2194,26 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
             )
             if trade_result.get("accepted"):
                 _trade_flow_inc("instrument_trades_received")
+                # Real exchange prints must be checked for a PAPER SL/TP trigger
+                # immediately. The monitor still requires a fresh executable BBO
+                # before recording any simulated close price.
+                if (
+                    getattr(execution_engine, "paper_mode", False)
+                    and trade_ticker in getattr(execution_engine, "paper_positions", {})
+                ):
+                    try:
+                        execution_engine.schedule_paper_position_monitor(
+                            trade_ticker,
+                            event.get("price"),
+                            db_manager,
+                            event_source="LAST_TRADE",
+                            event_timestamp=event.get("timestamp"),
+                        )
+                    except Exception as monitor_exc:
+                        logger.error(
+                            "[PAPER TRADE PRINT MONITOR] %s: не удалось передать принт в монитор выхода: %s",
+                            trade_ticker, monitor_exc, exc_info=True,
+                        )
             else:
                 trade_reason = str(trade_result.get("reason") or "rejected")
                 _trade_flow_inc("instrument_trades_" + trade_reason)

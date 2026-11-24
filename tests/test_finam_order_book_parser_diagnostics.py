@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import time
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from finam_client import FinamBrokerClient, _should_resync_position_order_book
 
@@ -53,6 +54,56 @@ class FinamOrderBookParserDiagnosticsTests(unittest.TestCase):
         self.assertGreater(detail["prior_monotonic"], detail["event_monotonic"])
         state = self.client._order_book_state["SBER"]
         self.assertEqual(state["bids"][100.0], 10.0)
+
+    def test_small_provider_timestamp_regression_is_tolerated_without_rewinding_watermark(self) -> None:
+        snapshot = {
+            "symbol": "SBER@MISX",
+            "is_snapshot": True,
+            "bids": [{"price": 100.0, "buySize": 10.0}],
+            "asks": [{"price": 101.0, "sellSize": 12.0}],
+        }
+        with patch("finam_client._event_timestamp_to_monotonic", return_value=100.0):
+            initial = self.client._extract_order_book_updates(
+                self.envelope(self.now, snapshot, 100.0)
+            )
+        self.assertEqual(len(initial), 1)
+
+        small_reversal = {
+            "symbol": "SBER@MISX",
+            "rows": [{"price": 100.0, "buySize": 7.0}],
+        }
+        with patch("finam_client._event_timestamp_to_monotonic", return_value=99.990):
+            update = self.client._extract_order_book_updates(
+                self.envelope(self.now - timedelta(milliseconds=10), small_reversal, 100.02)
+            )
+
+        self.assertEqual(len(update), 1)
+        self.assertNotIn("SBER", self.client._last_order_book_out_of_order_tickers)
+        self.assertEqual(self.client._order_book_state["SBER"]["bids"][100.0], 7.0)
+        self.assertEqual(self.client._order_book_state["SBER"]["last_event_monotonic"], 100.0)
+
+    def test_material_provider_timestamp_regression_is_still_rejected(self) -> None:
+        snapshot = {
+            "symbol": "SBER@MISX",
+            "is_snapshot": True,
+            "bids": [{"price": 100.0, "buySize": 10.0}],
+            "asks": [{"price": 101.0, "sellSize": 12.0}],
+        }
+        with patch("finam_client._event_timestamp_to_monotonic", return_value=100.0):
+            self.client._extract_order_book_updates(
+                self.envelope(self.now, snapshot, 100.0)
+            )
+        delta = {
+            "symbol": "SBER@MISX",
+            "rows": [{"price": 100.0, "buySize": 7.0}],
+        }
+        with patch("finam_client._event_timestamp_to_monotonic", return_value=99.970):
+            update = self.client._extract_order_book_updates(
+                self.envelope(self.now - timedelta(milliseconds=30), delta, 100.03)
+            )
+        self.assertEqual(update, [])
+        self.assertEqual(self.client._last_order_book_out_of_order_tickers, {"SBER"})
+        self.assertEqual(self.client._order_book_state["SBER"]["bids"][100.0], 10.0)
 
     def test_crossed_bbo_episode_records_recovery_duration(self) -> None:
         base_mono = time.monotonic()

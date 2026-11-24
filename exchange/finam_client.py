@@ -14,6 +14,9 @@ import websockets
 import httpx
 
 logger = logging.getLogger("Piluitus.FinamGateway")
+# Finam event timestamps occasionally step backwards by a few milliseconds
+# across sequential WebSocket DATA frames. Material reversals remain rejected.
+_ORDER_BOOK_EVENT_REORDER_TOLERANCE_SEC = 0.020
 JOURNAL_FILE = "trading_journal.json"
 _MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
 
@@ -1568,9 +1571,10 @@ class FinamBrokerClient:
                     "last_event_monotonic": 0.0,
                 },
             )
-            # Reject out-of-order DATA messages before mutating reconstructed
-            # depth. Screener-side rejection alone is insufficient: a stale
-            # delta must not poison parser state and later reappear in a heartbeat.
+            # WebSocket DATA frames are delivered in stream order, but Finam event
+            # timestamps can step backwards slightly between sequential frames.
+            # Tolerate only the measured sub-20ms jitter; material reversals are
+            # rejected before mutating reconstructed depth.
             message_timestamp = (
                 envelope.get("timestamp") or envelope.get("datetime") or envelope.get("time")
                 or payload.get("timestamp")
@@ -1579,7 +1583,10 @@ class FinamBrokerClient:
                 message_timestamp, received_monotonic
             )
             prior_message_seen = float(state.get("last_event_monotonic", 0.0) or 0.0)
-            if prior_message_seen > 0.0 and message_event_seen + 0.001 < prior_message_seen:
+            if (
+                prior_message_seen > 0.0
+                and message_event_seen + _ORDER_BOOK_EVENT_REORDER_TOLERANCE_SEC < prior_message_seen
+            ):
                 self._last_order_book_out_of_order = True
                 self._last_order_book_out_of_order_tickers.add(ticker)
                 self._last_order_book_out_of_order_details[ticker] = {
