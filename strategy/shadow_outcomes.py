@@ -696,6 +696,7 @@ class ShadowForwardTracker:
                         "excursion_observation_end_elapsed_sec": round(elapsed, 3),
                         "label_lag_sec": round(max(0.0, elapsed - horizon), 3),
                         "score": row["score"],
+                        "component_points": dict(row.get("component_points") or {}),
                         "shadow_eligible": row["shadow_eligible"],
                         "regime": row["regime"],
                         "market_regime": row.get("market_regime", "UNKNOWN"),
