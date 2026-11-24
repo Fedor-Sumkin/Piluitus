@@ -1161,7 +1161,7 @@ class AIEngine:
                             error_detail,
                         )
                         active_body.pop("response_format", None)
-                        resp = await self._post_with_retry(self.api_path, json=active_body)
+                        resp = await self._post_with_retry(self.api_path, json=active_body, retries=0)
 
                 if resp.status_code in (400, 422):
                     error_detail = self._http_error_detail(resp)
@@ -1183,7 +1183,7 @@ class AIEngine:
                             "[vLLM COMPAT] Переполнение контекста; повторяем компактный запрос, max_tokens=%s. Причина: %s",
                             compact_body["max_tokens"], error_detail,
                         )
-                        resp = await self._post_with_retry(self.api_path, json=compact_body)
+                        resp = await self._post_with_retry(self.api_path, json=compact_body, retries=0)
 
                 if resp.status_code in (400, 422):
                     error_detail = self._http_error_detail(resp)
@@ -1195,7 +1195,7 @@ class AIEngine:
                             "[vLLM COMPAT] Сервер отклонил temperature; повторяем без параметра. Причина: %s",
                             error_detail,
                         )
-                        resp = await self._post_with_retry(self.api_path, json=sampling_body)
+                        resp = await self._post_with_retry(self.api_path, json=sampling_body, retries=0)
 
                 if resp.status_code >= 400:
                     error_detail = self._http_error_detail(resp)
