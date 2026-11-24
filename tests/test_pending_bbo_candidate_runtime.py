@@ -355,7 +355,7 @@ def test_non_quote_evidence_failure_cancels_candidate():
     assert state["not_called"] == [("shadow-1", "SIGNAL_EVIDENCE_BLOCKED")]
     assert state["store"].count() == 0
     assert "prefilter_blocked" in counter_keys(state)
-    assert state["guard_blocks"] == ["spread above local limit"]
+    assert state["guard_blocks"] == ["candidate metrics malformed"]
 
 
 def test_atr_readiness_remains_a_hard_pre_llm_gate():

@@ -898,13 +898,14 @@ def test_main_delegates_pending_bbo_candidate_lifecycle_to_strategy_runtime() ->
     assert {
         "drop", "cancel", "expire", "store_candidate", "has_pending", "resume"
     } <= methods
+    assert "validate_pre_llm_entry_evidence" in runtime_source
+    assert "validate_entry_evidence" not in runtime_source
     for guard in (
         "PAPER_SESSION_CHANGED",
         "FUNNEL_NOT_READY",
         "TOP15_DESELECTED",
         "POSITION_ALREADY_OPEN",
         "DIRECTION_CHANGED",
-        "QUEUE_TRADE_FLOW_CONFLICT",
         "SIGNAL_EVIDENCE_BLOCKED",
         "ATR_NOT_READY",
         "PAYLOAD_SUPERSEDED",

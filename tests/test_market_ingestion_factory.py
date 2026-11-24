@@ -32,7 +32,7 @@ def make_inputs(environment=None):
         "record_position_order_book_event", "refresh_bbo_metrics",
         "persist_shadow_outcomes", "resume_pending_bbo_candidate",
         "infer_candidate_direction", "paper_mode_provider",
-        "validate_entry_evidence", "validate_atr_readiness",
+        "validate_pre_llm_entry_evidence", "validate_atr_readiness",
         "queue_flow_conflict_reason", "reserve_ai_ticker",
         "release_ai_ticker", "mark_shadow_llm_not_called",
         "log_shadow_candidate", "trade_flow_guard_block",

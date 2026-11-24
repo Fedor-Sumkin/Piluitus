@@ -65,6 +65,7 @@ class ShadowOutcomeStateMixin:
         bid_age = _number(metrics, "bid_quote_age_sec", math.inf)
         ask_age = _number(metrics, "ask_quote_age_sec", math.inf)
         max_age = min(5.0, max(0.25, _number(metrics, "bbo_max_age_sec", 2.0)))
+        spread_pct = _number(metrics, "spread_pct", math.nan)
         if "bid_ask_available" not in metrics or "spread_available" not in metrics:
             unavailable_reason = "MISSING_BBO_FLAGS"
         elif bid <= 0.0:
@@ -82,7 +83,6 @@ class ShadowOutcomeStateMixin:
         elif _number(metrics, "spread_available") < 0.5:
             unavailable_reason = "SPREAD_UNAVAILABLE"
         else:
-            spread_pct = _number(metrics, "spread_pct", math.nan)
             if not math.isfinite(spread_pct) and bid > 0.0 and ask >= bid:
                 midpoint = (bid + ask) / 2.0
                 spread_pct = (ask - bid) / midpoint * 100.0 if midpoint > 0.0 else math.nan
