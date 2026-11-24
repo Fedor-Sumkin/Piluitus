@@ -95,7 +95,7 @@ class SignalGuardSizeDiagnosticsTests(unittest.TestCase):
             "order_book_age_sec": 0.2,
         }
 
-    def test_pre_llm_gate_does_not_apply_strategic_m1_volume_or_cost_filters(self) -> None:
+    def test_pre_llm_gate_rejects_confirmed_opposite_m1_before_llm(self) -> None:
         metrics = self.paper_metrics()
         metrics.update({
             "volume_spike": 0.05,
@@ -109,8 +109,33 @@ class SignalGuardSizeDiagnosticsTests(unittest.TestCase):
         ok, reason = validate_pre_llm_entry_evidence(
             "BUY", metrics, paper_mode=True
         )
+        self.assertFalse(ok)
+        self.assertIn("закрытыми M1-свечами", reason)
+
+    def test_pre_llm_gate_does_not_apply_volume_or_cost_filters(self) -> None:
+        metrics = self.paper_metrics()
+        metrics.update({
+            "volume_spike": 0.05,
+            "bar_trend_up": 0.0,
+            "bar_trend_down": 0.0,
+            "bar_atr_pct": 0.01,
+        })
+        ok, reason = validate_pre_llm_entry_evidence(
+            "BUY", metrics, paper_mode=True
+        )
         self.assertTrue(ok, reason)
         self.assertIn("Предварительная проверка BBO пройдена", reason)
+
+    def test_pre_llm_respects_disabled_paper_m1_opposite_gate(self) -> None:
+        import os
+        from unittest.mock import patch
+
+        metrics = self.paper_metrics()
+        with patch.dict(os.environ, {"PILUITUS_PAPER_M1_OPPOSITE_GATE": "false"}):
+            ok, reason = validate_pre_llm_entry_evidence(
+                "BUY", metrics, paper_mode=True
+            )
+        self.assertTrue(ok, reason)
 
     def test_pre_llm_gate_still_rejects_missing_stale_or_crossed_bbo(self) -> None:
         cases = []

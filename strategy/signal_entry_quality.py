@@ -193,7 +193,10 @@ def validate_pre_llm_entry_evidence(
             f"лимит={max_age:.2f}s."
         )
 
-    if paper_mode and classify_m1_evidence_state(metrics, side) == "OPPOSITE":
+    m1_gate_enabled = str(
+        os.getenv("PILUITUS_PAPER_M1_OPPOSITE_GATE", "true")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if paper_mode and m1_gate_enabled and classify_m1_evidence_state(metrics, side) == "OPPOSITE":
         return False, (
             "PAPER-вход заблокирован: подтверждённый закрытыми M1-свечами "
             f"тренд/паттерн противоречит направлению {side}."
