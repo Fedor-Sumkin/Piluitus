@@ -184,6 +184,7 @@ class AIEngine:
             attempt_started = time.perf_counter()
             response = None
             error_type = None
+            retry_delay = False
             try:
                 async with asyncio.timeout(timeout_seconds):
                     response = await self.client.post(
@@ -205,7 +206,7 @@ class AIEngine:
                     "[vLLM RETRY] Тайм-аут запроса (%s, %.1fs); повтор 1/1 через 0.4s",
                     type(exc).__name__, timeout_seconds,
                 )
-                await asyncio.sleep(0.4)
+                retry_delay = True
             except httpx.TransportError as exc:
                 error_type = type(exc).__name__
                 if attempt >= retry_limit:
@@ -226,7 +227,7 @@ class AIEngine:
                     "[vLLM RETRY] Временный сетевой сбой (%s); повтор запроса 1/1 через 0.4s",
                     type(exc).__name__,
                 )
-                await asyncio.sleep(0.4)
+                retry_delay = True
             finally:
                 elapsed_ms = (time.perf_counter() - attempt_started) * 1000.0
                 remaining = await self._transport_request_finished()
@@ -238,6 +239,8 @@ class AIEngine:
                     int(getattr(self, "_transport_peak_inflight", 0) or 0),
                     error_type or "-",
                 )
+            if retry_delay:
+                await asyncio.sleep(0.4)
         raise RuntimeError("vLLM retry loop exited unexpectedly")
 
     def _clean_text(self, text: str) -> str:
