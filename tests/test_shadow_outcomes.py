@@ -3,7 +3,9 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from config import Settings
 from shadow_outcomes import ShadowForwardTracker
+from strategy.shadow_outcomes import _cost_settings
 
 
 def quote_metrics(bid: float, ask: float) -> dict[str, float]:
@@ -24,6 +26,13 @@ class ShadowForwardTrackerTests(unittest.TestCase):
     def test_default_paper_horizons_cover_one_three_five_and_ten_minutes(self) -> None:
         tracker = ShadowForwardTracker()
         self.assertEqual(tracker.horizons_seconds, (60, 180, 300, 600))
+
+    def test_shadow_cost_defaults_match_paper_execution_commission(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            commission_pct, slippage_bps = _cost_settings()
+        self.assertEqual(commission_pct, Settings.PAPER_COMMISSION_PCT)
+        self.assertEqual(commission_pct, 0.0354)
+        self.assertEqual(slippage_bps, 0.0)
 
     def test_buy_labels_use_ask_entry_and_bid_exit_after_one_minute(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,), max_label_lag_sec=30)
