@@ -7,7 +7,7 @@ from risk.risk_shared import *  # noqa: F401,F403
 class RiskLotMetadataMixin:
     @classmethod
     async def update_finam_lot_sizes(cls, finam_broker_client=None, paper_mode: bool | None = None):
-        """Refresh PAPER exchange lots or LIVE account-specific trade lots from Finam metadata."""
+        """Load PAPER lot multipliers from LOT_SIZES and refresh Finam price-step metadata."""
         risk_logger = logging.getLogger("Piluitus.RiskManager")
         is_paper = PAPER_TRADING if paper_mode is None else bool(paper_mode)
         if not LOT_SIZES and not TICKERS_TO_TRADE:
@@ -76,8 +76,8 @@ class RiskLotMetadataMixin:
             )
 
         # Pace external metadata calls and avoid an uncontrolled startup burst.
-        # MOEX ISS uses a separate, conservative interval; Finam's documented
-        # 200 requests/minute limit applies only to Finam REST endpoints.
+        # Finam documents a 200 requests/minute REST limit; the default
+        # 0.36-second spacing stays below that ceiling for the 88-symbol universe.
         semaphore = asyncio.Semaphore(6)
         request_lock = asyncio.Lock()
         interval_env = "FINAM_METADATA_REQUEST_INTERVAL_SEC"
@@ -100,8 +100,8 @@ class RiskLotMetadataMixin:
                 if wait_sec > 0.0:
                     await asyncio.sleep(wait_sec)
                 next_request_at = time.monotonic() + request_interval_sec
-            # GetAsset is account-independent for instrument specifications.
-            # PAPER omits account_id; LIVE passes its explicitly resolved account.
+            # PAPER never passes the execution account. FinamAssetMixin uses its
+            # separate metadata_account_id for GetAsset; LIVE passes account_id explicitly.
             if is_paper:
                 return await method(ticker)
             return await method(ticker, account_id=account_id)

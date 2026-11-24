@@ -10,6 +10,8 @@ from risk_manager import RiskManager
 
 
 class _FinamMetadataStub:
+    metadata_account_id = "READONLY-ACCOUNT-1234"
+
     async def get_asset(self, ticker: str, account_id: str | None = None):
         if ticker != "TESTMETA":
             return None
@@ -481,6 +483,8 @@ class FinamAssetMetadataTests(unittest.TestCase):
         from types import SimpleNamespace
 
         class _ObjectPayload:
+            metadata_account_id = "READONLY-ACCOUNT-1234"
+
             async def get_asset(self, ticker: str):
                 if ticker != "TESTMETA":
                     return None
