@@ -381,8 +381,8 @@ class ExecutionPositionRiskMixin:
         # unavailable, do not fabricate a 4-decimal price that may be rejected.
         sl_rounding = ROUND_FLOOR if side == "BUY" else ROUND_CEILING
         tp_rounding = ROUND_CEILING if side == "BUY" else ROUND_FLOOR
-        rounded_sl = self._round_price_to_valid_tick(ticker, sl, sl_rounding)
-        rounded_tp = self._round_price_to_valid_tick(ticker, tp, tp_rounding)
+        rounded_sl = ExecutionPositionRiskMixin._round_price_to_valid_tick(ticker, sl, sl_rounding)
+        rounded_tp = ExecutionPositionRiskMixin._round_price_to_valid_tick(ticker, tp, tp_rounding)
         if rounded_sl <= 0.0 or rounded_tp <= 0.0:
             return 0.0, 0.0
         if side == "BUY" and not (rounded_sl < price < rounded_tp):
