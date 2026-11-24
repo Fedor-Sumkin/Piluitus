@@ -169,8 +169,8 @@ class RiskLotMetadataMixin:
                     symbol = str(scalar(field(asset_data, "symbol", "ticker")) or "")
                     asset_mic = mic or ("MISX" if symbol.upper().endswith("@MISX") else "UNSPECIFIED")
                     asset_market_ok = (
-                        mic in {"", "MISX"}
-                        and (not symbol or "@" not in symbol or symbol.upper().endswith("@MISX"))
+                        mic == "MISX"
+                        or symbol.upper().endswith("@MISX")
                     )
 
                     price_step_raw = field(asset_data, "price_step", "priceStep")

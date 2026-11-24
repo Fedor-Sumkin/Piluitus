@@ -82,7 +82,7 @@ class FinamAssetMixin:
         return []
 
     async def get_assets(self) -> list[dict[str, Any]]:
-        """Fetch Finam's tradable asset directory once for tick-size metadata."""
+        """Fetch Finam's tradable asset directory (symbols and instrument identity)."""
         if not self.jwt_token:
             return []
         url = f"{self.base_url}/v1/assets"
@@ -231,10 +231,10 @@ class FinamAssetMixin:
         return None
 
     async def get_asset(self, ticker: str, account_id: str | None = None) -> dict[str, Any] | None:
-        """Fetch detailed instrument metadata (decimals, min_step, exchange lot_size)."""
+        """Fetch Finam instrument metadata (fixed/tiered price step and reference fields)."""
         if not self.jwt_token:
             logger.warning(
-                "Finam GetAsset %s skipped: JWT is empty; public exchange lot metadata unavailable.",
+                "Finam GetAsset %s skipped: JWT is empty; price-step metadata unavailable.",
                 str(ticker or "").strip().upper()[:32] or "<empty>",
             )
             return None

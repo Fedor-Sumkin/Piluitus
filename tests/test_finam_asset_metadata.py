@@ -164,6 +164,52 @@ class FinamAssetMetadataTests(unittest.TestCase):
         self.assertIn("/boards/TQBR/securities/VTBR.json", captured["url"])
         self.assertEqual(captured["params"]["iss.only"], "securities")
 
+    def test_paper_parses_finam_variable_price_step_without_moex(self):
+        class _VariableStep:
+            async def get_asset(self, ticker: str):
+                if ticker != "TESTMETA":
+                    return None
+                return {
+                    "symbol": "TESTMETA@MISX",
+                    "ticker": "TESTMETA",
+                    "mic": "MISX",
+                    "decimals": 2,
+                    "min_step": 0,
+                    "price_step": {
+                        "threshold_price": {"value": "100.00"},
+                        "step": {"value": "0.01"},
+                        "step_from_threshold": {"value": "0.05"},
+                    },
+                }
+
+        old_lot = LOT_SIZES.get("TESTMETA")
+        old_trade_lot = FINAM_TRADE_LOT_SIZES.get("TESTMETA")
+        old_metadata = ASSET_METADATA.get("TESTMETA")
+        try:
+            LOT_SIZES["TESTMETA"] = 1
+            ASSET_METADATA.pop("TESTMETA", None)
+            with patch.dict("os.environ", {"FINAM_METADATA_REQUEST_INTERVAL_SEC": "0"}):
+                asyncio.run(RiskManager.update_finam_lot_sizes(_VariableStep(), paper_mode=True))
+            self.assertEqual(ASSET_METADATA["TESTMETA"]["price_tick"], 0.0)
+            self.assertEqual(
+                ASSET_METADATA["TESTMETA"]["price_step"],
+                {"threshold_price": 100.0, "step": 0.01, "step_from_threshold": 0.05},
+            )
+            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 1)
+        finally:
+            if old_lot is None:
+                LOT_SIZES.pop("TESTMETA", None)
+            else:
+                LOT_SIZES["TESTMETA"] = old_lot
+            if old_trade_lot is None:
+                FINAM_TRADE_LOT_SIZES.pop("TESTMETA", None)
+            else:
+                FINAM_TRADE_LOT_SIZES["TESTMETA"] = old_trade_lot
+            if old_metadata is None:
+                ASSET_METADATA.pop("TESTMETA", None)
+            else:
+                ASSET_METADATA["TESTMETA"] = old_metadata
+
     def test_get_moex_asset_rejects_non_tqbr_or_mismatched_security(self):
         class _Response:
             def raise_for_status(self):
@@ -386,7 +432,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
             self.assertEqual(stub.calls, 0)
             self.assertEqual(stub.discovery_calls, 0)
             self.assertIsNone(stub.assert_no_account_id)
-            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 10)
+            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 1)
         finally:
             if old_lot is None:
                 LOT_SIZES.pop("TESTMETA", None)
@@ -454,8 +500,8 @@ class FinamAssetMetadataTests(unittest.TestCase):
             LOT_SIZES["TESTMETA"] = 1
             with patch.dict("os.environ", {"FINAM_METADATA_REQUEST_INTERVAL_SEC": "0"}):
                 asyncio.run(RiskManager.update_finam_lot_sizes(_ObjectPayload(), paper_mode=True))
-            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 15)
-            self.assertEqual(ASSET_METADATA["TESTMETA"]["lot_size"], 15.0)
+            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 1)
+            self.assertEqual(ASSET_METADATA["TESTMETA"]["lot_size"], 1)
         finally:
             if old_lot is None:
                 LOT_SIZES.pop("TESTMETA", None)

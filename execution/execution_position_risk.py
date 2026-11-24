@@ -268,8 +268,11 @@ class ExecutionPositionRiskMixin:
                 rounded_value = float(origin_decimal + units * tick_decimal)
             except (ArithmeticError, TypeError, ValueError, OverflowError):
                 return 0.0
-            next_tick, _ = cls._price_tick_rule(ticker, rounded_value)
-            if math.isclose(next_tick, tick, rel_tol=1e-12, abs_tol=1e-12):
+            next_tick, next_origin = cls._price_tick_rule(ticker, rounded_value)
+            if (
+                math.isclose(next_tick, tick, rel_tol=1e-12, abs_tol=1e-12)
+                and math.isclose(next_origin, origin, rel_tol=1e-12, abs_tol=1e-12)
+            ):
                 return round(rounded_value, max(0, min(10, decimals)))
             candidate = rounded_value
         return 0.0
