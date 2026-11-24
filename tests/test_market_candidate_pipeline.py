@@ -39,13 +39,16 @@ def make_pipeline(*, evidence=(True, ""), atr=(True, ""), direction="BUY",
         c["validate"] = (side, paper_mode); return evidence
     def reserve(ticker, side, metrics):
         c["reserved"].append((ticker, side)); return reserved
+    def queue_conflict(side, metrics):
+        c.setdefault("conflict_checks", []).append((side, metrics))
+        return conflict
     pipeline = MarketCandidatePipeline(
         execution_engine=Engine(active, opening), anomaly_queue=queue,
         queue_item_factory=Factory(), trade_flow_increment=lambda key: c["counters"].append(key),
         infer_direction=lambda metrics: direction,
         classify_direction=lambda side, metrics: "CONFIRMED",
-        log_shadow_candidate=shadow, queue_flow_conflict_reason=lambda side, metrics: conflict,
-        validate_entry_evidence=validate, paper_mode_provider=lambda: True,
+        log_shadow_candidate=shadow, queue_flow_conflict_reason=queue_conflict,
+        validate_pre_llm_entry_evidence=validate, paper_mode_provider=lambda: True,
         guard_reason_bucket=lambda reason: reason_bucket,
         store_pending_bbo_candidate=lambda ticker, data, received: c["pending"].append((ticker, data, received)),
         mark_shadow_llm_not_called=lambda cid, reason: c["not_called"].append((cid, reason)),
@@ -147,8 +150,10 @@ def test_queue_overflow_releases_reservation():
     assert len(logger.errors)==1
 
 
-def test_queue_flow_conflict_blocks_before_entry_evidence_validation():
+def test_queue_flow_conflict_is_deferred_until_after_llm_admission():
     p,c,q,_=make_pipeline(conflict="поток против направления")
     assert run(p) is True
-    assert "validate" not in c and c["guard"]==["поток против направления"]
-    assert not q.items
+    assert c["validate"] == ("BUY", True)
+    assert c.get("conflict_checks", []) == []
+    assert c["guard"] == [] and c["not_called"] == []
+    assert len(q.items) == 1

@@ -31,7 +31,7 @@ class _FinamMetadataStub:
         return None
 
 
-# PAPER GetAsset tick metadata is fetched with an isolated read-only context.
+# PAPER GetAsset obtains instrument tick metadata without an account_id.
 class FinamAssetMetadataTests(unittest.TestCase):
     def test_metadata_account_discovery_uses_session_id_without_setting_execution_account(self):
         client = FinamBrokerClient(token="test-token")
@@ -49,7 +49,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
         self.assertEqual(client.account_id, "")
         self.assertEqual(client.metadata_account_id_source, "session_details_first_authorized_account")
 
-    def test_get_asset_uses_read_only_metadata_context_not_execution_account(self):
+    def test_get_asset_does_not_inherit_cached_account_context(self):
         captured = {}
 
         class _Response:
@@ -85,18 +85,55 @@ class FinamAssetMetadataTests(unittest.TestCase):
             payload = asyncio.run(client.get_asset("VTBR"))
 
         self.assertEqual(payload["lot_size"]["value"], "10")
-        self.assertEqual(captured["params"], {"account_id": "READONLY-ACCOUNT-1234"})
+        self.assertIsNone(captured["params"])
         self.assertEqual(client.account_id, "STALE-EXECUTION-ACCOUNT")
 
-    def test_paper_metadata_refresh_keeps_static_lots_when_read_only_context_is_unavailable(self):
+    def test_get_asset_uses_only_an_explicit_account_id(self):
+        captured = {}
+
+        class _Response:
+            status_code = 200
+            headers = {"content-type": "application/json"}
+
+            def raise_for_status(self):
+                return None
+
+            @staticmethod
+            def json():
+                return {"symbol": "VTBR@MISX"}
+
+        class _AsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def get(self, url, *, headers, params=None):
+                captured["params"] = params
+                return _Response()
+
+        client = FinamBrokerClient(token="test-token")
+        client.jwt_token = "test-jwt"
+        client.metadata_account_id = "CACHED-METADATA-ACCOUNT"
+        client.account_id = "CACHED-EXECUTION-ACCOUNT"
+        with patch("exchange.finam_client.httpx.AsyncClient", _AsyncClient):
+            asyncio.run(client.get_asset("VTBR", account_id="EXPLICIT-ACCOUNT"))
+
+        self.assertEqual(captured["params"], {"account_id": "EXPLICIT-ACCOUNT"})
+
+    def test_paper_metadata_refresh_uses_finam_get_asset_without_account_context(self):
         class _NoMetadataContext:
-            calls = 0
+            calls = []
 
             async def discover_metadata_account_id(self):
-                raise AssertionError("No read-only metadata account is available")
+                raise AssertionError("PAPER must not discover an account for GetAsset")
 
             async def get_asset(self, ticker: str, account_id: str | None = None):
-                self.calls += 1
+                self.calls.append((ticker, account_id))
                 return None
 
         stub = _NoMetadataContext()
@@ -107,7 +144,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
             FINAM_TRADE_LOT_SIZES.pop("TESTMETA", None)
             with patch.dict("os.environ", {"FINAM_METADATA_REQUEST_INTERVAL_SEC": "0"}):
                 asyncio.run(RiskManager.update_finam_lot_sizes(stub, paper_mode=True))
-            self.assertEqual(stub.calls, 0)
+            self.assertIn(("TESTMETA", None), stub.calls)
             self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 3)
         finally:
             if old_lot is None:
@@ -412,7 +449,9 @@ class FinamAssetMetadataTests(unittest.TestCase):
         class _NoAccount(_FinamMetadataStub):
             calls = 0
             discovery_calls = 0
+            asset_calls = []
             async def get_asset(self, ticker: str, account_id: str | None = None):
+                self.asset_calls.append((ticker, account_id))
                 self.assert_no_account_id = account_id
                 return await super().get_asset(ticker, account_id)
             async def discover_accounts(self):
@@ -438,6 +477,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
             self.assertEqual(stub.calls, 0)
             self.assertEqual(stub.discovery_calls, 0)
             self.assertIsNone(stub.assert_no_account_id)
+            self.assertIn(("TESTMETA", None), stub.asset_calls)
             self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 7)
         finally:
             if old_lot is None:

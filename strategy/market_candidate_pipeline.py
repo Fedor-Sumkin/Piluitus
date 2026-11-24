@@ -15,7 +15,7 @@ class MarketCandidatePipeline:
                  classify_direction: Callable[[str, Mapping[str, Any]], str],
                  log_shadow_candidate: Callable[[str, str, dict[str, Any]], dict[str, Any]],
                  queue_flow_conflict_reason: Callable[[str, dict[str, Any]], str],
-                 validate_entry_evidence: Callable[..., tuple[bool, str]],
+                 validate_pre_llm_entry_evidence: Callable[..., tuple[bool, str]],
                  paper_mode_provider: Callable[[], bool],
                  guard_reason_bucket: Callable[[str], str],
                  store_pending_bbo_candidate: Callable[[str, dict[str, Any], object | None], None],
@@ -36,7 +36,7 @@ class MarketCandidatePipeline:
         self.classify_direction = classify_direction
         self.log_shadow_candidate = log_shadow_candidate
         self.queue_flow_conflict_reason = queue_flow_conflict_reason
-        self.validate_entry_evidence = validate_entry_evidence
+        self.validate_pre_llm_entry_evidence = validate_pre_llm_entry_evidence
         self.paper_mode_provider = paper_mode_provider
         self.guard_reason_bucket = guard_reason_bucket
         self.store_pending_bbo_candidate = store_pending_bbo_candidate
@@ -90,13 +90,12 @@ class MarketCandidatePipeline:
         )
         shadow = self.log_shadow_candidate(ticker, direction, metrics)
         shadow_id = shadow.get("candidate_id")
-        conflict = self.queue_flow_conflict_reason(direction, metrics)
-        if conflict:
-            evidence_ok, evidence_reason = False, conflict
-        else:
-            evidence_ok, evidence_reason = self.validate_entry_evidence(
-                direction, metrics, paper_mode=self.paper_mode_provider()
-            )
+        # Let the LLM evaluate strategic conditions for a locally selected instrument.
+        # Queue/flow conflict, M1, volume, spread/ATR and cost gates are rechecked
+        # after the model response before any execution plan can be prepared.
+        evidence_ok, evidence_reason = self.validate_pre_llm_entry_evidence(
+            direction, metrics, paper_mode=self.paper_mode_provider()
+        )
 
         if not evidence_ok:
             if self.guard_reason_bucket(evidence_reason) == "quotes":

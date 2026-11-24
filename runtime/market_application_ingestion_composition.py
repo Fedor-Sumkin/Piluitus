@@ -36,7 +36,7 @@ def create_market_ingestion_components(runtime: Any, factory_cls: Any) -> Any:
             "resume_pending_bbo_candidate": runtime.resume_pending_bbo_candidate,
             "infer_candidate_direction": callbacks["infer_candidate_direction"],
             "paper_mode_provider": callbacks["paper_mode_provider"],
-            "validate_entry_evidence": callbacks["validate_entry_evidence"],
+            "validate_pre_llm_entry_evidence": callbacks["validate_pre_llm_entry_evidence"],
             "validate_atr_readiness": callbacks["validate_atr_readiness"],
             "queue_flow_conflict_reason": runtime.paper_queue_flow_conflict_reason,
             "reserve_ai_ticker": runtime.reserve_ai_ticker,

@@ -14,7 +14,8 @@ from strategy.signal_evidence import (
 )
 from strategy.signal_entry_quality import (
     validate_entry_evidence, validate_paper_market_quality,
-    validate_paper_sell_quality, validate_signal_evidence, validate_spread_to_atr,
+    validate_paper_sell_quality, validate_pre_llm_entry_evidence,
+    validate_signal_evidence, validate_spread_to_atr,
 )
 from strategy.signal_text import (
     _complete_short_text, _CORRUPT_MARKERS, _NEGATION, _SIDE_SIZE_CLAIM,

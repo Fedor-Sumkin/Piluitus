@@ -39,7 +39,7 @@ from strategy.signal_guard import (
     classify_direction_evidence,
     infer_candidate_direction,
     validate_atr_readiness,
-    validate_entry_evidence,
+    validate_pre_llm_entry_evidence,
 )
 from strategy.verdict_records import (
     build_default_signal_reason,
@@ -93,7 +93,7 @@ class MarketRuntimeCompositionRuntime:
             "paper_mode_provider": lambda: bool(
                 getattr(execution_engine, "paper_mode", False)
             ),
-            "validate_entry_evidence": validate_entry_evidence,
+            "validate_pre_llm_entry_evidence": validate_pre_llm_entry_evidence,
             "validate_atr_readiness": validate_atr_readiness,
             "mark_shadow_llm_not_called": observability.mark_shadow_llm_not_called,
             "log_shadow_candidate": observability.log_shadow_candidate,

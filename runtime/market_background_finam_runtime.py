@@ -118,19 +118,10 @@ class MarketBackgroundFinamMixin:
             paper_mode = bool(getattr(self.execution_engine, "paper_mode", True))
             account_id = str(getattr(self.broker, "account_id", "") or "").strip()
             if paper_mode:
-                # PAPER lot sizing uses the public MOEX ISS TQBR specification.
-                # It does not require a Finam account or read-only account context.
-                # Keep account discovery exclusive to LIVE brokerage execution.
-                if callable(getattr(self.broker, "get_moex_asset", None)):
-                    self.logger.info(
-                        "[FINAM METADATA WORKER] PAPER lot refresh uses public MOEX ISS TQBR; "
-                        "Finam account context is not required."
-                    )
-                else:
-                    self.logger.warning(
-                        "[FINAM METADATA WORKER] public MOEX ISS provider unavailable; "
-                        "unconfirmed PAPER lots will remain blocked."
-                    )
+                self.logger.info(
+                    "[FINAM METADATA WORKER] PAPER LOTSIZE source=LOT_SIZES; "
+                    "Finam GetAsset without account_id refreshes MINSTEP/DECIMALS."
+                )
             elif not account_id:
                 discover = getattr(self.broker, "discover_accounts", None)
                 if callable(discover):
@@ -166,12 +157,17 @@ class MarketBackgroundFinamMixin:
                 1 for ticker in self.tickers
                 if int(self.finam_trade_lot_sizes.get(str(ticker).strip().upper(), 0) or 0) > 0
             )
-            # Avoid repeating 88 requests every 180 seconds after persistent provider-side HTTP 400.
+            # Refresh the configured instrument universe at a bounded interval.
             retry_delay = refresh_sec
-            if confirmed:
+            if paper_mode:
                 self.logger.info(
-                    "📦 [FINAM METADATA WORKER] confirmed %s lots=%d/%d; next refresh in %.0fs.",
-                    "PAPER exchange" if paper_mode else "LIVE account",
+                    "📦 [FINAM METADATA WORKER] static LOTSIZE available=%d/%d; "
+                    "Finam MINSTEP refresh attempted; next refresh in %.0fs.",
+                    confirmed, len(self.tickers), refresh_sec,
+                )
+            elif confirmed:
+                self.logger.info(
+                    "📦 [FINAM METADATA WORKER] confirmed account lots=%d/%d; next refresh in %.0fs.",
                     confirmed, len(self.tickers), refresh_sec,
                 )
             await asyncio.sleep(retry_delay)

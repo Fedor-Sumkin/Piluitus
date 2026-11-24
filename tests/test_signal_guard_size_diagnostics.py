@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import unittest
 
-from strategy.signal_guard import validate_entry_evidence, validate_signal_evidence
+from strategy.signal_guard import (
+    validate_entry_evidence, validate_pre_llm_entry_evidence, validate_signal_evidence,
+)
 
 
 class SignalGuardSizeDiagnosticsTests(unittest.TestCase):
@@ -92,6 +94,42 @@ class SignalGuardSizeDiagnosticsTests(unittest.TestCase):
             "order_book_valid": 1.0,
             "order_book_age_sec": 0.2,
         }
+
+    def test_pre_llm_gate_does_not_apply_strategic_m1_volume_or_cost_filters(self) -> None:
+        metrics = self.paper_metrics()
+        metrics.update({
+            "volume_spike": 0.05,
+            "bar_trend_up": 0.0,
+            "bar_trend_down": 1.0,
+            "bar_pattern_confirmed": 1.0,
+            "bar_pattern_name": "M1_RANGE_BREAKOUT_SELL",
+            "bar_pattern_direction_code": -1.0,
+            "bar_atr_pct": 0.01,
+        })
+        ok, reason = validate_pre_llm_entry_evidence(
+            "BUY", metrics, paper_mode=True
+        )
+        self.assertTrue(ok, reason)
+        self.assertIn("Предварительная проверка BBO пройдена", reason)
+
+    def test_pre_llm_gate_still_rejects_missing_stale_or_crossed_bbo(self) -> None:
+        cases = []
+        missing = self.paper_metrics()
+        missing["bid_ask_available"] = 0.0
+        cases.append(missing)
+        stale = self.paper_metrics()
+        stale["ask_quote_age_sec"] = 2.1
+        cases.append(stale)
+        crossed = self.paper_metrics()
+        crossed["ask"] = crossed["bid"] - 0.01
+        cases.append(crossed)
+        for metrics in cases:
+            with self.subTest(metrics=metrics):
+                ok, reason = validate_pre_llm_entry_evidence(
+                    "BUY", metrics, paper_mode=True
+                )
+                self.assertFalse(ok)
+                self.assertIn("BBO", reason)
 
     def test_paper_entry_blocks_confirmed_opposite_closed_m1_trend(self) -> None:
         import os

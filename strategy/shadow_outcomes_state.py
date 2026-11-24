@@ -65,7 +65,7 @@ class ShadowOutcomeStateMixin:
         bid_age = _number(metrics, "bid_quote_age_sec", math.inf)
         ask_age = _number(metrics, "ask_quote_age_sec", math.inf)
         max_age = min(5.0, max(0.25, _number(metrics, "bbo_max_age_sec", 2.0)))
-        if _number(metrics, "bid_ask_available") < 0.5 or _number(metrics, "spread_available") < 0.5:
+        if "bid_ask_available" not in metrics or "spread_available" not in metrics:
             unavailable_reason = "MISSING_BBO_FLAGS"
         elif bid <= 0.0:
             unavailable_reason = "MISSING_BID"
@@ -73,12 +73,21 @@ class ShadowOutcomeStateMixin:
             unavailable_reason = "MISSING_ASK"
         elif ask < bid:
             unavailable_reason = "CROSSED_BBO"
-        elif bid_age < 0.0 or bid_age > max_age:
+        elif not math.isfinite(bid_age) or bid_age < 0.0 or bid_age > max_age:
             unavailable_reason = "BID_STALE"
-        elif ask_age < 0.0 or ask_age > max_age:
+        elif not math.isfinite(ask_age) or ask_age < 0.0 or ask_age > max_age:
             unavailable_reason = "ASK_STALE"
+        elif _number(metrics, "bid_ask_available") < 0.5:
+            unavailable_reason = "BBO_UNCONFIRMED"
+        elif _number(metrics, "spread_available") < 0.5:
+            unavailable_reason = "SPREAD_UNAVAILABLE"
         else:
-            unavailable_reason = "OK"
+            spread_pct = _number(metrics, "spread_pct", math.nan)
+            unavailable_reason = (
+                "INVALID_SPREAD"
+                if not math.isfinite(spread_pct) or spread_pct < 0.0
+                else "OK"
+            )
         valid = unavailable_reason == "OK"
         return valid, {
             "bid": bid,
@@ -86,5 +95,8 @@ class ShadowOutcomeStateMixin:
             "bid_age_sec": bid_age,
             "ask_age_sec": ask_age,
             "max_age_sec": max_age,
+            "bid_ask_available": _number(metrics, "bid_ask_available", math.nan),
+            "spread_available": _number(metrics, "spread_available", math.nan),
+            "spread_pct": _number(metrics, "spread_pct", math.nan),
             "unavailable_reason": unavailable_reason,
         }

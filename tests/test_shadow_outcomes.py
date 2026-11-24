@@ -104,6 +104,10 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertNotIn("net_executable_return_pct", outcomes[0])
         self.assertEqual(outcomes[0]["valid_bbo_observations"], 0)
         self.assertEqual(outcomes[0]["no_fresh_bbo_observations"], 1)
+        self.assertEqual(outcomes[0]["bbo_unavailable_reason"], "BID_STALE")
+        self.assertEqual(outcomes[0]["observed_bid_age_sec"], 5.0)
+        self.assertEqual(outcomes[0]["bid_ask_available"], 1.0)
+        self.assertEqual(outcomes[0]["spread_available"], 1.0)
 
     def test_fresh_quote_after_allowed_label_lag_is_classified_as_label_late(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,), max_label_lag_sec=30)
@@ -160,6 +164,38 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         )
         self.assertIsNotNone(candidate_id)
         self.assertEqual(tracker.pending_count(), 1)
+
+    def test_bbo_unavailability_reasons_distinguish_missing_stale_and_unconfirmed_data(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,))
+        base = quote_metrics(100.0, 100.1)
+
+        missing_flag = dict(base)
+        missing_flag.pop("bid_ask_available")
+        self.assertEqual(
+            tracker._fresh_bbo(missing_flag)[1]["unavailable_reason"],
+            "MISSING_BBO_FLAGS",
+        )
+
+        stale_bid = dict(base)
+        stale_bid["bid_quote_age_sec"] = 3.0
+        self.assertEqual(
+            tracker._fresh_bbo(stale_bid)[1]["unavailable_reason"],
+            "BID_STALE",
+        )
+
+        unconfirmed = dict(base)
+        unconfirmed["bid_ask_available"] = 0.0
+        self.assertEqual(
+            tracker._fresh_bbo(unconfirmed)[1]["unavailable_reason"],
+            "BBO_UNCONFIRMED",
+        )
+
+        missing_spread = dict(base)
+        missing_spread["spread_available"] = 0.0
+        self.assertEqual(
+            tracker._fresh_bbo(missing_spread)[1]["unavailable_reason"],
+            "SPREAD_UNAVAILABLE",
+        )
 
     def test_stale_bbo_is_not_recorded_as_a_candidate_entry(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))

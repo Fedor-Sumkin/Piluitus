@@ -143,6 +143,61 @@ def validate_paper_sell_quality(
     )
 
 
+def validate_pre_llm_entry_evidence(
+    decision: str,
+    metrics: dict[str, Any],
+    *,
+    paper_mode: bool = False,
+) -> tuple[bool, str]:
+    """Admit a directional candidate to LLM only with a coherent, fresh two-sided BBO.
+
+    Strategy-quality rules (M1, volume, flow alignment, spread/ATR, round-trip
+    economics and PAPER SELL quality) remain in validate_entry_evidence after
+    the model has evaluated the selected instrument. This is a data-integrity
+    gate only; it never authorizes execution.
+    """
+    side = str(decision or "").strip().upper()
+    if side not in {"BUY", "SELL"} or not isinstance(metrics, dict):
+        return False, "Кандидат не содержит допустимое направление или структурированные метрики."
+
+    if "bid_ask_available" not in metrics or "spread_available" not in metrics:
+        return False, "BBO не подтверждён: отсутствуют обязательные флаги Bid/Ask или спреда."
+
+    bid = _num(metrics, "bid", math.nan)
+    ask = _num(metrics, "ask", math.nan)
+    if not math.isfinite(bid) or bid <= 0.0:
+        return False, "BBO не подтверждён: отсутствует корректная сторона Bid."
+    if not math.isfinite(ask) or ask <= 0.0:
+        return False, "BBO не подтверждён: отсутствует корректная сторона Ask."
+    if ask < bid:
+        return False, "BBO некорректен: Ask ниже Bid."
+
+    if (
+        _num(metrics, "bid_ask_available") < 0.5
+        or _num(metrics, "spread_available") < 0.5
+    ):
+        return False, "BBO не подтверждён потоком: Bid/Ask или спред ещё не доступны."
+
+    max_age = min(5.0, max(0.25, _num(metrics, "bbo_max_age_sec", 2.0)))
+    bid_age = _num(metrics, "bid_quote_age_sec", math.inf)
+    ask_age = _num(metrics, "ask_quote_age_sec", math.inf)
+    if (
+        not math.isfinite(bid_age) or bid_age < 0.0 or bid_age > max_age
+        or not math.isfinite(ask_age) or ask_age < 0.0 or ask_age > max_age
+    ):
+        bid_text = f"{bid_age:.2f}s" if math.isfinite(bid_age) else "н/д"
+        ask_text = f"{ask_age:.2f}s" if math.isfinite(ask_age) else "н/д"
+        return False, (
+            f"BBO устарел или не подтверждён: возраст Bid={bid_text}, Ask={ask_text}; "
+            f"лимит={max_age:.2f}s."
+        )
+
+    return True, (
+        f"Предварительная проверка BBO пройдена: Bid={bid:.6f}, Ask={ask:.6f}; "
+        f"возраст Bid={bid_age:.2f}s, Ask={ask_age:.2f}s."
+    )
+
+
 def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bool, str]:
     """Validate independent entry evidence; top-size depletion is supporting, not mandatory.
 

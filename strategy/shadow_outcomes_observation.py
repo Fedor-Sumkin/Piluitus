@@ -271,6 +271,14 @@ class ShadowMarketObservationMixin:
                             str(quote.get("unavailable_reason") or row.get("last_bbo_unavailable_reason") or "UNKNOWN")
                             if not fresh else "LABEL_LATE"
                         ),
+                        "observed_bid": quote.get("bid"),
+                        "observed_ask": quote.get("ask"),
+                        "observed_bid_age_sec": quote.get("bid_age_sec"),
+                        "observed_ask_age_sec": quote.get("ask_age_sec"),
+                        "bbo_max_age_sec": quote.get("max_age_sec"),
+                        "bid_ask_available": quote.get("bid_ask_available"),
+                        "spread_available": quote.get("spread_available"),
+                        "observed_spread_pct": quote.get("spread_pct"),
                         "no_fresh_bbo_observations": int(row.get("no_fresh_bbo_observations", 0)),
                         "entry_bid_age_sec": row["entry_bid_age_sec"],
                         "entry_ask_age_sec": row["entry_ask_age_sec"],

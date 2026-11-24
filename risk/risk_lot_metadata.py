@@ -50,25 +50,8 @@ class RiskLotMetadataMixin:
                 "Finam session; LIVE GetAssetParams is skipped and LIVE entries remain blocked."
             )
 
-        metadata_account_id = str(
-            getattr(finam_broker_client, "metadata_account_id", "") or ""
-        ).strip()
-        if is_paper and not metadata_account_id:
-            metadata_discover = getattr(finam_broker_client, "discover_metadata_account_id", None)
-            if callable(metadata_discover):
-                try:
-                    metadata_account_id = str(await metadata_discover() or "").strip()
-                except Exception as exc:
-                    risk_logger.warning(
-                        "[FINAM METADATA] read-only account-context discovery failed: %s",
-                        type(exc).__name__,
-                    )
-            if not metadata_account_id:
-                risk_logger.warning(
-                    "[FINAM METADATA] no read-only account context is available for GetAsset; "
-                    "PAPER LOTSIZE will still come from LOT_SIZES, but missing tick metadata blocks entries."
-                )
-
+        # PAPER GetAsset uses the authenticated Finam session without account_id.
+        # LOTSIZE remains sourced exclusively from the static LOT_SIZES dictionary.
         metadata_source_label = "FINAM_GET_ASSET"
         if not is_paper and not callable(params_method):
             risk_logger.error(
@@ -100,8 +83,8 @@ class RiskLotMetadataMixin:
                 if wait_sec > 0.0:
                     await asyncio.sleep(wait_sec)
                 next_request_at = time.monotonic() + request_interval_sec
-            # PAPER never passes the execution account. FinamAssetMixin uses its
-            # separate metadata_account_id for GetAsset; LIVE passes account_id explicitly.
+            # Finam GetAsset permits metadata lookup without account_id.
+            # Only the account-aware path passes an explicit execution account.
             if is_paper:
                 return await method(ticker)
             return await method(ticker, account_id=account_id)
@@ -117,10 +100,9 @@ class RiskLotMetadataMixin:
                 exchange_lot = 0.0
                 asset_market_ok = False
                 asset_mic = ""
-                # PAPER may query GetAsset only with an explicitly resolved
-                # read-only metadata context. Never fall back to a stale execution
-                # account or issue one request per symbol when that context is absent.
-                if callable(asset_method) and (not is_paper or metadata_account_id):
+                # PAPER always attempts Finam GetAsset without account_id;
+                # failures preserve the last confirmed tick-size metadata.
+                if callable(asset_method):
                     try:
                         asset_payload = await call_limited(asset_method, normalized)
                     except Exception as exc:
@@ -324,8 +306,7 @@ class RiskLotMetadataMixin:
             "PAPER lot failure examples=%s.",
             "PAPER" if is_paper else "LIVE",
             (
-                f"read_only_metadata:{bool(metadata_account_id)}"
-                if is_paper else f"{account_id_source}:{bool(account_id)}"
+                "not_requested" if is_paper else f"{account_id_source}:{bool(account_id)}"
             ),
             updated_lots, len(symbols_to_refresh), failed_lots, blocked_not_tradable,
             updated_metadata, len(symbols_to_refresh), failed_metadata,
