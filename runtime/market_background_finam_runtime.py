@@ -123,7 +123,7 @@ class MarketBackgroundFinamMixin:
             if paper_mode:
                 self.logger.info(
                     "[FINAM METADATA WORKER] PAPER LOTSIZE source=LOT_SIZES; "
-                    "GetAsset MINSTEP/DECIMALS uses a separate session-authorized metadata context."
+                    "GetAsset MINSTEP/DECIMALS requires a token-authorized account_id used for metadata only."
                 )
             elif not account_id:
                 discover = getattr(self.broker, "discover_accounts", None)
@@ -161,10 +161,24 @@ class MarketBackgroundFinamMixin:
                 if int(self.finam_trade_lot_sizes.get(str(ticker).strip().upper(), 0) or 0) > 0
             )
             if paper_mode:
+                metadata_account_id = str(
+                    getattr(self.broker, "metadata_account_id", "") or ""
+                ).strip()
+                if not metadata_account_id or metadata_account_id.upper() == "UNKNOWN_ACCOUNT":
+                    self.logger.warning(
+                        "⛔ [FINAM METADATA WORKER] PAPER: GetAsset требует account_id, "
+                        "но в текущем Finam-токене не найден разрешённый счёт. "
+                        "LOTSIZE продолжает браться из LOT_SIZES; MINSTEP не обновляется. "
+                        "Выберите хотя бы один доступный счёт при настройке API-токена Finam; "
+                        "повторная проверка через %.0fс.",
+                        account_retry_sec,
+                    )
+                    await asyncio.sleep(account_retry_sec)
+                    continue
                 self.logger.info(
                     "📦 [FINAM METADATA WORKER] static LOTSIZE available=%d/%d; "
-                    "Finam GetAsset MINSTEP refresh uses account-independent metadata; "
-                    "next refresh in %.0fs.",
+                    "Finam GetAsset MINSTEP refreshed with token-authorized metadata context; "
+                    "PAPER order routing remains internal; next refresh in %.0fs.",
                     confirmed, len(self.tickers), refresh_sec,
                 )
             elif confirmed:

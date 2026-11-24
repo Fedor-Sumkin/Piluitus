@@ -231,7 +231,7 @@ class FinamAssetMixin:
         return None
 
     async def get_asset(self, ticker: str, account_id: str | None = None) -> dict[str, Any] | None:
-        """Fetch Finam instrument metadata (fixed/tiered price step and reference fields)."""
+        """Fetch Finam instrument metadata using an explicitly authorized account context."""
         if not self.jwt_token:
             logger.warning(
                 "Finam GetAsset %s skipped: JWT is empty; price-step metadata unavailable.",
@@ -242,10 +242,17 @@ class FinamAssetMixin:
         if not normalized:
             return None
         symbol = f"{normalized}@MISX"
-        # account_id is optional. Never inherit either client account context;
-        # callers must opt in explicitly when the endpoint is intentionally scoped.
+        # The current Finam REST endpoint rejects GetAsset requests without account_id.
+        # Never borrow the execution account or a cached metadata account implicitly.
         account = str(account_id or "").strip()
-        params = {"account_id": account} if account and account != "UNKNOWN_ACCOUNT" else None
+        if not account or account.upper() == "UNKNOWN_ACCOUNT":
+            logger.warning(
+                "Finam GetAsset %s skipped: explicit account_id is required by the REST API; "
+                "no account context was inherited.",
+                normalized,
+            )
+            return None
+        params = {"account_id": account}
         url = f"{self.base_url}/v1/assets/{url_quote(symbol, safe='@')}"
         request_jwt = self.jwt_token
         for attempt in range(2):

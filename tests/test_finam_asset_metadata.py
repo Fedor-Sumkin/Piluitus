@@ -50,18 +50,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
         self.assertEqual(client.metadata_account_id_source, "session_details_first_authorized_account")
 
     def test_get_asset_does_not_inherit_cached_account_context(self):
-        captured = {}
-
-        class _Response:
-            status_code = 200
-            headers = {"content-type": "application/json"}
-
-            def raise_for_status(self):
-                return None
-
-            @staticmethod
-            def json():
-                return {"symbol": "VTBR@MISX", "lot_size": {"value": "10"}}
+        requested = []
 
         class _AsyncClient:
             def __init__(self, *args, **kwargs):
@@ -73,19 +62,22 @@ class FinamAssetMetadataTests(unittest.TestCase):
             async def __aexit__(self, exc_type, exc, tb):
                 return False
 
-            async def get(self, url, *, headers, params=None):
-                captured["params"] = params
-                return _Response()
+            async def get(self, *args, **kwargs):
+                requested.append((args, kwargs))
+                raise AssertionError("GetAsset must not be called without an explicit account_id")
 
         client = FinamBrokerClient(token="test-token")
         client.jwt_token = "test-jwt"
         client.metadata_account_id = "READONLY-ACCOUNT-1234"
         client.account_id = "STALE-EXECUTION-ACCOUNT"
         with patch("exchange.finam_client.httpx.AsyncClient", _AsyncClient):
-            payload = asyncio.run(client.get_asset("VTBR"))
+            with self.assertLogs("Piluitus.FinamGateway", level="WARNING") as captured:
+                payload = asyncio.run(client.get_asset("VTBR"))
 
-        self.assertEqual(payload["lot_size"]["value"], "10")
-        self.assertIsNone(captured["params"])
+        self.assertIsNone(payload)
+        self.assertEqual(requested, [])
+        self.assertIn("explicit account_id is required", captured.output[0])
+        self.assertEqual(client.metadata_account_id, "READONLY-ACCOUNT-1234")
         self.assertEqual(client.account_id, "STALE-EXECUTION-ACCOUNT")
 
     def test_get_asset_uses_only_an_explicit_account_id(self):
@@ -125,15 +117,20 @@ class FinamAssetMetadataTests(unittest.TestCase):
 
         self.assertEqual(captured["params"], {"account_id": "EXPLICIT-ACCOUNT"})
 
-    def test_paper_metadata_refresh_does_not_require_or_discover_account(self):
+    def test_paper_metadata_refresh_discovers_and_uses_token_authorized_metadata_account(self):
         class _MetadataContext:
+            metadata_account_id = ""
+            metadata_account_id_source = "unresolved"
+
             def __init__(self):
                 self.calls = []
                 self.discovery_calls = 0
 
             async def discover_metadata_account_id(self):
                 self.discovery_calls += 1
-                raise AssertionError("PAPER GetAsset must not require account discovery")
+                self.metadata_account_id = "READONLY-ACCOUNT-1234"
+                self.metadata_account_id_source = "session_details_first_authorized_account"
+                return self.metadata_account_id
 
             async def get_asset(self, ticker: str, account_id: str | None = None):
                 self.calls.append((ticker, account_id))
@@ -147,8 +144,46 @@ class FinamAssetMetadataTests(unittest.TestCase):
             FINAM_TRADE_LOT_SIZES.pop("TESTMETA", None)
             with patch.dict("os.environ", {"FINAM_METADATA_REQUEST_INTERVAL_SEC": "0"}):
                 asyncio.run(RiskManager.update_finam_lot_sizes(stub, paper_mode=True))
-            self.assertIn(("TESTMETA", None), stub.calls)
-            self.assertEqual(stub.discovery_calls, 0)
+            self.assertIn(("TESTMETA", "READONLY-ACCOUNT-1234"), stub.calls)
+            self.assertEqual(stub.discovery_calls, 1)
+            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 3)
+        finally:
+            if old_lot is None:
+                LOT_SIZES.pop("TESTMETA", None)
+            else:
+                LOT_SIZES["TESTMETA"] = old_lot
+            if old_trade_lot is None:
+                FINAM_TRADE_LOT_SIZES.pop("TESTMETA", None)
+            else:
+                FINAM_TRADE_LOT_SIZES["TESTMETA"] = old_trade_lot
+
+    def test_paper_metadata_without_authorized_account_skips_get_asset_but_keeps_static_lot(self):
+        class _NoMetadataAccount:
+            metadata_account_id = ""
+
+            def __init__(self):
+                self.calls = []
+                self.discovery_calls = 0
+
+            async def discover_metadata_account_id(self):
+                self.discovery_calls += 1
+                return None
+
+            async def get_asset(self, ticker: str, account_id: str | None = None):
+                self.calls.append((ticker, account_id))
+                raise AssertionError("GetAsset must not be called without an account_id")
+
+        stub = _NoMetadataAccount()
+        old_lot = LOT_SIZES.get("TESTMETA")
+        old_trade_lot = FINAM_TRADE_LOT_SIZES.get("TESTMETA")
+        try:
+            LOT_SIZES["TESTMETA"] = 3
+            FINAM_TRADE_LOT_SIZES.pop("TESTMETA", None)
+            with patch.dict("os.environ", {"FINAM_METADATA_REQUEST_INTERVAL_SEC": "0"}):
+                with self.assertLogs("Piluitus.RiskManager", level="WARNING"):
+                    asyncio.run(RiskManager.update_finam_lot_sizes(stub, paper_mode=True))
+            self.assertEqual(stub.discovery_calls, 1)
+            self.assertEqual(stub.calls, [])
             self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 3)
         finally:
             if old_lot is None:
@@ -288,7 +323,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
                 payload = asyncio.run(client.get_moex_asset("VTBR"))
         self.assertIsNone(payload)
 
-    def test_paper_uses_finam_get_asset_and_static_lot_dictionary(self):
+    def test_paper_uses_account_scoped_finam_metadata_and_static_lot_dictionary(self):
         class _FinamOnly(_FinamMetadataStub):
             metadata_account_id = "READONLY-ACCOUNT-1234"
 
@@ -351,7 +386,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
         client.jwt_token = "test-jwt"
         with patch("exchange.finam_client.httpx.AsyncClient", _AsyncClient):
             with self.assertLogs("Piluitus.FinamGateway", level="WARNING") as captured:
-                result = asyncio.run(client.get_asset("VTBR"))
+                result = asyncio.run(client.get_asset("VTBR", account_id="TEST-ACCOUNT"))
 
         self.assertIsNone(result)
         output = captured.output[0] if captured.output else ""
@@ -380,7 +415,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
         client.jwt_token = "test-jwt"
         with patch("exchange.finam_client.httpx.AsyncClient", _AsyncClient):
             with self.assertLogs("Piluitus.FinamGateway", level="WARNING") as captured:
-                result = asyncio.run(client.get_asset("VTBR"))
+                result = asyncio.run(client.get_asset("VTBR", account_id="TEST-ACCOUNT"))
 
         self.assertIsNone(result)
         output = captured.output[0] if captured.output else ""
@@ -449,24 +484,29 @@ class FinamAssetMetadataTests(unittest.TestCase):
             else:
                 FINAM_TRADE_LOT_SIZES["TESTMETA"] = old_trade_lot
 
-    def test_paper_mode_uses_exchange_lot_and_unscoped_finam_metadata(self):
+    def test_paper_mode_uses_exchange_lot_and_metadata_only_account_not_execution_account(self):
         class _NoExecutionAccount(_FinamMetadataStub):
             calls = 0
             discovery_calls = 0
             metadata_discovery_calls = 0
             asset_calls = []
+
             async def get_asset(self, ticker: str, account_id: str | None = None):
                 self.asset_calls.append((ticker, account_id))
                 return await super().get_asset(ticker, account_id)
+
             async def discover_metadata_account_id(self):
                 self.metadata_discovery_calls += 1
-                raise AssertionError("PAPER GetAsset must not discover an account")
+                self.metadata_account_id = "READONLY-ACCOUNT-1234"
+                return self.metadata_account_id
+
             async def discover_accounts(self):
                 self.discovery_calls += 1
                 raise AssertionError("PAPER must not discover an execution account")
+
             async def get_asset_params(self, ticker: str, account_id: str | None = None):
                 self.calls += 1
-                raise AssertionError("PAPER must not request account-specific parameters")
+                raise AssertionError("PAPER must not request account-specific trading parameters")
 
         stub = _NoExecutionAccount()
         stub.account_id = "STALE-BROKER-ACCOUNT"
@@ -484,8 +524,8 @@ class FinamAssetMetadataTests(unittest.TestCase):
                 asyncio.run(RiskManager.update_finam_lot_sizes(stub, paper_mode=True))
             self.assertEqual(stub.calls, 0)
             self.assertEqual(stub.discovery_calls, 0)
-            self.assertEqual(stub.metadata_discovery_calls, 0)
-            self.assertIn(("TESTMETA", None), stub.asset_calls)
+            self.assertEqual(stub.metadata_discovery_calls, 1)
+            self.assertIn(("TESTMETA", "READONLY-ACCOUNT-1234"), stub.asset_calls)
             self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 7)
         finally:
             if old_lot is None:
@@ -498,16 +538,8 @@ class FinamAssetMetadataTests(unittest.TestCase):
                 FINAM_TRADE_LOT_SIZES["TESTMETA"] = old_trade_lot
 
 
-    def test_public_get_asset_does_not_inherit_client_account_id(self):
-        captured = {}
-
-        class _Response:
-            def raise_for_status(self):
-                return None
-
-            @staticmethod
-            def json():
-                return {"symbol": "VTBR@MISX", "lot_size": {"value": "10"}}
+    def test_public_get_asset_requires_explicit_account_id_and_does_not_inherit_client_account_id(self):
+        requested = []
 
         class _AsyncClient:
             async def __aenter__(self):
@@ -516,21 +548,21 @@ class FinamAssetMetadataTests(unittest.TestCase):
             async def __aexit__(self, exc_type, exc, tb):
                 return False
 
-            async def get(self, url, *, headers, params=None):
-                captured["url"] = url
-                captured["params"] = params
-                return _Response()
+            async def get(self, *args, **kwargs):
+                requested.append((args, kwargs))
+                raise AssertionError("GetAsset must not issue an unscoped request")
 
         client = FinamBrokerClient(token="test-token")
         client.jwt_token = "test-jwt"
         client.account_id = "STALE-PAPER-ACCOUNT"
+        client.metadata_account_id = "CACHED-METADATA-ACCOUNT"
 
         with patch("exchange.finam_client.httpx.AsyncClient", return_value=_AsyncClient()):
-            payload = asyncio.run(client.get_asset("VTBR"))
+            with self.assertLogs("Piluitus.FinamGateway", level="WARNING"):
+                payload = asyncio.run(client.get_asset("VTBR"))
 
-        self.assertEqual(payload["lot_size"]["value"], "10")
-        self.assertIsNone(captured["params"])
-
+        self.assertIsNone(payload)
+        self.assertEqual(requested, [])
 
     def test_paper_accepts_nested_camel_case_and_object_wrapped_lot_metadata(self):
         from types import SimpleNamespace
