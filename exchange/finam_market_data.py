@@ -374,18 +374,10 @@ class FinamMarketDataMixin:
                                 # Keep a small subscription overlap during Top-N rotation.
                                 # It avoids tearing down a recently warmed book because of a
                                 # marginal score change while still bounding provider load.
-                                obsolete = order_book_subscribed - wanted
-                                protected = {
-                                    symbol for symbol in obsolete
-                                    if now_loop - order_book_subscribed_since.get(symbol, 0.0) < order_book_min_hold_sec
-                                }
-                                if len(protected) > order_book_max_overbook:
-                                    protected = set(sorted(
-                                        protected,
-                                        key=lambda item: order_book_subscribed_since.get(item, 0.0),
-                                        reverse=True,
-                                    )[:order_book_max_overbook])
-                                effective_wanted = wanted | protected
+                                effective_wanted, protected = retain_subscription_overlap(
+                                    order_book_subscribed, wanted, order_book_subscribed_since, now_loop,
+                                    order_book_min_hold_sec, order_book_max_overbook,
+                                )
                                 sync_due = now_loop - last_order_book_sync >= order_book_refresh_sec
                                 selection_changed = effective_wanted != order_book_subscribed
                                 if selection_changed or sync_due:
