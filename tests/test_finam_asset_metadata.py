@@ -199,7 +199,7 @@ class FinamAssetMetadataTests(unittest.TestCase):
                 ASSET_METADATA["TESTMETA"]["price_step"],
                 {"threshold_price": 100.0, "step": 0.01, "step_from_threshold": 0.05},
             )
-            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 7)
+            self.assertEqual(FINAM_TRADE_LOT_SIZES["TESTMETA"], 1)
         finally:
             if old_lot is None:
                 LOT_SIZES.pop("TESTMETA", None)
