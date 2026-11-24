@@ -163,6 +163,7 @@ def test_guard_reason_bucket_preserves_diagnostic_categories() -> None:
 
     cases = {
         "Bid/Ask котировки неактуальны": "quotes",
+        "BBO устарел: возраст Bid=5.00s, Ask=0.20s": "quotes",
         "Спред выше лимита": "spread",
         "ATR M1-история недостаточна": "atr",
         "Сокращение размера лучшей заявки": "size",

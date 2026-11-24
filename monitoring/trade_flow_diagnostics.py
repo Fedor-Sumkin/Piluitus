@@ -11,7 +11,12 @@ import threading
 def guard_reason_bucket(reason: object) -> str:
     """Map a pre-LLM guard explanation to a bounded diagnostic category."""
     lowered = str(reason or "").lower()
-    if "bid/ask" in lowered or "котировк" in lowered or "актуальн" in lowered:
+    if (
+        "bid/ask" in lowered
+        or "bbo" in lowered
+        or "котировк" in lowered
+        or "актуальн" in lowered
+    ):
         return "quotes"
     if "спред" in lowered:
         return "spread"
