@@ -2073,6 +2073,55 @@ class BaseExecutionEngine:
                     self._reserved_notional.pop(ticker, None)
                     self._reserved_stop_risk.pop(ticker, None)
 
+    def monitor_open_paper_positions_once(self, db: DBManager) -> int:
+        """Retry PAPER position monitoring when a fresh executable BBO is available.
+
+        This watchdog is independent of QUOTES/ORDER_BOOK event scheduling. It
+        never uses a stale mark as an exit price: positions are queued only after
+        _latest_fresh_exit_quote() confirms the executable side for the position.
+        """
+        if (
+            not bool(getattr(self, "paper_mode", False))
+            or bool(getattr(self, "_maintenance_active", False))
+        ):
+            return 0
+
+        positions = getattr(self, "paper_positions", {})
+        if not isinstance(positions, Mapping) or not positions:
+            return 0
+
+        scheduled = 0
+        for raw_ticker, raw_trade in list(positions.items()):
+            trade = _as_string_mapping(raw_trade)
+            if trade is None or str(trade.get("status", "")).upper() != "OPEN":
+                continue
+
+            side = str(trade.get("side", "")).strip().upper()
+            if side not in {"BUY", "SELL"}:
+                continue
+            ticker = str(trade.get("ticker") or raw_ticker).strip().upper().split("@")[0]
+            if not ticker:
+                continue
+
+            quote = self._latest_fresh_exit_quote(ticker, side)
+            if not isinstance(quote, Mapping):
+                continue
+            executable_price = _finite_or_default(
+                quote.get("executable_price"), 0.0
+            )
+            if not math.isfinite(executable_price) or executable_price <= 0.0:
+                continue
+
+            self.schedule_paper_position_monitor(
+                ticker,
+                executable_price,
+                db,
+                event_source="WATCHDOG",
+            )
+            scheduled += 1
+
+        return scheduled
+
     def schedule_paper_position_monitor(
         self,
         ticker: str,
@@ -2098,7 +2147,7 @@ class BaseExecutionEngine:
             return
 
         source = str(event_source or "LAST_TRADE").strip().upper()
-        if source not in {"LAST_TRADE", "ORDER_BOOK"}:
+        if source not in {"LAST_TRADE", "ORDER_BOOK", "WATCHDOG"}:
             source = "LAST_TRADE"
         trade = self.paper_positions.get(ticker)
         if source == "LAST_TRADE" and isinstance(trade, dict):
