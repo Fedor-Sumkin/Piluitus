@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from config import FINAM_TRADE_LOT_SIZES, LOT_SIZES
 from execution_layer import BaseExecutionEngine
