@@ -83,6 +83,7 @@ from strategy.decision_diagnostics import (
     build_llm_feature_snapshot,
     classify_hold_reason_bucket,
 )
+from strategy.signal_diagnostics import classify_guard_reason
 import tg_bot
 from news_parser import MarketNewsParser
 
@@ -1214,7 +1215,8 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "llm_hold", "llm_hold_buy", "llm_hold_sell", "llm_contract_violation",
         "llm_contract_retry", "llm_contract_retry_recovered", "llm_contract_retry_failed",
         "orders_opened_buy", "orders_opened_sell", "guard_blocked",
-        "guard_quotes", "guard_spread", "guard_volume", "guard_direction", "guard_size",
+        "guard_quotes", "guard_spread", "guard_cost", "guard_queue_flow", "guard_atr",
+        "guard_volume", "guard_direction", "guard_size", "guard_risk_reward",
         "guard_text", "guard_other", "confidence_blocked", "risk_blocked", "zero_lot",
         "strategy_shadow_evaluated", "strategy_shadow_pass", "strategy_shadow_reject",
         "shadow_block_bbo_unavailable", "shadow_block_bbo_stale",
@@ -1254,8 +1256,10 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "contract_error=%(llm_contract_violation)d (retry=%(llm_contract_retry)d,"
         "recovered=%(llm_contract_retry_recovered)d,failed=%(llm_contract_retry_failed)d); "
         "открыто(BUY=%(orders_opened_buy)d,SELL=%(orders_opened_sell)d); "
-        "Guard=%(guard_blocked)d (BBO=%(guard_quotes)d, спред=%(guard_spread)d, объём=%(guard_volume)d, "
-        "направление=%(guard_direction)d, размер=%(guard_size)d, текст=%(guard_text)d, прочее=%(guard_other)d); "
+        "Guard=%(guard_blocked)d (BBO=%(guard_quotes)d, спред=%(guard_spread)d, издержки=%(guard_cost)d, "
+        "queue_flow=%(guard_queue_flow)d, ATR=%(guard_atr)d, объём=%(guard_volume)d, "
+        "направление=%(guard_direction)d, размер=%(guard_size)d, RR=%(guard_risk_reward)d, "
+        "текст=%(guard_text)d, прочее=%(guard_other)d); "
         "ORDER_BOOK: принятых_состояний=%(orderbook_updates)d, затронуто_сторон_BBO=%(orderbook_side_touches)d, "
         "heartbeat_без_движения_BBO=%(orderbook_heartbeats)d, некорректных_состояний=%(orderbook_invalid)d, "
         "событий_не_по_порядку=%(orderbook_out_of_order)d, ошибок_обработки=%(orderbook_unusable)d; "
@@ -1337,7 +1341,8 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
     for prefix in (
         "regime=", "market_regime=", "volatility_regime=", "liquidity_regime=",
         "component=", "horizon_component=",
-        "directional_regime=", "cost_to_atr_bucket=", "score_band=", "horizon=",
+        "directional_regime=", "cost_to_atr_bucket=", "cost_gate_band=", "spread_gate_band=",
+        "score_band=", "horizon=",
         "hour_msk=", "hard_block=", "ofi_alignment_5s=", "side_ofi_alignment_5s=",
         "spread_atr_bucket=", "trade_count_bucket=", "flow_alignment=", "side_flow_alignment=",
         "market_regime_queue_alignment_5s=", "market_regime_flow_alignment_30s=",
@@ -1361,40 +1366,14 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
 
 
 def _trade_flow_guard_block(reason: str) -> None:
+    """Increment a stable reason bucket; keep costs and queue/flow blocks distinct."""
     _trade_flow_inc("guard_blocked")
-    lowered = str(reason or "").lower()
-    if "bid/ask" in lowered or "котировк" in lowered or "актуальн" in lowered:
-        bucket = "guard_quotes"
-    elif "спред" in lowered:
-        bucket = "guard_spread"
-    elif "размер лучшей заявки" in lowered or "сокращение" in lowered or "истории размера" in lowered:
-        bucket = "guard_size"
-    elif "всплеск" in lowered or "объём" in lowered or "объем" in lowered:
-        bucket = "guard_volume"
-    elif "импульс" in lowered or "vwap" in lowered or "цена не" in lowered:
-        bucket = "guard_direction"
-    elif "объяснение" in lowered or "текст" in lowered or "поврежд" in lowered or "неподтверждён" in lowered:
-        bucket = "guard_text"
-    else:
-        bucket = "guard_other"
-    _trade_flow_inc(bucket)
+    _trade_flow_inc("guard_" + classify_guard_reason(reason))
 
 
 def _guard_reason_bucket(reason: str) -> str:
-    lowered = str(reason or "").lower()
-    if "bid/ask" in lowered or "котировк" in lowered or "актуальн" in lowered:
-        return "quotes"
-    if "спред" in lowered:
-        return "spread"
-    if "atr" in lowered or "m1-диапазон" in lowered or "m1-истори" in lowered:
-        return "atr"
-    if "размер лучшей заявки" in lowered or "сокращение" in lowered or "истории размера" in lowered:
-        return "size"
-    if "всплеск" in lowered or "объём" in lowered or "объем" in lowered:
-        return "volume"
-    if "импульс" in lowered or "vwap" in lowered or "цена не" in lowered:
-        return "direction"
-    return "other"
+    """Share the taxonomy while preserving the retryable quotes bucket."""
+    return classify_guard_reason(reason)
 
 
 def _mark_shadow_llm_not_called(candidate_id: object, reason_code: str) -> None:

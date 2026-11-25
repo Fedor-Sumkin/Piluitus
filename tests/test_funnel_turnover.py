@@ -17,6 +17,7 @@ class FunnelTurnoverTests(unittest.TestCase):
             "liquidity_measure": 100.0,
             "tick_activity_30s": 10.0,
             "spread_pct": 0.1,
+            "bbo_freshness": 1.0,
         }
 
     def test_legacy_env_cannot_restore_fast_top_n_churn(self) -> None:
@@ -111,6 +112,22 @@ class FunnelTurnoverTests(unittest.TestCase):
         screener._refresh_selection(40.0)
         self.assertTrue(screener.selection_ready)
         self.assertEqual(set(screener.selected_tickers), {"A", "B", "C"})
+
+
+    def test_fresh_executable_bbo_improves_selection_priority_without_hard_excluding_stale_symbols(self) -> None:
+        screener = HFTMemoryScreener(top_n=1, min_samples=3, minimum_coverage=0.1)
+        screener.universe = ["FRESH", "STALE"]
+        screener.selection_ready = True
+        fresh = self._feature(5.0)
+        stale = self._feature(5.0)
+        stale["bbo_freshness"] = 0.0
+        features = {"FRESH": fresh, "STALE": stale}
+        screener._features_for = lambda ticker, now: features.get(ticker)
+
+        screener._refresh_selection(100.0)
+
+        self.assertEqual(screener.selected_tickers, ["FRESH"])
+        self.assertIn("STALE", screener.get_status()["ranking"])
 
 
 if __name__ == "__main__":

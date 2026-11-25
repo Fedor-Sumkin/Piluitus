@@ -576,6 +576,7 @@ class HFTMemoryScreener:
             "order_book_receive_age_sec": max(0.0, now - order_book_received) if order_book_received > 0.0 else -1.0,
             "order_book_valid": float(bool(quote.get("order_book_valid", False))),
             "spread_pct": spread_pct,
+            "bbo_freshness": 1.0 if bbo_fresh else 0.0,
             "tick_activity_30s": float(recent_ticks),
         }
 
@@ -628,6 +629,9 @@ class HFTMemoryScreener:
         volume_ranks = self._percentile_ranks({t: math.log1p(f["volume_spike"]) for t, f in candidates.items()})
         liquidity_ranks = self._percentile_ranks({t: math.log1p(f["liquidity_measure"]) for t, f in candidates.items()})
         activity_ranks = self._percentile_ranks({t: math.log1p(f["tick_activity_30s"]) for t, f in candidates.items()})
+        bbo_freshness_ranks = self._percentile_ranks({
+            t: float(f.get("bbo_freshness", 0.5)) for t, f in candidates.items()
+        })
 
         ranked: dict[str, dict[str, float | int]] = {}
         for ticker, feature in candidates.items():
@@ -638,12 +642,20 @@ class HFTMemoryScreener:
                 if spread_pct >= 0.0 else 0.35
             )
             liquidity_score = 0.7 * liquidity_ranks[ticker] + 0.3 * activity_ranks[ticker]
+            bbo_quality = (
+                0.5 * float(feature.get("bbo_freshness", 0.5))
+                + 0.5 * bbo_freshness_ranks[ticker]
+            )
+            # Keep the activity/momentum signal, but prioritize instruments
+            # with a fresh executable quote. Missing BBO remains eligible and
+            # is penalized softly rather than hard-excluded from the universe.
             score = 100.0 * (
-                0.40 * volatility_ranks[ticker]
-                + 0.25 * momentum_ranks[ticker]
-                + 0.15 * volume_ranks[ticker]
+                0.34 * volatility_ranks[ticker]
+                + 0.22 * momentum_ranks[ticker]
+                + 0.12 * volume_ranks[ticker]
                 + 0.10 * liquidity_score
-                + 0.10 * spread_quality
+                + 0.12 * spread_quality
+                + 0.10 * bbo_quality
             )
             ranked[ticker] = {
                 **feature,
@@ -651,6 +663,7 @@ class HFTMemoryScreener:
                 "volatility_rank_pct": round(volatility_ranks[ticker] * 100.0, 1),
                 "momentum_rank_pct": round(momentum_ranks[ticker] * 100.0, 1),
                 "volume_rank_pct": round(volume_ranks[ticker] * 100.0, 1),
+                "bbo_freshness_rank_pct": round(bbo_freshness_ranks[ticker] * 100.0, 1),
                 "rank": 0,
             }
 

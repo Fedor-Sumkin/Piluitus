@@ -89,6 +89,35 @@ def _cost_settings() -> tuple[float, float]:
     return commission_pct, slippage_bps
 
 
+
+def _ratio_limit_env(name: str, default: float = 0.50) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError, OverflowError):
+        value = default
+    if not math.isfinite(value) or value <= 0.0:
+        value = default
+    return min(2.0, max(0.05, value))
+
+
+def _gate_distance_band(ratio: object, limit: float) -> str:
+    """Bucket a measured ratio by distance from its existing active gate."""
+    try:
+        value = float(ratio)
+    except (TypeError, ValueError, OverflowError):
+        return "unavailable"
+    if not math.isfinite(value) or value < 0.0 or not math.isfinite(limit) or limit <= 0.0:
+        return "unavailable"
+    relative = value / limit
+    if relative <= 0.80:
+        return "comfortable"
+    if relative <= 1.0 + 1e-9:
+        return "near_pass"
+    if relative <= 1.25 + 1e-9:
+        return "near_fail"
+    return "far_fail"
+
+
 def _apply_adverse_slippage(price: float, transaction_side: str, slippage_bps: float) -> float:
     rate = max(0.0, slippage_bps) / 10_000.0
     adjusted = price * (1.0 + rate if transaction_side == "BUY" else 1.0 - rate)
@@ -259,6 +288,17 @@ class ShadowForwardTracker:
             commission_pct_per_side=commission_pct,
             slippage_bps_per_side=slippage_bps, atr_pct=atr_pct,
         )
+        cost_limit = _ratio_limit_env("PILUITUS_MAX_ENTRY_COST_TO_ATR_RATIO", 0.50)
+        cost_ratio = (
+            entry_economics.get("cost_to_atr_ratio")
+            if entry_economics.get("available") else None
+        )
+        spread_ratio = _number(shadow_result, "spread_atr_ratio", math.nan)
+        if not math.isfinite(spread_ratio):
+            spread_value = _number(metrics, "spread_pct", math.nan)
+            if math.isfinite(spread_value) and math.isfinite(atr_pct) and atr_pct > 0.0:
+                spread_ratio = spread_value / atr_pct
+        spread_limit = _ratio_limit_env("PILUITUS_MAX_SPREAD_TO_ATR_RATIO", 0.50)
         if math.isfinite(atr_pct) and atr_pct > 0.0:
             atr_history.append(atr_pct)
         now_mono = time.monotonic()
@@ -299,10 +339,12 @@ class ShadowForwardTracker:
                 entry_economics.get("minimum_favorable_move_pct")
                 if entry_economics.get("available") else None
             ),
-            "cost_to_atr_ratio": (
-                entry_economics.get("cost_to_atr_ratio")
-                if entry_economics.get("available") else None
-            ),
+            "cost_to_atr_ratio": cost_ratio,
+            "cost_gate_band": _gate_distance_band(cost_ratio, cost_limit),
+            "cost_gate_limit": cost_limit,
+            "spread_atr_ratio": spread_ratio if math.isfinite(spread_ratio) else None,
+            "spread_gate_band": _gate_distance_band(spread_ratio, spread_limit),
+            "spread_gate_limit": spread_limit,
             "hard_blocks": [
                 str(item) for item in shadow_result.get("hard_blocks", [])
                 if str(item).strip()
@@ -811,6 +853,8 @@ class ShadowForwardTracker:
         volatility_regime = str(label.get("volatility_regime") or "UNKNOWN")
         liquidity_regime = str(label.get("liquidity_regime") or "UNKNOWN")
         directional_regime = str(label.get("directional_regime") or "UNKNOWN")
+        cost_gate_band = str(label.get("cost_gate_band") or "unavailable")
+        spread_gate_band = str(label.get("spread_gate_band") or "unavailable")
         cost_to_atr = _number(label, "cost_to_atr_ratio", math.nan)
         if not math.isfinite(cost_to_atr) or cost_to_atr < 0.0:
             cost_to_atr_bucket = "unavailable"
@@ -910,6 +954,10 @@ class ShadowForwardTracker:
             f"liquidity_regime={liquidity_regime}",
             f"directional_regime={directional_regime}",
             f"cost_to_atr_bucket={cost_to_atr_bucket}",
+            f"cost_gate_band={cost_gate_band}",
+            f"side_cost_gate_band={side}|{cost_gate_band}",
+            f"spread_gate_band={spread_gate_band}",
+            f"side_spread_gate_band={side}|{spread_gate_band}",
             f"side_market_regime={side}|{market_regime}",
             f"side_cost_to_atr_bucket={side}|{cost_to_atr_bucket}",
             f"score_band={score_band}",

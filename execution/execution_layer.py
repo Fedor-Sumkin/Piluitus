@@ -2683,6 +2683,48 @@ class BaseExecutionEngine:
         side = str(trade.get("side", "BUY")).upper()
         if not order_id or side not in {"BUY", "SELL"}:
             raise ValueError("Некорректный идентификатор или направление PAPER-позиции.")
+
+        # The monitor's BBO can age while the close is being prepared. Re-read
+        # the executable side at the finalization boundary before planning either
+        # a full or partial PAPER fill. The SL/TP trigger itself remains latched.
+        if getattr(self, "screener", None) is not None:
+            prior_executable = _finite_or_default(bbo.get("executable_price"), 0.0)
+            refreshed_bbo = self._latest_fresh_exit_quote(ticker, side)
+            recheck_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
+            if refreshed_bbo is None:
+                trade["exit_final_bbo_recheck_failed_count"] = (
+                    int(_finite_or_default(trade.get("exit_final_bbo_recheck_failed_count"), 0.0)) + 1
+                )
+                trade["exit_final_bbo_recheck_failed_at"] = recheck_at
+                trade["exit_monitor_state"] = "EXIT_TRIGGERED_WAITING_FOR_BBO"
+                trade["exit_monitor_wait_reason"] = (
+                    "Триггер SL/TP сохранён; финальная проверка не подтвердила свежий исполнимый BBO."
+                )
+                try:
+                    await db.set_json(f"piluitus:trade:{order_id}", trade)
+                except Exception as persist_exc:
+                    logger.error(
+                        "[PAPER EXIT FINAL BBO RECHECK] %s: BBO стал неисполняемым, "
+                        "позиция оставлена OPEN; не удалось сохранить состояние ожидания: %s",
+                        ticker, persist_exc, exc_info=True,
+                    )
+                logger.warning(
+                    "[PAPER EXIT FINAL BBO RECHECK] %s %s: свежий исполнимый BBO исчез до расчёта fill; "
+                    "SL/TP trigger retained, position remains OPEN.",
+                    ticker, side,
+                )
+                return trade
+            bbo = refreshed_bbo
+            trade["exit_final_bbo_recheck_count"] = (
+                int(_finite_or_default(trade.get("exit_final_bbo_recheck_count"), 0.0)) + 1
+            )
+            trade["exit_final_bbo_rechecked_at"] = recheck_at
+            refreshed_executable = _finite_or_default(bbo.get("executable_price"), 0.0)
+            trade["exit_final_bbo_recheck_delta_pct"] = (
+                round((refreshed_executable - prior_executable) / prior_executable * 100.0, 6)
+                if prior_executable > 0.0 and refreshed_executable > 0.0 else None
+            )
+
         entry_price = _finite_or_default(trade.get("entry_price"), 0.0)
         share_qty = self._share_quantity(ticker, trade)
         if entry_price <= 0.0 or share_qty <= 0:

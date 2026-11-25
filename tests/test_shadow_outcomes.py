@@ -501,5 +501,66 @@ class ShadowForwardTrackerTests(unittest.TestCase):
         self.assertEqual(approved["sample_quality"], "INSUFFICIENT_LT_30")
 
 
+    def test_shadow_separates_near_pass_cost_and_spread_bands(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,))
+        metrics = quote_metrics(100.0, 100.1)
+        metrics["bar_atr_pct"] = 0.38
+        metrics["spread_pct"] = 0.10
+        shadow_result = {
+            "score": 82.0,
+            "eligible": False,
+            "regime": "TRANSITION_OR_RANGE",
+            "spread_atr_ratio": 0.46,
+        }
+        with (
+            patch.dict("os.environ", {
+                "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",
+                "PILUITUS_PAPER_SLIPPAGE_BPS": "0",
+                "PILUITUS_MAX_ENTRY_COST_TO_ATR_RATIO": "0.50",
+                "PILUITUS_MAX_SPREAD_TO_ATR_RATIO": "0.50",
+            }),
+            patch("strategy.shadow_outcomes.time.monotonic", side_effect=(100.0, 160.0)),
+        ):
+            candidate_id = tracker.record_candidate("SBER", "BUY", metrics, shadow_result)
+            labels = tracker.observe_market_tick("SBER", quote_metrics(100.2, 100.3))
+
+        self.assertIsNotNone(candidate_id)
+        self.assertEqual(len(labels), 1)
+        label = labels[0]
+        self.assertEqual(label["cost_gate_band"], "near_pass")
+        self.assertEqual(label["spread_gate_band"], "near_pass")
+        self.assertLessEqual(label["cost_to_atr_ratio"], label["cost_gate_limit"])
+        self.assertLessEqual(label["spread_atr_ratio"], label["spread_gate_limit"])
+        segments = tracker.statistics_snapshot()["segments"]
+        self.assertEqual(segments["cost_gate_band=near_pass"]["ok"], 1)
+        self.assertEqual(segments["spread_gate_band=near_pass"]["ok"], 1)
+        self.assertEqual(segments["side_cost_gate_band=BUY|near_pass"]["ok"], 1)
+
+    def test_shadow_marks_cost_and_spread_gate_crossings_as_near_fail(self) -> None:
+        tracker = ShadowForwardTracker(horizons_seconds=(60,))
+        metrics = quote_metrics(100.0, 100.1)
+        metrics["bar_atr_pct"] = 0.28
+        with (
+            patch.dict("os.environ", {
+                "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",
+                "PILUITUS_PAPER_SLIPPAGE_BPS": "0",
+                "PILUITUS_MAX_ENTRY_COST_TO_ATR_RATIO": "0.50",
+                "PILUITUS_MAX_SPREAD_TO_ATR_RATIO": "0.50",
+            }),
+            patch("strategy.shadow_outcomes.time.monotonic", side_effect=(100.0, 160.0)),
+        ):
+            candidate_id = tracker.record_candidate(
+                "SBER", "BUY", metrics,
+                {"score": 70.0, "eligible": False, "regime": "TRANSITION_OR_RANGE",
+                 "spread_atr_ratio": 0.58},
+            )
+            labels = tracker.observe_market_tick("SBER", quote_metrics(100.2, 100.3))
+
+        self.assertIsNotNone(candidate_id)
+        self.assertEqual(len(labels), 1)
+        self.assertEqual(labels[0]["cost_gate_band"], "near_fail")
+        self.assertEqual(labels[0]["spread_gate_band"], "near_fail")
+
+
 if __name__ == "__main__":
     unittest.main()

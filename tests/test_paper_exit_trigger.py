@@ -528,5 +528,45 @@ class PaperPartialExitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(history_call.args[0], "piluitus:trade_history")
 
 
+    async def test_final_close_rechecks_executable_bbo_and_uses_latest_depth(self):
+        engine = self._engine()
+        engine.screener = object()
+        latest = self._bbo([[100.8, 100]])
+        engine._latest_fresh_exit_quote = Mock(return_value=latest)
+        trade = self._trade()
+        db = AsyncMock()
+
+        result = await engine._finalize_paper_close(
+            "SBER", trade, db, self._bbo([[101.0, 100]]),
+            exit_reason="TAKE_PROFIT", trigger_price=102.0,
+        )
+
+        self.assertEqual(result["status"], "CLOSED")
+        self.assertAlmostEqual(result["exit_price"], 100.8)
+        self.assertEqual(result["exit_final_bbo_recheck_count"], 1)
+        self.assertIsNotNone(result["exit_final_bbo_rechecked_at"])
+        self.assertLess(result["exit_final_bbo_recheck_delta_pct"], 0.0)
+        engine._latest_fresh_exit_quote.assert_called_once_with("SBER", "BUY")
+
+    async def test_missing_final_executable_bbo_keeps_triggered_position_open(self):
+        engine = self._engine()
+        engine.screener = object()
+        engine._latest_fresh_exit_quote = Mock(return_value=None)
+        trade = self._trade()
+        db = AsyncMock()
+
+        result = await engine._finalize_paper_close(
+            "SBER", trade, db, self._bbo([[101.0, 100]]),
+            exit_reason="TAKE_PROFIT", trigger_price=102.0,
+        )
+
+        self.assertIs(result, trade)
+        self.assertEqual(trade["status"], "OPEN")
+        self.assertEqual(trade["exit_monitor_state"], "EXIT_TRIGGERED_WAITING_FOR_BBO")
+        self.assertEqual(trade["exit_final_bbo_recheck_failed_count"], 1)
+        db.set_json.assert_awaited_once()
+        db.push_to_list.assert_not_awaited()
+
+
 if __name__ == "__main__":
     unittest.main()
