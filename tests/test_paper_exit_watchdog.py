@@ -38,6 +38,7 @@ class PaperExitWatchdogTests(unittest.TestCase):
             },
         }
         engine._latest_fresh_exit_quote = Mock()
+        engine._latest_price = Mock(return_value=98.75)
         engine.schedule_paper_position_monitor = Mock()
         return engine
 
@@ -56,7 +57,7 @@ class PaperExitWatchdogTests(unittest.TestCase):
         engine._latest_fresh_exit_quote.assert_any_call("GAZP", "SELL")
         engine.schedule_paper_position_monitor.assert_called_once_with(
             "SBER",
-            99.5,
+            98.75,
             db,
             event_source="WATCHDOG",
         )
