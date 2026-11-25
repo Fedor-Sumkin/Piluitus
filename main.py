@@ -72,6 +72,7 @@ from strategy.paper_performance import (
     PAPER_CLOSED_TRADES_STORAGE_LIMIT,
     paper_performance_tracker,
 )
+from monitoring.trading_status import build_trading_status_snapshot
 from dashboard_verdicts import (
     build_verdict_explanation,
     finite_float,
@@ -4832,6 +4833,10 @@ async def websocket_frontend_endpoint(websocket: WebSocket):
         except Exception as history_exc:
             logger.debug("Не удалось обогатить историю статусами исполнения: %s", history_exc)
 
+        last_status_payload = build_trading_status_snapshot(
+            risk_manager=risk_manager,
+            execution_engine=execution_engine,
+        )
         await websocket.send_json({
             "type": "INIT_DATA",
             "portfolio": {},
@@ -4839,11 +4844,25 @@ async def websocket_frontend_endpoint(websocket: WebSocket):
             "news": cached_news,
             "verdicts_history": verdicts_for_client,
             "active_positions": initial_positions,
-            "closed_trades": raw_closed[-30:] if isinstance(raw_closed, list) else []
+            "closed_trades": raw_closed[-30:] if isinstance(raw_closed, list) else [],
+            "trading_status": last_status_payload,
         })
 
         while True:
-            data = await websocket.receive_text()
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+            except asyncio.TimeoutError:
+                current_status = build_trading_status_snapshot(
+                    risk_manager=risk_manager,
+                    execution_engine=execution_engine,
+                )
+                if current_status != last_status_payload:
+                    await websocket.send_json({
+                        "type": "TRADING_STATUS",
+                        "status": current_status,
+                    })
+                    last_status_payload = current_status
+                continue
             message = json.loads(data)
 
             if isinstance(message, list):
