@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from monitoring.durable_file_handler import DurableFileHandler
 
@@ -47,7 +48,8 @@ def test_session_log_rotates_before_record_exceeds_limit(tmp_path):
 
 def test_rotation_uses_utf8_byte_size_not_character_count(tmp_path):
     path = tmp_path / "session_unicode.log"
-    logger, handler = _make_logger(path, max_bytes=9)
+    expected_size = len("абвг".encode("utf-8")) + len(os.linesep.encode("utf-8"))
+    logger, handler = _make_logger(path, max_bytes=expected_size)
     try:
         logger.info("абвг")
         logger.info("д")
@@ -57,7 +59,7 @@ def test_rotation_uses_utf8_byte_size_not_character_count(tmp_path):
     part_two = tmp_path / "session_unicode_part02.log"
     assert path.read_text(encoding="utf-8") == "абвг\n"
     assert part_two.read_text(encoding="utf-8") == "д\n"
-    assert path.stat().st_size == 9
+    assert path.stat().st_size == expected_size
 
 
 def test_zero_rotation_limit_keeps_one_file(tmp_path):
