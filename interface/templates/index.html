@@ -126,6 +126,36 @@
         .badge.positive { background: rgba(16, 185, 129, 0.2); color: var(--accent-green); }
         .badge.negative { background: rgba(239, 68, 68, 0.2); color: var(--accent-red); }
         .badge.neutral { background: rgba(100, 116, 139, 0.2); color: #94a3b8; }
+            .trading-status-panel {
+            display:flex; align-items:flex-start; gap:14px; padding:14px 16px;
+            margin:0 0 20px; border:1px solid var(--border-color); border-radius:10px;
+            background:#172131;
+        }
+        .trading-status-indicator {
+            width:12px; height:12px; flex:0 0 12px; margin-top:5px;
+            border-radius:50%; background:#64748b;
+            box-shadow:0 0 0 4px rgba(100,116,139,.14);
+        }
+        .trading-status-panel.active { border-color:rgba(16,185,129,.45); }
+        .trading-status-panel.active .trading-status-indicator {
+            background:#10b981; box-shadow:0 0 0 4px rgba(16,185,129,.16);
+        }
+        .trading-status-panel.paused { border-color:rgba(245,158,11,.5); }
+        .trading-status-panel.paused .trading-status-indicator {
+            background:#f59e0b; box-shadow:0 0 0 4px rgba(245,158,11,.16);
+        }
+        .trading-status-panel.stopped { border-color:rgba(239,68,68,.5); }
+        .trading-status-panel.stopped .trading-status-indicator {
+            background:#ef4444; box-shadow:0 0 0 4px rgba(239,68,68,.16);
+        }
+        .trading-status-panel.connecting .trading-status-indicator,
+        .trading-status-panel.checking .trading-status-indicator {
+            background:#60a5fa; box-shadow:0 0 0 4px rgba(96,165,250,.16);
+        }
+        .trading-status-content { min-width:0; flex:1; }
+        .trading-status-title { font-weight:800; font-size:15px; line-height:1.4; }
+        .trading-status-message { margin-top:4px; color:#cbd5e1; font-size:13px; line-height:1.5; }
+        .trading-status-meta { margin-top:7px; color:#94a3b8; font-size:11px; line-height:1.45; }
     </style>
 </head>
 <body>
@@ -157,6 +187,15 @@
             Лимит задействования капитала: до 15% депозита; одна позиция — до 5%.
         </div>
     </div>
+
+    <section id="trading-status-panel" class="trading-status-panel checking" role="status" aria-live="polite">
+        <span id="trading-status-indicator" class="trading-status-indicator" aria-hidden="true"></span>
+        <div class="trading-status-content">
+            <div id="trading-status-title" class="trading-status-title">Ожидание статуса торговой системы</div>
+            <div id="trading-status-message" class="trading-status-message">Получаем состояние рыночного потока и риск-ограничений.</div>
+            <div id="trading-status-meta" class="trading-status-meta">Режим: — · Finam WS: — · Убыточная серия: —</div>
+        </div>
+    </section>
 
     <div class="grid-container">
         <!-- ЛЕВАЯ СТОРОНА: ВЕРДИКТЫ ИИ -->
@@ -239,6 +278,7 @@
             case "INIT_DATA":
                 // 1. Ликвидация Бага №2: Мгновенное заполнение баланса при старте страницы
                 if (msg.balance) updateBalanceUI(msg.balance);
+                if (msg.trading_status) updateTradingStatusUI(msg.trading_status);
                 
                 // 2. Ликвидация Бага №1: Заполнение ленты новостей из кэша Redis при F5
                 if (msg.news) updateNewsUI(msg.news);
@@ -288,6 +328,10 @@
                 if (msg.balance) updateBalanceUI(msg.balance);
                 break;
                 
+            case "TRADING_STATUS":
+                if (msg.status) updateTradingStatusUI(msg.status);
+                break;
+
             case "NEWS_UPDATE":
                 // Живое обновление макро-ленты от асинхронного NewsParser (Баг №1)
                 if (msg.news) updateNewsUI(msg.news);
@@ -296,6 +340,11 @@
     };
 
     ws.onclose = function() {
+        const panel = document.getElementById("trading-status-panel");
+        panel.className = "trading-status-panel connecting";
+        document.getElementById("trading-status-title").textContent = "Нет связи с сервером веб-панели";
+        document.getElementById("trading-status-message").textContent = "Обновление статуса торговли временно недоступно. Это состояние соединения панели, а не подтверждение остановки торгового процесса.";
+        document.getElementById("trading-status-meta").textContent = "Ожидается переподключение к серверу интерфейса.";
         console.log("🛑 Соединение со шлюзом потеряно. Попытка переподключения через 3 сек...");
         setTimeout(connectWebSocket, 3000);
     };
@@ -305,6 +354,31 @@
     }
 
     connectWebSocket();
+
+    function updateTradingStatusUI(data) {
+        const panel = document.getElementById("trading-status-panel");
+        const title = document.getElementById("trading-status-title");
+        const message = document.getElementById("trading-status-message");
+        const meta = document.getElementById("trading-status-meta");
+        const status = String(data.status || "CHECKING").toUpperCase();
+        const cssStatus = ["ACTIVE", "PAUSED", "STOPPED", "CONNECTING", "CHECKING"].includes(status)
+            ? status.toLowerCase() : "checking";
+        panel.className = `trading-status-panel ${cssStatus}`;
+        title.textContent = String(data.title || "Статус торговой системы не определён");
+        message.textContent = String(data.message || "Нет подробной информации о текущем состоянии.");
+        const modeText = data.mode === "LIVE" ? "LIVE" : "PAPER";
+        const marketText = data.market_connected
+            ? "Finam WS: подключён"
+            : (data.market_stream_running ? "Finam WS: переподключение" : "Finam WS: не подключён");
+        const losses = Number.isFinite(Number(data.loss_streak)) ? Math.max(0, Number(data.loss_streak)) : 0;
+        const limit = Number.isFinite(Number(data.loss_streak_limit)) ? Math.max(1, Number(data.loss_streak_limit)) : 5;
+        const metaParts = [`Режим: ${modeText}`, marketText, `Убыточная серия: ${losses}/${limit}`];
+        const remaining = Number(data.pause_remaining_seconds);
+        if (status === "PAUSED" && Number.isFinite(remaining) && remaining > 0) {
+            metaParts.push(`Осталось паузы: ${Math.ceil(remaining)} сек.`);
+        }
+        meta.textContent = metaParts.join(" · ");
+    }
 
     function updateBalanceUI(data) {
         // Используем фактический депозит, переданный backend; fallback только для старого API.
