@@ -504,7 +504,7 @@ class ShadowForwardTrackerTests(unittest.TestCase):
     def test_shadow_separates_near_pass_cost_and_spread_bands(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
         metrics = quote_metrics(100.0, 100.1)
-        metrics["bar_atr_pct"] = 0.38
+        metrics["bar_atr_pct"] = 0.27
         metrics["spread_pct"] = 0.10
         shadow_result = {
             "score": 82.0,
@@ -539,7 +539,7 @@ class ShadowForwardTrackerTests(unittest.TestCase):
     def test_shadow_marks_cost_and_spread_gate_crossings_as_near_fail(self) -> None:
         tracker = ShadowForwardTracker(horizons_seconds=(60,))
         metrics = quote_metrics(100.0, 100.1)
-        metrics["bar_atr_pct"] = 0.28
+        metrics["bar_atr_pct"] = 0.21
         with (
             patch.dict("os.environ", {
                 "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",

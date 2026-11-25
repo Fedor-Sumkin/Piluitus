@@ -127,7 +127,11 @@ class FunnelTurnoverTests(unittest.TestCase):
         screener._refresh_selection(100.0)
 
         self.assertEqual(screener.selected_tickers, ["FRESH"])
-        self.assertIn("STALE", screener.get_status()["ranking"])
+        self.assertIn("STALE", screener._ranking)
+        self.assertLess(
+            screener._ranking["STALE"]["score"],
+            screener._ranking["FRESH"]["score"],
+        )
 
 
 if __name__ == "__main__":
