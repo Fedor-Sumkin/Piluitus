@@ -131,7 +131,7 @@ class PaperSellQualityGateTests(unittest.TestCase):
         metrics["order_book_valid"] = 0.0
         with patch.dict("os.environ", {
             "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",
-            "PILUITUS_PAPER_SLIPPAGE_BPS": "0",
+            "PILUITUS_PAPER_SLIPPAGE_BPS": "1.0",
             "PILUITUS_MAX_ENTRY_COST_TO_ATR_RATIO": "0.50",
         }, clear=False):
             valid, reason = validate_entry_evidence("BUY", metrics, paper_mode=True)
@@ -143,7 +143,7 @@ class PaperSellQualityGateTests(unittest.TestCase):
         metrics["order_book_age_sec"] = 2.5
         with patch.dict("os.environ", {
             "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",
-            "PILUITUS_PAPER_SLIPPAGE_BPS": "0",
+            "PILUITUS_PAPER_SLIPPAGE_BPS": "1.0",
             "PILUITUS_MAX_ENTRY_COST_TO_ATR_RATIO": "0.50",
         }, clear=False):
             valid, reason = validate_entry_evidence("BUY", metrics, paper_mode=True)
@@ -155,7 +155,7 @@ class PaperSellQualityGateTests(unittest.TestCase):
         metrics["bar_atr_pct"] = 0.15
         with patch.dict("os.environ", {
             "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",
-            "PILUITUS_PAPER_SLIPPAGE_BPS": "0",
+            "PILUITUS_PAPER_SLIPPAGE_BPS": "1.0",
             "PILUITUS_MAX_ENTRY_COST_TO_ATR_RATIO": "0.50",
         }, clear=False):
             valid, reason = validate_entry_evidence("BUY", metrics, paper_mode=True)
@@ -166,7 +166,7 @@ class PaperSellQualityGateTests(unittest.TestCase):
         metrics = buy_metrics()
         with patch.dict("os.environ", {
             "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",
-            "PILUITUS_PAPER_SLIPPAGE_BPS": "0",
+            "PILUITUS_PAPER_SLIPPAGE_BPS": "1.0",
             "PILUITUS_MAX_ENTRY_COST_TO_ATR_RATIO": "0.50",
         }, clear=False):
             valid, reason = validate_entry_evidence("BUY", metrics, paper_mode=True)

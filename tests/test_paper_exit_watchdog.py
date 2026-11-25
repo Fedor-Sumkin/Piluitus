@@ -71,6 +71,41 @@ class PaperExitWatchdogTests(unittest.TestCase):
         self.assertEqual(scheduled, 0)
         engine.schedule_paper_position_monitor.assert_not_called()
 
+    def test_watchdog_logs_detailed_bbo_gap_once_per_throttle_window(self):
+        from types import SimpleNamespace
+        import time
+
+        engine = self._engine()
+        engine.paper_positions = {"SBER": engine.paper_positions["SBER"]}
+        engine.paper_exit_status_log_interval_sec = 300.0
+        engine._last_bbo_exit_warning_at = {}
+        now = time.monotonic()
+        engine.screener = SimpleNamespace(
+            quotes={
+                "SBER": {
+                    "bid": 99.5,
+                    "ask": 99.6,
+                    "last_bid_confirmed_seen": now - 10.0,
+                    "last_ask_confirmed_seen": now - 0.1,
+                    "last_order_book_seen": now - 10.0,
+                    "order_book_valid": False,
+                    "order_book_last_reason": "WAITING_FOR_SNAPSHOT",
+                }
+            },
+            bbo_max_age_sec=2.0,
+        )
+        engine._latest_fresh_exit_quote.return_value = None
+
+        with patch("execution.execution_layer.logger.warning") as warning:
+            self.assertEqual(engine.monitor_open_paper_positions_once(object()), 0)
+            self.assertEqual(engine.monitor_open_paper_positions_once(object()), 0)
+
+        warning.assert_called_once()
+        message = warning.call_args.args[0]
+        self.assertIn("[PAPER EXIT WATCHDOG WAIT]", message)
+        self.assertIn("book_reason=%s", message)
+        self.assertIn("фиктивное исполнение", message)
+
     def test_watchdog_is_disabled_outside_paper_mode_or_during_maintenance(self):
         engine = self._engine()
         engine.paper_mode = False

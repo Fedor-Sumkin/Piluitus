@@ -217,6 +217,78 @@ def validate_spread_to_atr(
     return True, f"Spread/ATR пройден: ratio={ratio:.3f} при лимите {limit:.2f}."
 
 
+def _paper_m1_queue_conflict(direction: str, metrics: dict[str, Any]) -> str | None:
+    """Reject PAPER entries against a confirmed opposite M1 trend or persistent queue."""
+    side = str(direction or "").strip().upper()
+    if side not in {"BUY", "SELL"} or not isinstance(metrics, dict):
+        return None
+
+    # Native screener fields and the equivalent LLM diagnostic aliases.
+    trend_up = max(_num(metrics, "bar_trend_up", 0.0), _num(metrics, "m1_trend_up", 0.0))
+    trend_down = max(_num(metrics, "bar_trend_down", 0.0), _num(metrics, "m1_trend_down", 0.0))
+    up_confirmed = trend_up >= 0.5
+    down_confirmed = trend_down >= 0.5
+    if up_confirmed and down_confirmed:
+        return (
+            f"PAPER {side} заблокирован: M1-тренд противоречив "
+            f"(up={trend_up:.0f}, down={trend_down:.0f}); направление не подтверждено."
+        )
+    if side == "BUY" and down_confirmed:
+        return (
+            f"PAPER BUY заблокирован: подтверждён встречный M1-тренд вниз "
+            f"(bar_trend_down={trend_down:.0f}); импульс и поток сделок не отменяют "
+            "противоречие локального тренда."
+        )
+    if side == "SELL" and up_confirmed:
+        return (
+            f"PAPER SELL заблокирован: подтверждён встречный M1-тренд вверх "
+            f"(bar_trend_up={trend_up:.0f}); импульс и поток сделок не отменяют "
+            "противоречие локального тренда."
+        )
+
+    # Queue imbalance is a veto only when book data is fresh and statistically
+    # usable; a few isolated deltas or stale history are not treated as evidence.
+    if (
+        _num(metrics, "queue_imbalance_5s_available", 0.0) < 0.5
+        or _num(metrics, "queue_imbalance_available", 0.0) < 0.5
+        or _num(metrics, "order_book_valid", 0.0) < 0.5
+    ):
+        return None
+    queue_age = _num(metrics, "queue_imbalance_5s_age_sec", -1.0)
+    queue_coverage = _num(metrics, "queue_imbalance_5s_coverage_sec", 0.0)
+    queue_samples = _num(metrics, "queue_imbalance_5s_samples", 0.0)
+    max_age = min(5.0, max(0.25, _num(metrics, "bbo_max_age_sec", 2.0)))
+    if (
+        not math.isfinite(queue_age) or queue_age < 0.0 or queue_age > max_age
+        or queue_coverage < 3.0 or queue_samples < 5.0
+    ):
+        return None
+    queue = _num(metrics, "queue_imbalance_5s", math.nan)
+    if not math.isfinite(queue):
+        return None
+    try:
+        threshold = float(os.getenv("PILUITUS_PAPER_OPPOSING_QUEUE_THRESHOLD", "0.15"))
+    except (TypeError, ValueError, OverflowError):
+        threshold = 0.15
+    if not math.isfinite(threshold):
+        threshold = 0.15
+    threshold = min(0.75, max(0.05, threshold))
+
+    if side == "BUY" and queue <= -threshold:
+        return (
+            "PAPER BUY заблокирован: устойчивый встречный дисбаланс стакана "
+            f"(queue_imbalance_5s={queue:+.3f}, порог=-{threshold:.2f}, "
+            f"coverage={queue_coverage:.2f}s, samples={queue_samples:.0f}, age={queue_age:.2f}s)."
+        )
+    if side == "SELL" and queue >= threshold:
+        return (
+            "PAPER SELL заблокирован: устойчивый встречный дисбаланс стакана "
+            f"(queue_imbalance_5s={queue:+.3f}, порог=+{threshold:.2f}, "
+            f"coverage={queue_coverage:.2f}s, samples={queue_samples:.0f}, age={queue_age:.2f}s)."
+        )
+    return None
+
+
 def validate_paper_directional_quality(
     direction: str,
     metrics: dict[str, Any],
@@ -277,6 +349,10 @@ def validate_paper_directional_quality(
             f"PAPER {side} заблокирован: {state_label} направленное подтверждение "
             "цены/VWAP не допускает открытие позиции."
         )
+
+    microstructure_conflict = _paper_m1_queue_conflict(side, metrics)
+    if microstructure_conflict:
+        return False, microstructure_conflict
 
     if _num(metrics, "trade_data_ready") < 0.5:
         participant = "покупателей" if side == "BUY" else "продавцов"
@@ -517,6 +593,14 @@ def validate_paper_market_quality(
         metrics["entry_minimum_favorable_move_pct"] = economics.get("minimum_favorable_move_pct")
         metrics["entry_cost_to_atr_limit"] = economics.get("max_cost_to_atr_ratio")
         metrics["entry_cost_model_status"] = economics.get("cost_model_status")
+    if economics.get("available") and economics.get("cost_model_status") != "CONFIGURED":
+        return False, (
+            "PAPER-вход заблокирован: модель издержек неполная "
+            f"(status={economics.get('cost_model_status', 'UNKNOWN')}, "
+            f"комиссия={commission:.4f}%/сторону, проскальзывание={slippage:.2f} bps/сторону). "
+            "Для PAPER задайте обоснованное ненулевое значение "
+            "PILUITUS_PAPER_SLIPPAGE_BPS; нулевое допущение не считается полной моделью."
+        )
     if not economics.get("available") or not economics.get("eligible"):
         ratio = economics.get("cost_to_atr_ratio")
         ratio_text = f"{float(ratio):.3f}" if isinstance(ratio, (int, float)) and math.isfinite(float(ratio)) else "н/д"

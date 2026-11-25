@@ -1777,12 +1777,28 @@ class BaseExecutionEngine:
                     atr_pct=atr_pct_for_costs,
                     max_cost_to_atr_ratio=max_cost_to_atr,
                 )
-                if not entry_economics.get("available") or not entry_economics.get("eligible"):
+                cost_model_status = str(entry_economics.get("cost_model_status", "UNKNOWN"))
+                if (
+                    not entry_economics.get("available")
+                    or cost_model_status != "CONFIGURED"
+                    or not entry_economics.get("eligible")
+                ):
+                    if cost_model_status != "CONFIGURED":
+                        block_reason = (
+                            "INCOMPLETE_COST_MODEL: задайте обоснованное ненулевое "
+                            "PILUITUS_PAPER_SLIPPAGE_BPS; PAPER-вход с нулевым допущением запрещён"
+                        )
+                    else:
+                        block_reason = str(entry_economics.get("reason", "ENTRY_ECONOMICS_UNAVAILABLE"))
+                    limit_value = _finite_or_default(
+                        entry_economics.get("max_cost_to_atr_ratio", max_cost_to_atr),
+                        max_cost_to_atr,
+                    )
                     message = (
-                        "PAPER_ENTRY_COST_BLOCK: round-trip издержки слишком велики или не измерены "
-                        f"(cost/ATR={entry_economics.get('cost_to_atr_ratio')}, "
-                        f"limit={entry_economics.get('max_cost_to_atr_ratio', max_cost_to_atr):.2f}, "
-                        f"reason={entry_economics.get('reason', 'UNKNOWN')})."
+                        "PAPER_ENTRY_COST_BLOCK: round-trip издержки слишком велики, "
+                        "не измерены или модель неполная "
+                        f"(status={cost_model_status}, cost/ATR={entry_economics.get('cost_to_atr_ratio')}, "
+                        f"limit={limit_value:.2f}, reason={block_reason})."
                     )
                     logger.warning("🧱 [PAPER ENTRY ECONOMICS BLOCK] %s %s: %s", side, ticker, message)
                     return {"status": "BLOCKED", "message": message}
@@ -2222,6 +2238,74 @@ class BaseExecutionEngine:
 
             quote = self._latest_fresh_exit_quote(ticker, side)
             if not isinstance(quote, Mapping):
+                # Never turn a stale mark into a simulated close. Expose the
+                # missing executable side and book state at a bounded log rate.
+                now = time.monotonic()
+                warnings = getattr(self, "_last_bbo_exit_warning_at", None)
+                if not isinstance(warnings, dict):
+                    warnings = {}
+                    self._last_bbo_exit_warning_at = warnings
+                try:
+                    interval = float(getattr(self, "paper_exit_status_log_interval_sec", 300.0))
+                except (TypeError, ValueError, OverflowError):
+                    interval = 300.0
+                if not math.isfinite(interval) or interval <= 0.0:
+                    interval = 300.0
+                if now - _finite_or_default(warnings.get(ticker), 0.0) >= interval:
+                    screener = getattr(self, "screener", None)
+                    quote_cache = getattr(screener, "quotes", {})
+                    raw_quote = quote_cache.get(ticker, {}) if isinstance(quote_cache, Mapping) else {}
+                    quote_state = _as_string_mapping(raw_quote) or {}
+
+                    def _age_label(seen_key: str, fallback_key: str) -> tuple[float, str]:
+                        seen = _finite_or_default(
+                            quote_state.get(seen_key, quote_state.get(fallback_key, 0.0)), 0.0
+                        )
+                        age = now - seen if seen > 0.0 else math.inf
+                        label = f"{age:.2f}s" if math.isfinite(age) and age >= 0.0 else "нет/некорректно"
+                        return age, label
+
+                    bid = _finite_or_default(quote_state.get("bid"), 0.0)
+                    ask = _finite_or_default(quote_state.get("ask"), 0.0)
+                    bid_age, bid_age_text = _age_label("last_bid_confirmed_seen", "last_bid_seen")
+                    ask_age, ask_age_text = _age_label("last_ask_confirmed_seen", "last_ask_seen")
+                    exec_side = "BID" if side == "BUY" else "ASK"
+                    exec_age_text = bid_age_text if side == "BUY" else ask_age_text
+                    max_age = _finite_or_default(
+                        getattr(screener, "bbo_max_age_sec", os.getenv("PILUITUS_BBO_MAX_AGE_SEC", "2.0")),
+                        2.0,
+                    )
+                    if not math.isfinite(max_age) or max_age <= 0.0:
+                        max_age = 2.0
+                    max_age = min(5.0, max(0.25, max_age))
+                    book_seen = _finite_or_default(
+                        quote_state.get(
+                            "last_order_book_seen",
+                            quote_state.get("last_order_book_received", quote_state.get("last_order_book_event_seen", 0.0)),
+                        ),
+                        0.0,
+                    )
+                    book_age = now - book_seen if book_seen > 0.0 else math.inf
+                    book_age_text = (
+                        f"{book_age:.2f}s" if math.isfinite(book_age) and book_age >= 0.0
+                        else "нет/некорректно"
+                    )
+                    book_valid = bool(quote_state.get("order_book_valid", False))
+                    book_reason = str(
+                        quote_state.get("order_book_last_reason")
+                        or quote_state.get("last_order_book_reason")
+                        or ("NO_ORDER_BOOK_STATE" if not quote_state else "UNKNOWN")
+                    )
+                    crossed = bool(bid > 0.0 and ask > 0.0 and ask < bid)
+                    logger.warning(
+                        "[PAPER EXIT WATCHDOG WAIT] ticker=%s side=%s executable_side=%s "
+                        "bid=%.6f bid_age=%s ask=%.6f ask_age=%s required_side_age=%s "
+                        "max_age=%.2fs crossed=%s book_valid=%s book_age=%s book_reason=%s; "
+                        "позиция сохранена, фиктивное исполнение/закрытие не выполняется.",
+                        ticker, side, exec_side, bid, bid_age_text, ask, ask_age_text,
+                        exec_age_text, max_age, crossed, book_valid, book_age_text, book_reason,
+                    )
+                    warnings[ticker] = now
                 continue
             executable_price = _finite_or_default(
                 quote.get("executable_price"), 0.0

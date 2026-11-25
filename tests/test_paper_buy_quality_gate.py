@@ -29,12 +29,14 @@ def buy_metrics() -> dict[str, float]:
 
 
 class PaperBuyQualityGateTests(unittest.TestCase):
-    def _validate(self, metrics: dict[str, float], *, enabled: str = "true"):
+    def _validate(
+        self, metrics: dict[str, float], *, enabled: str = "true", slippage: str = "1.0"
+    ):
         with patch.dict("os.environ", {
             "PILUITUS_PAPER_BUY_STRICT_GATE": enabled,
             "PILUITUS_PAPER_BUY_MIN_FLOW_IMBALANCE": "0.10",
             "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",
-            "PILUITUS_PAPER_SLIPPAGE_BPS": "0",
+            "PILUITUS_PAPER_SLIPPAGE_BPS": slippage,
             "PILUITUS_MAX_ENTRY_COST_TO_ATR_RATIO": "0.50",
         }, clear=False):
             return validate_entry_evidence("BUY", metrics, paper_mode=True)
@@ -76,6 +78,54 @@ class PaperBuyQualityGateTests(unittest.TestCase):
 
         self.assertFalse(valid)
         self.assertIn("поток сделок устарел", reason)
+
+    def test_buy_blocks_confirmed_opposite_m1_trend(self) -> None:
+        metrics = buy_metrics()
+        metrics["bar_trend_down"] = 1.0
+        metrics["bar_trend_up"] = 0.0
+
+        valid, reason = self._validate(metrics)
+
+        self.assertFalse(valid)
+        self.assertIn("встречный M1-тренд вниз", reason)
+
+    def test_buy_blocks_persistent_opposing_five_second_queue(self) -> None:
+        metrics = buy_metrics()
+        metrics.update({
+            "queue_imbalance_5s_available": 1.0,
+            "queue_imbalance_available": 1.0,
+            "queue_imbalance_5s": -0.70,
+            "queue_imbalance_5s_age_sec": 0.2,
+            "queue_imbalance_5s_coverage_sec": 4.5,
+            "queue_imbalance_5s_samples": 12.0,
+        })
+
+        valid, reason = self._validate(metrics)
+
+        self.assertFalse(valid)
+        self.assertIn("устойчивый встречный дисбаланс стакана", reason)
+
+    def test_buy_ignores_short_or_stale_queue_history(self) -> None:
+        metrics = buy_metrics()
+        metrics.update({
+            "queue_imbalance_5s_available": 1.0,
+            "queue_imbalance_available": 1.0,
+            "queue_imbalance_5s": -0.70,
+            "queue_imbalance_5s_age_sec": 4.5,
+            "queue_imbalance_5s_coverage_sec": 1.0,
+            "queue_imbalance_5s_samples": 2.0,
+        })
+
+        valid, reason = self._validate(metrics)
+
+        self.assertTrue(valid, reason)
+
+    def test_buy_blocks_incomplete_zero_slippage_cost_model(self) -> None:
+        valid, reason = self._validate(buy_metrics(), slippage="0")
+
+        self.assertFalse(valid)
+        self.assertIn("модель издержек неполная", reason)
+        self.assertIn("PILUITUS_PAPER_SLIPPAGE_BPS", reason)
 
     def test_buy_passes_with_aligned_direction_and_fresh_buyer_flow(self) -> None:
         valid, reason = self._validate(buy_metrics())
