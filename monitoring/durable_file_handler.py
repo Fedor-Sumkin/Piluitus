@@ -143,8 +143,11 @@ class DurableFileHandler(logging.FileHandler):
             message = self.format(record)
             payload = message + self.terminator
             if self.max_bytes > 0 and self.stream is not None:
+                # TextIOWrapper translates newline characters to os.linesep
+                # on Windows, so estimate the bytes that will actually hit disk.
+                disk_payload = payload.replace("\\n", os.linesep)
                 encoded_size = len(
-                    payload.encode(
+                    disk_payload.encode(
                         self.stream.encoding or "utf-8",
                         errors=self.stream.errors or "strict",
                     )
