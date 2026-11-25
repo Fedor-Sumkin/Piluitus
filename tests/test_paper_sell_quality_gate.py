@@ -121,6 +121,9 @@ class PaperSellQualityGateTests(unittest.TestCase):
         with patch.dict("os.environ", {
             "PAPER_TRADING": "true",
             "PILUITUS_PAPER_SELL_STRICT_GATE": "true",
+            "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",
+            "PILUITUS_PAPER_SLIPPAGE_BPS": "1.0",
+            "PILUITUS_MAX_ENTRY_COST_TO_ATR_RATIO": "0.50",
         }, clear=False):
             valid, reason = validate_entry_evidence("SELL", metrics, paper_mode=True)
         self.assertFalse(valid)

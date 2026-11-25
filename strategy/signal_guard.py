@@ -233,17 +233,18 @@ def _paper_m1_queue_conflict(direction: str, metrics: dict[str, Any]) -> str | N
             f"PAPER {side} заблокирован: M1-тренд противоречив "
             f"(up={trend_up:.0f}, down={trend_down:.0f}); направление не подтверждено."
         )
-    if side == "BUY" and down_confirmed:
+    pattern_direction = _fresh_bar_pattern_direction(metrics)
+    if side == "BUY" and down_confirmed and pattern_direction != "BUY":
         return (
             f"PAPER BUY заблокирован: подтверждён встречный M1-тренд вниз "
-            f"(bar_trend_down={trend_down:.0f}); импульс и поток сделок не отменяют "
-            "противоречие локального тренда."
+            f"(bar_trend_down={trend_down:.0f}); исключение допускается только "
+            "при свежем подтверждённом M1 BUY breakout/pullback-паттерне."
         )
-    if side == "SELL" and up_confirmed:
+    if side == "SELL" and up_confirmed and pattern_direction != "SELL":
         return (
             f"PAPER SELL заблокирован: подтверждён встречный M1-тренд вверх "
-            f"(bar_trend_up={trend_up:.0f}); импульс и поток сделок не отменяют "
-            "противоречие локального тренда."
+            f"(bar_trend_up={trend_up:.0f}); исключение допускается только "
+            "при свежем подтверждённом M1 SELL breakout/pullback-паттерне."
         )
 
     # Queue imbalance is a veto only when book data is fresh and statistically

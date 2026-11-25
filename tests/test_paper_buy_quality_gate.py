@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import unittest
 from unittest.mock import patch
 
@@ -88,6 +89,23 @@ class PaperBuyQualityGateTests(unittest.TestCase):
 
         self.assertFalse(valid)
         self.assertIn("встречный M1-тренд вниз", reason)
+
+    def test_buy_allows_fresh_confirmed_pullback_against_m1_trend(self) -> None:
+        metrics = buy_metrics()
+        metrics.update({
+            "bar_trend_down": 1.0,
+            "bar_trend_up": 0.0,
+            "bar_pattern_confirmed": 1.0,
+            "bar_pattern_name": "M1_EMA_PULLBACK_BUY",
+            "bar_pullback_buy": 1.0,
+            "bar_pattern_direction_code": 1.0,
+            "_bar_pattern_signal_at_monotonic": time.monotonic(),
+        })
+
+        valid, reason = self._validate(metrics)
+
+        self.assertTrue(valid, reason)
+        self.assertIn("PAPER BUY прошёл строгую проверку", reason)
 
     def test_buy_blocks_persistent_opposing_five_second_queue(self) -> None:
         metrics = buy_metrics()
