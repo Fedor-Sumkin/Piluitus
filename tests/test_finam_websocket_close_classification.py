@@ -1,9 +1,10 @@
-"""Regression tests for classifying normal Finam WebSocket closes."""
+"""Regression tests for Finam WebSocket state and close classification."""
 from types import SimpleNamespace
 import logging
 import unittest
 
 from exchange.finam_client import (
+    FinamBrokerClient,
     _websocket_close_code,
     _websocket_disconnect_log_level,
 )
@@ -31,11 +32,7 @@ class FinamWebSocketCloseClassificationTests(unittest.TestCase):
         self.assertEqual(_websocket_disconnect_log_level(exc), logging.ERROR)
 
     def test_dashboard_connection_flag_defaults_to_false_on_broker(self) -> None:
-        from exchange.finam_client import FinamClient
-
-        client = FinamClient.__new__(FinamClient)
-        client.is_ws_running = False
-        client._market_stream_connected = False
+        client = FinamBrokerClient(token="test-token")
 
         self.assertFalse(client._market_stream_connected)
         client._market_stream_connected = True
