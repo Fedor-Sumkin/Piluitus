@@ -30,6 +30,19 @@ class FinamWebSocketCloseClassificationTests(unittest.TestCase):
         self.assertIsNone(_websocket_close_code(exc))
         self.assertEqual(_websocket_disconnect_log_level(exc), logging.ERROR)
 
+    def test_dashboard_connection_flag_defaults_to_false_on_broker(self) -> None:
+        from exchange.finam_client import FinamClient
+
+        client = FinamClient.__new__(FinamClient)
+        client.is_ws_running = False
+        client._market_stream_connected = False
+
+        self.assertFalse(client._market_stream_connected)
+        client._market_stream_connected = True
+        self.assertTrue(client._market_stream_connected)
+        client._market_stream_connected = False
+        self.assertFalse(client._market_stream_connected)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -189,6 +189,9 @@ class FinamBrokerClient:
         self.account_details: dict[str, dict[str, Any]] = {}
         self.client: Any = None
         self.is_ws_running = False
+        # True only after the current Finam socket has confirmed HANDSHAKE_SUCCESS.
+        # The dashboard reads this separately from the reconnect-loop running flag.
+        self._market_stream_connected = False
         # Local level maps for ORDER_BOOK deltas.
         self._order_book_state: dict[str, dict[str, Any]] = {}
         # Last parser outcome distinguishes a valid delta with no BBO change
@@ -1980,6 +1983,8 @@ class FinamBrokerClient:
         refresh_token_before_retry = False
 
         while self.is_ws_running:
+            # Never carry a previous socket's state into a reconnect attempt.
+            self._market_stream_connected = False
             try:
                 if refresh_token_before_retry:
                     await self.connect()
@@ -2035,6 +2040,7 @@ class FinamBrokerClient:
                                 if isinstance(event_info, dict) else ""
                             )
                             if event_name == "HANDSHAKE_SUCCESS":
+                                self._market_stream_connected = True
                                 logger.info("✅ Finam WS: авторизация успешна (HANDSHAKE_SUCCESS)")
                                 break
                             logger.info("Событие Finam WS до подписки: %s", event_info)
@@ -3070,8 +3076,10 @@ class FinamBrokerClient:
                         raise RuntimeError("Finam WebSocket завершил поток без команды остановки.")
 
             except asyncio.CancelledError:
+                self._market_stream_connected = False
                 raise
             except Exception as exc:
+                self._market_stream_connected = False
                 if not self.is_ws_running:
                     break
 
@@ -3124,6 +3132,7 @@ class FinamBrokerClient:
 
     async def stop_market_data_stream(self):
         self.is_ws_running = False
+        self._market_stream_connected = False
 
     async def refresh_order_book_snapshot(self, ticker: str, queue: asyncio.Queue) -> bool:
         """Fetch a coherent control snapshot; REST sizes remain informational only."""
