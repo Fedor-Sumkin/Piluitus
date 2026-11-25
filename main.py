@@ -3722,6 +3722,44 @@ async def _finam_metadata_refresh_loop() -> None:
         await asyncio.sleep(retry_delay)
 
 
+async def _paper_exit_watchdog_loop() -> None:
+    """Periodically retry PAPER exits independently of market-event delivery."""
+    if not bool(getattr(execution_engine, "paper_mode", True)):
+        return
+
+    try:
+        interval_sec = float(
+            os.getenv("PILUITUS_PAPER_EXIT_WATCHDOG_INTERVAL_SEC", "1.0")
+        )
+    except (TypeError, ValueError, OverflowError):
+        interval_sec = 1.0
+    if not math.isfinite(interval_sec) or interval_sec <= 0.0:
+        interval_sec = 1.0
+    interval_sec = min(5.0, max(0.25, interval_sec))
+
+    logger.info(
+        "[PAPER EXIT WATCHDOG] active; interval=%.2fs; retries require a fresh executable BBO.",
+        interval_sec,
+    )
+    while True:
+        try:
+            scheduled = execution_engine.monitor_open_paper_positions_once(db_manager)
+            if scheduled:
+                logger.debug(
+                    "[PAPER EXIT WATCHDOG] fresh executable BBO rechecked for %d open position(s).",
+                    scheduled,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "[PAPER EXIT WATCHDOG] retry cycle failed: %s",
+                type(exc).__name__,
+                exc_info=True,
+            )
+        await asyncio.sleep(interval_sec)
+
+
 async def _start_tables_sync_loop():
     """Периодически обновляет позиции и фактическую оценку задействованного капитала."""
     logger.info("📊 Воркер синхронизации таблиц и капитала запущен.")
@@ -3865,6 +3903,8 @@ async def lifespan(app: FastAPI):
     _spawn_background(_finam_metadata_refresh_loop(), name="finam-metadata-refresh")
     _spawn_background(_start_news_updater(), name="news-updater")
     _spawn_background(_start_tables_sync_loop(), name="tables-sync")
+    if bool(getattr(execution_engine, "paper_mode", True)):
+        _spawn_background(_paper_exit_watchdog_loop(), name="paper-exit-watchdog")
 
     import tg_bot as tb
     tb.global_broker_ref = broker
