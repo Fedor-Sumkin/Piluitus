@@ -2112,9 +2112,16 @@ class BaseExecutionEngine:
             if not math.isfinite(executable_price) or executable_price <= 0.0:
                 continue
 
+            # Keep last-trade MFE/MAE accounting separate from executable BBO.
+            # The quote above is only a freshness gate; monitor_paper_positions()
+            # independently reads the executable Bid/Ask again before exit logic.
+            observed_price = self._latest_price(ticker, trade)
+            if not math.isfinite(observed_price) or observed_price <= 0.0:
+                continue
+
             self.schedule_paper_position_monitor(
                 ticker,
-                executable_price,
+                observed_price,
                 db,
                 event_source="WATCHDOG",
             )
