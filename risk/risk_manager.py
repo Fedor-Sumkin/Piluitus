@@ -1042,7 +1042,7 @@ class RiskManager:
 
     def calculate_lot_size(self, ticker: str, current_price: float, atr_stop: float) -> int:
         """Backward-compatible lot-count API."""
-        lots, _reason = self.calculate_lot_size_with_reason(ticker, current_price, atr_stop)
+        lots, _reason = RiskManager.calculate_lot_size_with_reason(self, ticker, current_price, atr_stop)
         return lots
 
 if __name__ == "__main__":
