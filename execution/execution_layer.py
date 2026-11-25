@@ -339,6 +339,22 @@ class BaseExecutionEngine:
         except (TypeError, ValueError):
             self.shadow_be_enabled = True
             self.shadow_be_arm_r = 1.0
+        try:
+            self.paper_breakeven_enabled = bool(
+                getattr(Settings, "PAPER_BREAKEVEN_ENABLED", True)
+            )
+            self.paper_breakeven_arm_r = min(
+                3.0,
+                max(
+                    0.25,
+                    _finite_or_default(
+                        getattr(Settings, "PAPER_BREAKEVEN_ARM_R", 1.0), 1.0
+                    ),
+                ),
+            )
+        except (TypeError, ValueError, OverflowError):
+            self.paper_breakeven_enabled = True
+            self.paper_breakeven_arm_r = 1.0
 
         # Fees are explicit configuration: never guess the user's Finam tariff.
         # Percentage is charged on each side (entry and exit). Slippage is an
@@ -418,7 +434,8 @@ class BaseExecutionEngine:
 
         logger.info(
             "🛡️ [PORTFOLIO GUARD] capital=%.2f ₽ gross_cap=%.0f%% single_position_cap=%.0f%% "
-            "open_stop_risk_cap=%.0f%% stop_cooldown=%.0fs repeat_SL=%d/%.0fs->%.0fs shadow_BE=%s@%.2fR",
+            "open_stop_risk_cap=%.0f%% stop_cooldown=%.0fs repeat_SL=%d/%.0fs->%.0fs "
+            "shadow_BE=%s@%.2fR paper_BE=%s@%.2fR",
             self.initial_capital,
             self.max_gross_exposure_pct * 100,
             self.max_single_position_pct * 100,
@@ -426,6 +443,7 @@ class BaseExecutionEngine:
             self.stop_loss_cooldown_sec,
             self.repeat_stop_limit, self.repeat_stop_window_sec,
             self.repeat_stop_cooldown_sec, self.shadow_be_enabled, self.shadow_be_arm_r,
+            self.paper_mode and self.paper_breakeven_enabled, self.paper_breakeven_arm_r,
         )
         if self.paper_mode:
             logger.info("🛡️ РЕЖИМ АГЕНТА: [PAPER TRADING] — Симуляция ордеров через Redis ОЗУ.")
@@ -1259,6 +1277,95 @@ class BaseExecutionEngine:
             raw_bbo = required_fill / (1.0 + slip_rate)
         return raw_bbo if math.isfinite(raw_bbo) and raw_bbo > 0.0 else 0.0
 
+    @staticmethod
+    def _round_paper_breakeven_stop(ticker: str, side: str, raw_price: float) -> float:
+        """Round a net-BE stop conservatively to the instrument's Finam price tick."""
+        price = _finite_or_default(raw_price, 0.0)
+        direction = str(side or "").strip().upper()
+        if price <= 0.0 or direction not in {"BUY", "SELL"}:
+            return 0.0
+        metadata_obj = ASSET_METADATA.get(str(ticker or "").strip().upper(), {})
+        metadata = metadata_obj if isinstance(metadata_obj, Mapping) else {}
+        tick = _finite_or_default(metadata.get("price_tick"), 0.0)
+        decimals = int(_finite_or_default(metadata.get("decimals"), 6.0))
+        decimals = max(0, min(8, decimals))
+        if math.isfinite(tick) and tick > 0.0:
+            units = price / tick
+            ticks = (
+                math.ceil(units - 1e-10)
+                if direction == "BUY"
+                else math.floor(units + 1e-10)
+            )
+            rounded = ticks * tick
+        else:
+            rounded = round(price, decimals)
+        return round(rounded, decimals) if math.isfinite(rounded) and rounded > 0.0 else 0.0
+
+    def _arm_paper_breakeven_stop(
+        self,
+        ticker: str,
+        trade: TradeRecord,
+        executable_exit_price: float,
+    ) -> float | None:
+        """Tighten only a PAPER stop to estimated net break-even after the R threshold."""
+        if (
+            not bool(getattr(self, "paper_breakeven_enabled", False))
+            or bool(trade.get("paper_breakeven_armed"))
+            or str(trade.get("pending_exit_reason") or "").upper() in {"STOP_LOSS", "TAKE_PROFIT"}
+        ):
+            return None
+        side = str(trade.get("side") or "").strip().upper()
+        entry = _finite_or_default(trade.get("entry_price"), 0.0)
+        current_stop = _finite_or_default(trade.get("stop_loss"), 0.0)
+        target = _finite_or_default(trade.get("take_profit"), 0.0)
+        market_price = _finite_or_default(executable_exit_price, 0.0)
+        quantity = int(_finite_or_default(trade.get("volume"), 0.0))
+        if quantity <= 0:
+            quantity = int(_finite_or_default(trade.get("lots"), 0.0)) * max(
+                1, int(_finite_or_default(trade.get("lot_size"), 1.0))
+            )
+        if (
+            side not in {"BUY", "SELL"} or entry <= 0.0 or current_stop <= 0.0
+            or target <= 0.0 or market_price <= 0.0 or quantity <= 0
+        ):
+            return None
+        raw_stop = self._calculate_shadow_be_raw_trigger_price(
+            entry,
+            side,
+            quantity,
+            _finite_or_default(trade.get("entry_commission_rub"), 0.0),
+            _finite_or_default(
+                trade.get("commission_pct_per_side"),
+                getattr(self, "paper_commission_pct", 0.0354),
+            ),
+            _finite_or_default(getattr(self, "paper_slippage_bps", 0.0), 0.0),
+        )
+        candidate = self._round_paper_breakeven_stop(ticker, side, raw_stop)
+        if candidate <= 0.0:
+            return None
+        if side == "BUY":
+            if not (candidate > current_stop and entry < candidate < min(market_price, target)):
+                return None
+        else:
+            if not (candidate < current_stop and max(market_price, target) < candidate < entry):
+                return None
+
+        initial_stop = _finite_or_default(
+            trade.get("initial_stop_loss"), current_stop
+        )
+        trade.update({
+            "initial_stop_loss": initial_stop,
+            "stop_loss": candidate,
+            "paper_breakeven_armed": True,
+            "paper_breakeven_stop_price": candidate,
+            "paper_breakeven_raw_stop_price": raw_stop,
+            "paper_breakeven_armed_timestamp": datetime.now().astimezone().isoformat(
+                timespec="milliseconds"
+            ),
+            "stop_loss_stage": "BREAKEVEN",
+        })
+        return candidate
+
     async def _hydrate_stop_loss_cooldown(
         self,
         db: DBManager,
@@ -1974,7 +2081,17 @@ class BaseExecutionEngine:
                     else "Finam ORDER_BOOK size unit not confirmed; raw quantity is informational only."
                 ),
                 "stop_loss": stop_loss,
+                "initial_stop_loss": stop_loss,
                 "take_profit": take_profit,
+                "paper_breakeven_enabled": bool(
+                    self.paper_mode and self.paper_breakeven_enabled
+                ),
+                "paper_breakeven_arm_r": self.paper_breakeven_arm_r,
+                "paper_breakeven_armed": False,
+                "paper_breakeven_stop_price": None,
+                "paper_breakeven_raw_stop_price": None,
+                "paper_breakeven_armed_timestamp": None,
+                "stop_loss_stage": "INITIAL",
                 "atr_at_entry": atr_at_entry,
                 "atr_periods_at_entry": atr_periods_at_entry,
                 "atr_multiplier": atr_multiplier_at_entry,
@@ -2750,6 +2867,12 @@ class BaseExecutionEngine:
             ),
             "observed_exit_price": observed_last_price,
             "exit_reason": exit_reason,
+            "exit_stop_stage": (
+                str(trade.get("stop_loss_stage") or "INITIAL")
+                if exit_reason == "STOP_LOSS" else None
+            ),
+            "paper_breakeven_armed": bool(trade.get("paper_breakeven_armed")),
+            "paper_breakeven_stop_price": trade.get("paper_breakeven_stop_price"),
             "exit_price_source": (
                 ("ORDER_BOOK_BID_DEPTH" if side == "BUY" else "ORDER_BOOK_ASK_DEPTH")
                 if depth_confirmed else ("BBO_BID" if side == "BUY" else "BBO_ASK")
@@ -3008,10 +3131,19 @@ class BaseExecutionEngine:
             default_tp = entry_price * (1.015 if side == "BUY" else 0.985)
             stop_loss = float(trade.get("stop_loss") or default_sl)
             take_profit = float(trade.get("take_profit") or default_tp)
-            if side == "BUY" and not (stop_loss < entry_price < take_profit):
+            initial_stop_loss = _finite_or_default(
+                trade.get("initial_stop_loss"), stop_loss
+            )
+            if side == "BUY" and not (
+                0.0 < initial_stop_loss < entry_price < take_profit
+                and initial_stop_loss <= stop_loss < take_profit
+            ):
                 logger.error("Некорректные SL/TP в PAPER-позиции %s; монитор закрытия остановлен.", order_id)
                 return
-            if side == "SELL" and not (take_profit < entry_price < stop_loss):
+            if side == "SELL" and not (
+                0.0 < take_profit < entry_price < initial_stop_loss
+                and take_profit < stop_loss <= initial_stop_loss
+            ):
                 logger.error("Некорректные SL/TP в PAPER-позиции %s; монитор закрытия остановлен.", order_id)
                 return
 
@@ -3040,15 +3172,22 @@ class BaseExecutionEngine:
                 float(trade.get("max_adverse_excursion_rub", 0.0) or 0.0),
                 observed_signed_rub,
             )
-            stop_distance = abs(entry_price - stop_loss)
-            stop_distance_pct = (stop_distance / entry_price * 100.0) if entry_price > 0 else 0.0
+            initial_stop_distance = abs(entry_price - initial_stop_loss)
+            initial_stop_distance_pct = (
+                initial_stop_distance / entry_price * 100.0
+                if entry_price > 0 else 0.0
+            )
             trade.update({
                 "max_favorable_excursion_pct": round(max_fav_pct, 6),
                 "max_adverse_excursion_pct": round(max_adv_pct, 6),
                 "max_favorable_excursion_rub": round(max_fav_rub, 4),
                 "max_adverse_excursion_rub": round(max_adv_rub, 4),
-                "max_favorable_excursion_r": round(max_fav_pct / stop_distance_pct, 4) if stop_distance_pct > 0 else 0.0,
-                "max_adverse_excursion_r": round(max_adv_pct / stop_distance_pct, 4) if stop_distance_pct > 0 else 0.0,
+                "max_favorable_excursion_r": round(
+                    max_fav_pct / initial_stop_distance_pct, 4
+                ) if initial_stop_distance_pct > 0 else 0.0,
+                "max_adverse_excursion_r": round(
+                    max_adv_pct / initial_stop_distance_pct, 4
+                ) if initial_stop_distance_pct > 0 else 0.0,
                 "observed_last_price": observed_last_price,
             })
 
@@ -3270,11 +3409,63 @@ class BaseExecutionEngine:
                 bbo_signed_rub,
             ), 4)
 
-            # Shadow-only break-even: track whether a stop moved to net BE after
-            # the configured R threshold would have triggered. Fixed SL/TP is untouched.
+            # Actual PAPER break-even: after the initial-risk R threshold, tighten
+            # the stop to net BE (both commission sides and configured slippage).
+            # Only a fresh executable BBO may arm it; persist before treating it as active.
+            favorable_r = (
+                bbo_signed_rub / (share_qty * initial_stop_distance)
+                if initial_stop_distance > 0.0 else 0.0
+            )
+            if (
+                bool(getattr(self, "paper_breakeven_enabled", False))
+                and not bool(trade.get("paper_breakeven_armed"))
+                and initial_stop_distance > 0.0
+                and favorable_r >= _finite_or_default(
+                    getattr(self, "paper_breakeven_arm_r", 1.0), 1.0
+                )
+            ):
+                previous_fields = {
+                    key: (key in trade, trade.get(key))
+                    for key in (
+                        "initial_stop_loss",
+                        "stop_loss",
+                        "paper_breakeven_armed",
+                        "paper_breakeven_stop_price",
+                        "paper_breakeven_raw_stop_price",
+                        "paper_breakeven_armed_timestamp",
+                        "stop_loss_stage",
+                    )
+                }
+                armed_stop = self._arm_paper_breakeven_stop(
+                    ticker, trade, executable_exit_price
+                )
+                if armed_stop is not None:
+                    try:
+                        await db.set_json(f"piluitus:trade:{order_id}", trade)
+                    except Exception as persist_exc:
+                        for key, (existed, old_value) in previous_fields.items():
+                            if existed:
+                                trade[key] = old_value
+                            else:
+                                trade.pop(key, None)
+                        logger.error(
+                            "[PAPER BREAKEVEN PERSIST] %s: stop was not activated because "
+                            "the updated position could not be persisted: %s",
+                            ticker, persist_exc, exc_info=True,
+                        )
+                    else:
+                        stop_loss = armed_stop
+                        logger.warning(
+                            "🛡️ [PAPER BREAKEVEN ARMED] %s %s: favorable=%.2fR "
+                            "net_BE_stop=%.6f raw=%.6f; previous_SL=%.6f; stage=BREAKEVEN.",
+                            ticker, side, favorable_r, armed_stop,
+                            _finite_or_default(trade.get("paper_breakeven_raw_stop_price"), 0.0),
+                            _finite_or_default(previous_fields["stop_loss"][1], 0.0),
+                        )
+
+            # Keep the former shadow BE as an independent benchmark for later
+            # analysis; its R denominator always remains the initial stop distance.
             if self.shadow_be_enabled:
-                stop_distance = abs(entry_price - stop_loss)
-                favorable_r = bbo_signed_rub / (share_qty * stop_distance) if stop_distance > 0.0 else 0.0
                 if not bool(trade.get("shadow_be_armed")) and favorable_r >= self.shadow_be_arm_r:
                     shadow_trigger = self._calculate_shadow_be_raw_trigger_price(
                         entry_price,
@@ -3291,7 +3482,7 @@ class BaseExecutionEngine:
                         trade["shadow_be_armed_timestamp"] = datetime.now().astimezone().isoformat(timespec="milliseconds")
                         logger.info(
                             "🧪 [SHADOW BE ARMED] %s %s: BBO достиг %.2fR; гипотетический net-BE stop=%.6f; "
-                            "фактические SL/TP не изменены.",
+                            "shadow benchmark; активный PAPER stop учитывается отдельно.",
                             ticker, side, favorable_r, shadow_trigger,
                         )
                 if bool(trade.get("shadow_be_armed")) and not bool(trade.get("shadow_be_triggered")):
@@ -3318,7 +3509,7 @@ class BaseExecutionEngine:
                         trade["shadow_be_estimated_net_pnl_rub"] = round(shadow_net, 4)
                         logger.info(
                             "🧪 [SHADOW BE TRIGGERED] %s %s: BBO=%.6f, гипотетический net PnL=%+.4f ₽; "
-                            "позиция продолжает жить по исходным SL/TP.",
+                            "позиция продолжает контролироваться активным PAPER SL/TP.",
                             ticker, side, executable_exit_price, shadow_net,
                         )
 

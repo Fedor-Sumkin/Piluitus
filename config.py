@@ -181,6 +181,14 @@ class Settings:
     PAPER_COMMISSION_PCT: float = min(
         1.0, max(0.0, float(os.getenv("PILUITUS_PAPER_COMMISSION_PCT", "0.0354")))
     )
+    # PAPER-only net break-even stop. The arm threshold is measured from the
+    # initial ATR stop distance; the active stop is rounded conservatively to MINSTEP.
+    PAPER_BREAKEVEN_ENABLED: bool = os.getenv(
+        "PILUITUS_PAPER_BREAKEVEN_ENABLED", "true"
+    ).strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    PAPER_BREAKEVEN_ARM_R: float = min(
+        3.0, max(0.25, float(os.getenv("PILUITUS_PAPER_BREAKEVEN_ARM_R", "1.0")))
+    )
     # Hard Moscow-time cutoff for new entries; open-position exits remain active.
     ENTRY_HARD_CUTOFF_MSK: str = os.getenv("PILUITUS_ENTRY_HARD_CUTOFF_MSK", "22:00").strip()
 

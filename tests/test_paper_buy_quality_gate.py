@@ -39,14 +39,24 @@ class PaperBuyQualityGateTests(unittest.TestCase):
         }, clear=False):
             return validate_entry_evidence("BUY", metrics, paper_mode=True)
 
-    def test_buy_requires_price_and_vwap_to_be_directionally_aligned(self) -> None:
+    def test_buy_accepts_neutral_vwap_when_price_impulse_and_buyer_flow_align(self) -> None:
         metrics = buy_metrics()
         metrics["price_vs_vwap_pct"] = 0.01
 
         valid, reason = self._validate(metrics)
 
+        self.assertTrue(valid, reason)
+        self.assertIn("нейтральном VWAP", reason)
+
+    def test_buy_blocks_neutral_vwap_without_directional_impulse_or_fresh_m1(self) -> None:
+        metrics = buy_metrics()
+        metrics["price_change_pct"] = 0.005
+        metrics["price_vs_vwap_pct"] = 0.01
+
+        valid, reason = self._validate(metrics)
+
         self.assertFalse(valid)
-        self.assertIn("PAPER BUY требует полного согласования", reason)
+        self.assertIn("свежего совпадающего M1-паттерна", reason)
 
     def test_buy_requires_fresh_positive_aggressor_flow(self) -> None:
         metrics = buy_metrics()

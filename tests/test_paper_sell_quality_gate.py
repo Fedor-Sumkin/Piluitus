@@ -49,8 +49,21 @@ class PaperSellQualityGateTests(unittest.TestCase):
         self.assertTrue(valid, reason)
         self.assertIn("строгую проверку", reason)
 
-    def test_neutral_vwap_is_not_enough_for_paper_sell(self) -> None:
+    def test_sell_accepts_neutral_vwap_when_price_impulse_and_seller_flow_align(self) -> None:
         metrics = sell_metrics()
+        metrics["price_vs_vwap_pct"] = -0.01
+        with patch.dict("os.environ", {
+            "PAPER_TRADING": "true",
+            "PILUITUS_PAPER_SELL_STRICT_GATE": "true",
+            "PILUITUS_PAPER_SELL_MIN_FLOW_IMBALANCE": "0.10",
+        }, clear=False):
+            valid, reason = validate_paper_sell_quality(metrics)
+        self.assertTrue(valid, reason)
+        self.assertIn("нейтральном VWAP", reason)
+
+    def test_sell_blocks_neutral_vwap_without_directional_impulse_or_fresh_m1(self) -> None:
+        metrics = sell_metrics()
+        metrics["price_change_pct"] = -0.005
         metrics["price_vs_vwap_pct"] = -0.01
         with patch.dict("os.environ", {
             "PAPER_TRADING": "true",
@@ -58,7 +71,7 @@ class PaperSellQualityGateTests(unittest.TestCase):
         }, clear=False):
             valid, reason = validate_paper_sell_quality(metrics)
         self.assertFalse(valid)
-        self.assertIn("полного согласования", reason)
+        self.assertIn("свежего совпадающего M1-паттерна", reason)
 
     def test_weak_or_opposing_aggressor_flow_blocks_paper_sell(self) -> None:
         metrics = sell_metrics()

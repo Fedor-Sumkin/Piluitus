@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from execution_layer import BaseExecutionEngine
 
@@ -52,6 +52,86 @@ class PaperExitTriggerTests(unittest.TestCase):
             "stop_loss": 101.0,
             "take_profit": 98.0,
         }
+
+    def test_paper_breakeven_rounds_long_stop_up_and_only_tightens(self):
+        self.engine.paper_breakeven_enabled = True
+        self.engine.paper_commission_pct = 0.0354
+        self.engine.paper_slippage_bps = 0.0
+        trade = {
+            "side": "BUY",
+            "entry_price": 100.0,
+            "stop_loss": 99.0,
+            "initial_stop_loss": 99.0,
+            "take_profit": 102.0,
+            "volume": 100,
+            "entry_commission_rub": 3.54,
+            "commission_pct_per_side": 0.0354,
+            "paper_breakeven_armed": False,
+        }
+        with patch.dict(
+            "execution.execution_layer.ASSET_METADATA",
+            {"TEST": {"price_tick": 0.01, "decimals": 2}},
+            clear=False,
+        ):
+            armed = self.engine._arm_paper_breakeven_stop("TEST", trade, 101.0)
+        self.assertEqual(armed, 100.08)
+        self.assertEqual(trade["stop_loss"], 100.08)
+        self.assertEqual(trade["stop_loss_stage"], "BREAKEVEN")
+        self.assertTrue(trade["paper_breakeven_armed"])
+        self.assertIsNone(
+            self.engine._arm_paper_breakeven_stop("TEST", trade, 101.0)
+        )
+
+    def test_paper_breakeven_rounds_short_stop_down_and_only_tightens(self):
+        self.engine.paper_breakeven_enabled = True
+        self.engine.paper_commission_pct = 0.0354
+        self.engine.paper_slippage_bps = 0.0
+        trade = {
+            "side": "SELL",
+            "entry_price": 100.0,
+            "stop_loss": 101.0,
+            "initial_stop_loss": 101.0,
+            "take_profit": 98.0,
+            "volume": 100,
+            "entry_commission_rub": 3.54,
+            "commission_pct_per_side": 0.0354,
+            "paper_breakeven_armed": False,
+        }
+        with patch.dict(
+            "execution.execution_layer.ASSET_METADATA",
+            {"TEST": {"price_tick": 0.01, "decimals": 2}},
+            clear=False,
+        ):
+            armed = self.engine._arm_paper_breakeven_stop("TEST", trade, 99.0)
+        self.assertEqual(armed, 99.92)
+        self.assertEqual(trade["stop_loss"], 99.92)
+        self.assertEqual(trade["stop_loss_stage"], "BREAKEVEN")
+        self.assertTrue(trade["paper_breakeven_armed"])
+
+    def test_paper_breakeven_does_not_arm_if_live_price_is_already_below_stop(self):
+        self.engine.paper_breakeven_enabled = True
+        self.engine.paper_commission_pct = 0.0354
+        self.engine.paper_slippage_bps = 0.0
+        trade = {
+            "side": "BUY",
+            "entry_price": 100.0,
+            "stop_loss": 99.0,
+            "initial_stop_loss": 99.0,
+            "take_profit": 102.0,
+            "volume": 100,
+            "entry_commission_rub": 3.54,
+            "commission_pct_per_side": 0.0354,
+            "paper_breakeven_armed": False,
+        }
+        with patch.dict(
+            "execution.execution_layer.ASSET_METADATA",
+            {"TEST": {"price_tick": 0.01, "decimals": 2}},
+            clear=False,
+        ):
+            armed = self.engine._arm_paper_breakeven_stop("TEST", trade, 100.05)
+        self.assertIsNone(armed)
+        self.assertEqual(trade["stop_loss"], 99.0)
+        self.assertFalse(trade["paper_breakeven_armed"])
 
     def test_long_stop_trigger_is_latched_from_last_trade(self):
         trade = self._trade("BUY")

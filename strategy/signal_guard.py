@@ -223,12 +223,12 @@ def validate_paper_directional_quality(
     *,
     paper_mode: bool | None = None,
 ) -> tuple[bool, str]:
-    """Apply mirrored PAPER-only directional price/VWAP and aggressor-flow checks.
+    """Apply mirrored PAPER-only impulse, non-opposing VWAP and fresh-flow checks.
 
-    BUY requires positive price/VWAP alignment and fresh net buyer flow.
-    SELL requires negative price/VWAP alignment and fresh net seller flow.
-    The guard is intentionally PAPER-only; it never lets the LLM change the
-    locally selected direction and it does not alter LIVE entry behaviour.
+    A neutral VWAP is acceptable only when price momentum or a fresh matching
+    closed-M1 pattern independently supports the candidate side. Opposing or
+    unavailable evidence remains a hard block. Fresh aggressor flow is required
+    for both BUY and SELL; LIVE entry behaviour is unchanged.
     """
     side = str(direction or "").strip().upper()
     if side not in {"BUY", "SELL"}:
@@ -249,11 +249,33 @@ def validate_paper_directional_quality(
         return True, ""
 
     direction_state = classify_direction_evidence(side, metrics)
-    side_label = "положительного" if side == "BUY" else "отрицательного"
-    if direction_state != "ALIGNED":
+    direction_support = "цена и VWAP согласованы"
+    if direction_state == "NEUTRAL":
+        try:
+            momentum_band = max(
+                0.0,
+                float(os.getenv("PILUITUS_DIRECTION_MOMENTUM_NEUTRAL_PCT", "0.01")),
+            )
+        except (TypeError, ValueError, OverflowError):
+            momentum_band = 0.01
+        signed_momentum = _num(metrics, "price_change_pct", math.nan) * (
+            1.0 if side == "BUY" else -1.0
+        )
+        pattern_direction = _fresh_bar_pattern_direction(metrics)
+        if math.isfinite(signed_momentum) and signed_momentum > momentum_band:
+            direction_support = "направленный импульс цены при нейтральном VWAP"
+        elif pattern_direction == side:
+            direction_support = "свежий M1-паттерн при нейтральном VWAP"
+        else:
+            return False, (
+                f"PAPER {side} требует направленного импульса цены либо свежего "
+                "совпадающего M1-паттерна; нейтральный VWAP сам по себе не подтверждает вход."
+            )
+    elif direction_state != "ALIGNED":
+        state_label = "встречное" if direction_state == "OPPOSITE" else "недоступное"
         return False, (
-            f"PAPER {side} требует полного согласования {side_label} импульса "
-            "цены и VWAP; нейтральное или встречное подтверждение недостаточно."
+            f"PAPER {side} заблокирован: {state_label} направленное подтверждение "
+            "цены/VWAP не допускает открытие позиции."
         )
 
     if _num(metrics, "trade_data_ready") < 0.5:
@@ -298,7 +320,7 @@ def validate_paper_directional_quality(
         )
 
     return True, (
-        f"PAPER {side} прошёл строгую проверку: цена/VWAP согласованы, "
+        f"PAPER {side} прошёл строгую проверку: {direction_support}, "
         f"trade_flow_imbalance_30s={flow:.3f}, возраст={flow_age:.2f}s."
     )
 
