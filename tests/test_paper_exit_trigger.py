@@ -532,6 +532,8 @@ class PaperPartialExitTests(unittest.IsolatedAsyncioTestCase):
         engine = self._engine()
         engine.screener = object()
         latest = self._bbo([[100.8, 100]])
+        latest["bid"] = 100.8
+        latest["executable_price"] = 100.8
         engine._latest_fresh_exit_quote = Mock(return_value=latest)
         trade = self._trade()
         db = AsyncMock()
