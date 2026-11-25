@@ -2251,7 +2251,12 @@ class BaseExecutionEngine:
                     interval = 300.0
                 if not math.isfinite(interval) or interval <= 0.0:
                     interval = 300.0
-                if now - _finite_or_default(warnings.get(ticker), 0.0) >= interval:
+                last_warning_at = warnings.get(ticker)
+                should_log_wait = (
+                    last_warning_at is None
+                    or now - _finite_or_default(last_warning_at, now) >= interval
+                )
+                if should_log_wait:
                     screener = getattr(self, "screener", None)
                     quote_cache = getattr(screener, "quotes", {})
                     raw_quote = quote_cache.get(ticker, {}) if isinstance(quote_cache, Mapping) else {}

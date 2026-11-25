@@ -73,13 +73,11 @@ class PaperExitWatchdogTests(unittest.TestCase):
 
     def test_watchdog_logs_detailed_bbo_gap_once_per_throttle_window(self):
         from types import SimpleNamespace
-        import time
-
         engine = self._engine()
         engine.paper_positions = {"SBER": engine.paper_positions["SBER"]}
         engine.paper_exit_status_log_interval_sec = 300.0
         engine._last_bbo_exit_warning_at = {}
-        now = time.monotonic()
+        now = 25.0  # Simulate a freshly booted Windows host.
         engine.screener = SimpleNamespace(
             quotes={
                 "SBER": {
@@ -96,7 +94,9 @@ class PaperExitWatchdogTests(unittest.TestCase):
         )
         engine._latest_fresh_exit_quote.return_value = None
 
-        with patch("execution.execution_layer.logger.warning") as warning:
+        with patch("execution.execution_layer.time.monotonic", return_value=now), patch(
+            "execution.execution_layer.logger.warning"
+        ) as warning:
             self.assertEqual(engine.monitor_open_paper_positions_once(object()), 0)
             self.assertEqual(engine.monitor_open_paper_positions_once(object()), 0)
 
