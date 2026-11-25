@@ -2445,39 +2445,87 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                             # reject an APPROVE after the model has answered.
                             _trade_flow_inc("atr_unready_candidates")
                             _log_prefilter_blocked(ticker, atr_reason, interval_sec=60.0)
-                        elif not _reserve_ai_ticker(ticker, candidate_direction, metrics_payload):
-                            _mark_shadow_llm_not_called(shadow_candidate_id, "AI_DEDUPLICATED")
-                            _trade_flow_inc("candidate_deduplicated")
                         else:
-                            event_payload = {
-                                "ticker": ticker,
-                                "candidate_created_monotonic": time_module.monotonic(),
-                                "price": price,
-                                "volume": volume,
-                                "bid": bid,
-                                "ask": ask,
-                                "bid_size": bid_size,
-                                "ask_size": ask_size,
-                                "day_volume": day_volume,
-                                "candidate_direction": candidate_direction,
-                                "shadow_candidate_id": shadow_candidate_id,
-                                "paper_session_generation": event_session_generation,
-                                "metrics": {
-                                    key: value
-                                    for key, value in metrics_payload.items()
-                                    if key not in {"selected_for_ai", "funnel_ready"}
-                                },
-                            }
-                            try:
-                                anomaly_queue.put_nowait(_make_priority_item(1, "MARKET_TICK", event_payload))
-                                _trade_flow_inc("anomalies_queued")
-                                _trade_flow_inc("prefilter_pass_buy" if candidate_direction == "BUY" else "prefilter_pass_sell")
-                                update_numpy_impulse_status(ticker)
-                            except asyncio.QueueFull:
-                                _mark_shadow_llm_not_called(shadow_candidate_id, "AI_QUEUE_FULL")
-                                _release_ai_ticker(ticker)
-                                _trade_flow_inc("queue_dropped")
-                                logger.error("Очередь AI-сигналов заполнена; аномалия %s отброшена.", ticker)
+                            preflight_atr_value = finite_float(metrics_payload.get("bar_atr")) or 0.0
+                            preflight_atr_periods = nonnegative_int(metrics_payload.get("bar_atr_periods")) or 0
+                            preflight_bbo_available = (finite_float(metrics_payload.get("spread_available")) or 0.0) >= 0.5
+                            preflight_bid = (finite_float(metrics_payload.get("bid")) or 0.0) if preflight_bbo_available else 0.0
+                            preflight_ask = (finite_float(metrics_payload.get("ask")) or 0.0) if preflight_bbo_available else 0.0
+                            preflight_stop, preflight_target = execution_engine.calculate_atr_stop(
+                                ticker,
+                                price,
+                                candidate_direction,
+                                atr_value=preflight_atr_value,
+                                atr_periods=preflight_atr_periods,
+                                bid=preflight_bid,
+                                ask=preflight_ask,
+                            )
+                            if preflight_stop <= 0.0 or preflight_target <= 0.0:
+                                preflight_reason = (
+                                    "ATR_STOP_UNAVAILABLE: не удалось построить положительные SL/TP "
+                                    f"до LLM (M1 periods={preflight_atr_periods})."
+                                )
+                                _mark_shadow_llm_not_called(shadow_candidate_id, "ATR_STOP_UNAVAILABLE")
+                                _trade_flow_inc("atr_stop_unavailable_prefilter")
+                                _trade_flow_guard_block(preflight_reason)
+                                _log_prefilter_blocked(ticker, preflight_reason, interval_sec=60.0)
+                            else:
+                                preflight_lots, preflight_size_reason = risk_manager.calculate_lot_size_with_reason(
+                                    ticker, price, preflight_stop
+                                )
+                                if preflight_lots <= 0:
+                                    if preflight_size_reason.startswith("LOT_SIZE_METADATA_MISSING"):
+                                        shadow_reason_code = "LOT_SIZE_METADATA_UNAVAILABLE"
+                                        _trade_flow_inc("finam_lot_metadata_prefiltered")
+                                    elif preflight_size_reason.startswith("MIN_LOT_NOTIONAL_EXCEEDS_SINGLE_CAP"):
+                                        shadow_reason_code = "MIN_LOT_NOTIONAL_UNTRADEABLE"
+                                        _trade_flow_inc("min_lot_notional_prefiltered")
+                                    elif preflight_size_reason.startswith("MIN_LOT_RISK_EXCEEDS_TRADE_RISK"):
+                                        shadow_reason_code = "MIN_LOT_RISK_UNTRADEABLE"
+                                        _trade_flow_inc("min_lot_risk_prefiltered")
+                                    else:
+                                        shadow_reason_code = "POSITION_SIZE_UNAVAILABLE"
+                                    _mark_shadow_llm_not_called(shadow_candidate_id, shadow_reason_code)
+                                    _trade_flow_inc("position_size_prefiltered")
+                                    _trade_flow_guard_block(preflight_size_reason)
+                                    _log_prefilter_blocked(ticker, preflight_size_reason, interval_sec=120.0)
+                                elif not _reserve_ai_ticker(ticker, candidate_direction, metrics_payload):
+                                    _mark_shadow_llm_not_called(shadow_candidate_id, "AI_DEDUPLICATED")
+                                    _trade_flow_inc("candidate_deduplicated")
+                                else:
+                                    logger.debug(
+                                        "[PRE-LLM POSITION SIZE] %s %s lots=%d; %s",
+                                        candidate_direction, ticker, preflight_lots, preflight_size_reason,
+                                    )
+                                    event_payload = {
+                                        "ticker": ticker,
+                                        "candidate_created_monotonic": time_module.monotonic(),
+                                        "price": price,
+                                        "volume": volume,
+                                        "bid": bid,
+                                        "ask": ask,
+                                        "bid_size": bid_size,
+                                        "ask_size": ask_size,
+                                        "day_volume": day_volume,
+                                        "candidate_direction": candidate_direction,
+                                        "shadow_candidate_id": shadow_candidate_id,
+                                        "paper_session_generation": event_session_generation,
+                                        "metrics": {
+                                            key: value
+                                            for key, value in metrics_payload.items()
+                                            if key not in {"selected_for_ai", "funnel_ready"}
+                                        },
+                                    }
+                                    try:
+                                        anomaly_queue.put_nowait(_make_priority_item(1, "MARKET_TICK", event_payload))
+                                        _trade_flow_inc("anomalies_queued")
+                                        _trade_flow_inc("prefilter_pass_buy" if candidate_direction == "BUY" else "prefilter_pass_sell")
+                                        update_numpy_impulse_status(ticker)
+                                    except asyncio.QueueFull:
+                                        _mark_shadow_llm_not_called(shadow_candidate_id, "AI_QUEUE_FULL")
+                                        _release_ai_ticker(ticker)
+                                        _trade_flow_inc("queue_dropped")
+                                        logger.error("Очередь AI-сигналов заполнена; аномалия %s отброшена.", ticker)
 
         # Обновление позиции продолжается по всем 88 котировкам, а не только по top-N.
         execution_engine.schedule_paper_position_monitor(
@@ -3236,26 +3284,21 @@ class MarketWorker:
                         ai_analysis["entry_ask"] = entry_ask
                         ai_analysis["entry_spread_pct"] = entry_spread_pct
                         ai_analysis["entry_bbo_age_sec"] = entry_bbo_age_sec
-                        requested_lots = risk_manager.calculate_lot_size(ticker, price, stop_loss)
+                        requested_lots, sizing_reason = risk_manager.calculate_lot_size_with_reason(
+                            ticker, price, stop_loss
+                        )
+                        ai_analysis["position_size_reason"] = sizing_reason
                         if requested_lots <= 0:
                             _trade_flow_inc("zero_lot")
+                            _trade_flow_inc("position_size_blocked")
                             execution_status = "BLOCKED"
+                            execution_message = sizing_reason or "POSITION_SIZE_UNAVAILABLE: размер позиции не прошёл лимиты риска."
                             if lot_multiplier <= 0:
                                 _trade_flow_inc("finam_lot_unavailable")
-                                execution_message = (
-                                    f"{'биржевой lot_size' if Settings.PAPER_TRADING else 'Finam account trade_lot_size'} для {ticker} не подтверждён; "
-                                    "новая позиция не открыта."
-                                )
-                                logger.warning(
-                                    "Сигнал %s по %s заблокирован: lot_size не подтверждён.",
-                                    decision, ticker,
-                                )
-                            else:
-                                execution_message = "Риск на минимальный лот превышает установленный лимит."
-                                logger.warning(
-                                    "Сигнал %s по %s пропущен: риск на минимальный лот превышает лимит.",
-                                    decision, ticker,
-                                )
+                            logger.warning(
+                                "Сигнал %s по %s заблокирован при расчёте размера позиции: %s",
+                                decision, ticker, execution_message,
+                            )
                         else:
                             requested_notional = requested_lots * lot_multiplier * price
                             logger.info(
@@ -3273,7 +3316,21 @@ class MarketWorker:
                     if not confidence_valid:
                         signal_reason = "Ответ модели не содержит корректной числовой оценки; вход запрещён."
                     elif model_decision == "HOLD" and candidate_decision in {"BUY", "SELL"}:
-                        signal_reason = "Модель отклонила локальный кандидат: вердикт HOLD."
+                        hold_reason_labels = {
+                            "HOLD_WEAK_DIRECTION": "направленное подтверждение недостаточно",
+                            "HOLD_M1_CONTRADICTION": "закрытый M1-паттерн противоречит кандидату",
+                            "HOLD_STALE_BBO": "Bid/Ask устарели или не подтверждены",
+                            "HOLD_WEAK_VOLUME": "всплеск объёма недостаточен",
+                            "HOLD_WIDE_SPREAD": "спред слишком велик относительно допустимого диапазона",
+                            "HOLD_INSUFFICIENT_SUPPORT": "совокупных подтверждений недостаточно",
+                        }
+                        hold_reason_text = hold_reason_labels.get(
+                            model_reason_code, "модель не подтвердила вход"
+                        )
+                        signal_reason = (
+                            f"Модель HOLD: {hold_reason_text} ({model_reason_code}). "
+                            "Локальный кандидат не изменён."
+                        )
                     elif candidate_decision in {"BUY", "SELL"}:
                         signal_reason = "Кандидат ИИ не прошёл локальные проверки входа."
                     else:
@@ -3281,6 +3338,12 @@ class MarketWorker:
                 tactic_text, critic_text = build_verdict_explanation(
                     decision, candidate_decision, evidence, signal_reason
                 )
+                if (
+                    decision in {"BUY", "SELL"}
+                    and execution_status in {"BLOCKED", "SKIPPED", "FAILED"}
+                ):
+                    signal_reason = execution_message or "Исполнение не прошло заключительную проверку."
+                    critic_text = signal_reason
                 if block_reason:
                     local_evidence_diagnostic = block_reason
                 elif candidate_direction not in {"BUY", "SELL"}:
@@ -3431,11 +3494,26 @@ class MarketWorker:
                 ai_analysis["tactic_opinion"] = tactic_text
                 ai_analysis["critic_opinion"] = critic_text
 
+                session_reason = (
+                    execution_message
+                    if execution_status in {"BLOCKED", "SKIPPED", "FAILED"} and execution_message
+                    else signal_reason or local_evidence_diagnostic or model_reason_code
+                )
+                session_reason = " ".join(str(session_reason).replace("\r", " ").replace("\n", " ").split())[:180]
+                latency_text = (
+                    f"{latency_val:.2f}s"
+                    if math.isfinite(latency_val) and latency_val >= 0.0 else "n/a"
+                )
                 _spawn_tracked_operation(
                     log_trading_event_to_file(
                         ticker=ticker,
                         price=price,
-                        decision=f"ВЕРДИКТ ИИ: {decision} (кандидат={candidate_decision}, исполнение={execution_status})",
+                        decision=(
+                            f"ВЕРДИКТ ИИ: {decision} (кандидат={candidate_decision}, "
+                            f"исполнение={execution_status}; причина={session_reason}; "
+                            f"model_reason={model_reason_code}; guard={local_evidence_diagnostic}; "
+                            f"vLLM={latency_text})"
+                        ),
                         confidence=round(candidate_confidence, 1) if candidate_confidence is not None else 0.0,
                         tactic=tactic_text,
                         critic=critic_text,

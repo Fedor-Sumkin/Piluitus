@@ -951,45 +951,99 @@ class RiskManager:
             self._blocked_date = today
             return _cache_result(False)
 
-    def calculate_lot_size(self, ticker: str, current_price: float, atr_stop: float) -> int:
-        """Return affordable lots under the risk cap; return 0 if even one lot exceeds it."""
-        if current_price <= 0 or atr_stop <= 0:
-            return 0
-        risk_per_share_rub = abs(current_price - atr_stop)
-        if risk_per_share_rub <= 0:
-            return 0
-        allowed_risk_money = max(0.0, self.initial_deposit * self.max_risk_per_trade)
-        normalized_ticker = str(ticker or "").strip().upper().split("@", 1)[0]
-        raw_lot_size = FINAM_TRADE_LOT_SIZES.get(normalized_ticker)
+    def calculate_lot_size_with_reason(
+        self,
+        ticker: str,
+        current_price: float,
+        atr_stop: float,
+    ) -> tuple[int, str]:
+        """Return affordable lots and a fail-closed diagnostic.
+
+        Only confirmed Finam trade_lot_size metadata authorizes a new order;
+        the static LOT_SIZES map is never used as a fallback.
+        """
+        symbol = str(ticker or "").strip().upper().split("@", 1)[0]
+        try:
+            price = float(current_price)
+            stop = float(atr_stop)
+            deposit = float(self.initial_deposit)
+            risk_fraction = float(self.max_risk_per_trade)
+        except (TypeError, ValueError, OverflowError):
+            return 0, "POSITION_SIZE_INVALID_INPUT: цена, стоп или параметры риска некорректны."
+        if (
+            not all(math.isfinite(value) for value in (price, stop, deposit, risk_fraction))
+            or price <= 0.0 or stop <= 0.0 or deposit <= 0.0 or risk_fraction < 0.0
+        ):
+            return 0, "POSITION_SIZE_INVALID_INPUT: цена, стоп или параметры риска вне допустимого диапазона."
+        risk_per_share = abs(price - stop)
+        if risk_per_share <= 0.0:
+            return 0, "POSITION_SIZE_ZERO_STOP_DISTANCE: расстояние до стопа равно нулю."
+
+        raw_lot_size = FINAM_TRADE_LOT_SIZES.get(symbol)
+        if raw_lot_size is None:
+            logging.getLogger("Piluitus.RiskManager").error(
+                "Размер позиции заблокирован: подтверждённый Finam trade_lot_size для %s отсутствует; "
+                "статический LOT_SIZES не используется для нового ордера.", symbol,
+            )
+            return 0, (
+                f"LOT_SIZE_METADATA_MISSING: для {symbol} не получен подтверждённый "
+                "Finam trade_lot_size; статический LOT_SIZES не используется."
+            )
         try:
             lot_size = int(raw_lot_size)
         except (TypeError, ValueError, OverflowError):
-            risk_logger = logging.getLogger("Piluitus.RiskManager")
-            risk_logger.error(
-                "Размер позиции заблокирован: %s lot_size для %s не подтверждён; "
-                "статический LOT_SIZES не используется для нового ордера.",
-                "биржевой" if PAPER_TRADING else "Finam account trade",
-                normalized_ticker,
-            )
-            return 0
+            lot_size = 0
         if lot_size <= 0:
-            return 0
-        risk_per_lot_rub = risk_per_share_rub * lot_size
-        notional_per_lot = float(current_price) * lot_size
-        if risk_per_lot_rub <= 0 or notional_per_lot <= 0 or allowed_risk_money < risk_per_lot_rub:
-            return 0
-        lots_by_risk = int(allowed_risk_money // risk_per_lot_rub)
-        # Pre-limit is intentionally capped at 3% per instrument. ExecutionLayer
-        # applies the final aggregate / single-position guard atomically.
+            return 0, f"LOT_SIZE_METADATA_INVALID: Finam trade_lot_size для {symbol} не положителен."
+
         try:
             max_single_pct = float(os.getenv("PILUITUS_MAX_SINGLE_POSITION_PCT", "0.03"))
         except (TypeError, ValueError, OverflowError):
             max_single_pct = 0.03
-        if not math.isfinite(max_single_pct) or max_single_pct <= 0:
+        if not math.isfinite(max_single_pct) or max_single_pct <= 0.0:
             max_single_pct = 0.03
         max_single_pct = min(max_single_pct, 0.03)
-        lots_by_notional = int((self.initial_deposit * max_single_pct) // notional_per_lot)
-        return max(0, min(lots_by_risk, lots_by_notional))
+
+        risk_budget = max(0.0, deposit * risk_fraction)
+        single_cap = deposit * max_single_pct
+        risk_per_lot = risk_per_share * lot_size
+        notional_per_lot = price * lot_size
+        if not all(math.isfinite(value) for value in (risk_budget, single_cap, risk_per_lot, notional_per_lot)):
+            return 0, "POSITION_SIZE_NONFINITE: расчёт риска или номинала дал неконечное значение."
+
+        # Notional is checked first to identify symbols whose minimum exchange
+        # lot cannot fit the configured single-position budget (e.g. VTBR).
+        if notional_per_lot > single_cap + 1e-9:
+            return 0, (
+                "MIN_LOT_NOTIONAL_EXCEEDS_SINGLE_CAP: "
+                f"{symbol} minimum lot={lot_size} shares, notional={notional_per_lot:.2f} ₽ "
+                f"exceeds single-position cap={single_cap:.2f} ₽ "
+                f"({max_single_pct * 100:.2f}% of deposit {deposit:.2f} ₽)."
+            )
+        if risk_per_lot > risk_budget + 1e-9:
+            return 0, (
+                "MIN_LOT_RISK_EXCEEDS_TRADE_RISK: "
+                f"{symbol} minimum-lot stop risk={risk_per_lot:.2f} ₽ "
+                f"exceeds per-trade risk budget={risk_budget:.2f} ₽."
+            )
+        if risk_per_lot <= 0.0 or notional_per_lot <= 0.0:
+            return 0, "POSITION_SIZE_INVALID_LOT_ECONOMICS: риск или номинал лота не положителен."
+
+        lots_by_risk = int(risk_budget // risk_per_lot)
+        lots_by_notional = int(single_cap // notional_per_lot)
+        approved = max(0, min(lots_by_risk, lots_by_notional))
+        if approved <= 0:
+            return 0, "NO_AFFORDABLE_LOT: минимальный лот не помещается в бюджет риска и лимит позиции."
+        return approved, (
+            f"SIZE_OK: {symbol} lots={approved}; lot_size={lot_size} shares; "
+            f"risk_per_lot={risk_per_lot:.2f}/{risk_budget:.2f} ₽; "
+            f"notional_per_lot={notional_per_lot:.2f}/{single_cap:.2f} ₽."
+        )
+
+    def calculate_lot_size(self, ticker: str, current_price: float, atr_stop: float) -> int:
+        """Backward-compatible lot-count API."""
+        lots, _reason = self.calculate_lot_size_with_reason(ticker, current_price, atr_stop)
+        return lots
 
 if __name__ == "__main__":
     emulator = RealMarketSimulator(uri="ws://127.0.0.1:8080/ws/frontend", batch_size=10)
