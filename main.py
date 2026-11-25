@@ -3717,19 +3717,13 @@ async def _finam_metadata_refresh_loop() -> None:
         paper_mode = bool(getattr(execution_engine, "paper_mode", True))
         account_id = str(getattr(broker, "account_id", "") or "").strip()
         if paper_mode:
-            # PAPER lot sizing uses the public MOEX ISS TQBR specification.
-            # It does not require a Finam account or read-only account context.
-            # Keep account discovery exclusive to LIVE brokerage execution.
-            if callable(getattr(broker, "get_moex_asset", None)):
-                logger.info(
-                    "[FINAM METADATA WORKER] PAPER lot refresh uses public MOEX ISS TQBR; "
-                    "Finam account context is not required."
-                )
-            else:
-                logger.warning(
-                    "[FINAM METADATA WORKER] public MOEX ISS provider unavailable; "
-                    "unconfirmed PAPER lots will remain blocked."
-                )
+            # PAPER lot multipliers are maintained in LOT_SIZES.
+            # Finam GetAsset is used only for price-step metadata and receives
+            # a token-authorized read-only metadata context from RiskManager.
+            logger.info(
+                "[FINAM METADATA WORKER] PAPER lots use local LOT_SIZES; "
+                "no MOEX ISS requests. Finam GetAsset refreshes price-step metadata only."
+            )
         elif not account_id:
             discover = getattr(broker, "discover_accounts", None)
             if callable(discover):
