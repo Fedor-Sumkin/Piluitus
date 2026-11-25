@@ -217,60 +217,99 @@ def validate_spread_to_atr(
     return True, f"Spread/ATR пройден: ratio={ratio:.3f} при лимите {limit:.2f}."
 
 
+def validate_paper_directional_quality(
+    direction: str,
+    metrics: dict[str, Any],
+    *,
+    paper_mode: bool | None = None,
+) -> tuple[bool, str]:
+    """Apply mirrored PAPER-only directional price/VWAP and aggressor-flow checks.
+
+    BUY requires positive price/VWAP alignment and fresh net buyer flow.
+    SELL requires negative price/VWAP alignment and fresh net seller flow.
+    The guard is intentionally PAPER-only; it never lets the LLM change the
+    locally selected direction and it does not alter LIVE entry behaviour.
+    """
+    side = str(direction or "").strip().upper()
+    if side not in {"BUY", "SELL"}:
+        return False, "PAPER directional quality requires BUY or SELL."
+
+    if paper_mode is None:
+        paper_mode = str(os.getenv("PAPER_TRADING", "True")).strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+    if not paper_mode:
+        return True, ""
+
+    strict_key = f"PILUITUS_PAPER_{side}_STRICT_GATE"
+    enabled = str(os.getenv(strict_key, "true")).strip().lower() not in {
+        "0", "false", "no", "off", "disabled",
+    }
+    if not enabled:
+        return True, ""
+
+    direction_state = classify_direction_evidence(side, metrics)
+    side_label = "положительного" if side == "BUY" else "отрицательного"
+    if direction_state != "ALIGNED":
+        return False, (
+            f"PAPER {side} требует полного согласования {side_label} импульса "
+            "цены и VWAP; нейтральное или встречное подтверждение недостаточно."
+        )
+
+    if _num(metrics, "trade_data_ready") < 0.5:
+        participant = "покупателей" if side == "BUY" else "продавцов"
+        return False, (
+            f"PAPER {side} заблокирован: поток сделок не готов для подтверждения "
+            f"агрессивного потока {participant}."
+        )
+
+    flow_age = _num(metrics, "trade_metrics_age_sec", -1.0)
+    if flow_age < 0.0 or flow_age > 5.0:
+        return False, (
+            f"PAPER {side} заблокирован: поток сделок устарел "
+            f"({flow_age:.2f}s; лимит 5.00s)."
+        )
+
+    flow = _num(metrics, "trade_flow_imbalance_30s", math.nan)
+    minimum_key = f"PILUITUS_PAPER_{side}_MIN_FLOW_IMBALANCE"
+    default_minimum = 0.10
+    try:
+        minimum_flow = float(os.getenv(minimum_key, str(default_minimum)))
+    except (TypeError, ValueError, OverflowError):
+        minimum_flow = default_minimum
+    if not math.isfinite(minimum_flow):
+        minimum_flow = default_minimum
+    minimum_flow = min(0.75, max(0.05, minimum_flow))
+
+    flow_supports_side = (
+        math.isfinite(flow) and flow >= minimum_flow
+        if side == "BUY"
+        else math.isfinite(flow) and flow <= -minimum_flow
+    )
+    if not flow_supports_side:
+        flow_text = f"{flow:.3f}" if math.isfinite(flow) else "недоступен"
+        operator = ">=" if side == "BUY" else "<="
+        required_flow = minimum_flow if side == "BUY" else -minimum_flow
+        participant = "покупателей" if side == "BUY" else "продавцов"
+        return False, (
+            f"PAPER {side} заблокирован: недостаточно подтверждённого агрессивного "
+            f"потока {participant} (imbalance_30s={flow_text}; "
+            f"требуется {operator} {required_flow:.2f})."
+        )
+
+    return True, (
+        f"PAPER {side} прошёл строгую проверку: цена/VWAP согласованы, "
+        f"trade_flow_imbalance_30s={flow:.3f}, возраст={flow_age:.2f}s."
+    )
+
+
 def validate_paper_sell_quality(
     metrics: dict[str, Any],
     *,
     paper_mode: bool | None = None,
 ) -> tuple[bool, str]:
-    """Apply a deliberately stricter, PAPER-only SELL quality gate.
-
-    The 2026-11-20 sample showed materially weaker SELL expectancy than BUY.
-    This gate requires measured price/VWAP alignment and fresh negative
-    aggressor flow; it never changes LIVE behaviour and can be disabled
-    explicitly for controlled A/B research.
-    """
-    if paper_mode is None:
-        paper_mode = str(os.getenv("PAPER_TRADING", "True")).strip().lower() in {
-            "1", "true", "yes", "on",
-        }
-    enabled = str(os.getenv("PILUITUS_PAPER_SELL_STRICT_GATE", "true")).strip().lower() in {
-        "1", "true", "yes", "on",
-    }
-    if not paper_mode or not enabled:
-        return True, ""
-
-    direction_state = classify_direction_evidence("SELL", metrics)
-    if direction_state != "ALIGNED":
-        return False, (
-            "PAPER SELL требует полного согласования отрицательного импульса "
-            "цены и VWAP; нейтральное подтверждение недостаточно."
-        )
-
-    if _num(metrics, "trade_data_ready") < 0.5:
-        return False, "PAPER SELL заблокирован: поток сделок не готов для подтверждения продавцов."
-    flow_age = _num(metrics, "trade_metrics_age_sec", -1.0)
-    if flow_age < 0.0 or flow_age > 5.0:
-        return False, (
-            f"PAPER SELL заблокирован: поток сделок устарел ({flow_age:.2f}s; лимит 5.00s)."
-        )
-    flow = _num(metrics, "trade_flow_imbalance_30s", math.nan)
-    try:
-        minimum_flow = float(os.getenv("PILUITUS_PAPER_SELL_MIN_FLOW_IMBALANCE", "0.10"))
-    except (TypeError, ValueError, OverflowError):
-        minimum_flow = 0.10
-    if not math.isfinite(minimum_flow):
-        minimum_flow = 0.10
-    minimum_flow = min(0.75, max(0.05, minimum_flow))
-    if not math.isfinite(flow) or flow > -minimum_flow:
-        flow_text = f"{flow:.3f}" if math.isfinite(flow) else "недоступен"
-        return False, (
-            "PAPER SELL заблокирован: недостаточно подтверждённого агрессивного потока продавцов "
-            f"(imbalance_30s={flow_text}; требуется <= {-minimum_flow:.2f})."
-        )
-    return True, (
-        f"PAPER SELL прошёл строгую проверку: цена/VWAP согласованы, "
-        f"trade_flow_imbalance_30s={flow:.3f}, возраст={flow_age:.2f}s."
-    )
+    """Backward-compatible SELL-only wrapper for the mirrored PAPER quality gate."""
+    return validate_paper_directional_quality("SELL", metrics, paper_mode=paper_mode)
 
 
 def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bool, str]:
@@ -493,11 +532,13 @@ def validate_entry_evidence(
         if not market_ok:
             return False, market_reason
         reason = f"{reason} {market_reason}".strip()
-    if str(decision or "").strip().upper() == "SELL" and paper_mode:
-        sell_ok, sell_reason = validate_paper_sell_quality(metrics, paper_mode=True)
-        if not sell_ok:
-            return False, sell_reason
-        return True, f"{reason} {sell_reason}".strip()
+    if paper_mode:
+        directional_ok, directional_reason = validate_paper_directional_quality(
+            decision, metrics, paper_mode=True
+        )
+        if not directional_ok:
+            return False, directional_reason
+        return True, f"{reason} {directional_reason}".strip()
     return True, reason
 
 
