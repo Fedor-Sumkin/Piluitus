@@ -6,8 +6,10 @@ __pycache__/
 *.py[cod]
 trading_logs/
 live_market_logs/
-# Runtime/test logs are generated artifacts; keep only test-logs/README.md tracked.
+# Runtime logs stay ignored by default; PAPER analysis logs under test-logs/ are the explicit exception.
 *.log
+!test-logs/*.log
+!test-logs/**/*.log
 test-logs/piluitus_session_*.txt
 /import_knowledge/
 /data/knowledge/sources/
