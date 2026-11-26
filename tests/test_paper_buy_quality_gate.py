@@ -138,7 +138,27 @@ class PaperBuyQualityGateTests(unittest.TestCase):
 
         self.assertTrue(valid, reason)
 
-    def test_buy_blocks_incomplete_zero_slippage_cost_model(self) -> None:
+    def test_zero_slippage_allows_pre_llm_analysis_but_keeps_cost_status_visible(self) -> None:
+        metrics = buy_metrics()
+        with patch.dict("os.environ", {
+            "PILUITUS_PAPER_BUY_STRICT_GATE": "true",
+            "PILUITUS_PAPER_BUY_MIN_FLOW_IMBALANCE": "0.10",
+            "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",
+            "PILUITUS_PAPER_SLIPPAGE_BPS": "0",
+            "PILUITUS_MAX_ENTRY_COST_TO_ATR_RATIO": "0.50",
+        }, clear=False):
+            valid, reason = validate_entry_evidence(
+                "BUY", metrics, paper_mode=True,
+                require_complete_cost_model=False,
+            )
+
+        self.assertTrue(valid, reason)
+        self.assertEqual(
+            metrics["entry_cost_model_status"], "INCOMPLETE_OR_ZERO_ASSUMPTION"
+        )
+        self.assertIn("INCOMPLETE_OR_ZERO_ASSUMPTION", reason)
+
+    def test_buy_blocks_incomplete_zero_slippage_cost_model_after_llm(self) -> None:
         valid, reason = self._validate(buy_metrics(), slippage="0")
 
         self.assertFalse(valid)

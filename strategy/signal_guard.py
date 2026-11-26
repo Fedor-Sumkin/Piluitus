@@ -552,8 +552,15 @@ def validate_signal_evidence(decision: str, metrics: dict[str, Any]) -> tuple[bo
 def validate_paper_market_quality(
     decision: str,
     metrics: dict[str, Any],
+    *,
+    require_complete_cost_model: bool = True,
 ) -> tuple[bool, str]:
-    """Require a fresh confirmed book and positive round-trip cost/ATR edge in PAPER."""
+    """Require a fresh book and affordable round-trip costs.
+
+    The pre-LLM analysis path may evaluate a lower-bound cost estimate when
+    slippage is not calibrated yet. Actual post-LLM approval/execution must keep
+    require_complete_cost_model=True and therefore fail closed.
+    """
     side = str(decision or "").strip().upper()
     if side not in {"BUY", "SELL"} or not isinstance(metrics, dict):
         return False, "PAPER entry quality requires a BUY/SELL candidate and measured metrics."
@@ -594,7 +601,11 @@ def validate_paper_market_quality(
         metrics["entry_minimum_favorable_move_pct"] = economics.get("minimum_favorable_move_pct")
         metrics["entry_cost_to_atr_limit"] = economics.get("max_cost_to_atr_ratio")
         metrics["entry_cost_model_status"] = economics.get("cost_model_status")
-    if economics.get("available") and economics.get("cost_model_status") != "CONFIGURED":
+    if (
+        require_complete_cost_model
+        and economics.get("available")
+        and economics.get("cost_model_status") != "CONFIGURED"
+    ):
         return False, (
             "PAPER-вход заблокирован: модель издержек неполная "
             f"(status={economics.get('cost_model_status', 'UNKNOWN')}, "
@@ -625,6 +636,7 @@ def validate_entry_evidence(
     metrics: dict[str, Any],
     *,
     paper_mode: bool = False,
+    require_complete_cost_model: bool = True,
 ) -> tuple[bool, str]:
     """Validate common evidence, then enforce PAPER-only market-quality and SELL gates.
 
@@ -635,7 +647,10 @@ def validate_entry_evidence(
     if not ok:
         return ok, reason
     if paper_mode:
-        market_ok, market_reason = validate_paper_market_quality(decision, metrics)
+        market_ok, market_reason = validate_paper_market_quality(
+            decision, metrics,
+            require_complete_cost_model=require_complete_cost_model,
+        )
         if not market_ok:
             return False, market_reason
         reason = f"{reason} {market_reason}".strip()
