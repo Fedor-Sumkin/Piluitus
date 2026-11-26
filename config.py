@@ -157,6 +157,10 @@ class Settings:
     VLLM_TIMEOUT: int = int(os.getenv("VLLM_TIMEOUT", "30"))
     # Короткий JSON-контракт: эффективный max_tokens ограничен диапазоном 384..768.
     VLLM_MAX_TOKENS: int = int(os.getenv("VLLM_MAX_TOKENS", "768"))
+    # Bound simultaneous inference requests; queueing is measured by AIEngine.
+    VLLM_MAX_CONCURRENCY: int = max(
+        1, min(16, int(os.getenv("PILUITUS_VLLM_MAX_CONCURRENCY", "4")))
+    )
     # Consecutive vLLM connection failures open an exponential backoff circuit.
     VLLM_CONNECT_BACKOFF_BASE_SEC: float = max(
         1.0, float(os.getenv("PILUITUS_VLLM_CONNECT_BACKOFF_BASE_SEC", "5"))
@@ -188,6 +192,16 @@ class Settings:
     ).strip().lower() not in {"0", "false", "no", "off", "disabled"}
     PAPER_BREAKEVEN_ARM_R: float = min(
         3.0, max(0.25, float(os.getenv("PILUITUS_PAPER_BREAKEVEN_ARM_R", "1.0")))
+    )
+    # PAPER-only trailing stop: activate after a confirmed BBO move and trail from its high-water mark.
+    PAPER_TRAILING_ENABLED: bool = os.getenv(
+        "PILUITUS_PAPER_TRAILING_ENABLED", "true"
+    ).strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    PAPER_TRAILING_ARM_R: float = min(
+        5.0, max(0.5, float(os.getenv("PILUITUS_PAPER_TRAILING_ARM_R", "1.5")))
+    )
+    PAPER_TRAILING_DISTANCE_R: float = min(
+        2.0, max(0.25, float(os.getenv("PILUITUS_PAPER_TRAILING_DISTANCE_R", "0.75")))
     )
     # Hard Moscow-time cutoff for new entries; open-position exits remain active.
     ENTRY_HARD_CUTOFF_MSK: str = os.getenv("PILUITUS_ENTRY_HARD_CUTOFF_MSK", "22:00").strip()
