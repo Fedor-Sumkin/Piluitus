@@ -133,6 +133,73 @@ class PaperExitTriggerTests(unittest.TestCase):
         self.assertEqual(trade["stop_loss"], 99.0)
         self.assertFalse(trade["paper_breakeven_armed"])
 
+    def test_paper_trailing_stop_arms_and_only_tightens_for_long(self):
+        self.engine.paper_trailing_enabled = True
+        self.engine.paper_trailing_arm_r = 1.5
+        self.engine.paper_trailing_distance_r = 0.75
+        trade = {
+            "side": "BUY",
+            "entry_price": 100.0,
+            "stop_loss": 99.0,
+            "initial_stop_loss": 99.0,
+            "take_profit": 104.0,
+            "volume": 100,
+            "paper_trailing_armed": False,
+            "paper_trailing_high_water_price": 102.0,
+        }
+        with patch(
+            "execution.execution_layer.ASSET_METADATA",
+            {"TEST": {"price_tick": 0.01, "decimals": 2}},
+        ):
+            armed = self.engine._update_paper_trailing_stop("TEST", trade, 101.5)
+            self.assertEqual(armed, 101.25)
+            self.assertEqual(trade["stop_loss"], 101.25)
+            self.assertEqual(trade["stop_loss_stage"], "TRAILING")
+            self.assertTrue(trade["paper_trailing_armed"])
+            self.assertIsNone(self.engine._update_paper_trailing_stop("TEST", trade, 102.0))
+            self.assertEqual(trade["stop_loss"], 101.25)
+
+    def test_paper_trailing_stop_is_mirrored_for_short_and_does_not_loosen(self):
+        self.engine.paper_trailing_enabled = True
+        self.engine.paper_trailing_arm_r = 1.5
+        self.engine.paper_trailing_distance_r = 0.75
+        trade = {
+            "side": "SELL",
+            "entry_price": 100.0,
+            "stop_loss": 101.0,
+            "initial_stop_loss": 101.0,
+            "take_profit": 96.0,
+            "volume": 100,
+            "paper_trailing_armed": False,
+            "paper_trailing_high_water_price": 98.0,
+        }
+        with patch(
+            "execution.execution_layer.ASSET_METADATA",
+            {"TEST": {"price_tick": 0.01, "decimals": 2}},
+        ):
+            armed = self.engine._update_paper_trailing_stop("TEST", trade, 98.5)
+        self.assertEqual(armed, 98.75)
+        self.assertEqual(trade["stop_loss"], 98.75)
+        self.assertEqual(trade["stop_loss_stage"], "TRAILING")
+
+    def test_paper_trailing_stop_waits_until_arm_r_and_does_not_move_stop(self):
+        self.engine.paper_trailing_enabled = True
+        self.engine.paper_trailing_arm_r = 1.5
+        self.engine.paper_trailing_distance_r = 0.75
+        trade = {
+            "side": "BUY",
+            "entry_price": 100.0,
+            "stop_loss": 99.0,
+            "initial_stop_loss": 99.0,
+            "take_profit": 104.0,
+            "volume": 100,
+            "paper_trailing_armed": False,
+            "paper_trailing_high_water_price": 101.4,
+        }
+        self.assertIsNone(self.engine._update_paper_trailing_stop("TEST", trade, 101.4))
+        self.assertEqual(trade["stop_loss"], 99.0)
+        self.assertFalse(trade["paper_trailing_armed"])
+
     def test_long_stop_trigger_is_latched_from_last_trade(self):
         trade = self._trade("BUY")
         reason = self.engine._capture_paper_exit_trigger(

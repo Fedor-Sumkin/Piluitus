@@ -355,6 +355,24 @@ class BaseExecutionEngine:
         except (TypeError, ValueError, OverflowError):
             self.paper_breakeven_enabled = True
             self.paper_breakeven_arm_r = 1.0
+        try:
+            self.paper_trailing_enabled = bool(
+                getattr(Settings, "PAPER_TRAILING_ENABLED", True)
+            )
+            self.paper_trailing_arm_r = min(
+                5.0, max(0.5, _finite_or_default(
+                    getattr(Settings, "PAPER_TRAILING_ARM_R", 1.5), 1.5
+                ))
+            )
+            self.paper_trailing_distance_r = min(
+                2.0, max(0.25, _finite_or_default(
+                    getattr(Settings, "PAPER_TRAILING_DISTANCE_R", 0.75), 0.75
+                ))
+            )
+        except (TypeError, ValueError, OverflowError):
+            self.paper_trailing_enabled = True
+            self.paper_trailing_arm_r = 1.5
+            self.paper_trailing_distance_r = 0.75
 
         # Fees are explicit configuration: never guess the user's Finam tariff.
         # Percentage is charged on each side (entry and exit). Slippage is an
@@ -1366,6 +1384,90 @@ class BaseExecutionEngine:
         })
         return candidate
 
+    def _update_paper_trailing_stop(
+        self,
+        ticker: str,
+        trade: TradeRecord,
+        executable_exit_price: float,
+    ) -> float | None:
+        """Tighten PAPER SL behind the best confirmed executable BBO after the arm threshold.
+
+        The stop follows the best Bid for BUY positions or best Ask for SELL
+        positions. It is never loosened and is only persisted by the caller before
+        the new level is treated as active. A crossed trailing level is still
+        installed so the regular trigger path can close on this same fresh quote.
+        """
+        if (
+            not bool(getattr(self, "paper_trailing_enabled", False))
+            or str(trade.get("pending_exit_reason") or "").upper() in {"STOP_LOSS", "TAKE_PROFIT"}
+        ):
+            return None
+
+        side = str(trade.get("side") or "").strip().upper()
+        entry = _finite_or_default(trade.get("entry_price"), 0.0)
+        current_stop = _finite_or_default(trade.get("stop_loss"), 0.0)
+        initial_stop = _finite_or_default(trade.get("initial_stop_loss"), current_stop)
+        target = _finite_or_default(trade.get("take_profit"), 0.0)
+        market_price = _finite_or_default(executable_exit_price, 0.0)
+        initial_distance = abs(entry - initial_stop)
+        high_water = _finite_or_default(
+            trade.get("paper_trailing_high_water_price"), entry
+        )
+        if (
+            side not in {"BUY", "SELL"} or entry <= 0.0 or current_stop <= 0.0
+            or initial_stop <= 0.0 or target <= 0.0 or market_price <= 0.0
+            or initial_distance <= 0.0 or high_water <= 0.0
+        ):
+            return None
+
+        arm_r = min(5.0, max(0.5, _finite_or_default(
+            trade.get("paper_trailing_arm_r", getattr(self, "paper_trailing_arm_r", 1.5)),
+            1.5,
+        )))
+        distance_r = min(2.0, max(0.25, _finite_or_default(
+            trade.get("paper_trailing_distance_r", getattr(self, "paper_trailing_distance_r", 0.75)),
+            0.75,
+        )))
+        high_water_r = ((high_water - entry) / initial_distance) * (
+            1.0 if side == "BUY" else -1.0
+        )
+        if high_water_r < arm_r:
+            return None
+
+        raw_stop = (
+            high_water - initial_distance * distance_r
+            if side == "BUY"
+            else high_water + initial_distance * distance_r
+        )
+        candidate = self._round_paper_breakeven_stop(ticker, side, raw_stop)
+        if candidate <= 0.0:
+            return None
+        if side == "BUY":
+            if not (candidate > current_stop and candidate > entry and candidate < target):
+                return None
+        else:
+            if not (candidate < current_stop and candidate < entry and candidate > target):
+                return None
+
+        trade.update({
+            "stop_loss": candidate,
+            "paper_trailing_armed": True,
+            "paper_trailing_stop_price": candidate,
+            "paper_trailing_high_water_price": high_water,
+            "paper_trailing_arm_r": arm_r,
+            "paper_trailing_distance_r": distance_r,
+            "paper_trailing_armed_timestamp": (
+                trade.get("paper_trailing_armed_timestamp")
+                or datetime.now().astimezone().isoformat(timespec="milliseconds")
+            ),
+            "paper_trailing_updated_timestamp": datetime.now().astimezone().isoformat(
+                timespec="milliseconds"
+            ),
+            "paper_trailing_favorable_r_at_update": round(high_water_r, 4),
+            "stop_loss_stage": "TRAILING",
+        })
+        return candidate
+
     async def _hydrate_stop_loss_cooldown(
         self,
         db: DBManager,
@@ -2107,6 +2209,15 @@ class BaseExecutionEngine:
                 "paper_breakeven_stop_price": None,
                 "paper_breakeven_raw_stop_price": None,
                 "paper_breakeven_armed_timestamp": None,
+                "paper_trailing_enabled": bool(self.paper_mode and self.paper_trailing_enabled),
+                "paper_trailing_arm_r": self.paper_trailing_arm_r,
+                "paper_trailing_distance_r": self.paper_trailing_distance_r,
+                "paper_trailing_armed": False,
+                "paper_trailing_stop_price": None,
+                "paper_trailing_high_water_price": price,
+                "paper_trailing_armed_timestamp": None,
+                "paper_trailing_updated_timestamp": None,
+                "paper_trailing_favorable_r_at_update": None,
                 "stop_loss_stage": "INITIAL",
                 "atr_at_entry": atr_at_entry,
                 "atr_periods_at_entry": atr_periods_at_entry,
@@ -3004,6 +3115,11 @@ class BaseExecutionEngine:
             ),
             "paper_breakeven_armed": bool(trade.get("paper_breakeven_armed")),
             "paper_breakeven_stop_price": trade.get("paper_breakeven_stop_price"),
+            "paper_trailing_armed": bool(trade.get("paper_trailing_armed")),
+            "paper_trailing_stop_price": trade.get("paper_trailing_stop_price"),
+            "paper_trailing_high_water_price": trade.get("paper_trailing_high_water_price"),
+            "paper_trailing_arm_r": trade.get("paper_trailing_arm_r"),
+            "paper_trailing_distance_r": trade.get("paper_trailing_distance_r"),
             "exit_price_source": (
                 ("ORDER_BOOK_BID_DEPTH" if side == "BUY" else "ORDER_BOOK_ASK_DEPTH")
                 if depth_confirmed else ("BBO_BID" if side == "BUY" else "BBO_ASK")
@@ -3539,6 +3655,15 @@ class BaseExecutionEngine:
                 _finite_or_default(trade.get("max_adverse_bbo_excursion_rub"), 0.0),
                 bbo_signed_rub,
             ), 4)
+            previous_high_water = _finite_or_default(
+                trade.get("paper_trailing_high_water_price"), entry_price
+            )
+            high_water_price = (
+                max(previous_high_water, executable_exit_price)
+                if side == "BUY"
+                else min(previous_high_water, executable_exit_price)
+            )
+            trade["paper_trailing_high_water_price"] = round(high_water_price, 8)
 
             # Actual PAPER break-even: after the initial-risk R threshold, tighten
             # the stop to net BE (both commission sides and configured slippage).
@@ -3593,6 +3718,48 @@ class BaseExecutionEngine:
                             _finite_or_default(trade.get("paper_breakeven_raw_stop_price"), 0.0),
                             _finite_or_default(previous_fields["stop_loss"][1], 0.0),
                         )
+
+            # Once the executable BBO has advanced far enough, protect a portion
+            # of the best unrealized move. Persist the tighter stop before using it.
+            trailing_previous_fields = {
+                key: (key in trade, trade.get(key))
+                for key in (
+                    "stop_loss",
+                    "paper_trailing_armed",
+                    "paper_trailing_stop_price",
+                    "paper_trailing_high_water_price",
+                    "paper_trailing_armed_timestamp",
+                    "paper_trailing_updated_timestamp",
+                    "paper_trailing_favorable_r_at_update",
+                    "stop_loss_stage",
+                )
+            }
+            trailing_stop = self._update_paper_trailing_stop(
+                ticker, trade, executable_exit_price
+            )
+            if trailing_stop is not None:
+                try:
+                    await db.set_json(f"piluitus:trade:{order_id}", trade)
+                except Exception as persist_exc:
+                    for key, (existed, old_value) in trailing_previous_fields.items():
+                        if existed:
+                            trade[key] = old_value
+                        else:
+                            trade.pop(key, None)
+                    logger.error(
+                        "[PAPER TRAILING STOP PERSIST] %s: tighter stop was not activated "
+                        "because the updated position could not be persisted: %s",
+                        ticker, persist_exc, exc_info=True,
+                    )
+                else:
+                    stop_loss = trailing_stop
+                    logger.warning(
+                        "🛡️ [PAPER TRAILING STOP] %s %s: high_water=%.6f favorable=%.2fR "
+                        "trailing_SL=%.6f distance=%.2fR.",
+                        ticker, side, high_water_price,
+                        _finite_or_default(trade.get("paper_trailing_favorable_r_at_update"), 0.0),
+                        trailing_stop, self.paper_trailing_distance_r,
+                    )
 
             # Keep the former shadow BE as an independent benchmark for later
             # analysis; its R denominator always remains the initial stop distance.
