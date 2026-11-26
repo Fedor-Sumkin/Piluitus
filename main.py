@@ -1762,6 +1762,7 @@ async def _resume_pending_bbo_candidate(
         # Do not suppress the LLM verdict because a slippage estimate is uncalibrated.
         # The post-LLM guard and ExecutionLayer still require a complete cost model.
         require_complete_cost_model=False,
+        pre_llm_evaluation=True,
     )
     if not evidence_ok:
         if _guard_reason_bucket(evidence_reason) == "quotes":
@@ -2414,6 +2415,7 @@ async def process_market_event(event: Union[SimpleNamespace, dict]):
                             paper_mode=bool(getattr(execution_engine, "paper_mode", False)),
                             # Cost calibration is an execution gate, not a reason to hide an AI verdict.
                             require_complete_cost_model=False,
+                            pre_llm_evaluation=True,
                         )
                     if not evidence_ok:
                         if _guard_reason_bucket(evidence_reason) == "quotes":

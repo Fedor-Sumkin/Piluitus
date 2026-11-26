@@ -554,12 +554,14 @@ def validate_paper_market_quality(
     metrics: dict[str, Any],
     *,
     require_complete_cost_model: bool = True,
+    pre_llm_evaluation: bool = False,
 ) -> tuple[bool, str]:
-    """Require a fresh book and affordable round-trip costs.
+    """Require a fresh book and stage-appropriate round-trip cost limits.
 
-    The pre-LLM analysis path may evaluate a lower-bound cost estimate when
-    slippage is not calibrated yet. Actual post-LLM approval/execution must keep
-    require_complete_cost_model=True and therefore fail closed.
+    The pre-LLM path may evaluate candidates up to a separately bounded
+    analytical cost/ATR ceiling. This is only permission to request an LLM
+    assessment, never permission to execute. The post-LLM path retains the
+    strict execution ceiling and requires a complete cost model.
     """
     side = str(decision or "").strip().upper()
     if side not in {"BUY", "SELL"} or not isinstance(metrics, dict):
@@ -587,6 +589,28 @@ def validate_paper_market_quality(
     except (TypeError, ValueError, OverflowError):
         return False, "PAPER-вход заблокирован: параметры модели издержек некорректны."
 
+    # The analytical ceiling only decides whether a candidate merits an LLM
+    # verdict. It must never replace the stricter post-LLM/execution ceiling.
+    execution_cost_limit = min(2.0, max(0.05, max_cost_ratio))
+    evaluation_cost_limit = execution_cost_limit
+    if pre_llm_evaluation:
+        if require_complete_cost_model:
+            return False, (
+                "PAPER-вход заблокирован: предварительная оценка не может "
+                "использоваться вместе с режимом окончательного допуска."
+            )
+        try:
+            configured_pre_llm_limit = float(
+                os.getenv("PILUITUS_MAX_PRE_LLM_COST_TO_ATR_RATIO", "1.25")
+            )
+        except (TypeError, ValueError, OverflowError):
+            return False, "PAPER-вход заблокирован: некорректен лимит предварительной оценки cost/ATR."
+        if not math.isfinite(configured_pre_llm_limit) or configured_pre_llm_limit <= 0.0:
+            return False, "PAPER-вход заблокирован: лимит предварительной оценки cost/ATR должен быть положительным."
+        evaluation_cost_limit = min(
+            2.0, max(execution_cost_limit, configured_pre_llm_limit)
+        )
+
     economics = validate_entry_economics(
         side=side,
         bid=bid,
@@ -594,12 +618,16 @@ def validate_paper_market_quality(
         commission_pct_per_side=commission,
         slippage_bps_per_side=slippage,
         atr_pct=atr_pct,
-        max_cost_to_atr_ratio=max_cost_ratio,
+        max_cost_to_atr_ratio=evaluation_cost_limit,
     )
     if economics.get("available"):
         metrics["entry_cost_to_atr_ratio"] = economics.get("cost_to_atr_ratio")
         metrics["entry_minimum_favorable_move_pct"] = economics.get("minimum_favorable_move_pct")
-        metrics["entry_cost_to_atr_limit"] = economics.get("max_cost_to_atr_ratio")
+        metrics["entry_cost_to_atr_limit"] = execution_cost_limit
+        metrics["entry_cost_evaluation_limit"] = evaluation_cost_limit
+        metrics["entry_cost_evaluation_stage"] = (
+            "PRE_LLM_ANALYSIS" if pre_llm_evaluation else "EXECUTION"
+        )
         metrics["entry_cost_model_status"] = economics.get("cost_model_status")
     if (
         require_complete_cost_model
@@ -618,14 +646,21 @@ def validate_paper_market_quality(
         ratio_text = f"{float(ratio):.3f}" if isinstance(ratio, (int, float)) and math.isfinite(float(ratio)) else "н/д"
         return False, (
             "PAPER-вход заблокирован: round-trip издержки слишком велики или не измерены "
-            f"(cost/ATR={ratio_text}, лимит={max_cost_ratio:.2f}, "
+            f"(cost/ATR={ratio_text}, лимит_этапа={evaluation_cost_limit:.2f}, "
+            f"лимит_исполнения={execution_cost_limit:.2f}, "
             f"причина={economics.get('reason', 'UNKNOWN')})."
         )
 
+    stage_message = (
+        f"предварительная оценка для LLM: cost/ATR <= {evaluation_cost_limit:.2f}; "
+        f"окончательный лимит исполнения остаётся {execution_cost_limit:.2f}"
+        if pre_llm_evaluation
+        else f"окончательный лимит исполнения cost/ATR <= {execution_cost_limit:.2f}"
+    )
     return True, (
         "PAPER market quality подтверждена: свежий ORDER_BOOK; "
-        f"cost/ATR={float(economics['cost_to_atr_ratio']):.3f} "
-        f"<= {float(economics['max_cost_to_atr_ratio']):.2f}; "
+        f"cost/ATR={float(economics['cost_to_atr_ratio']):.3f}; "
+        f"{stage_message}; "
         f"минимальное движение до безубыточности="
         f"{float(economics['minimum_favorable_move_pct']):.4f}%; "
         f"модель издержек={economics.get('cost_model_status', 'UNKNOWN')}."
@@ -637,6 +672,7 @@ def validate_entry_evidence(
     *,
     paper_mode: bool = False,
     require_complete_cost_model: bool = True,
+    pre_llm_evaluation: bool = False,
 ) -> tuple[bool, str]:
     """Validate common evidence, then enforce PAPER-only market-quality and SELL gates.
 
@@ -650,6 +686,7 @@ def validate_entry_evidence(
         market_ok, market_reason = validate_paper_market_quality(
             decision, metrics,
             require_complete_cost_model=require_complete_cost_model,
+            pre_llm_evaluation=pre_llm_evaluation,
         )
         if not market_ok:
             return False, market_reason

@@ -193,5 +193,78 @@ class PaperBuyQualityGateTests(unittest.TestCase):
         self.assertTrue(valid, reason)
 
 
+    def test_pre_llm_analysis_can_assess_candidates_over_execution_cost_limit(self) -> None:
+        metrics = buy_metrics()
+        metrics["bar_atr_pct"] = 0.20
+        with patch.dict("os.environ", {
+            "PILUITUS_PAPER_BUY_STRICT_GATE": "true",
+            "PILUITUS_PAPER_BUY_MIN_FLOW_IMBALANCE": "0.10",
+            "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",
+            "PILUITUS_PAPER_SLIPPAGE_BPS": "1.0",
+            "PILUITUS_MAX_ENTRY_COST_TO_ATR_RATIO": "0.50",
+            "PILUITUS_MAX_PRE_LLM_COST_TO_ATR_RATIO": "1.25",
+        }, clear=False):
+            valid, reason = validate_entry_evidence(
+                "BUY", metrics,
+                paper_mode=True,
+                require_complete_cost_model=False,
+                pre_llm_evaluation=True,
+            )
+
+        self.assertTrue(valid, reason)
+        self.assertGreater(metrics["entry_cost_to_atr_ratio"], 0.50)
+        self.assertLessEqual(metrics["entry_cost_to_atr_ratio"], 1.25)
+        self.assertEqual(metrics["entry_cost_evaluation_stage"], "PRE_LLM_ANALYSIS")
+        self.assertIn("окончательный лимит исполнения остаётся 0.50", reason)
+
+    def test_post_llm_gate_still_blocks_same_candidate_over_execution_cost_limit(self) -> None:
+        metrics = buy_metrics()
+        metrics["bar_atr_pct"] = 0.20
+        with patch.dict("os.environ", {
+            "PILUITUS_PAPER_BUY_STRICT_GATE": "true",
+            "PILUITUS_PAPER_BUY_MIN_FLOW_IMBALANCE": "0.10",
+            "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",
+            "PILUITUS_PAPER_SLIPPAGE_BPS": "1.0",
+            "PILUITUS_MAX_ENTRY_COST_TO_ATR_RATIO": "0.50",
+            "PILUITUS_MAX_PRE_LLM_COST_TO_ATR_RATIO": "1.25",
+        }, clear=False):
+            valid, reason = validate_entry_evidence(
+                "BUY", metrics,
+                paper_mode=True,
+                require_complete_cost_model=True,
+            )
+
+        self.assertFalse(valid)
+        self.assertGreater(metrics.get("entry_cost_to_atr_ratio", 0.0), 0.50)
+        self.assertIn("лимит_исполнения=0.50", reason)
+
+    def test_pre_llm_analysis_still_blocks_costs_above_analytical_ceiling(self) -> None:
+        metrics = buy_metrics()
+        metrics.update({
+            "bar_atr_pct": 0.055,
+            "spread_pct": 0.01,
+            "bid": 99.99,
+            "ask": 100.0,
+        })
+        with patch.dict("os.environ", {
+            "PILUITUS_PAPER_BUY_STRICT_GATE": "true",
+            "PILUITUS_PAPER_BUY_MIN_FLOW_IMBALANCE": "0.10",
+            "PILUITUS_PAPER_COMMISSION_PCT": "0.0354",
+            "PILUITUS_PAPER_SLIPPAGE_BPS": "1.0",
+            "PILUITUS_MAX_ENTRY_COST_TO_ATR_RATIO": "0.50",
+            "PILUITUS_MAX_PRE_LLM_COST_TO_ATR_RATIO": "1.25",
+        }, clear=False):
+            valid, reason = validate_entry_evidence(
+                "BUY", metrics,
+                paper_mode=True,
+                require_complete_cost_model=False,
+                pre_llm_evaluation=True,
+            )
+
+        self.assertFalse(valid)
+        self.assertIn("лимит_этапа=1.25", reason)
+        self.assertIn("лимит_исполнения=0.50", reason)
+
+
 if __name__ == "__main__":
     unittest.main()
