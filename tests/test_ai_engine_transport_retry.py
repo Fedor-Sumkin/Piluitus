@@ -165,6 +165,39 @@ class AIEngineTransportRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(engine._transport_inflight_count, 0)
         self.assertEqual(engine.client.post.await_count, 2)
 
+    async def test_transport_semaphore_caps_concurrency(self) -> None:
+        engine = self._engine([])
+        first_started = asyncio.Event()
+        release = asyncio.Event()
+        started = 0
+
+        async def delayed_post(*args, **kwargs):
+            nonlocal started
+            started += 1
+            first_started.set()
+            await release.wait()
+            return self._response()
+
+        engine.client.post = AsyncMock(side_effect=delayed_post)
+        with patch.object(Settings, "VLLM_MAX_CONCURRENCY", 1):
+            first = asyncio.create_task(
+                engine._post_with_retry(engine.api_path, json={"model": "test-model"}, retries=0)
+            )
+            second = asyncio.create_task(
+                engine._post_with_retry(engine.api_path, json={"model": "test-model"}, retries=0)
+            )
+            await asyncio.wait_for(first_started.wait(), timeout=1.0)
+            await asyncio.sleep(0.02)
+            self.assertEqual(started, 1)
+            self.assertEqual(engine._transport_inflight_count, 1)
+            release.set()
+            responses = await asyncio.gather(first, second)
+
+        self.assertEqual([response.status_code for response in responses], [200, 200])
+        self.assertEqual(started, 2)
+        self.assertEqual(engine._transport_peak_inflight, 1)
+        self.assertEqual(engine._transport_inflight_count, 0)
+
     async def test_caller_cancellation_is_not_retried_or_swallowed(self) -> None:
         engine = self._engine([asyncio.CancelledError()])
         with self.assertRaises(asyncio.CancelledError):
@@ -174,6 +207,14 @@ class AIEngineTransportRetryTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(engine.client.post.await_count, 1)
         self.assertEqual(engine._transport_inflight_count, 0)
+
+    def test_effective_max_concurrency_is_bounded(self) -> None:
+        with patch.object(Settings, "VLLM_MAX_CONCURRENCY", 0):
+            self.assertEqual(AIEngine._effective_max_concurrency(), 1)
+        with patch.object(Settings, "VLLM_MAX_CONCURRENCY", 6):
+            self.assertEqual(AIEngine._effective_max_concurrency(), 6)
+        with patch.object(Settings, "VLLM_MAX_CONCURRENCY", 99):
+            self.assertEqual(AIEngine._effective_max_concurrency(), 16)
 
     def test_effective_generation_budget_is_clamped_to_short_contract_range(self) -> None:
         with patch.object(Settings, "VLLM_MAX_TOKENS", 1280):

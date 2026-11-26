@@ -47,6 +47,15 @@ class AIEngine:
             return 768
 
     @staticmethod
+    def _effective_max_concurrency() -> int:
+        """Bound parallel vLLM calls so inference bursts cannot swamp the local server."""
+        try:
+            configured = int(getattr(Settings, "VLLM_MAX_CONCURRENCY", 4))
+        except (TypeError, ValueError, OverflowError):
+            configured = 4
+        return max(1, min(16, configured))
+
+    @staticmethod
     def _request_timeout_seconds() -> float:
         """Return a finite, positive per-attempt timeout for vLLM requests."""
         try:
@@ -78,7 +87,8 @@ class AIEngine:
         self._transport_inflight_count = 0
         self._transport_peak_inflight = 0
         self._transport_inflight_lock = asyncio.Lock()
-        
+        self._transport_semaphore = asyncio.Semaphore(self._effective_max_concurrency())
+
         limits = httpx.Limits(max_connections=100, max_keepalive_connections=20, keepalive_expiry=30.0)
         timeout = httpx.Timeout(connect=5.0, read=45.0, write=10.0, pool=10.0)
 
@@ -93,9 +103,9 @@ class AIEngine:
         self.spaces_pattern = re.compile(r"\s+")
         model_label = str(self.model_name).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
         log.info(
-            "🧠 AIEngine v34 загружен: файл=ai_engine.py | API=%s | модель=%s | max_tokens=%s",
+            "🧠 AIEngine v34 загружен: файл=ai_engine.py | API=%s | модель=%s | max_tokens=%s | max_concurrency=%s",
             self.api_path, model_label,
-            self._effective_max_tokens(),
+            self._effective_max_tokens(), self._effective_max_concurrency(),
         )
 
     async def _transport_circuit_retry_after(self) -> float:
@@ -179,13 +189,23 @@ class AIEngine:
 
         timeout_seconds = self._request_timeout_seconds()
         retry_limit = max(0, min(1, int(retries)))
+        semaphore = getattr(self, "_transport_semaphore", None)
+        if semaphore is None:
+            semaphore = asyncio.Semaphore(self._effective_max_concurrency())
+            self._transport_semaphore = semaphore
+
         for attempt in range(retry_limit + 1):
-            await self._transport_request_started()
+            queue_started = time.perf_counter()
+            await semaphore.acquire()
+            semaphore_wait_ms = (time.perf_counter() - queue_started) * 1000.0
+            tracked = False
             attempt_started = time.perf_counter()
             response = None
             error_type = None
             retry_delay = False
             try:
+                await self._transport_request_started()
+                tracked = True
                 async with asyncio.timeout(timeout_seconds):
                     response = await self.client.post(
                         path,
@@ -230,14 +250,20 @@ class AIEngine:
                 retry_delay = True
             finally:
                 elapsed_ms = (time.perf_counter() - attempt_started) * 1000.0
-                remaining = await self._transport_request_finished()
+                try:
+                    remaining = (
+                        await self._transport_request_finished()
+                        if tracked else int(getattr(self, "_transport_inflight_count", 0) or 0)
+                    )
+                finally:
+                    semaphore.release()
                 log.debug(
-                    "[vLLM TRANSPORT] status=%s attempt=%d/%d elapsed_ms=%.1f "
-                    "inflight=%d peak_inflight=%d error=%s",
+                    "[vLLM TRANSPORT] status=%s attempt=%d/%d queue_wait_ms=%.1f elapsed_ms=%.1f "
+                    "inflight=%d peak_inflight=%d limit=%d error=%s",
                     response.status_code if response is not None else "-",
-                    attempt + 1, retry_limit + 1, elapsed_ms, remaining,
+                    attempt + 1, retry_limit + 1, semaphore_wait_ms, elapsed_ms, remaining,
                     int(getattr(self, "_transport_peak_inflight", 0) or 0),
-                    error_type or "-",
+                    self._effective_max_concurrency(), error_type or "-",
                 )
             if retry_delay:
                 await asyncio.sleep(0.4)
