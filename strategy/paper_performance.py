@@ -317,6 +317,20 @@ def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         value for row in rows
         if (value := _number(row.get("gross_pnl"))) is not None
     ]
+    entry_shortfalls = [
+        value for row in rows
+        if (value := _number(row.get("entry_execution_shortfall_rub"))) is not None
+    ]
+    exit_shortfalls = [
+        value for row in rows
+        if (value := _number(row.get("exit_execution_shortfall_rub"))) is not None
+    ]
+    round_trip_shortfalls = []
+    for row in rows:
+        entry_shortfall = _number(row.get("entry_execution_shortfall_rub"))
+        exit_shortfall = _number(row.get("exit_execution_shortfall_rub"))
+        if entry_shortfall is not None and exit_shortfall is not None:
+            round_trip_shortfalls.append(entry_shortfall + exit_shortfall)
 
     # Exit-BBO gaps are collected by the execution monitor while a position is
     # open. Closed trades carry the completed episode count and durations.
@@ -376,6 +390,16 @@ def _metrics(rows: list[Mapping[str, Any]]) -> dict[str, Any]:
         "current_loss_streak": current_loss_streak,
         "average_holding_sec": round(sum(holding) / len(holding), 2) if holding else None,
         "total_commission_rub": round(sum(commissions), 2),
+        "entry_execution_shortfall_rub": round(sum(entry_shortfalls), 4),
+        "exit_execution_shortfall_rub": round(sum(exit_shortfalls), 4),
+        "round_trip_execution_shortfall_rub": (
+            round(sum(round_trip_shortfalls), 4) if round_trip_shortfalls else None
+        ),
+        "round_trip_execution_shortfall_coverage": len(round_trip_shortfalls),
+        "average_round_trip_execution_shortfall_rub": (
+            round(sum(round_trip_shortfalls) / len(round_trip_shortfalls), 4)
+            if round_trip_shortfalls else None
+        ),
         "trades_with_exit_bbo_gap": trades_with_gap,
         "exit_bbo_gap_trade_rate_pct": (
             round(trades_with_gap / len(valid) * 100.0, 3) if valid else None

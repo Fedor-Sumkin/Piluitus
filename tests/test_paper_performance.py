@@ -100,6 +100,22 @@ class PaperPerformanceTests(unittest.TestCase):
         self.assertLessEqual(interval[0], interval[1])
         self.assertLessEqual(interval[1], 100.0)
 
+    def test_scorecard_reports_entry_exit_and_round_trip_execution_shortfall(self):
+        tracker = PaperPerformanceTracker()
+        row = trade("costs-1", 5.0)
+        row.update({
+            "entry_execution_shortfall_rub": 1.25,
+            "exit_execution_shortfall_rub": 0.75,
+        })
+        tracker.restore([row])
+
+        overall = tracker.scorecard()["overall"]
+        self.assertEqual(overall["entry_execution_shortfall_rub"], 1.25)
+        self.assertEqual(overall["exit_execution_shortfall_rub"], 0.75)
+        self.assertEqual(overall["round_trip_execution_shortfall_rub"], 2.0)
+        self.assertEqual(overall["round_trip_execution_shortfall_coverage"], 1)
+        self.assertEqual(overall["average_round_trip_execution_shortfall_rub"], 2.0)
+
     def test_session_stability_counts_sessions_not_individual_trades(self):
         tracker = PaperPerformanceTracker()
         tracker.restore([
