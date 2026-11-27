@@ -1377,6 +1377,8 @@ class AIEngine:
                 "tactic_opinion": "vLLM отклонил запрос; торговый вход заблокирован.",
                 "critic_opinion": self._compact_opinion(f"HTTP {status}: {detail}", max_chars=165),
                 "latency": round(time.time() - start_inference_time, 3),
+                "vllm_transport_metrics": _transport_summary(),
+                "candidate_id": candidate_id, "request_id": request_id,
             }
         except httpx.TransportError as exc:
             if isinstance(exc, VLLMCircuitOpenError):
@@ -1405,6 +1407,8 @@ class AIEngine:
                 "tactic_opinion": "Сбой сетевого соединения с vLLM; вход заблокирован.",
                 "critic_opinion": self._compact_opinion(str(exc), max_chars=165),
                 "latency": round(time.time() - start_inference_time, 3),
+                "vllm_transport_metrics": _transport_summary(),
+                "candidate_id": candidate_id, "request_id": request_id,
             }
         except Exception as exc:
             log.exception("[AIEngine v34] Ошибка запроса/ответа vLLM (%s): %r", self.api_path, exc)
@@ -1422,6 +1426,8 @@ class AIEngine:
                 "tactic_opinion": "Ошибка запроса к vLLM; вход заблокирован.",
                 "critic_opinion": self._compact_opinion(str(exc), max_chars=165),
                 "latency": round(time.time() - start_inference_time, 3),
+                "vllm_transport_metrics": _transport_summary(),
+                "candidate_id": candidate_id, "request_id": request_id,
             }
         
         inference_latency = time.time() - start_inference_time
