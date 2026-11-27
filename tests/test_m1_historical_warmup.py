@@ -72,6 +72,31 @@ class HistoricalM1WarmupTests(unittest.TestCase):
         self.assertEqual(imported, 10)
         self.assertEqual(engine._states["SBER"]["bars"][-1].bucket, base_bucket - 1)
 
+    def test_history_diagnostics_separate_new_bars_from_merged_history(self):
+        engine = MinuteBarPatternEngine()
+        base_bucket = int(1_800_000_000 // 60)
+        now_epoch = base_bucket * 60 + 20
+        first_count = engine.load_closed_bars(
+            "SBER", self._bars(base_bucket - 10, base_bucket - 1),
+            now=500.0, now_epoch=now_epoch,
+        )
+        self.assertEqual(first_count, 10)
+
+        # Only three already-known bars are returned by the next provider call.
+        # The retained history remains ten bars, but no bar is newly imported.
+        merged_count = engine.load_closed_bars(
+            "SBER", self._bars(base_bucket - 3, base_bucket - 1),
+            now=501.0, now_epoch=now_epoch,
+        )
+        self.assertEqual(merged_count, 10)
+        diagnostics = engine._states["SBER"]["last_history_load"]
+        self.assertEqual(diagnostics["received_rows"], 3)
+        self.assertEqual(diagnostics["valid_closed_unique"], 3)
+        self.assertEqual(diagnostics["new_history_bars"], 0)
+        self.assertEqual(diagnostics["merged_closed_total"], 10)
+        self.assertEqual(diagnostics["atr_contiguous_ranges"], 9)
+        self.assertEqual(diagnostics["atr_contiguous_bars"], 10)
+
     def test_old_history_remains_unready_due_to_freshness_guard(self):
         engine = MinuteBarPatternEngine()
         base_bucket = int(1_800_000_000 // 60)

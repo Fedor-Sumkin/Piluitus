@@ -272,6 +272,13 @@ class MinuteBarPatternEngine:
             int(bar.bucket): bar for bar in existing_bars
             if isinstance(bar, MinuteBar)
         }
+        existing_buckets = set(merged)
+        valid_buckets: set[int] = set()
+        duplicate_payload_rows = 0
+        invalid_rows = 0
+        invalid_timestamp_rows = 0
+        current_or_future_rows = 0
+        invalid_ohlc_rows = 0
 
         def number(value: object) -> float:
             if isinstance(value, Mapping):
@@ -284,21 +291,29 @@ class MinuteBarPatternEngine:
 
         for item in raw_bars:
             if not isinstance(item, Mapping):
+                invalid_rows += 1
                 continue
             event_epoch = _event_epoch_seconds(item.get("timestamp") or item.get("time"))
             if event_epoch is None:
+                invalid_timestamp_rows += 1
                 continue
             bucket = int(event_epoch // self.bar_seconds)
             if bucket >= current_bucket:
+                current_or_future_rows += 1
                 continue
             open_price = number(item.get("open"))
             high = number(item.get("high"))
             low = number(item.get("low"))
             close = number(item.get("close"))
             if min(open_price, high, low, close) <= 0.0 or high < low:
+                invalid_ohlc_rows += 1
                 continue
             if high < max(open_price, close) or low > min(open_price, close):
+                invalid_ohlc_rows += 1
                 continue
+            if bucket in valid_buckets:
+                duplicate_payload_rows += 1
+            valid_buckets.add(bucket)
             merged[bucket] = MinuteBar(
                 bucket=bucket, open=open_price, high=high, low=low, close=close,
                 # Historical OHLC has volume but not a trustworthy tick count;
@@ -307,6 +322,19 @@ class MinuteBarPatternEngine:
             )
 
         if not merged:
+            state["last_history_load"] = {
+                "received_rows": len(raw_bars),
+                "valid_closed_unique": len(valid_buckets),
+                "new_history_bars": len(valid_buckets - existing_buckets),
+                "merged_closed_total": 0,
+                "duplicate_payload_rows": duplicate_payload_rows,
+                "invalid_rows": invalid_rows,
+                "invalid_timestamp_rows": invalid_timestamp_rows,
+                "current_or_future_rows": current_or_future_rows,
+                "invalid_ohlc_rows": invalid_ohlc_rows,
+                "atr_contiguous_ranges": 0,
+                "atr_contiguous_bars": 0,
+            }
             return 0
         ordered = sorted(merged.values(), key=lambda bar: bar.bucket)[-self.history_bars:]
         state["bars"] = deque(ordered, maxlen=self.history_bars)
@@ -323,6 +351,20 @@ class MinuteBarPatternEngine:
         state["last_event_time"] = float(last_close_epoch)
         state["last_event_monotonic"] = stamp
         state["last_closed_bar_monotonic"] = stamp - max(0.0, epoch_now - last_close_epoch)
+        atr_snapshot = self.get_atr_snapshot_from_bars(ordered)
+        state["last_history_load"] = {
+            "received_rows": len(raw_bars),
+            "valid_closed_unique": len(valid_buckets),
+            "new_history_bars": len(valid_buckets - existing_buckets),
+            "merged_closed_total": len(ordered),
+            "duplicate_payload_rows": duplicate_payload_rows,
+            "invalid_rows": invalid_rows,
+            "invalid_timestamp_rows": invalid_timestamp_rows,
+            "current_or_future_rows": current_or_future_rows,
+            "invalid_ohlc_rows": invalid_ohlc_rows,
+            "atr_contiguous_ranges": int(atr_snapshot.get("periods", 0.0)),
+            "atr_contiguous_bars": int(atr_snapshot.get("bars", 0.0)),
+        }
         return len(ordered)
 
     def _summarize(self, state: dict[str, Any], price: float, now: float) -> dict[str, Any]:

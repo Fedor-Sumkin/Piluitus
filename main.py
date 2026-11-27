@@ -36,6 +36,7 @@ from risk_limits import validate_daily_loss_limit
 
 # --- PILUITUS‑V3 modules ------------------------------------------------
 from ai_engine import AIEngine
+from ai.worker_pool import effective_ai_worker_count
 from db_manager import DBManager
 from finam_client import FinamBrokerClient
 from screener_funnel import HFTMemoryScreener
@@ -780,6 +781,7 @@ spinner_frames = ["|", "/", "-", "\\"]
 PriorityItem = tuple[int, int, float, str, dict[str, Any]]
 anomaly_queue: asyncio.PriorityQueue[PriorityItem] = asyncio.PriorityQueue(maxsize=1000)
 _priority_sequence = count()
+_priority_command_lock = asyncio.Lock()
 # Serializes order publication with PAPER maintenance; generation invalidates old queued/in-flight AI events.
 _paper_session_lock = asyncio.Lock()
 _paper_session_generation = 0
@@ -1190,7 +1192,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "execution_bbo_blocked", "execution_spread_atr_blocked", "atr_history_blocked", "portfolio_cap_blocked",
         "portfolio_size_reduced", "entry_session_blocked", "execution_other_blocked",
         "execution_stale_signal_blocked", "risk_final_gate_blocked",
-        "candidate_expired", "finam_lot_unavailable",
+        "candidate_expired", "candidate_expired_after_context", "finam_lot_unavailable",
     )
     values = {key: counts.get(key, 0) for key in names}
     with _pending_bbo_lock:
@@ -1230,7 +1232,7 @@ def _trade_flow_maybe_log(force: bool = False) -> None:
         "блок ATR после APPROVE=%(atr_history_blocked)d; "
         "Spread/ATR execution block=%(execution_spread_atr_blocked)d; "
         "BBO wait=%(bbo_deferred)d, resumed=%(bbo_resumed)d, expired=%(bbo_expired)d, "
-        "superseded=%(bbo_superseded)d, coalesced=%(bbo_coalesced)d, cancelled=%(bbo_cancelled)d, pending_now=%(bbo_pending)d, candidate_expired_pre_LLM=%(candidate_expired)d; "
+        "superseded=%(bbo_superseded)d, coalesced=%(bbo_coalesced)d, cancelled=%(bbo_cancelled)d, pending_now=%(bbo_pending)d, candidate_expired_pre_LLM=%(candidate_expired)d (after_context=%(candidate_expired_after_context)d); "
         "BBO resume: attempts=%(bbo_resume_attempted)d (ORDER_BOOK=%(bbo_resume_from_book)d, QUOTES=%(bbo_resume_from_quotes)d), "
         "expired=%(bbo_resume_expired)d, session_cancel=%(bbo_resume_session_cancelled)d, "
         "funnel_not_ready=%(bbo_resume_funnel_not_ready)d, not_selected=%(bbo_resume_not_selected)d, "
@@ -1500,10 +1502,23 @@ async def _warmup_selected_m1_history(tickers: tuple[str, ...] | list[str]) -> N
                 if atr_ready:
                     with _m1_history_warmup_lock:
                         _m1_history_warmed.add(ticker)
+                load_diag = state.get("last_history_load", {})
+                if not isinstance(load_diag, dict):
+                    load_diag = {}
                 logger.info(
-                    "[M1 HISTORY WARMUP] %s: получено=%d, загружено_закрытых=%d, "
-                    "ATR_ranges=%.0f, age=%.1fs, ready=%s; %s",
-                    ticker, len(bars), imported, float(snapshot.get("periods", 0.0)),
+                    "[M1 HISTORY WARMUP] %s: получено=%d, valid_closed=%d, new=%d, "
+                    "merged_closed=%d, ATR_ranges=%.0f, contiguous_bars=%d, "
+                    "invalid_ts=%d, invalid_ohlc=%d, open_bar=%d, age=%.1fs, ready=%s; %s",
+                    ticker,
+                    len(bars),
+                    int(load_diag.get("valid_closed_unique", imported) or 0),
+                    int(load_diag.get("new_history_bars", 0) or 0),
+                    int(load_diag.get("merged_closed_total", imported) or 0),
+                    float(snapshot.get("periods", 0.0)),
+                    int(load_diag.get("atr_contiguous_bars", 0) or 0),
+                    int(load_diag.get("invalid_timestamp_rows", 0) or 0),
+                    int(load_diag.get("invalid_ohlc_rows", 0) or 0),
+                    int(load_diag.get("current_or_future_rows", 0) or 0),
                     atr_age, atr_ready, atr_reason,
                 )
             else:
@@ -2811,14 +2826,18 @@ class MarketWorker:
         except Exception as broadcast_exc:
             logger.error("Не удалось отправить RiskManager-вердикт в веб-интерфейс: %s", broadcast_exc)
 
-    async def start_processing(self):
+    async def start_processing(self, *, worker_id: int = 1):
         global last_ai_verdicts_cache
-        logger.info("🤖 ИИ‑конвейер воркеров Piluitus v35.2 успешно запущен.")
+        logger.info("🤖 ИИ‑конвейер Piluitus v35.2 запущен: worker=%d.", worker_id)
 
         while True:
             queue_item_acquired = False
             pending_ticker = ""
             try:
+                queue_wait_sec = 0.0
+                candidate_created_at = None
+                rag_elapsed_ms = 0.0
+                llm_started_at = 0.0
                 priority, _sequence_id, _timestamp_id, event_type, event_payload = await anomaly_queue.get()
                 queue_item_acquired = True
                 if event_type == "MARKET_TICK" and isinstance(event_payload, dict):
@@ -2828,30 +2847,50 @@ class MarketWorker:
                         or event_payload.get("paper_session_generation") != _paper_session_generation
                     ):
                         continue
-                    created_at = event_payload.get("candidate_created_monotonic")
-                    if created_at is not None and candidate_is_expired(
-                        created_at, ttl_sec=_AI_CANDIDATE_TTL_SEC
+                    candidate_created_at = event_payload.get("candidate_created_monotonic")
+                    if candidate_created_at is not None:
+                        try:
+                            queue_wait_sec = max(
+                                0.0, time_module.monotonic() - float(candidate_created_at)
+                            )
+                        except (TypeError, ValueError, OverflowError):
+                            queue_wait_sec = 0.0
+                        logger.info(
+                            "[AI QUEUE] worker=%d ticker=%s side=%s queue_wait_ms=%.1f "
+                            "depth_after_dequeue=%d ttl_sec=%.1f",
+                            worker_id, pending_ticker,
+                            event_payload.get("candidate_direction", "NONE"),
+                            queue_wait_sec * 1000.0, anomaly_queue.qsize(),
+                            _AI_CANDIDATE_TTL_SEC,
+                        )
+                    if candidate_created_at is not None and candidate_is_expired(
+                        candidate_created_at, ttl_sec=_AI_CANDIDATE_TTL_SEC
                     ):
                         _trade_flow_inc("candidate_expired")
+                        _mark_shadow_llm_not_called(
+                            event_payload.get("shadow_candidate_id"), "CANDIDATE_EXPIRED_QUEUE"
+                        )
                         logger.info(
-                            "[CANDIDATE TTL] %s side=%s expired before LLM; evidence age exceeded %.1fs.",
+                            "[CANDIDATE TTL] %s side=%s expired in AI queue; "
+                            "queue_wait_ms=%.1f ttl_sec=%.1f; inference skipped.",
                             pending_ticker,
                             event_payload.get("candidate_direction", "NONE"),
-                            _AI_CANDIDATE_TTL_SEC,
+                            queue_wait_sec * 1000.0, _AI_CANDIDATE_TTL_SEC,
                         )
                         continue
 
                 if priority == 0:
-                    logger.warning(f"🚨 [ПРИОРИТЕТНЫЙ ПЕРЕХВАТ] Выполнение экстренной команды: {event_type}")
-                    if event_type == "CMD_CLOSE_ALL":
-                        await execution_engine.close_all_positions(db=self.db) 
-                    elif event_type == "CMD_SET_RISK_LIMIT":
-                        try:
-                            risk_manager.daily_loss_limit = validate_daily_loss_limit(
-                                event_payload.get("value", Settings.DAILY_LOSS_LIMIT_PCT)
-                            )
-                        except ValueError as exc:
-                            logger.error("[RISK LIMIT] Некорректное значение в очереди: %s", exc)
+                    async with _priority_command_lock:
+                        logger.warning(f"🚨 [ПРИОРИТЕТНЫЙ ПЕРЕХВАТ] Выполнение экстренной команды: {event_type}")
+                        if event_type == "CMD_CLOSE_ALL":
+                            await execution_engine.close_all_positions(db=self.db)
+                        elif event_type == "CMD_SET_RISK_LIMIT":
+                            try:
+                                risk_manager.daily_loss_limit = validate_daily_loss_limit(
+                                    event_payload.get("value", Settings.DAILY_LOSS_LIMIT_PCT)
+                                )
+                            except ValueError as exc:
+                                logger.error("[RISK LIMIT] Некорректное значение в очереди: %s", exc)
                     continue
 
                 ticker   = event_payload.get("ticker") or event_payload.get("security_code") or "UNKNOWN"
@@ -2932,6 +2971,7 @@ class MarketWorker:
                     )
                     continue
 
+                rag_started_at = time_module.monotonic()
                 try:
                     from knowledge_parser import TechnicalKnowledgeParser
 
@@ -2967,11 +3007,31 @@ class MarketWorker:
                         "Нет проверенного контекста правил; направленный вход должен быть HOLD."
                     ]
 
+                rag_elapsed_ms = max(0.0, time_module.monotonic() - rag_started_at) * 1000.0
+                if (
+                    event_type == "MARKET_TICK"
+                    and candidate_created_at is not None
+                    and candidate_is_expired(candidate_created_at, ttl_sec=_AI_CANDIDATE_TTL_SEC)
+                ):
+                    _trade_flow_inc("candidate_expired")
+                    _trade_flow_inc("candidate_expired_after_context")
+                    _mark_shadow_llm_not_called(
+                        event_payload.get("shadow_candidate_id"), "CANDIDATE_EXPIRED_CONTEXT"
+                    )
+                    logger.info(
+                        "[CANDIDATE TTL] %s side=%s expired while preparing RAG context; "
+                        "queue_wait_ms=%.1f rag_ms=%.1f ttl_sec=%.1f; inference skipped.",
+                        ticker, candidate_direction_for_diag,
+                        queue_wait_sec * 1000.0, rag_elapsed_ms, _AI_CANDIDATE_TTL_SEC,
+                    )
+                    continue
+
                 logger.info(
                     "🧭 [LLM INPUT] ticker=%s candidate=%s features=%s",
                     ticker, candidate_direction_for_diag,
                     json.dumps(llm_input_features, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
                 )
+                llm_started_at = time_module.monotonic()
                 try:
                     _trade_flow_inc("llm_calls")
                     ai_response = await asyncio.wait_for(
@@ -3014,6 +3074,19 @@ class MarketWorker:
                     or event_payload.get("paper_session_generation") != _paper_session_generation
                 ):
                     continue
+
+                llm_elapsed_ms = max(0.0, time_module.monotonic() - llm_started_at) * 1000.0
+                candidate_total_age_ms = (
+                    max(0.0, time_module.monotonic() - float(candidate_created_at)) * 1000.0
+                    if candidate_created_at is not None else -1.0
+                )
+                logger.info(
+                    "[AI PIPELINE TIMING] worker=%d ticker=%s side=%s queue_wait_ms=%.1f "
+                    "rag_ms=%.1f inference_wall_ms=%.1f candidate_age_ms=%.1f",
+                    worker_id, ticker, candidate_direction_for_diag,
+                    queue_wait_sec * 1000.0, rag_elapsed_ms, llm_elapsed_ms,
+                    candidate_total_age_ms,
+                )
 
                 ai_analysis = {"final_decision": "HOLD", "confidence_score": 0.0, "confidence_valid": False, "tactic_opinion": "", "critic_opinion": ""}
                 if isinstance(ai_response, list) and len(ai_response) > 0:
@@ -3824,6 +3897,16 @@ async def lifespan(app: FastAPI):
         DEPOSIT, gross_exposure_pct, DEPOSIT * gross_exposure_pct / 100.0,
         single_position_pct, DEPOSIT * single_position_pct / 100.0,
     )
+    logger.info(
+        "[ENTRY COST POLICY] commission=%s%%/side slippage=%s bps/side "
+        "execution_cost_ATR_limit=%s pre_LLM_cost_ATR_limit=%s spread_ATR_limit=%s; "
+        "pre-LLM assessment does not relax the final execution gate.",
+        os.getenv("PILUITUS_PAPER_COMMISSION_PCT", "0.0354"),
+        os.getenv("PILUITUS_PAPER_SLIPPAGE_BPS", "0"),
+        os.getenv("PILUITUS_MAX_ENTRY_COST_TO_ATR_RATIO", "0.50"),
+        os.getenv("PILUITUS_MAX_PRE_LLM_COST_TO_ATR_RATIO", "1.25"),
+        os.getenv("PILUITUS_MAX_SPREAD_TO_ATR_RATIO", "0.50"),
+    )
 
     try:
         await db_manager.connect()
@@ -3917,15 +4000,33 @@ async def lifespan(app: FastAPI):
     except Exception as redis_restore_err:
         logger.error(f"⚠️ Не удалось восстановить историю вердиктов из Redis: {redis_restore_err}")
 
-    worker = MarketWorker(db=db_manager, ai=ai_engine, broker_client=broker)
-    async def _run_worker_safely():
-        try:
-            await worker.start_processing()
-        except Exception as e:
-            logger.critical(f"❌ КРИТИЧЕСКОЕ ПАДЕНИЕ MarketWorker В ЦИКЛЕ ТОРГОВЛИ: {e}", exc_info=True)
+    worker_count = effective_ai_worker_count(
+        os.getenv("PILUITUS_AI_WORKERS", "3"),
+        getattr(Settings, "VLLM_MAX_CONCURRENCY", 4),
+    )
+    logger.info(
+        "[AI WORKER POOL] workers=%d vllm_max_concurrency=%s queue_maxsize=%d; "
+        "per-ticker deduplication and serialized PAPER execution remain active.",
+        worker_count, getattr(Settings, "VLLM_MAX_CONCURRENCY", 4), anomaly_queue.maxsize,
+    )
 
-    # Запускаем строго по одной асинхронной задаче на каждый воркер (дублирование удалено)
-    _spawn_background(_run_worker_safely(), name="market-worker")
+    async def _run_worker_safely(worker_id: int):
+        worker = MarketWorker(db=db_manager, ai=ai_engine, broker_client=broker)
+        try:
+            await worker.start_processing(worker_id=worker_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.critical(
+                "❌ КРИТИЧЕСКОЕ ПАДЕНИЕ MarketWorker #%d В ЦИКЛЕ ТОРГОВЛИ: %s",
+                worker_id, e, exc_info=True,
+            )
+
+    for worker_id in range(1, worker_count + 1):
+        _spawn_background(
+            _run_worker_safely(worker_id),
+            name=f"market-worker-{worker_id}",
+        )
     _spawn_background(_finam_metadata_refresh_loop(), name="finam-metadata-refresh")
     _spawn_background(_start_news_updater(), name="news-updater")
     _spawn_background(_start_tables_sync_loop(), name="tables-sync")
