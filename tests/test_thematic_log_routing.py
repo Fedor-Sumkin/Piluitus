@@ -22,9 +22,9 @@ def test_diagnostic_records_stay_in_diagnostic_and_not_thematic_files():
     vllm = ThematicLogFilter("vllm", diagnostic)
     record = _record("Piluitus.Main", "[LLM DECISION] ticker=SBER decision=HOLD")
 
-    assert diagnostic.filter(record)
+    assert not diagnostic.filter(record)
     assert not shadow.filter(record)
-    assert not vllm.filter(record)
+    assert vllm.filter(record)
 
 
 def test_subsystem_logger_names_route_to_expected_theme():
@@ -39,6 +39,10 @@ def test_subsystem_logger_names_route_to_expected_theme():
     assert market.filter(_record("Piluitus.FinamGateway", "websocket reconnect"))
     assert execution.filter(_record("Piluitus.ExecutionLayer", "position updated"))
 
+    shadow_be = _record("Piluitus.ExecutionLayer", "[SHADOW BE ARMED] SBER BUY")
+    assert shadow.filter(shadow_be)
+    assert not execution.filter(shadow_be)
+
 
 def test_general_session_excludes_diagnostic_and_thematic_records():
     diagnostic = DiagnosticLogFilter()
@@ -51,6 +55,7 @@ def test_general_session_excludes_diagnostic_and_thematic_records():
     assert session.filter(_record("Piluitus.Main", "PILUITUS startup complete"))
     assert not session.filter(_record("Piluitus.AIEngine", "request completed"))
     assert not session.filter(_record("Piluitus.Main", "[TRADE FLOW 60s] trades=10"))
+    assert not session.filter(_record("Piluitus.Main", "[PAPER FILL] ticker=SBER"))
 
 
 def test_verdict_and_error_streams_are_independent():
