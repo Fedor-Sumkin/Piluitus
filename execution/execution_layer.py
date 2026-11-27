@@ -471,7 +471,8 @@ class BaseExecutionEngine:
         self._maintenance_active = False
         self._maintenance_reason = ""
         self._last_portfolio_guard_log_at = 0.0
-        self.session_id = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        self.session_started_at = datetime.now(timezone.utc)
+        self.session_id = self.session_started_at.strftime("%Y%m%d-%H%M%S-%f")
 
         logger.info(
             "🛡️ [PORTFOLIO GUARD] capital=%.2f ₽ gross_cap=%.0f%% single_position_cap=%.0f%% "
