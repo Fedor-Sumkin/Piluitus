@@ -14,6 +14,7 @@ import logging
 import os
 import asyncio
 import fnmatch
+import math
 from datetime import datetime
 from typing import Any, List, Optional, Union, cast
 
@@ -22,6 +23,16 @@ from config import PROJECT_ROOT, Settings       # единый корень пр
 
 log = logging.getLogger(__name__)   # под именем "Piluitus.DBManager"
 AOF_FILE = str(PROJECT_ROOT / "piluitus_fallback_aof.jsonl")
+
+
+def _positive_number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) and number > 0.0 else None
 
 
 # ----------------------------------------------------------------------
@@ -691,6 +702,97 @@ class DBManager:
                 "aof_compacted": aof_compacted,
             }
             log.warning("🧹 PAPER test session cleared: %s", result)
+            return result
+
+    async def restore_archived_paper_positions(self) -> dict:
+        """Restore unresolved PAPER positions archived during the session reset.
+
+        Only full, directionally coherent journals are reactivated as OPEN.
+        Records that were already STALE_REVIEW (or fail validation) are reinserted
+        as STALE_REVIEW so the execution layer keeps its reconciliation lock.
+        No synthetic fill, exit price or PnL is created.
+        """
+        async with self._paper_session_lock:
+            client = await self._get_client()
+            archive_keys = await self._scan_matching_keys(
+                client, "piluitus:paper:archive:position:*"
+            )
+            restored = 0
+            review = 0
+            malformed = 0
+            unresolved_ids: list[str] = []
+            for archive_key in archive_keys:
+                archive = self._decode_json_value(await client.get(archive_key))
+                if not isinstance(archive, dict):
+                    malformed += 1
+                    unresolved_ids.append(archive_key.rsplit(":", 1)[-1])
+                    continue
+                trade = archive.get("trade")
+                if not isinstance(trade, dict):
+                    malformed += 1
+                    unresolved_ids.append(str(archive.get("trade_id") or archive_key.rsplit(":", 1)[-1]))
+                    continue
+                order_id = str(trade.get("id") or archive.get("trade_id") or archive_key.rsplit(":", 1)[-1]).strip()
+                if not order_id or not self.is_paper_trade(trade, order_id):
+                    malformed += 1
+                    unresolved_ids.append(order_id or "UNKNOWN_ID")
+                    continue
+
+                original_status = str(archive.get("original_status") or trade.get("status") or "UNKNOWN").strip().upper()
+                candidate = dict(trade)
+                candidate["id"] = order_id
+                if original_status in {"OPEN", "ACTIVE"}:
+                    ticker = str(candidate.get("ticker") or "").strip().upper().split("@")[0]
+                    side = str(candidate.get("side") or "").strip().upper()
+                    entry = _positive_number(candidate.get("entry_price"))
+                    stop = _positive_number(candidate.get("initial_stop_loss", candidate.get("stop_loss")))
+                    current_stop = _positive_number(candidate.get("stop_loss"))
+                    target = _positive_number(candidate.get("take_profit"))
+                    quantity = _positive_number(candidate.get("volume", candidate.get("original_volume")))
+                    structurally_valid = bool(
+                        ticker and side in {"BUY", "SELL"}
+                        and entry and stop and current_stop and target and quantity
+                        and ((side == "BUY" and stop < entry < target)
+                             or (side == "SELL" and target < entry < stop))
+                        and (current_stop < target if side == "BUY" else target < current_stop)
+                    )
+                    if structurally_valid:
+                        candidate["status"] = "OPEN"
+                        candidate["restored_after_restart"] = True
+                        candidate["restored_from_archive"] = archive_key
+                        candidate["restored_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+                        candidate["carried_over_from_previous_session"] = True
+                        candidate.setdefault("restart_reconciliation_status", "RESTORED_FROM_COMPLETE_PAPER_JOURNAL")
+                        restored += 1
+                    else:
+                        candidate["status"] = "STALE_REVIEW"
+                        candidate["reconciliation_status"] = "REVIEW_REQUIRED"
+                        candidate["stale_reason"] = "Archived OPEN PAPER trade failed structural restore validation."
+                        candidate["stale_detected_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+                        review += 1
+                elif original_status == "STALE_REVIEW":
+                    candidate["status"] = "STALE_REVIEW"
+                    candidate["reconciliation_status"] = "REVIEW_REQUIRED"
+                    review += 1
+                else:
+                    candidate["status"] = "STALE_REVIEW"
+                    candidate["reconciliation_status"] = "REVIEW_REQUIRED"
+                    candidate["stale_reason"] = f"Archive had unsupported unresolved status: {original_status}."
+                    review += 1
+
+                await RedisClient.write_trade(order_id, candidate, client=client)
+                await client.delete(archive_key)
+                if candidate.get("status") == "STALE_REVIEW":
+                    unresolved_ids.append(order_id)
+
+            result = {
+                "restored_open_positions": restored,
+                "positions_requiring_review": review,
+                "malformed_archives": malformed,
+                "unresolved_position_ids": sorted(set(unresolved_ids)),
+                "archive_keys_scanned": len(archive_keys),
+            }
+            log.warning("[PAPER POSITION RESTORE] %s", result)
             return result
 
     async def clear_unreconciled_paper_positions(self) -> dict:
