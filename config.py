@@ -132,9 +132,6 @@ class Settings:
     # ---------- FastAPI / Uvicorn ----------
     APP_HOST: str = os.getenv("APP_HOST", "0.0.0.0")
     APP_PORT: int = int(os.getenv("APP_PORT", "5813"))
-    # LAN dashboard access is fail-closed until a strong password is configured.
-    WEB_AUTH_USER: str = os.getenv("PILUITUS_WEB_AUTH_USER", "piluitus").strip() or "piluitus"
-    WEB_AUTH_PASSWORD: str = os.getenv("PILUITUS_WEB_AUTH_PASSWORD", "")
     RELOAD: bool = os.getenv("APP_RELOAD", "False").lower() in ("true", "1", "yes")
 
     # ---------- Redis ----------
