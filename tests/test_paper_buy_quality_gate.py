@@ -71,6 +71,20 @@ class PaperBuyQualityGateTests(unittest.TestCase):
         self.assertIn("агрессивного потока покупателей", reason)
         self.assertIn("требуется >= 0.10", reason)
 
+    def test_buy_blocks_unreliable_aggressor_side_coverage(self) -> None:
+        metrics = buy_metrics()
+        metrics.update({
+            "trade_flow_ready": 0.0,
+            "trade_flow_known_trade_count_30s": 2,
+            "trade_flow_known_volume_share_30s": 0.20,
+            "trade_flow_min_known_trades_30s": 3,
+            "trade_flow_min_known_volume_share": 0.50,
+        })
+        valid, reason = self._validate(metrics)
+        self.assertFalse(valid)
+        self.assertIn("недостаточно данных о стороне агрессора", reason)
+        self.assertIn("известных сделок=2/3", reason)
+
     def test_buy_blocks_stale_aggressor_flow(self) -> None:
         metrics = buy_metrics()
         metrics["trade_metrics_age_sec"] = 5.1
