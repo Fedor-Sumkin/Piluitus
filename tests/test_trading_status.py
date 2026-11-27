@@ -27,7 +27,11 @@ def _runtime(*, allowed=True, connected=True, **risk_overrides):
         is_ws_running=connected,
         _market_stream_connected=connected,
     )
-    engine = SimpleNamespace(paper_mode=True, broker=broker)
+    engine = SimpleNamespace(
+        paper_mode=True,
+        broker=broker,
+        session_started_at=datetime.now(timezone.utc) - timedelta(seconds=12),
+    )
     return risk, engine
 
 
@@ -41,6 +45,17 @@ def test_status_reports_active_only_after_risk_approval_and_finam_handshake():
     assert status["mode"] == "PAPER"
     assert status["market_connected"] is True
     assert "новые входы" in status["message"]
+
+
+def test_status_includes_aware_session_start_timestamp_for_dashboard_timer():
+    risk, engine = _runtime(allowed=True, connected=True)
+
+    status = build_trading_status_snapshot(risk_manager=risk, execution_engine=engine)
+
+    parsed = datetime.fromisoformat(status["session_started_at"].replace("Z", "+00:00"))
+    assert parsed.tzinfo is not None
+    assert parsed <= datetime.now(timezone.utc)
+    assert (datetime.now(timezone.utc) - parsed).total_seconds() >= 11
 
 
 def test_status_reports_hard_stop_after_five_consecutive_losses():
