@@ -143,19 +143,22 @@ async def cmd_get_logs(message: types.Message):
     """Находит актуальный текстовый лог текущей торговой сессии и отправляет файлом."""
     if not message.from_user or str(message.from_user.id) != str(USER_ID): return
     
-    log_dir = PROJECT_ROOT / "trading_logs"
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    target_file = log_dir / f"piluitus_session_{date_str}.txt"
-    
-    if not target_file.is_file():
-        # Если файл за сегодня еще не создался, ищем самый свежий доступный лог в папке
-        if log_dir.is_dir():
-            files = sorted(log_dir.glob("piluitus_session_*.txt"), key=lambda p: p.stat().st_mtime)
-            if files:
-                target_file = files[-1]
-                
-    if not target_file or not target_file.is_file():
-        await message.answer("📂 Папка бортовых журналов <code>trading_logs/</code> пуста. Запустите стресс-тест.", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard())
+    log_dir_value = os.getenv("PILUITUS_LOG_DIR", "trading_logs").strip() or "trading_logs"
+    log_dir = Path(log_dir_value).expanduser()
+    if not log_dir.is_absolute():
+        log_dir = PROJECT_ROOT / log_dir
+    verdict_files = sorted(
+        log_dir.glob("verdicts_*.log"),
+        key=lambda path: path.stat().st_mtime,
+    ) if log_dir.is_dir() else []
+    target_file = verdict_files[-1] if verdict_files else None
+
+    if target_file is None or not target_file.is_file():
+        await message.answer(
+            "📂 Файл вердиктов <code>verdicts_*.log</code> пока не создан.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_keyboard(),
+        )
         return
 
     await message.answer(f"⏳ <i>Формирование выгрузки... Подготовка файла: {target_file.name}</i>", parse_mode=ParseMode.HTML)
@@ -163,7 +166,7 @@ async def cmd_get_logs(message: types.Message):
     try:
         # Асинхронная отправка файла через нативный инструмент aiogram
         document = FSInputFile(path=str(target_file), filename=target_file.name)
-        await message.answer_document(document=document, caption=f"📜 Полный бортовой журнал сессии: <code>{target_file.name}</code>\n\nИспользуйте текстовый редактор для анализа цепочек рассуждений ИИ.", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard())
+        await message.answer_document(document=document, caption=f"📜 Журнал вердиктов: <code>{target_file.name}</code>\n\nПолные тематические журналы доступны в папке trading_logs.", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard())
     except Exception as e:
         logger.error(f"Ошибка отправки файла логов в Telegram: {e}")
         await message.answer(f"❌ Ошибка выгрузки файла: {e}", reply_markup=get_main_keyboard())
