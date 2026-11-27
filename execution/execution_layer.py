@@ -3900,7 +3900,6 @@ class BaseExecutionEngine:
             if (
                 not exit_reason
                 and bool(getattr(Settings, "PAPER_SIGNAL_EXIT_ENABLED", True))
-                and not bool(trade.get("paper_profit_partial_taken"))
             ):
                 quote_obj = (
                     self.screener.quotes.get(ticker, {})

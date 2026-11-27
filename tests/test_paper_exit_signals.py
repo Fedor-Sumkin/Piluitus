@@ -95,7 +95,7 @@ class PaperExitSignalTests(unittest.TestCase):
         )
         first = evaluate_paper_exit_signal(
             position_side="BUY", metrics=weakening, sample_id="501",
-            favorable_r=0.8, state=state,
+            favorable_r=1.2, state=state,
         )
         second = evaluate_paper_exit_signal(
             position_side="BUY", metrics=weakening, sample_id="502",
