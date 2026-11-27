@@ -212,6 +212,11 @@ def estimate_entry_economics(
         "minimum_favorable_move_pct": max(0.0, required_move_pct),
         "move_beyond_entry_executable_pct": max(0.0, move_from_executable_pct),
         "entry_spread_pct": spread_pct,
+        # Component figures are transparent approximations; the break-even
+        # move above remains the exact multiplicative calculation.
+        "estimated_round_trip_spread_cost_pct": spread_pct,
+        "estimated_round_trip_commission_cost_pct": 2.0 * commission_pct,
+        "estimated_round_trip_slippage_cost_pct": 2.0 * slippage_bps / 100.0,
         "commission_pct_per_side": commission_pct,
         "slippage_bps_per_side": slippage_bps,
         "cost_to_atr_ratio": cost_to_atr,
