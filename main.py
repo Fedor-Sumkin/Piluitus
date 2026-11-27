@@ -167,6 +167,13 @@ logger.setLevel(logging.INFO)
 
 
 from monitoring.durable_file_handler import DurableFileHandler as _DurableFileHandler
+from monitoring.log_routing import (
+    DiagnosticLogFilter as _DiagnosticLogFilter,
+    ErrorLogFilter as _ErrorLogFilter,
+    SessionLogFilter as _SessionLogFilter,
+    ThematicLogFilter as _ThematicLogFilter,
+    VerdictLogFilter as _VerdictLogFilter,
+)
 
 
 def _log_fsync_interval_seconds() -> float:
@@ -178,19 +185,17 @@ def _log_fsync_interval_seconds() -> float:
     return value if math.isfinite(value) and value >= 0.0 else 1.0
 
 
-_DEFAULT_SESSION_LOG_MAX_BYTES = 24 * 1024 * 1024
+_RUN_LOG_MAX_BYTES = 15 * 1024 * 1024
+_THEMATIC_LOG_KINDS = ("shadow", "vllm", "market", "execution")
 
 
-def _session_log_max_bytes() -> int:
-    raw_value = os.getenv(
-        "PILUITUS_SESSION_LOG_MAX_BYTES",
-        str(_DEFAULT_SESSION_LOG_MAX_BYTES),
-    ).strip()
+def _log_fsync_interval_seconds() -> float:
+    raw_value = os.getenv("PILUITUS_LOG_FSYNC_INTERVAL_SECONDS", "1.0").strip()
     try:
-        value = int(raw_value)
+        value = float(raw_value)
     except (TypeError, ValueError, OverflowError):
-        return _DEFAULT_SESSION_LOG_MAX_BYTES
-    return value if value >= 0 else _DEFAULT_SESSION_LOG_MAX_BYTES
+        return 1.0
+    return value if math.isfinite(value) and value >= 0.0 else 1.0
 
 
 class _RunIdFilter(logging.Filter):
@@ -205,102 +210,25 @@ class _RunIdFilter(logging.Filter):
         return True
 
 
-class _DiagnosticLogFilter(logging.Filter):
-    """Keep high-volume market/telemetry diagnostics out of the session narrative."""
-
-    _markers = (
-        "[TRADE FLOW 60s]",
-        "[ORDER_BOOK 60s]",
-        "[OPEN POSITION BBO 60s]",
-        "[ORDER_BOOK PARSER SAMPLE]",
-        "[ORDER_BOOK UNATTRIBUTED SAMPLE]",
-        "[vLLM RAW LATENCY]",
-        "[PRE-LLM FILTER]",
-        "[PRE-LLM WAIT]",
-        "[LLM DECISION]",
-        "[LLM REASON MISMATCH]",
-        "[LLM CONTRACT RETRY]",
-        "[LLM CONTRACT RESULT]",
-        "[M1 HISTORY WARMUP]",
-        "[ORDER_BOOK POSITION POLICY]",
-        "[ORDER_BOOK POSITION RESYNC]",
-        "[ORDER_BOOK REST CONTROL]",
-        "[PAPER EXIT GUARD]",
-        "[CANDIDATE TTL]",
-        "[POSITION SIZE]",
-        "[SIGNAL GUARD]",
-        "[RISK FINAL GATE]",
-        "[EXECUTION RESULT]",
-        "[EXECUTION OUTCOME]",
-        "[EXECUTION STALE SIGNAL BLOCK]",
-        "[PAPER BBO ENTRY BLOCK]",
-        "[PAPER BBO ENTRY RETRY]",
-        "[PAPER FILL]",
-        "[PAPER PARTIAL ENTRY]",
-        "[PAPER EXIT TRIGGER]",
-        "[PAPER POSITION RESUMED]",
-        "[PAPER BBO GAP RECOVERED]",
-        "[PORTFOLIO GUARD]",
-        "[ENTRY SESSION GUARD]",
-        "[STOP COOLDOWN HYDRATION FAILED]",
-        "[PAPER CLOSE ALL]",
-        "[PAPER JOURNAL]",
-        "[PAPER EXIT TRIGGER WAIT]",
-        "[PAPER EXIT GUARD]",
-        "[PAPER STALE POSITION DETAIL]",
-        "[PAPER RECONCILIATION GUARD]",
-        "[STOP COOLDOWN]",
-        "[SHADOW BE ARMED]",
-        "[SHADOW BE TRIGGERED]",
-        "[M1 PATTERN]",
-        "[DIAGNOSTIC LOGGER READY]",
-        "[NUMPY ИМПУЛЬС]",
-        "[WS ПОТОК ФИНАМ]",
-        "Поток Finam активен:",
-        "Finam ORDER_BOOK подписки синхронизированы:",
-    )
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        if record.levelno >= logging.ERROR:
-            return False
-        try:
-            message = record.getMessage()
-        except Exception:
-            return False
-        return any(marker in message for marker in self._markers)
-
-
-class _SessionLogFilter(logging.Filter):
-    """Keep ordinary session events and human-readable technical conclusions."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        if record.levelno >= logging.ERROR:
-            return False
-        return not _DiagnosticLogFilter().filter(record)
-
-
-class _ErrorLogFilter(logging.Filter):
-    """Route errors and critical failures to the dedicated error file."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        return record.levelno >= logging.ERROR
-
-
 def _configure_run_file_logging() -> tuple[str, dict[str, str]]:
-    """Create session, diagnostic and error files for one uniquely named run."""
+    """Create correlated, size-limited files for each logging theme in this run."""
     root_logger = logging.getLogger()
+    log_kinds = (
+        "session", "diagnostic", "errors",
+        *_THEMATIC_LOG_KINDS, "verdicts",
+    )
     existing_handlers = [
         handler for handler in root_logger.handlers
         if getattr(handler, "_piluitus_run_log", False)
     ]
-    if len(existing_handlers) >= 3:
+    if len(existing_handlers) >= len(log_kinds):
         paths = {
             str(getattr(handler, "_piluitus_log_kind", "")):
                 str(getattr(handler, "_piluitus_run_path", ""))
             for handler in existing_handlers
         }
         run_id = str(getattr(existing_handlers[0], "_piluitus_run_id", "existing"))
-        if all(paths.get(kind) for kind in ("session", "diagnostic", "errors")):
+        if all(paths.get(kind) for kind in log_kinds):
             return run_id, paths
 
     now = datetime.now().astimezone()
@@ -315,6 +243,11 @@ def _configure_run_file_logging() -> tuple[str, dict[str, str]]:
         "session": f"session_{filename_stamp}",
         "diagnostic": f"diagnostic_{filename_stamp}",
         "errors": f"errors_log_{filename_stamp}",
+        "shadow": f"shadow_{filename_stamp}",
+        "vllm": f"vllm_{filename_stamp}",
+        "market": f"market_{filename_stamp}",
+        "execution": f"execution_{filename_stamp}",
+        "verdicts": f"verdicts_{filename_stamp}_{run_id}",
     }
     suffix_number = 1
     while True:
@@ -327,16 +260,26 @@ def _configure_run_file_logging() -> tuple[str, dict[str, str]]:
             break
         suffix_number += 1
 
-    created_handlers: list[logging.Handler] = []
-    filters: dict[str, logging.Filter] = {
-        "session": _SessionLogFilter(),
-        "diagnostic": _DiagnosticLogFilter(),
-        "errors": _ErrorLogFilter(),
+    diagnostic_filter = _DiagnosticLogFilter()
+    thematic_filters = {
+        kind: _ThematicLogFilter(kind, diagnostic_filter)
+        for kind in _THEMATIC_LOG_KINDS
     }
+    filters: dict[str, logging.Filter] = {
+        "session": _SessionLogFilter(
+            diagnostic_filter, tuple(thematic_filters.values())
+        ),
+        "diagnostic": diagnostic_filter,
+        "errors": _ErrorLogFilter(),
+        **thematic_filters,
+        "verdicts": _VerdictLogFilter(),
+    }
+
+    created_handlers: list[logging.Handler] = []
     paths: dict[str, str] = {}
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
-        for kind in ("session", "diagnostic", "errors"):
+        for kind in log_kinds:
             path = candidate_paths[kind]
             handler = _DurableFileHandler(
                 path,
@@ -345,14 +288,17 @@ def _configure_run_file_logging() -> tuple[str, dict[str, str]]:
                 sync_interval_seconds=(
                     0.0 if kind == "errors" else _log_fsync_interval_seconds()
                 ),
-                max_bytes=_session_log_max_bytes() if kind == "session" else 0,
+                max_bytes=_RUN_LOG_MAX_BYTES,
             )
             created_handlers.append(handler)
-            handler.setLevel(logging.ERROR if kind == "errors" else logging.INFO)
-            handler.setFormatter(_PrivacyFormatter(
-                "%(asctime)s,%(msecs)03d [%(levelname)s] [RUN=%(run_id)s] %(name)s: %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            ))
+            handler.setLevel(logging.INFO)
+            if kind == "verdicts":
+                handler.setFormatter(_PrivacyFormatter("%(message)s"))
+            else:
+                handler.setFormatter(_PrivacyFormatter(
+                    "%(asctime)s,%(msecs)03d [%(levelname)s] [RUN=%(run_id)s] %(name)s: %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S",
+                ))
             handler.addFilter(_RunIdFilter(run_id))
             handler.addFilter(filters[kind])
             setattr(handler, "_piluitus_run_log", True)
@@ -367,27 +313,32 @@ def _configure_run_file_logging() -> tuple[str, dict[str, str]]:
             root_logger.removeHandler(handler)
             handler.close()
         root_logger.warning(
-            "Не удалось создать файловые журналы запуска (каталог=%s): %s",
+            "Не удалось создать тематические журналы запуска (каталог=%s): %s",
             log_dir.name, type(exc).__name__,
         )
         return run_id, {}
 
 
 RUN_ID, RUN_LOG_PATHS = _configure_run_file_logging()
-logger.info(
-    "🧾 [RUN START] id=%s; session=%s; diagnostic=%s; errors=%s",
-    RUN_ID,
-    Path(RUN_LOG_PATHS["session"]).name if RUN_LOG_PATHS.get("session") else "unavailable",
-    Path(RUN_LOG_PATHS["diagnostic"]).name if RUN_LOG_PATHS.get("diagnostic") else "unavailable",
-    Path(RUN_LOG_PATHS["errors"]).name if RUN_LOG_PATHS.get("errors") else "unavailable",
+_LOG_KINDS_FOR_STARTUP = (
+    "session", "diagnostic", "errors", "shadow",
+    "vllm", "market", "execution", "verdicts",
 )
 logger.info(
-    "🛡️ [LOG DURABILITY] session/diagnostic fsync interval=%.2fs; errors=fsync per record",
+    "[RUN START] id=%s; " + "; ".join(f"{kind}=%s" for kind in _LOG_KINDS_FOR_STARTUP),
+    RUN_ID,
+    *[
+        Path(RUN_LOG_PATHS[kind]).name if RUN_LOG_PATHS.get(kind) else "unavailable"
+        for kind in _LOG_KINDS_FOR_STARTUP
+    ],
+)
+logger.info(
+    "[LOG DURABILITY] non-error logs fsync interval=%.2fs; errors=fsync per record",
     _log_fsync_interval_seconds(),
 )
 logger.info(
-    "[SESSION LOG ROTATION] max_bytes=%d (0=disabled)",
-    _session_log_max_bytes(),
+    "[LOG ROTATION] max_bytes=%d (15 MiB) for every run log",
+    _RUN_LOG_MAX_BYTES,
 )
 logger.info(
     "[DIAGNOSTIC LOGGER READY] path=%s",
@@ -2032,14 +1983,12 @@ async def _drain_tracked_operations() -> None:
     logger.info("[BACKGROUND OPERATIONS] shutdown drain complete.")
 
 
-def _sync_write_trading_log(filename: str, log_line: str):
-    """Синхронная сериализованная запись блока торгового лога на диск."""
+def _sync_write_trading_log(log_line: str):
+    """Write one complete verdict block through the durable 15 MiB log handler."""
     try:
-        with _trading_log_file_lock:
-            with open(filename, "a", encoding="utf-8") as file:
-                file.write(log_line + "\n")
-    except Exception as e:
-        logger.error(f"❌ Ошибка записи в текстовый лог: {e}", exc_info=True)
+        logging.getLogger("Piluitus.Verdicts").info("%s", log_line.rstrip("\n"))
+    except Exception as exc:
+        logger.error("Ошибка записи вердикта в тематический лог: %s", exc, exc_info=True)
 
 
 async def log_trading_event_to_file(
@@ -2055,12 +2004,11 @@ async def log_trading_event_to_file(
     model_confidence: float | None = None,
     final_confidence: float | None = None,
 ):
-    """Асинхронный неблокирующий регистратор торговых событий текущего запуска."""
-    os.makedirs("trading_logs", exist_ok=True)
-
-    date_str = datetime.now().strftime("%Y-%m-%d")
+    """Асинхронный неблокирующий регистратор вердиктов текущего запуска."""
     run_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(RUN_ID or "unknown"))
-    filename = f"trading_logs/piluitus_session_{date_str}_{run_id}.txt"
+    if not RUN_LOG_PATHS.get("verdicts"):
+        logger.error("Файл verdicts недоступен; вердикт %s по %s не записан.", verdict_id, ticker)
+        return
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     model_confidence_value = confidence if model_confidence is None else model_confidence
@@ -2080,7 +2028,7 @@ async def log_trading_event_to_file(
     )
 
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, _sync_write_trading_log, filename, log_line)
+    await loop.run_in_executor(None, _sync_write_trading_log, log_line)
 # --------------------------------------------------------------
 #  3️⃣  CONNECTION MANAGER (WebSocket)
 # --------------------------------------------------------------
