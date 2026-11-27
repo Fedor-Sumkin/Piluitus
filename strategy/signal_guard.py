@@ -639,6 +639,9 @@ def validate_paper_market_quality(
     if economics.get("available"):
         metrics["entry_cost_to_atr_ratio"] = economics.get("cost_to_atr_ratio")
         metrics["entry_minimum_favorable_move_pct"] = economics.get("minimum_favorable_move_pct")
+        metrics["estimated_round_trip_spread_cost_pct"] = economics.get("estimated_round_trip_spread_cost_pct")
+        metrics["estimated_round_trip_commission_cost_pct"] = economics.get("estimated_round_trip_commission_cost_pct")
+        metrics["estimated_round_trip_slippage_cost_pct"] = economics.get("estimated_round_trip_slippage_cost_pct")
         metrics["entry_cost_to_atr_limit"] = execution_cost_limit
         metrics["entry_cost_evaluation_limit"] = evaluation_cost_limit
         metrics["entry_cost_evaluation_stage"] = (
