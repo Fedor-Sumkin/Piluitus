@@ -13,6 +13,8 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
+from strategy.market_context import classify_market_regime
+
 
 def _number(metrics: Mapping[str, Any], key: str, default: float = 0.0) -> float:
     value = metrics.get(key, default)
@@ -318,6 +320,75 @@ def evaluate_scalping_candidate(
 
     score = round(sum(components.values()), 2)
     eligible = not hard_blocks and score >= 85.0
+    # Regime-specific hypotheses remain SHADOW_ONLY until independently calibrated.
+    market_context = classify_market_regime(metrics)
+    market_regime = str(market_context.get("market_regime") or "INSUFFICIENT_DATA")
+    directional_regime = str(market_context.get("directional_regime") or "DIRECTION_UNAVAILABLE")
+    volume_baseline_buckets = int(max(0.0, _number(metrics, "trade_baseline_bucket_count")))
+    minimum_volume_buckets = int(max(1.0, _number(metrics, "trade_baseline_min_bucket_count", 4.0)))
+    volume_impulse_confirmed = bool(
+        volume_spike >= 1.5
+        and volume_baseline_buckets >= minimum_volume_buckets
+        and _number(metrics, "trade_data_ready") >= 0.5
+    )
+    signed_flow = (flow_imbalance if side == "BUY" else -flow_imbalance) if flow_ready and math.isfinite(flow_imbalance) else math.nan
+    signed_momentum = price_change if side == "BUY" else -price_change
+    matching_pattern = bool(pattern_confirmed and pattern_side == side)
+    m1_direction_confirmed = bool(matching_pattern or trend_aligned)
+    queue_support = bool(
+        queue_available and math.isfinite(queue_imbalance)
+        and (queue_imbalance if side == "BUY" else -queue_imbalance) >= 0.10
+        and queue_age <= max_age and queue_coverage >= 1.0
+    )
+    flow_support = bool(math.isfinite(signed_flow) and signed_flow >= 0.10)
+    try:
+        minimum_favorable_move = float(metrics.get("entry_minimum_favorable_move_pct"))
+        planned_target_move = float(metrics.get("entry_target_move_pct"))
+        economic_edge_available = math.isfinite(minimum_favorable_move) and math.isfinite(planned_target_move)
+    except (TypeError, ValueError, OverflowError):
+        minimum_favorable_move = planned_target_move = math.nan
+        economic_edge_available = False
+    economic_coverage = (
+        planned_target_move / minimum_favorable_move
+        if economic_edge_available and minimum_favorable_move > 0.0 else math.nan
+    )
+    regime_blocks: list[str] = []
+    if market_regime == "LOW_LIQUIDITY":
+        regime_blocks.append("regime_low_liquidity")
+    elif market_regime == "HIGH_VOLATILITY":
+        if not matching_pattern or not volume_impulse_confirmed or not flow_support or signed_flow < 0.20:
+            regime_blocks.append("high_volatility_needs_m1_volume_and_strong_flow")
+    elif market_regime == "TREND":
+        if directional_regime != ("TREND_UP" if side == "BUY" else "TREND_DOWN"):
+            regime_blocks.append("trend_direction_not_aligned")
+        if not m1_direction_confirmed or not volume_impulse_confirmed or not flow_support:
+            regime_blocks.append("trend_needs_m1_volume_and_flow_confirmation")
+    elif market_regime == "RANGE_OR_MIXED":
+        if not matching_pattern or not queue_support or not flow_support:
+            regime_blocks.append("range_needs_fresh_breakout_queue_and_flow")
+        if not math.isfinite(signed_momentum) or signed_momentum <= 0.0:
+            regime_blocks.append("range_breakout_momentum_not_confirmed")
+    else:
+        regime_blocks.append("market_regime_unavailable")
+    if not economic_edge_available or not math.isfinite(economic_coverage):
+        regime_blocks.append("planned_move_vs_full_cost_unavailable")
+    elif planned_target_move <= minimum_favorable_move:
+        regime_blocks.append("planned_move_does_not_cover_full_round_trip_cost")
+    strategy_hard_blocks = sorted(set(hard_blocks + regime_blocks))
+    strategy_variant = {
+        "TREND": "TREND_CONTINUATION",
+        "RANGE_OR_MIXED": "RANGE_BREAKOUT_PULLBACK",
+        "LOW_LIQUIDITY": "BLOCKED_LOW_LIQUIDITY",
+        "HIGH_VOLATILITY": "HIGH_VOLATILITY_CONFIRMED_IMPULSE",
+    }.get(market_regime, "UNAVAILABLE")
+    strategy_score = round(
+        (20.0 if m1_direction_confirmed else 0.0)
+        + (20.0 if volume_impulse_confirmed else 0.0)
+        + (20.0 if flow_support else 0.0)
+        + (15.0 if queue_support else 0.0)
+        + (25.0 if economic_edge_available and planned_target_move > minimum_favorable_move else 0.0), 2
+    )
+    strategy_eligible = not strategy_hard_blocks and strategy_score >= 80.0
     return {
         "schema_version": 1,
         "side": side,
@@ -353,4 +424,13 @@ def evaluate_scalping_candidate(
         "threshold": 85.0,
         "spread_atr_limit": max_spread_atr_ratio,
         "mode": "SHADOW_ONLY",
+        "market_regime": market_regime,
+        "directional_regime": directional_regime,
+        "strategy_variant": strategy_variant,
+        "strategy_score": strategy_score,
+        "strategy_eligible": strategy_eligible,
+        "strategy_hard_blocks": strategy_hard_blocks,
+        "volume_impulse_confirmed": volume_impulse_confirmed,
+        "planned_move_cost_coverage_ratio": round(economic_coverage, 4) if math.isfinite(economic_coverage) else None,
+        "economic_edge_available": economic_edge_available,
     }
