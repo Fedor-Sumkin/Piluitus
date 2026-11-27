@@ -15,6 +15,7 @@ from typing import Any, List, Mapping, Union, cast
 from aiogram import Bot 
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, HTTPException
+from interface.web_security import PILUITUSBasicAuthMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
@@ -4037,6 +4038,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PILUITUS v35.2 — AI Trading Core", lifespan=lifespan)
+app.add_middleware(
+    PILUITUSBasicAuthMiddleware,
+    username=Settings.WEB_AUTH_USER,
+    password=Settings.WEB_AUTH_PASSWORD,
+)
 
 # 🔥 HTTP-ЭНДПОИНТ ДЛЯ ПЕРЕХВАТА ИНТЕРАКТИВНЫХ КОМАНД С ВЫСШИМ ПРИОРИТЕТОМ (Priority 0)
 @app.post("/api/v1/control/close_all")
@@ -4972,8 +4978,8 @@ if __name__ == "__main__":
             app,
             # Keep Uvicorn from reconfiguring/closing PILUITUS' durable file handlers.
             log_config=None,
-            host="127.0.0.1",
-            port=8080,
+            host=Settings.APP_HOST,
+            port=Settings.APP_PORT,
             reload=False,
             workers=1,
         )
