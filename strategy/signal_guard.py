@@ -11,7 +11,7 @@ import time
 import os
 from typing import Any
 
-from strategy.market_context import validate_entry_economics
+from strategy.market_context import estimate_planned_trade_risk_reward, validate_entry_economics
 
 MIN_VOLUME_SPIKE = 1.5
 MIN_TOP_SIZE_DROP_PCT = 50.0
@@ -648,6 +648,33 @@ def validate_paper_market_quality(
             "PRE_LLM_ANALYSIS" if pre_llm_evaluation else "EXECUTION"
         )
         metrics["entry_cost_model_status"] = economics.get("cost_model_status")
+    planned_rr: dict[str, Any] = {"available": False, "eligible": False, "reason": "ENTRY_ECONOMICS_UNAVAILABLE"}
+    minimum_net_rr = 1.0
+    if economics.get("available"):
+        try:
+            minimum_net_rr = float(os.getenv("PILUITUS_MIN_NET_REWARD_TO_RISK", "1.0"))
+            atr_multiplier = float(os.getenv("ATR_MULTIPLIER", "1.5"))
+            min_stop_pct = float(os.getenv("PILUITUS_MIN_STOP_PCT", "0.0025"))
+            reward_multiple = float(os.getenv("PILUITUS_TAKE_PROFIT_R_MULTIPLE", "2.0"))
+            atr_value = _num(metrics, "bar_atr", math.nan)
+        except (TypeError, ValueError, OverflowError):
+            return False, "PAPER-вход заблокирован: параметры Risk/Reward некорректны."
+        planned_rr = estimate_planned_trade_risk_reward(
+            side=side, bid=bid, ask=ask, atr_value=atr_value,
+            commission_pct_per_side=commission, slippage_bps_per_side=slippage,
+            atr_multiplier=atr_multiplier, min_stop_pct=min_stop_pct,
+            reward_r_multiple=reward_multiple, min_net_reward_to_risk=minimum_net_rr,
+        )
+        metrics["entry_risk_reward_available"] = bool(planned_rr.get("available"))
+        metrics["entry_planned_reward_to_risk"] = planned_rr.get("gross_reward_to_risk")
+        metrics["entry_net_reward_to_risk"] = planned_rr.get("net_reward_to_risk")
+        metrics["entry_min_net_reward_to_risk"] = planned_rr.get("minimum_net_reward_to_risk")
+        metrics["entry_stop_distance_pct"] = planned_rr.get("stop_distance_pct")
+        metrics["entry_target_move_pct"] = planned_rr.get("target_move_pct")
+        metrics["entry_planned_stop_loss"] = planned_rr.get("planned_stop_loss")
+        metrics["entry_planned_take_profit"] = planned_rr.get("planned_take_profit")
+        metrics["entry_net_reward_pct"] = planned_rr.get("net_reward_pct")
+        metrics["entry_risk_reward_reason"] = planned_rr.get("reason", "UNAVAILABLE")
     if (
         require_complete_cost_model
         and economics.get("available")
@@ -660,6 +687,14 @@ def validate_paper_market_quality(
             "Для PAPER задайте обоснованное ненулевое значение "
             "PILUITUS_PAPER_SLIPPAGE_BPS; нулевое допущение не считается полной моделью."
         )
+    if not planned_rr.get("available") or not planned_rr.get("eligible"):
+        net_rr = planned_rr.get("net_reward_to_risk")
+        rr_text = f"{float(net_rr):.3f}" if isinstance(net_rr, (int, float)) and math.isfinite(float(net_rr)) else "н/д"
+        return False, (
+            "PAPER-вход заблокирован: ожидаемая цель после всех издержек не покрывает риск; "
+            f"net_RR={rr_text}, минимум={minimum_net_rr:.2f}, причина={planned_rr.get('reason', 'UNAVAILABLE')}."
+        )
+
     if not economics.get("available") or not economics.get("eligible"):
         ratio = economics.get("cost_to_atr_ratio")
         ratio_text = f"{float(ratio):.3f}" if isinstance(ratio, (int, float)) and math.isfinite(float(ratio)) else "н/д"
