@@ -987,6 +987,11 @@ class HFTMemoryScreener:
                         )
                 quote["last_bid_confirmed_seen"] = 0.0
                 quote["last_ask_confirmed_seen"] = 0.0
+                # An invalid book packet is not an executable quote heartbeat.
+                # Revoke local receive freshness too; a later accepted QUOTES or
+                # coherent ORDER_BOOK event may establish it again.
+                quote["last_bid_source_received_seen"] = 0.0
+                quote["last_ask_source_received_seen"] = 0.0
                 quote["last_bbo_seen"] = 0.0
                 quote["order_book_valid"] = False
                 quote["order_book_last_reason"] = str(

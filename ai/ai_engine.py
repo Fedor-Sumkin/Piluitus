@@ -1019,7 +1019,7 @@ class AIEngine:
             "Never select, change, invert, or output BUY/SELL. APPROVE authorizes only the exact local candidate side; "
             "candidate=NONE => HOLD. "
             f"VWAP inside +/-{vwap_neutral_band_pct:.3f}% is NEUTRAL, not a veto; materially opposite VWAP blocks. "
-            "M1 NEUTRAL/UNAVAILABLE is not a contradiction; HOLD_M1_CONTRADICTION requires fresh OPPOSITE evidence. "
+            "HOLD_M1_CONTRADICTION only when m1_evidence_state=OPPOSITE; ALIGNED/NEUTRAL/UNAVAILABLE need another reason. "
             f"Entry requires trade_data_ready=1, trade age<=5s, volume_spike>=1.5, fresh BBO, spread<=0.5%, "
             f"spread/ATR<={spread_to_atr_limit:.2f}; missing ratio=insufficient; HOLD_WIDE_SPREAD needs measured violation. "
             f"{quote_depletion_rule} "

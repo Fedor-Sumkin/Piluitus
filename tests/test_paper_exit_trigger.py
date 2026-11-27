@@ -637,5 +637,90 @@ class PaperPartialExitTests(unittest.IsolatedAsyncioTestCase):
         db.push_to_list.assert_not_awaited()
 
 
+
+class PaperExitQuoteFreshnessTests(unittest.TestCase):
+    def _engine(self, quote):
+        engine = BaseExecutionEngine.__new__(BaseExecutionEngine)
+        engine.screener = Mock()
+        engine.screener.quotes = {"TEST": quote}
+        engine.screener.bbo_max_age_sec = 2.0
+        return engine
+
+    @patch("execution.execution_layer.time.monotonic", return_value=100.0)
+    def test_long_exit_uses_local_bid_receive_time_not_provider_event_time(self, _clock):
+        engine = self._engine({
+            "bid": 99.9,
+            "ask": 100.0,
+            "last_bid_source_received_seen": 99.5,
+            "last_ask_source_received_seen": 99.5,
+            "last_bid_confirmed_seen": 97.0,
+            "last_ask_confirmed_seen": 97.0,
+        })
+
+        quote = engine._latest_fresh_exit_quote("TEST", "BUY")
+
+        self.assertIsNotNone(quote)
+        self.assertEqual(quote["executable_price"], 99.9)
+        self.assertAlmostEqual(quote["bid_age_sec"], 0.5)
+
+    @patch("execution.execution_layer.time.monotonic", return_value=100.0)
+    def test_short_exit_uses_local_ask_receive_time_not_provider_event_time(self, _clock):
+        engine = self._engine({
+            "bid": 99.9,
+            "ask": 100.0,
+            "last_bid_source_received_seen": 99.5,
+            "last_ask_source_received_seen": 99.5,
+            "last_bid_confirmed_seen": 97.0,
+            "last_ask_confirmed_seen": 97.0,
+        })
+
+        quote = engine._latest_fresh_exit_quote("TEST", "SELL")
+
+        self.assertIsNotNone(quote)
+        self.assertEqual(quote["executable_price"], 100.0)
+        self.assertAlmostEqual(quote["ask_age_sec"], 0.5)
+
+    @patch("execution.execution_layer.time.monotonic", return_value=100.0)
+    def test_stale_local_receive_time_cannot_be_overridden_by_newer_event_time(self, _clock):
+        engine = self._engine({
+            "bid": 99.9,
+            "ask": 100.0,
+            "last_bid_source_received_seen": 97.0,
+            "last_ask_source_received_seen": 99.9,
+            "last_bid_confirmed_seen": 99.9,
+            "last_ask_confirmed_seen": 99.9,
+        })
+
+        self.assertIsNone(engine._latest_fresh_exit_quote("TEST", "BUY"))
+
+    @patch("execution.execution_layer.time.monotonic", return_value=100.0)
+    def test_legacy_quote_without_source_receive_fields_uses_confirmed_clock(self, _clock):
+        engine = self._engine({
+            "bid": 99.9,
+            "ask": 100.0,
+            "last_bid_confirmed_seen": 99.5,
+            "last_ask_confirmed_seen": 99.5,
+        })
+
+        quote = engine._latest_fresh_exit_quote("TEST", "BUY")
+
+        self.assertIsNotNone(quote)
+        self.assertAlmostEqual(quote["bid_age_sec"], 0.5)
+
+    @patch("execution.execution_layer.time.monotonic", return_value=100.0)
+    def test_explicitly_revoked_source_clock_does_not_fall_back_to_old_level_time(self, _clock):
+        engine = self._engine({
+            "bid": 99.9,
+            "ask": 100.0,
+            "last_bid_source_received_seen": 0.0,
+            "last_ask_source_received_seen": 99.9,
+            "last_bid_confirmed_seen": 0.0,
+            "last_ask_confirmed_seen": 99.9,
+            "last_bid_seen": 99.9,
+        })
+
+        self.assertIsNone(engine._latest_fresh_exit_quote("TEST", "BUY"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -140,6 +140,27 @@ def _finite_or_default(value: object, default: float = 0.0) -> float:
         return default
 
 
+def _quote_side_freshness_seen(quote: Mapping[str, Any], side: str) -> float:
+    """Return local ingress freshness while preserving explicit invalidation.
+
+    Current screener records always carry the source-received timestamp. A
+    present zero means that source was explicitly invalidated and must not
+    fall back to an older event/level timestamp. Older dictionaries without
+    that field retain the confirmed/legacy fallback.
+    """
+    normalized = str(side or "").strip().upper()
+    if normalized not in {"BID", "ASK"}:
+        return 0.0
+    prefix = normalized.lower()
+    source_key = f"last_{prefix}_source_received_seen"
+    if source_key in quote:
+        return _finite_or_default(quote.get(source_key), 0.0)
+    confirmed = _finite_or_default(quote.get(f"last_{prefix}_confirmed_seen"), 0.0)
+    if confirmed > 0.0:
+        return confirmed
+    return _finite_or_default(quote.get(f"last_{prefix}_seen"), 0.0)
+
+
 def _decision_attribution_fields(ai_analysis: object) -> dict[str, object]:
     """Return bounded, typed decision identifiers to persist with an opened trade."""
     if not isinstance(ai_analysis, Mapping):
@@ -980,12 +1001,8 @@ class BaseExecutionEngine:
                 return None
             bid = _finite_or_default(quote.get("bid", 0.0), 0.0)
             ask = _finite_or_default(quote.get("ask", 0.0), 0.0)
-            bid_seen = _finite_or_default(
-                quote.get("last_bid_confirmed_seen", quote.get("last_bid_seen", 0.0)), 0.0
-            )
-            ask_seen = _finite_or_default(
-                quote.get("last_ask_confirmed_seen", quote.get("last_ask_seen", 0.0)), 0.0
-            )
+            bid_seen = _quote_side_freshness_seen(quote, "BID")
+            ask_seen = _quote_side_freshness_seen(quote, "ASK")
             now = time.monotonic()
             bid_age = now - bid_seen if bid_seen > 0.0 else math.inf
             ask_age = now - ask_seen if ask_seen > 0.0 else math.inf
@@ -1205,12 +1222,8 @@ class BaseExecutionEngine:
             now = time.monotonic()
             bid = _finite_or_default(quote.get("bid"), 0.0)
             ask = _finite_or_default(quote.get("ask"), 0.0)
-            bid_seen = _finite_or_default(
-                quote.get("last_bid_confirmed_seen", quote.get("last_bid_seen", 0.0)), 0.0
-            )
-            ask_seen = _finite_or_default(
-                quote.get("last_ask_confirmed_seen", quote.get("last_ask_seen", 0.0)), 0.0
-            )
+            bid_seen = _quote_side_freshness_seen(quote, "BID")
+            ask_seen = _quote_side_freshness_seen(quote, "ASK")
             bid_age = now - bid_seen if bid_seen > 0.0 else math.inf
             ask_age = now - ask_seen if ask_seen > 0.0 else math.inf
             max_age = _finite_or_default(getattr(self.screener, "bbo_max_age_sec", 2.0), 2.0)
@@ -2373,18 +2386,16 @@ class BaseExecutionEngine:
                     raw_quote = quote_cache.get(ticker, {}) if isinstance(quote_cache, Mapping) else {}
                     quote_state = _as_string_mapping(raw_quote) or {}
 
-                    def _age_label(seen_key: str, fallback_key: str) -> tuple[float, str]:
-                        seen = _finite_or_default(
-                            quote_state.get(seen_key, quote_state.get(fallback_key, 0.0)), 0.0
-                        )
+                    def _age_label(side_key: str) -> tuple[float, str]:
+                        seen = _quote_side_freshness_seen(quote_state, side_key)
                         age = now - seen if seen > 0.0 else math.inf
                         label = f"{age:.2f}s" if math.isfinite(age) and age >= 0.0 else "нет/некорректно"
                         return age, label
 
                     bid = _finite_or_default(quote_state.get("bid"), 0.0)
                     ask = _finite_or_default(quote_state.get("ask"), 0.0)
-                    bid_age, bid_age_text = _age_label("last_bid_confirmed_seen", "last_bid_seen")
-                    ask_age, ask_age_text = _age_label("last_ask_confirmed_seen", "last_ask_seen")
+                    bid_age, bid_age_text = _age_label("BID")
+                    ask_age, ask_age_text = _age_label("ASK")
                     exec_side = "BID" if side == "BUY" else "ASK"
                     exec_age_text = bid_age_text if side == "BUY" else ask_age_text
                     max_age = _finite_or_default(
@@ -3533,14 +3544,11 @@ class BaseExecutionEngine:
                     )
                     quote = _as_string_mapping(quote_obj) or {}
                     required_side = "Bid" if side == "BUY" else "Ask"
-                    seen_key = "last_bid_confirmed_seen" if side == "BUY" else "last_ask_confirmed_seen"
-                    fallback_seen_key = "last_bid_seen" if side == "BUY" else "last_ask_seen"
+                    executable_side = "BID" if side == "BUY" else "ASK"
                     bid_value = _finite_or_default(quote.get("bid", 0.0), 0.0)
                     ask_value = _finite_or_default(quote.get("ask", 0.0), 0.0)
                     try:
-                        seen_at = _finite_or_default(
-                            quote.get(seen_key, quote.get(fallback_seen_key, 0.0)), 0.0
-                        )
+                        seen_at = _quote_side_freshness_seen(quote, executable_side)
                         side_age = time.monotonic() - seen_at if seen_at > 0.0 else math.inf
                     except (TypeError, ValueError, AttributeError):
                         side_age = math.inf
@@ -3570,6 +3578,8 @@ class BaseExecutionEngine:
                     book_receive_age = _quote_age("last_order_book_received")
                     bid_confirm_age = _quote_age("last_bid_confirmed_seen")
                     ask_confirm_age = _quote_age("last_ask_confirmed_seen")
+                    bid_source_receive_age = _quote_age("last_bid_source_received_seen")
+                    ask_source_receive_age = _quote_age("last_ask_source_received_seen")
                     if bid_value > 0.0 and ask_value > 0.0 and ask_value < bid_value:
                         guard_reason = "пересекающийся BBO (Ask ниже Bid)"
                     elif (bid_value if side == "BUY" else ask_value) <= 0.0:
@@ -3584,11 +3594,14 @@ class BaseExecutionEngine:
                     logger.warning(
                         "⏸️ [PAPER EXIT GUARD] %s: %s; executable_age=%s, лимит=%.2fs, "
                         "Bid=%.4f Ask=%.4f; book_valid=%s event_age=%s receive_age=%s "
+                        "bid_source_receive_age=%s ask_source_receive_age=%s "
                         "bid_confirm_age=%s ask_confirm_age=%s; SL/TP отложены, last=%.4f.",
                         ticker, guard_reason, age_text, warning_max_age,
                         bid_value, ask_value, bool(quote.get("order_book_valid", False)),
                         f"{book_event_age:.2f}s" if math.isfinite(book_event_age) else "нет",
                         f"{book_receive_age:.2f}s" if math.isfinite(book_receive_age) else "нет",
+                        f"{bid_source_receive_age:.2f}s" if math.isfinite(bid_source_receive_age) else "нет",
+                        f"{ask_source_receive_age:.2f}s" if math.isfinite(ask_source_receive_age) else "нет",
                         f"{bid_confirm_age:.2f}s" if math.isfinite(bid_confirm_age) else "нет",
                         f"{ask_confirm_age:.2f}s" if math.isfinite(ask_confirm_age) else "нет",
                         observed_last_price,

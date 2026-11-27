@@ -376,6 +376,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         )
         self.assertIn("HOLD_WEAK_DIRECTION", prompt)
         self.assertIn("HOLD_M1_CONTRADICTION", prompt)
+        self.assertIn("HOLD_M1_CONTRADICTION only when m1_evidence_state=OPPOSITE", prompt)
         self.assertIn("HOLD_UNCLEAR", prompt)
         self.assertNotIn("HOLD_{", prompt)
 

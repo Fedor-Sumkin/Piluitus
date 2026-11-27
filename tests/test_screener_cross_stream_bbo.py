@@ -107,5 +107,38 @@ class ScreenerCrossStreamBboTests(unittest.TestCase):
         self.assertEqual(metrics["ask"], 100.1)
 
 
+
+    def test_invalid_order_book_snapshot_revokes_source_receive_freshness(self):
+        screener = HFTMemoryScreener(top_n=1, min_samples=3)
+        screener.set_universe(["TESTBBO"])
+
+        with patch("screener_funnel.time.monotonic", return_value=10.1), patch(
+            "screener_funnel._event_timestamp_to_monotonic",
+            side_effect=lambda value, received: float(value) if value is not None else received,
+        ):
+            valid = asyncio.run(screener.push_order_book(
+                "TESTBBO", 100.0, 100.1, 10.0, 12.0,
+                bid_present=True, ask_present=True,
+                bid_size_present=True, ask_size_present=True,
+                bid_timestamp=10.0, ask_timestamp=10.0,
+                order_book_timestamp=10.0, received_monotonic=10.0,
+            ))
+            invalid = asyncio.run(screener.push_order_book(
+                "TESTBBO", 0.0, 0.0, 0.0, 0.0,
+                bid_present=True, ask_present=True,
+                bid_size_present=True, ask_size_present=True,
+                order_book_timestamp=10.1, received_monotonic=10.1,
+                book_valid=False, book_reason="EMPTY_SNAPSHOT",
+            ))
+
+        quote = screener.quotes["TESTBBO"]
+        self.assertTrue(valid["valid"])
+        self.assertFalse(invalid["valid"])
+        self.assertFalse(quote["order_book_valid"])
+        self.assertEqual(quote["last_bid_source_received_seen"], 0.0)
+        self.assertEqual(quote["last_ask_source_received_seen"], 0.0)
+        self.assertEqual(quote["last_bid_confirmed_seen"], 0.0)
+        self.assertEqual(quote["last_ask_confirmed_seen"], 0.0)
+
 if __name__ == "__main__":
     unittest.main()
