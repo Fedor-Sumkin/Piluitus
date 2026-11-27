@@ -4010,8 +4010,9 @@ async def lifespan(app: FastAPI):
         worker_count, getattr(Settings, "VLLM_MAX_CONCURRENCY", 4), anomaly_queue.maxsize,
     )
 
+    worker = MarketWorker(db=db_manager, ai=ai_engine, broker_client=broker)
+
     async def _run_worker_safely(worker_id: int):
-        worker = MarketWorker(db=db_manager, ai=ai_engine, broker_client=broker)
         try:
             await worker.start_processing(worker_id=worker_id)
         except asyncio.CancelledError:
