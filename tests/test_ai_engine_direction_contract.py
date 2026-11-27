@@ -581,7 +581,8 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             "SBER", 100.0, 500, "BUY",
             {"price_change_pct": 0.2, "price_vs_vwap_pct": 0.1, "volume_spike": 2.0},
         )
-        self.assertIn("exactly three keys", prompt)
+        self.assertIn("required fields final_decision", prompt)
+        self.assertIn("optional reason_code", prompt)
         self.assertIn("APPROVE or HOLD", prompt)
         self.assertIn("Never select, change, invert, or output BUY/SELL", prompt)
         self.assertNotIn("Advisory RAG context", prompt)
