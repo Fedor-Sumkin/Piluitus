@@ -27,7 +27,7 @@ def _close_logger(logger: logging.Logger, handler: DurableFileHandler) -> None:
 
 
 def test_session_log_rotates_before_record_exceeds_limit(tmp_path):
-    path = tmp_path / "session_25112026_10.37.log"
+    path = tmp_path / "verdicts_25112026_10.37.log"
     logger, handler = _make_logger(path, max_bytes=9)
     try:
         logger.info("1234567")
@@ -36,8 +36,8 @@ def test_session_log_rotates_before_record_exceeds_limit(tmp_path):
     finally:
         _close_logger(logger, handler)
 
-    part_two = tmp_path / "session_25112026_10.37_part02.log"
-    part_three = tmp_path / "session_25112026_10.37_part03.log"
+    part_two = tmp_path / "verdicts_25112026_10.37_part02.log"
+    part_three = tmp_path / "verdicts_25112026_10.37_part03.log"
     assert path.read_text(encoding="utf-8") == "1234567\n"
     assert part_two.read_text(encoding="utf-8") == "abcdefg\n"
     assert part_three.read_text(encoding="utf-8") == "xy\n"
@@ -47,7 +47,7 @@ def test_session_log_rotates_before_record_exceeds_limit(tmp_path):
 
 
 def test_rotation_uses_utf8_byte_size_not_character_count(tmp_path):
-    path = tmp_path / "session_unicode.log"
+    path = tmp_path / "vllm_unicode.log"
     expected_size = len("абвг".encode("utf-8")) + len(os.linesep.encode("utf-8"))
     logger, handler = _make_logger(path, max_bytes=expected_size)
     try:
@@ -76,8 +76,8 @@ def test_zero_rotation_limit_keeps_one_file(tmp_path):
 
 
 def test_rotation_skips_an_existing_part_without_overwriting_it(tmp_path):
-    path = tmp_path / "session_existing.log"
-    existing_part = tmp_path / "session_existing_part02.log"
+    path = tmp_path / "shadow_existing.log"
+    existing_part = tmp_path / "shadow_existing_part02.log"
     existing_part.write_text("keep me", encoding="utf-8")
     logger, handler = _make_logger(path, max_bytes=3)
     try:
@@ -86,6 +86,6 @@ def test_rotation_skips_an_existing_part_without_overwriting_it(tmp_path):
     finally:
         _close_logger(logger, handler)
 
-    part_three = tmp_path / "session_existing_part03.log"
+    part_three = tmp_path / "shadow_existing_part03.log"
     assert existing_part.read_text(encoding="utf-8") == "keep me"
     assert part_three.read_text(encoding="utf-8") == "b\n"
