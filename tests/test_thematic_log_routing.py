@@ -27,6 +27,15 @@ def test_diagnostic_records_stay_in_diagnostic_and_not_thematic_files():
     assert vllm.filter(record)
 
 
+def test_quality_diagnostics_remain_in_diagnostic_only():
+    diagnostic = DiagnosticLogFilter()
+    execution = ThematicLogFilter("execution", diagnostic)
+    record = _record("Piluitus.Main", "[SIGNAL GUARD] evidence=weak")
+
+    assert diagnostic.filter(record)
+    assert not execution.filter(record)
+
+
 def test_subsystem_logger_names_route_to_expected_theme():
     diagnostic = DiagnosticLogFilter()
     shadow = ThematicLogFilter("shadow", diagnostic)
@@ -38,6 +47,7 @@ def test_subsystem_logger_names_route_to_expected_theme():
     assert vllm.filter(_record("Piluitus.AIEngine", "request completed"))
     assert market.filter(_record("Piluitus.FinamGateway", "websocket reconnect"))
     assert execution.filter(_record("Piluitus.ExecutionLayer", "position updated"))
+    assert execution.filter(_record("Piluitus.Main", "[PAPER FILL] ticker=SBER"))
 
     shadow_be = _record("Piluitus.ExecutionLayer", "[SHADOW BE ARMED] SBER BUY")
     assert shadow.filter(shadow_be)
