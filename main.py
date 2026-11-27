@@ -15,7 +15,6 @@ from typing import Any, List, Mapping, Union, cast
 from aiogram import Bot 
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, HTTPException
-from interface.web_security import PILUITUSBasicAuthMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
@@ -4038,11 +4037,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PILUITUS v35.2 — AI Trading Core", lifespan=lifespan)
-app.add_middleware(
-    PILUITUSBasicAuthMiddleware,
-    username=Settings.WEB_AUTH_USER,
-    password=Settings.WEB_AUTH_PASSWORD,
-)
 
 # 🔥 HTTP-ЭНДПОИНТ ДЛЯ ПЕРЕХВАТА ИНТЕРАКТИВНЫХ КОМАНД С ВЫСШИМ ПРИОРИТЕТОМ (Priority 0)
 @app.post("/api/v1/control/close_all")
