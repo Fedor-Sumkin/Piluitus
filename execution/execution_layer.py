@@ -26,6 +26,7 @@ from strategy.paper_performance import (
 from strategy.paper_entry_diagnostics import build_entry_execution_diagnostics
 from strategy.paper_exit_diagnostics import build_exit_execution_diagnostics
 from strategy.paper_exit_signals import evaluate_paper_exit_signal
+from strategy.paper_mfe import build_paper_mfe_reconciliation
 
 logger = logging.getLogger("Piluitus.ExecutionLayer")
 
@@ -2576,6 +2577,9 @@ class BaseExecutionEngine:
         quarantined = 0
         unresolved: dict[str, TradeRecord] = {}
         self._unreconciled_paper_positions = unresolved
+        if not isinstance(getattr(self, "paper_positions", None), dict):
+            self.paper_positions = {}
+        restored_tickers: dict[str, str] = {}
         now = datetime.now().isoformat(timespec="seconds")
         for order_id, raw_trade in all_positions.items():
             if not isinstance(raw_trade, dict):
@@ -2599,6 +2603,62 @@ class BaseExecutionEngine:
                 continue
 
             status = str(trade.get("status", "")).upper()
+            if status == "OPEN" and bool(trade.get("restored_after_restart")):
+                ticker = str(trade.get("ticker") or "").strip().upper().split("@")[0]
+                side = str(trade.get("side") or "").strip().upper()
+                entry = _finite_or_default(trade.get("entry_price"), 0.0)
+                initial_stop = _finite_or_default(
+                    trade.get("initial_stop_loss", trade.get("stop_loss")), 0.0
+                )
+                current_stop = _finite_or_default(trade.get("stop_loss"), 0.0)
+                target = _finite_or_default(trade.get("take_profit"), 0.0)
+                quantity = _finite_or_default(
+                    trade.get("volume", trade.get("original_volume")), 0.0
+                )
+                levels_valid = bool(
+                    entry > 0.0 and initial_stop > 0.0 and current_stop > 0.0
+                    and target > 0.0 and quantity > 0.0 and ticker
+                    and side in {"BUY", "SELL"}
+                    and (
+                        (side == "BUY" and initial_stop < entry < target and current_stop < target)
+                        or (side == "SELL" and target < entry < initial_stop and target < current_stop)
+                    )
+                )
+                if levels_valid:
+                    previous_id = restored_tickers.get(ticker)
+                    if previous_id is None:
+                        restored_tickers[ticker] = str(order_id)
+                        restored_trade = dict(trade)
+                        restored_trade["ticker"] = ticker
+                        restored_trade["restart_reconciliation_status"] = "RESTORED_AND_LOADED_INTO_MONITOR"
+                        self.paper_positions[ticker] = restored_trade
+                        continue
+                    # The execution engine is keyed by ticker; it cannot safely
+                    # monitor multiple simultaneous positions for one symbol.
+                    previous = self.paper_positions.pop(ticker, None)
+                    for duplicate_id, duplicate_trade in (
+                        (previous_id, previous), (str(order_id), trade)
+                    ):
+                        stale = dict(duplicate_trade or {})
+                        stale["status"] = "STALE_REVIEW"
+                        stale["reconciliation_status"] = "REVIEW_REQUIRED"
+                        stale["stale_reason"] = "Multiple restored PAPER positions share one ticker; monitor key collision."
+                        unresolved[duplicate_id] = stale
+                        await db.set_json(f"piluitus:trade:{duplicate_id}", stale)
+                    continue
+                trade["status"] = "STALE_REVIEW"
+                trade["reconciliation_status"] = "REVIEW_REQUIRED"
+                trade["stale_detected_at"] = now
+                trade["stale_reason"] = (
+                    "Archived PAPER position failed strict restore validation; "
+                    "missing/corrupt size or SL/TP geometry. No synthetic exit was created."
+                )
+                unresolved[str(order_id)] = trade
+                self._unreconciled_paper_positions = unresolved
+                await db.set_json(f"piluitus:trade:{order_id}", trade)
+                quarantined += 1
+                continue
+
             if status == "OPEN":
                 trade["status"] = "STALE_REVIEW"
                 trade["reconciliation_status"] = "REVIEW_REQUIRED"
@@ -3264,6 +3324,7 @@ class BaseExecutionEngine:
             else "ARMED_NOT_TRIGGERED" if bool(trade.get("shadow_be_armed"))
             else "NOT_ARMED"
         )
+        closed_trade.update(build_paper_mfe_reconciliation(closed_trade, net_pnl))
 
         await db.set_json(f"piluitus:trade:{order_id}", closed_trade)
         trade.update(closed_trade)
