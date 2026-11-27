@@ -133,6 +133,9 @@ logging.basicConfig(
     level=logging.WARNING,
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
+# Earlier imports may have configured root logging at INFO; keep unclassified
+# third-party chatter out of session_*.log and enable INFO only for named themes.
+logging.getLogger().setLevel(logging.WARNING)
 # basicConfig may be a no-op when a server has already installed handlers;
 # replace the formatter on every existing root handler either way.
 for _root_handler in logging.getLogger().handlers:
