@@ -362,6 +362,22 @@ def validate_paper_directional_quality(
             f"агрессивного потока {participant}."
         )
 
+    # New screener payloads distinguish a usable directional aggressor sample
+    # from a generally warmed-up trade stream. Legacy/test payloads without the
+    # field retain the previous compatibility behaviour.
+    if "trade_flow_ready" in metrics and _num(metrics, "trade_flow_ready") < 0.5:
+        known_count = int(max(0.0, _num(metrics, "trade_flow_known_trade_count_30s")))
+        known_share = _num(metrics, "trade_flow_known_volume_share_30s")
+        share_text = f"{known_share:.0%}" if math.isfinite(known_share) else "н/д"
+        required_count = int(max(1.0, _num(metrics, "trade_flow_min_known_trades_30s", 3.0)))
+        required_share = _num(metrics, "trade_flow_min_known_volume_share", 0.50)
+        return False, (
+            f"PAPER {side} заблокирован: недостаточно данных о стороне агрессора "
+            f"за 30s (известных сделок={known_count}/{required_count}, "
+            f"доля известного объёма={share_text}, минимум={required_share:.0%}); "
+            "нейтральный дисбаланс не считается подтверждением."
+        )
+
     flow_age = _num(metrics, "trade_metrics_age_sec", -1.0)
     if flow_age < 0.0 or flow_age > 5.0:
         return False, (
