@@ -657,6 +657,16 @@ def validate_paper_market_quality(
             min_stop_pct = float(os.getenv("PILUITUS_MIN_STOP_PCT", "0.0025"))
             reward_multiple = float(os.getenv("PILUITUS_TAKE_PROFIT_R_MULTIPLE", "2.0"))
             atr_value = _num(metrics, "bar_atr", math.nan)
+            if not math.isfinite(atr_value) or atr_value <= 0.0:
+                # Older and compact candidate payloads carry M1 ATR in percent.
+                # Reconstruct the same absolute range from the current mid quote.
+                atr_pct_value = _num(metrics, "bar_atr_pct", math.nan)
+                reference_price = (bid + ask) / 2.0
+                if (
+                    math.isfinite(atr_pct_value) and atr_pct_value > 0.0
+                    and math.isfinite(reference_price) and reference_price > 0.0
+                ):
+                    atr_value = reference_price * atr_pct_value / 100.0
         except (TypeError, ValueError, OverflowError):
             return False, "PAPER-вход заблокирован: параметры Risk/Reward некорректны."
         planned_rr = estimate_planned_trade_risk_reward(
