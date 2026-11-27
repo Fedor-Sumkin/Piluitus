@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from strategy.shadow_validation import build_shadow_cost_sensitivity
+from strategy.shadow_validation import build_shadow_cost_sensitivity, build_shadow_cost_atr_gate_sensitivity
 
 
 class ShadowCostSensitivityTests(unittest.TestCase):
@@ -80,6 +80,27 @@ class ShadowCostSensitivityTests(unittest.TestCase):
             build_shadow_cost_sensitivity(self.labels(), scenarios_bps=(-1.0,))["reason"],
             "INVALID_PARAMETERS",
         )
+
+
+    def test_cost_atr_gate_sensitivity_compares_horizons_without_repricing(self) -> None:
+        labels = [
+            {"candidate_id": "a", "side": "BUY", "horizon_sec": horizon,
+             "result": "OK", "label_quality": "ON_TIME",
+             "net_executable_return_pct": 0.10, "cost_to_atr_ratio": 0.30}
+            for horizon in (60, 180, 300, 600)
+        ] + [
+            {"candidate_id": "b", "side": "SELL", "horizon_sec": horizon,
+             "result": "OK", "label_quality": "ON_TIME",
+             "net_executable_return_pct": -0.05, "cost_to_atr_ratio": 0.75}
+            for horizon in (60, 180, 300, 600)
+        ]
+        report = build_shadow_cost_atr_gate_sensitivity(labels)
+        self.assertTrue(report["available"])
+        self.assertTrue(report["active_gate_unchanged"])
+        self.assertEqual(report["thresholds"]["0.50"]["included_candidates"], 1)
+        self.assertEqual(report["thresholds"]["1.00"]["included_candidates"], 2)
+        self.assertEqual(report["thresholds"]["0.50"]["by_horizon"]["60s"]["overall"]["valid_labels"], 1)
+        self.assertIn("600s", report["thresholds"]["0.50"]["by_horizon"])
 
 
 if __name__ == "__main__":
