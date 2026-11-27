@@ -228,6 +228,7 @@
             <div id="trading-status-title" class="trading-status-title">Ожидание статуса торговой системы</div>
             <div id="trading-status-message" class="trading-status-message">Получаем состояние рыночного потока и риск-ограничений.</div>
             <div id="trading-status-meta" class="trading-status-meta">Режим: — · Finam WS: — · Убыточная серия: —</div>
+            <div id="trading-session-duration" class="trading-status-meta">Длительность текущей сессии: —</div>
         </div>
     </section>
 
@@ -296,6 +297,25 @@
     const wsScheme = window.location.protocol === "https:" ? "wss" : "ws";
     const wsUrl = `${wsScheme}://${window.location.host}/ws/frontend`;
     let ws = null;
+    let tradingSessionStartedAtMs = null;
+
+    function renderTradingSessionDuration() {
+        const element = document.getElementById("trading-session-duration");
+        if (!element) return;
+        if (!Number.isFinite(tradingSessionStartedAtMs)) {
+            element.textContent = "Длительность текущей сессии: —";
+            return;
+        }
+        const elapsed = Math.max(0, Math.floor((Date.now() - tradingSessionStartedAtMs) / 1000));
+        const days = Math.floor(elapsed / 86400);
+        const hours = Math.floor((elapsed % 86400) / 3600);
+        const minutes = Math.floor((elapsed % 3600) / 60);
+        const seconds = elapsed % 60;
+        const clock = [hours, minutes, seconds].map(value => String(value).padStart(2, "0")).join(":");
+        const duration = days > 0 ? `${days} дн. ${clock}` : clock;
+        element.textContent = `Длительность текущей сессии: ${duration}`;
+    }
+    setInterval(renderTradingSessionDuration, 1000);
 
     // Все обработчики назначаются при каждом подключении, включая reconnect.
     function connectWebSocket() {
@@ -394,6 +414,9 @@
         const title = document.getElementById("trading-status-title");
         const message = document.getElementById("trading-status-message");
         const meta = document.getElementById("trading-status-meta");
+        const startedAt = Date.parse(String(data.session_started_at || ""));
+        tradingSessionStartedAtMs = Number.isFinite(startedAt) ? startedAt : null;
+        renderTradingSessionDuration();
         const status = String(data.status || "CHECKING").toUpperCase();
         const cssStatus = ["ACTIVE", "PAUSED", "STOPPED", "CONNECTING", "CHECKING"].includes(status)
             ? status.toLowerCase() : "checking";
