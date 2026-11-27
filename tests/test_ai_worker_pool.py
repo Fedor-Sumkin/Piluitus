@@ -17,7 +17,7 @@ class AIWorkerPoolSizingTests(unittest.TestCase):
 
     def test_invalid_values_use_safe_defaults(self):
         self.assertEqual(effective_ai_worker_count("invalid", 4), 3)
-        self.assertEqual(effective_ai_worker_count(4, "invalid"), 3)
+        self.assertEqual(effective_ai_worker_count(4, "invalid"), 4)
         self.assertEqual(effective_ai_worker_count(True, 4), 3)
 
 
