@@ -141,8 +141,17 @@ def build_trading_status_snapshot(
             "Скринер анализирует рынок; открытые позиции продолжают сопровождаться."
         )
 
+    session_started_at = getattr(execution_engine, "session_started_at", None)
+    if isinstance(session_started_at, datetime):
+        if session_started_at.tzinfo is None:
+            session_started_at = session_started_at.replace(tzinfo=timezone.utc)
+        session_started_at_text = session_started_at.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    else:
+        session_started_at_text = None
+
     return {
         "status": status,
+        "session_started_at": session_started_at_text,
         "title": title,
         "message": message,
         "mode": mode,
