@@ -109,6 +109,9 @@ class MarketContextTests(unittest.TestCase):
         self.assertGreater(result["cost_to_atr_ratio"], 0.0)
         self.assertEqual(result["cost_model_status"], "CONFIGURED")
         self.assertGreater(result["breakeven_exit_executable_price"], 100.2)
+        self.assertAlmostEqual(result["estimated_round_trip_spread_cost_pct"], result["entry_spread_pct"])
+        self.assertAlmostEqual(result["estimated_round_trip_commission_cost_pct"], 0.10)
+        self.assertAlmostEqual(result["estimated_round_trip_slippage_cost_pct"], 0.04)
 
     def test_sell_break_even_move_is_positive_and_directionally_correct(self) -> None:
         result = estimate_entry_economics(
