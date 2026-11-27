@@ -525,3 +525,81 @@ def build_shadow_cost_sensitivity(
             "Horizon rows from one candidate are correlated and must not be interpreted as independent trades."
         ),
     }
+
+
+def build_shadow_cost_atr_gate_sensitivity(
+    labels: Any,
+    *,
+    thresholds: tuple[float, ...] = (0.25, 0.35, 0.50, 0.65, 0.80, 1.00, 1.25),
+    required_horizons: tuple[int, ...] = (60, 180, 300, 600),
+    limit: int = 20000,
+) -> dict[str, Any]:
+    """Compare historical cost/ATR thresholds without changing active gates."""
+    try:
+        row_limit = int(limit)
+        scenario_values = sorted({float(value) for value in thresholds})
+        horizons = sorted({int(value) for value in required_horizons})
+    except (TypeError, ValueError, OverflowError):
+        return {"available": False, "reason": "INVALID_PARAMETERS"}
+    if (
+        row_limit < 1 or row_limit > 20000 or not scenario_values or not horizons
+        or any(not math.isfinite(value) or value <= 0.0 or value > 2.0 for value in scenario_values)
+        or any(value not in {60, 180, 300, 600} for value in horizons)
+    ):
+        return {"available": False, "reason": "INVALID_PARAMETERS"}
+
+    source = labels if isinstance(labels, (list, tuple)) else []
+    deduplicated = deduplicate_shadow_labels(source)[-row_limit:]
+    valid: list[dict[str, Any]] = []
+    missing_cost = 0
+    for row in deduplicated:
+        ratio = _finite(row.get("cost_to_atr_ratio"))
+        horizon = _finite(row.get("horizon_sec"))
+        side = str(row.get("side") or "").upper()
+        candidate_id = str(row.get("candidate_id") or "").strip()
+        if ratio is None or ratio < 0.0:
+            missing_cost += 1
+            continue
+        if not candidate_id or side not in {"BUY", "SELL"} or horizon is None or int(horizon) not in horizons:
+            continue
+        valid.append(dict(row, _cost_to_atr=ratio, horizon_sec=int(horizon)))
+
+    by_threshold: dict[str, Any] = {}
+    valid_candidates = {str(row.get("candidate_id")) for row in valid}
+    for threshold in scenario_values:
+        included = [row for row in valid if row["_cost_to_atr"] <= threshold]
+        candidate_ids = {str(row.get("candidate_id")) for row in included}
+        observed_by_horizon: dict[str, Any] = {}
+        for horizon in horizons:
+            horizon_rows = [row for row in included if int(row["horizon_sec"]) == horizon]
+            observed_by_horizon[f"{horizon}s"] = {
+                "candidate_count": len({str(row.get("candidate_id")) for row in horizon_rows}),
+                "label_rows": len(horizon_rows),
+                "by_side": {
+                    side: _summarize(
+                        [row for row in horizon_rows if str(row.get("side")).upper() == side],
+                        {str(row.get("candidate_id")) for row in horizon_rows if str(row.get("side")).upper() == side},
+                    )
+                    for side in ("BUY", "SELL")
+                },
+                "overall": _summarize(horizon_rows, {str(row.get("candidate_id")) for row in horizon_rows}),
+            }
+        by_threshold[f"{threshold:.2f}"] = {
+            "max_cost_to_atr_ratio": threshold,
+            "included_candidates": len(candidate_ids),
+            "included_label_rows": len(included),
+            "coverage_pct": round(len(candidate_ids) / max(1, len(valid_candidates)) * 100.0, 3),
+            "by_horizon": observed_by_horizon,
+        }
+    return {
+        "available": bool(valid),
+        "method": "OBSERVED_SHADOW_LABELS_COST_ATR_THRESHOLD_SWEEP",
+        "active_gate_unchanged": True,
+        "input_label_rows": len(source),
+        "deduplicated_label_rows": len(deduplicated),
+        "valid_cost_labeled_rows": len(valid),
+        "rows_missing_cost_ratio": missing_cost,
+        "unique_cost_labeled_candidates": len(valid_candidates),
+        "thresholds": by_threshold,
+        "interpretation": "Descriptive historical sensitivity only; not a recommendation to change the execution gate.",
+    }
