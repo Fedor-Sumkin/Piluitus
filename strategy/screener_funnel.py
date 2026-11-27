@@ -339,6 +339,9 @@ class HFTMemoryScreener:
             "trade_seen_set": set(),
         }
         self.quotes[ticker] = {
+            "ticker": ticker,
+            "last_accepted_bbo_mid": 0.0,
+            "pending_bbo_anomaly": None,
             "bid": 0.0,
             "ask": 0.0,
             "bid_size": 0.0,
@@ -840,6 +843,75 @@ class HFTMemoryScreener:
             return 0.0
         return drop
 
+
+    def _quarantine_bbo_price_jump(
+        self, quote: dict[str, Any], bid: float, ask: float, now: float, source: str
+    ) -> tuple[bool, str]:
+        """Require a second coherent sample before accepting an isolated BBO jump."""
+        if not (math.isfinite(bid) and math.isfinite(ask) and bid > 0.0 and ask >= bid):
+            return False, "INVALID_BBO"
+        mid = (bid + ask) / 2.0
+        previous_mid = float(quote.get("last_accepted_bbo_mid", 0.0) or 0.0)
+        if previous_mid <= 0.0 or not math.isfinite(previous_mid):
+            quote["last_accepted_bbo_mid"] = mid
+            quote["pending_bbo_anomaly"] = None
+            return False, "INITIAL_BBO"
+
+        try:
+            configured_jump = float(os.getenv("PILUITUS_BBO_MAX_JUMP_PCT", "1.0"))
+        except (TypeError, ValueError, OverflowError):
+            configured_jump = 1.0
+        if not math.isfinite(configured_jump) or configured_jump <= 0.0:
+            configured_jump = 1.0
+        jump_limit = min(3.0, max(0.25, configured_jump))
+        try:
+            atr_snapshot = self.minute_bar_patterns.get_atr_snapshot(
+                str(quote.get("ticker") or ""), period=14
+            )
+            atr_value = float(atr_snapshot.get("bar_atr", 0.0) or 0.0)
+            if math.isfinite(atr_value) and atr_value > 0.0:
+                jump_limit = max(jump_limit, min(3.0, atr_value / previous_mid * 100.0 * 5.0))
+        except Exception:
+            pass
+        jump_pct = abs(mid / previous_mid - 1.0) * 100.0
+        if jump_pct <= jump_limit:
+            quote["last_accepted_bbo_mid"] = mid
+            quote["pending_bbo_anomaly"] = None
+            return False, "WITHIN_JUMP_LIMIT"
+
+        pending = quote.get("pending_bbo_anomaly")
+        pending_mid = pending_at = 0.0
+        if isinstance(pending, dict):
+            try:
+                pending_mid = float(pending.get("mid", 0.0) or 0.0)
+                pending_at = float(pending.get("seen_at", 0.0) or 0.0)
+            except (TypeError, ValueError, OverflowError):
+                pending_mid = pending_at = 0.0
+        stable_pending = bool(
+            pending_mid > 0.0 and pending_at > 0.0
+            and 0.0 <= now - pending_at <= 2.0
+            and abs(mid / pending_mid - 1.0) * 100.0 <= max(0.05, jump_limit * 0.20)
+        )
+        if stable_pending:
+            quote["pending_bbo_anomaly"] = None
+            quote["last_accepted_bbo_mid"] = mid
+            quote["bbo_anomaly_confirmed_at"] = now
+            quote["bbo_anomaly_confirmed_source"] = str(source)
+            return False, "SECOND_SAMPLE_CONFIRMED"
+
+        quote["pending_bbo_anomaly"] = {
+            "mid": mid, "bid": bid, "ask": ask, "seen_at": now,
+            "source": str(source), "jump_pct": jump_pct, "jump_limit_pct": jump_limit,
+        }
+        quote.setdefault("queue_imbalance_history", deque(maxlen=1024)).clear()
+        quote.setdefault("ofi_history", deque(maxlen=4096)).clear()
+        quote["last_bid_confirmed_seen"] = 0.0
+        quote["last_ask_confirmed_seen"] = 0.0
+        quote["last_bbo_seen"] = 0.0
+        quote["order_book_valid"] = False
+        quote["order_book_last_reason"] = "BBO_ANOMALY_QUARANTINE"
+        return True, "BBO_ANOMALY_QUARANTINE"
+
     def _sync_push_order_book(
         self,
         ticker: str,
@@ -1041,6 +1113,17 @@ class HFTMemoryScreener:
                     "bbo_side_touch_count": int(bool(bid_present)) + int(bool(ask_present)),
                     "confirmed_sides": 0,
                     "bbo_price_changed": bool(old_bid != current_bid or old_ask != current_ask),
+                }
+
+            quarantined, anomaly_reason = self._quarantine_bbo_price_jump(
+                quote, current_bid, current_ask, received_at, "ORDER_BOOK"
+            )
+            if quarantined:
+                return {
+                    "updated": True, "valid": False, "reason": anomaly_reason,
+                    "ticker": ticker, "bid": old_bid, "ask": old_ask,
+                    "bbo_side_updated": False, "bbo_side_touch_count": 0,
+                    "confirmed_sides": 0, "bbo_price_changed": False,
                 }
 
             quote["order_book_valid"] = True
@@ -1355,6 +1438,19 @@ class HFTMemoryScreener:
                 quote["last_bid_quotes_event_seen"] = event_seen_at
             if accept_ask_event:
                 quote["last_ask_quotes_event_seen"] = event_seen_at
+
+            proposed_bid = float(bid) if accept_bid_update and bid > 0.0 else float(quote.get("bid", 0.0) or 0.0)
+            proposed_ask = float(ask) if accept_ask_update and ask > 0.0 else float(quote.get("ask", 0.0) or 0.0)
+            anomaly_quarantined = False
+            if proposed_bid > 0.0 and proposed_ask > 0.0 and proposed_ask >= proposed_bid:
+                anomaly_quarantined, _ = self._quarantine_bbo_price_jump(
+                    quote, proposed_bid, proposed_ask, received_at, "QUOTES"
+                )
+            if anomaly_quarantined:
+                accept_bid_update = accept_ask_update = False
+                accept_bid_event = accept_ask_event = False
+                bid_size_present = ask_size_present = False
+
             if accept_bid_update:
                 quote["last_bid_source_received_seen"] = received_at
                 quote["last_bid_event_seen"] = event_seen_at
@@ -1424,6 +1520,9 @@ class HFTMemoryScreener:
                 and 0.0 <= bid_age <= self.bbo_max_age_sec
                 and 0.0 <= ask_age <= self.bbo_max_age_sec
             )
+
+            if bbo_fresh and not anomaly_quarantined:
+                quote["last_accepted_bbo_mid"] = (float(quote["bid"]) + float(quote["ask"])) / 2.0
 
             # Направленный импульс относительно цены до текущего тика.
             lookback = min(5, int(history_prices.size))
