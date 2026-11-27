@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from monitoring.log_routing import (
     DiagnosticLogFilter,
@@ -76,3 +77,13 @@ def test_verdict_and_error_streams_are_independent():
     assert not verdicts.filter(_record("Piluitus.Main", "ordinary message"))
     assert errors.filter(_record("Piluitus.AIEngine", "request failed", logging.ERROR))
     assert not errors.filter(_record("Piluitus.Main", "warning", logging.WARNING))
+
+def test_every_run_log_uses_the_shared_15_mib_rotation_limit():
+    source = (Path(__file__).resolve().parents[1] / "main.py").read_text(encoding="utf-8")
+
+    assert "_RUN_LOG_MAX_BYTES = 15 * 1024 * 1024" in source
+    assert "max_bytes=_RUN_LOG_MAX_BYTES" in source
+    assert "PILUITUS_SESSION_LOG_MAX_BYTES" not in source
+    for kind in ("session", "diagnostic", "errors", "shadow", "vllm",
+                 "market", "execution", "verdicts"):
+        assert f'"{kind}"' in source
