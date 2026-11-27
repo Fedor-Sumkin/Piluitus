@@ -20,7 +20,9 @@
     input,select{background:#0f1724;color:var(--text);border:1px solid #3a4a61;border-radius:6px;padding:8px;max-width:100%}input[type=number]{width:140px}input[type=text]{width:min(340px,100%)}
     button{border:0;border-radius:7px;padding:9px 12px;font-weight:700;cursor:pointer;margin:3px 4px 3px 0;background:#334155;color:#f8fafc}button:hover{filter:brightness(1.15)}button:disabled{opacity:.45;cursor:not-allowed}.primary{background:#1d4ed8}.good{background:#047857}.warn{background:#92400e}.bad{background:#991b1b}
     .row-actions{display:flex;flex-wrap:wrap;gap:4px}.field{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}.result{white-space:pre-wrap;background:#0a1220;padding:12px;border-radius:7px;margin-top:10px;overflow-wrap:anywhere}.hidden{display:none}
-    @media(max-width:850px){body{padding:12px}.stats{grid-template-columns:repeat(2,minmax(120px,1fr))}.panel{padding:13px}}
+    button,a,input{touch-action:manipulation}button{min-height:42px}input{min-height:40px}
+    @media(max-width:850px){body{padding:12px}.stats{grid-template-columns:repeat(2,minmax(120px,1fr))}.panel{padding:13px}.top .field{width:100%}.top .field>*{max-width:100%}}
+    @media(max-width:480px){body{padding:8px}.stats{grid-template-columns:minmax(0,1fr)}h1{font-size:19px}.top{align-items:stretch}.top .field{align-items:stretch;flex-direction:column}.top .field>*{width:100%}.panel{padding:10px}.row-actions{flex-direction:column;align-items:stretch}.row-actions button{width:100%}input[type=number],input[type=text]{width:100%}}
   </style>
 </head>
 <body>
