@@ -81,3 +81,16 @@ def test_reduced_open_position_without_partial_ledger_requires_review():
     result = audit_open_paper_position(trade)
     assert result["valid"] is False
     assert "PARTIAL_FILL_LEDGER_MISSING_FOR_REDUCED_POSITION" in result["reasons"]
+
+
+
+def test_legacy_journal_uses_verified_instrument_lot_size_when_field_is_absent():
+    trade = _trade(
+        original_volume=10, volume=10, original_lots=1, lots=1,
+        exit_partial_fills=[], exit_partial_fill_count=0,
+        realized_net_pnl_rub=0.0,
+    )
+    trade.pop("lot_size")
+    result = audit_open_paper_position(trade, fallback_lot_size=10)
+    assert result["valid"] is True
+    assert result["remaining_shares"] == 10

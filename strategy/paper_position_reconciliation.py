@@ -20,6 +20,7 @@ def audit_open_paper_position(
     trade: Mapping[str, Any],
     *,
     expected_order_id: str | None = None,
+    fallback_lot_size: object = 1,
 ) -> dict[str, Any]:
     """Validate identifiers, volume/lot arithmetic and partial-fill accounting.
 
@@ -45,7 +46,10 @@ def audit_open_paper_position(
 
     remaining = _number(trade.get("volume", trade.get("original_volume")))
     original = _number(trade.get("original_volume", trade.get("volume")))
-    lot_size = _number(trade.get("lot_size", 1))
+    raw_lot_size = trade.get("lot_size")
+    if raw_lot_size in (None, "", 0):
+        raw_lot_size = fallback_lot_size
+    lot_size = _number(raw_lot_size)
     lots = _number(trade.get("lots"))
     if remaining is None or original is None or remaining <= 0.0 or original < remaining:
         reasons.append("INVALID_REMAINING_OR_ORIGINAL_VOLUME")

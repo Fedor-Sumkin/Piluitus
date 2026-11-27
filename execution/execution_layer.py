@@ -2748,7 +2748,9 @@ class BaseExecutionEngine:
                 audit_trade = dict(trade)
                 audit_trade.setdefault("id", str(order_id))
                 journal_audit = audit_open_paper_position(
-                    audit_trade, expected_order_id=str(order_id)
+                    audit_trade,
+                    expected_order_id=str(order_id),
+                    fallback_lot_size=LOT_SIZES.get(ticker, 1),
                 )
                 trade["journal_position_audit"] = journal_audit
                 levels_valid = bool(levels_valid and journal_audit.get("valid"))
