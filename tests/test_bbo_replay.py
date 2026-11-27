@@ -34,6 +34,20 @@ class BBOReplayRecorderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0]["ticker"], "TEST")
         self.assertEqual(recorder.skipped_unchanged, 1)
 
+    def test_records_atr_snapshot_and_explicitly_unknown_book_size_unit(self):
+        recorder = BBOReplayRecorder(queue_limit=10)
+        snapshot = {
+            "updated": True, "valid": True, "order_book_valid": True,
+            "bid": 100.0, "ask": 100.1, "bid_size": 10.0, "ask_size": 12.0,
+            "atr_at_event": 0.25, "atr_periods_at_event": 14,
+        }
+        with patch("strategy.bbo_replay.time.monotonic", return_value=15.0):
+            self.assertTrue(recorder.record("TEST", snapshot, {"source": "FINAM_ORDER_BOOK"}))
+        row = recorder._queue.get_nowait()
+        self.assertEqual(row["atr_at_event"], 0.25)
+        self.assertEqual(row["atr_periods_at_event"], 14)
+        self.assertEqual(row["order_book_size_unit"], "UNSPECIFIED_BY_FINAM_SCHEMA")
+
     def test_records_source_switch_and_per_side_freshness(self):
         recorder = BBOReplayRecorder(queue_limit=100, heartbeat_interval_sec=5.0)
         snapshot = {

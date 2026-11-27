@@ -27,6 +27,8 @@ from strategy.paper_entry_diagnostics import build_entry_execution_diagnostics
 from strategy.paper_exit_diagnostics import build_exit_execution_diagnostics
 from strategy.paper_exit_signals import evaluate_paper_exit_signal
 from strategy.paper_mfe import build_paper_mfe_reconciliation
+from strategy.paper_exit_adaptation import calculate_adaptive_trailing_gap
+from strategy.paper_position_reconciliation import audit_open_paper_position
 
 logger = logging.getLogger("Piluitus.ExecutionLayer")
 
@@ -71,6 +73,25 @@ class BBOExitQuote(TypedDict):
 
 TradeRecord = dict[str, Any]
 _MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
+
+
+def _timestamp_age_seconds(value: object, *, now: datetime | None = None) -> float | None:
+    """Age of a persisted ISO timestamp; safe across process/monotonic resets."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        stamp = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            stamp = stamp.astimezone()
+        current = now or datetime.now().astimezone()
+        if current.tzinfo is None:
+            current = current.astimezone()
+        age = (current - stamp.astimezone(current.tzinfo)).total_seconds()
+        return max(0.0, age) if math.isfinite(age) else None
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
 PAPER_EXIT_TERMINAL_REASONS = frozenset({"STOP_LOSS", "TAKE_PROFIT", "SIGNAL_REVERSAL"})
 
 
@@ -1406,6 +1427,7 @@ class BaseExecutionEngine:
         ticker: str,
         trade: TradeRecord,
         executable_exit_price: float,
+        market_context: Mapping[str, Any] | None = None,
     ) -> float | None:
         """Tighten PAPER SL behind the best confirmed executable BBO after the arm threshold.
 
@@ -1448,13 +1470,81 @@ class BaseExecutionEngine:
         high_water_r = ((high_water - entry) / initial_distance) * (
             1.0 if side == "BUY" else -1.0
         )
+
+        context = market_context if isinstance(market_context, Mapping) else {}
+        adaptive = calculate_adaptive_trailing_gap(
+            initial_risk_distance=initial_distance,
+            base_gap_r=distance_r,
+            entry_atr=context.get("entry_atr", trade.get("atr_at_entry")),
+            current_atr=context.get("current_atr", trade.get("atr_at_entry")),
+            entry_spread=context.get("entry_spread", max(
+                0.0,
+                _finite_or_default(trade.get("entry_ask"), 0.0)
+                - _finite_or_default(trade.get("entry_bid"), 0.0),
+            )),
+            current_spread=context.get("current_spread"),
+            entry_exit_top_size_raw=context.get(
+                "entry_exit_top_size_raw", trade.get("entry_exit_top_size_raw")
+            ),
+            current_exit_top_size_raw=context.get("current_exit_top_size_raw"),
+        )
+        gap_distance = _finite_or_default(
+            adaptive.get("gap_distance"), initial_distance * distance_r
+        )
+
         if high_water_r < arm_r:
+            # Adaptive initial SL: reduce risk only when measured volatility or
+            # same-side displayed liquidity contracts. Spread expansion can
+            # increase the modelled buffer, but it can never widen a live stop.
+            initial_adaptive = calculate_adaptive_trailing_gap(
+                initial_risk_distance=initial_distance,
+                base_gap_r=1.0,
+                entry_atr=context.get("entry_atr", trade.get("atr_at_entry")),
+                current_atr=context.get("current_atr", trade.get("atr_at_entry")),
+                entry_spread=context.get("entry_spread"),
+                current_spread=context.get("current_spread"),
+                entry_exit_top_size_raw=context.get(
+                    "entry_exit_top_size_raw", trade.get("entry_exit_top_size_raw")
+                ),
+                current_exit_top_size_raw=context.get("current_exit_top_size_raw"),
+            )
+            adaptive_initial_distance = min(
+                initial_distance,
+                _finite_or_default(initial_adaptive.get("gap_distance"), initial_distance),
+            )
+            initial_raw_stop = (
+                entry - adaptive_initial_distance
+                if side == "BUY"
+                else entry + adaptive_initial_distance
+            )
+            initial_candidate = self._round_paper_breakeven_stop(
+                ticker, side, initial_raw_stop
+            )
+            can_tighten = (
+                initial_candidate > current_stop and initial_candidate < market_price
+                if side == "BUY"
+                else initial_candidate < current_stop and initial_candidate > market_price
+            )
+            if can_tighten:
+                trade.update({
+                    "stop_loss": initial_candidate,
+                    "paper_adaptive_initial_stop_distance": round(adaptive_initial_distance, 8),
+                    "paper_adaptive_initial_adaptation": {
+                        key: value for key, value in initial_adaptive.items()
+                        if key != "available"
+                    },
+                    "paper_adaptive_initial_stop_updated_at": datetime.now().astimezone().isoformat(
+                        timespec="milliseconds"
+                    ),
+                    "stop_loss_stage": "ADAPTIVE_INITIAL",
+                })
+                return initial_candidate
             return None
 
         raw_stop = (
-            high_water - initial_distance * distance_r
+            high_water - gap_distance
             if side == "BUY"
-            else high_water + initial_distance * distance_r
+            else high_water + gap_distance
         )
         candidate = self._round_paper_breakeven_stop(ticker, side, raw_stop)
         if candidate <= 0.0:
@@ -1481,6 +1571,11 @@ class BaseExecutionEngine:
                 timespec="milliseconds"
             ),
             "paper_trailing_favorable_r_at_update": round(high_water_r, 4),
+            "paper_trailing_adaptive_gap_distance": round(gap_distance, 8),
+            "paper_trailing_adaptation": {
+                key: value for key, value in adaptive.items()
+                if key != "available"
+            },
             "stop_loss_stage": "TRAILING",
         })
         return candidate
@@ -2205,6 +2300,11 @@ class BaseExecutionEngine:
                 "paper_slippage_bps": self.paper_slippage_bps if self.paper_mode else 0.0,
                 "entry_executable_side": entry_bbo.get("executable_side") if entry_bbo is not None else None,
                 "entry_top_size_raw": entry_quote_size,
+                "entry_exit_top_size_raw": _finite_or_default(
+                    entry_bbo.get("bid_size") if side == "BUY" else entry_bbo.get("ask_size"),
+                    0.0,
+                ) if entry_bbo is not None else 0.0,
+                "entry_exit_top_size_unit": "RELATIVE_RAW_UNSPECIFIED",
                 "entry_top_size_unit": (
                     self.paper_book_size_unit
                     if self.paper_mode and self.paper_book_size_unit in {"shares", "lots"}
@@ -2366,9 +2466,20 @@ class BaseExecutionEngine:
 
             quote = self._latest_fresh_exit_quote(ticker, side)
             if not isinstance(quote, Mapping):
-                # Never turn a stale mark into a simulated close. Expose the
-                # missing executable side and book state at a bounded log rate.
+                # Never turn a stale mark into a simulated close. The watchdog
+                # records retries in memory and escalates long-latched exits.
                 now = time.monotonic()
+                if isinstance(raw_trade, dict):
+                    raw_trade["exit_watchdog_retry_count"] = (
+                        int(_finite_or_default(raw_trade.get("exit_watchdog_retry_count"), 0.0)) + 1
+                    )
+                    raw_trade["exit_watchdog_last_check_at"] = datetime.now().astimezone().isoformat(
+                        timespec="milliseconds"
+                    )
+                pending_reason = str(trade.get("pending_exit_reason") or "").upper()
+                trigger_wait_sec = (
+                    _timestamp_age_seconds(trade.get("exit_trigger_timestamp")) or 0.0
+                ) if pending_reason in PAPER_EXIT_TERMINAL_REASONS else 0.0
                 warnings = getattr(self, "_last_bbo_exit_warning_at", None)
                 if not isinstance(warnings, dict):
                     warnings = {}
@@ -2379,6 +2490,13 @@ class BaseExecutionEngine:
                     interval = 300.0
                 if not math.isfinite(interval) or interval <= 0.0:
                     interval = 300.0
+                if pending_reason in PAPER_EXIT_TERMINAL_REASONS:
+                    interval = min(
+                        interval,
+                        _finite_or_default(
+                            getattr(Settings, "PAPER_EXIT_STALL_LOG_INTERVAL_SEC", 30.0), 30.0
+                        ),
+                    )
                 last_warning_at = warnings.get(ticker)
                 should_log_wait = (
                     last_warning_at is None
@@ -2431,10 +2549,13 @@ class BaseExecutionEngine:
                     logger.warning(
                         "[PAPER EXIT WATCHDOG WAIT] ticker=%s side=%s executable_side=%s "
                         "bid=%.6f bid_age=%s ask=%.6f ask_age=%s required_side_age=%s "
-                        "max_age=%.2fs crossed=%s book_valid=%s book_age=%s book_reason=%s; "
+                        "max_age=%.2fs crossed=%s book_valid=%s book_age=%s book_reason=%s "
+                        "pending_exit=%s trigger_wait=%.1fs watchdog_retries=%d; "
                         "позиция сохранена, фиктивное исполнение/закрытие не выполняется.",
                         ticker, side, exec_side, bid, bid_age_text, ask, ask_age_text,
                         exec_age_text, max_age, crossed, book_valid, book_age_text, book_reason,
+                        pending_reason or "NONE", trigger_wait_sec,
+                        int(_finite_or_default(trade.get("exit_watchdog_retry_count"), 0.0)),
                     )
                     warnings[ticker] = now
                 continue
@@ -2624,6 +2745,13 @@ class BaseExecutionEngine:
                         or (side == "SELL" and target < entry < initial_stop and target < current_stop)
                     )
                 )
+                audit_trade = dict(trade)
+                audit_trade.setdefault("id", str(order_id))
+                journal_audit = audit_open_paper_position(
+                    audit_trade, expected_order_id=str(order_id)
+                )
+                trade["journal_position_audit"] = journal_audit
+                levels_valid = bool(levels_valid and journal_audit.get("valid"))
                 if levels_valid:
                     previous_id = restored_tickers.get(ticker)
                     if previous_id is None:
@@ -2651,7 +2779,9 @@ class BaseExecutionEngine:
                 trade["stale_detected_at"] = now
                 trade["stale_reason"] = (
                     "Archived PAPER position failed strict restore validation; "
-                    "missing/corrupt size or SL/TP geometry. No synthetic exit was created."
+                    "missing/corrupt size, partial-fill ledger or SL/TP geometry. "
+                    f"Journal audit: {journal_audit.get('reasons', [])}. "
+                    "No synthetic exit was created."
                 )
                 unresolved[str(order_id)] = trade
                 self._unreconciled_paper_positions = unresolved
@@ -3597,6 +3727,65 @@ class BaseExecutionEngine:
                 else:
                     wait_state = "WAITING_FOR_BBO"
                     wait_reason = "сессия открыта, но свежая исполнимая сторона BBO отсутствует"
+                wait_now = datetime.now().astimezone()
+                wait_now_iso = wait_now.isoformat(timespec="milliseconds")
+                wait_started = (
+                    trade.get("exit_trigger_timestamp")
+                    if pending_exit in PAPER_EXIT_TERMINAL_REASONS
+                    else trade.get("exit_wait_started_at")
+                )
+                if not wait_started:
+                    wait_started = wait_now_iso
+                wait_elapsed = _timestamp_age_seconds(wait_started, now=wait_now) or 0.0
+                trade["exit_wait_started_at"] = str(wait_started)
+                trade["exit_wait_last_checked_at"] = wait_now_iso
+                trade["exit_wait_retry_count"] = (
+                    int(_finite_or_default(trade.get("exit_wait_retry_count"), 0.0)) + 1
+                )
+                trade["exit_wait_duration_sec"] = round(wait_elapsed, 3)
+                stall_threshold = _finite_or_default(
+                    getattr(Settings, "PAPER_EXIT_STALL_ALERT_SEC", 10.0), 10.0
+                )
+                stall_log_interval = _finite_or_default(
+                    getattr(Settings, "PAPER_EXIT_STALL_LOG_INTERVAL_SEC", 30.0), 30.0
+                )
+                stall_last_alert_age = _timestamp_age_seconds(
+                    trade.get("exit_stall_last_alert_at"), now=wait_now
+                )
+                if pending_exit in PAPER_EXIT_TERMINAL_REASONS and wait_elapsed >= stall_threshold:
+                    wait_state = "EXIT_TRIGGERED_STALLED_WAITING_FOR_BBO"
+                    wait_reason = (
+                        f"{pending_exit}: ожидание свежего исполнимого BBO "
+                        f"{wait_elapsed:.1f}s; закрытие без подтверждённой цены запрещено"
+                    )
+                    if (
+                        stall_last_alert_age is None
+                        or stall_last_alert_age >= stall_log_interval
+                    ):
+                        trade["exit_stall_last_alert_at"] = wait_now_iso
+                        raw_quote_state = (
+                            self.screener.quotes.get(ticker, {})
+                            if self.screener is not None else {}
+                        )
+                        quote_state = _as_string_mapping(raw_quote_state) or {}
+                        now_mono = time.monotonic()
+                        bid_seen = _quote_side_freshness_seen(quote_state, "BID")
+                        ask_seen = _quote_side_freshness_seen(quote_state, "ASK")
+                        book_seen = _finite_or_default(quote_state.get("last_order_book_seen"), 0.0)
+                        bid_age = now_mono - bid_seen if bid_seen > 0.0 else math.inf
+                        ask_age = now_mono - ask_seen if ask_seen > 0.0 else math.inf
+                        book_age = now_mono - book_seen if book_seen > 0.0 else math.inf
+                        logger.error(
+                            "[PAPER EXIT STALLED] %s %s reason=%s waiting=%.1fs retries=%d "
+                            "required_side=%s bid_age=%s ask_age=%s book_age=%s; "
+                            "позиция остаётся OPEN, требуется свежий исполнимый BBO.",
+                            ticker, side, pending_exit, wait_elapsed,
+                            int(trade["exit_wait_retry_count"]),
+                            "BID" if side == "BUY" else "ASK",
+                            f"{bid_age:.2f}s" if math.isfinite(bid_age) else "нет",
+                            f"{ask_age:.2f}s" if math.isfinite(ask_age) else "нет",
+                            f"{book_age:.2f}s" if math.isfinite(book_age) else "нет",
+                        )
                 previous_wait_state = str(trade.get("exit_monitor_state") or "")
                 if previous_wait_state != wait_state:
                     trade["exit_monitor_state"] = wait_state
@@ -3650,14 +3839,16 @@ class BaseExecutionEngine:
                 now_mono = time.monotonic()
                 previous_gap_count = int(_finite_or_default(trade.get("exit_bbo_gap_count"), 0.0))
                 self._track_exit_bbo_gap(trade, now_mono, fresh=False)
-                if int(_finite_or_default(trade.get("exit_bbo_gap_count"), 0.0)) > previous_gap_count:
-                    # Persist the start/count of a new outage episode immediately;
-                    # the completed duration is persisted when fresh BBO returns.
+                gap_started = int(_finite_or_default(trade.get("exit_bbo_gap_count"), 0.0)) > previous_gap_count
+                retry_checkpoint = int(_finite_or_default(trade.get("exit_wait_retry_count"), 0.0)) % 10 == 0
+                if gap_started or retry_checkpoint:
+                    # Persist outage starts and bounded retry checkpoints. This
+                    # survives a restart without writing to Redis on every poll.
                     try:
                         await db.set_json(f"piluitus:trade:{order_id}", trade)
                     except Exception as persist_exc:
                         logger.warning(
-                            "[PAPER BBO GAP PERSIST] %s: не удалось сохранить начало эпизода: %s",
+                            "[PAPER BBO GAP PERSIST] %s: не удалось сохранить состояние ожидания: %s",
                             ticker, persist_exc,
                         )
                 last_warn = self._last_bbo_exit_warning_at.get(ticker, 0.0)
@@ -3757,8 +3948,19 @@ class BaseExecutionEngine:
             # manufacturing a fill or changing the saved SL/TP levels.
             if str(trade.get("exit_monitor_state") or "") != "ACTIVE":
                 previous_reason = str(trade.get("exit_monitor_wait_reason") or "ожидание BBO")
+                wait_elapsed = _timestamp_age_seconds(trade.get("exit_wait_started_at"))
+                if wait_elapsed is not None:
+                    trade["exit_last_wait_duration_sec"] = round(wait_elapsed, 3)
+                    trade["exit_max_wait_duration_sec"] = round(max(
+                        wait_elapsed,
+                        _finite_or_default(trade.get("exit_max_wait_duration_sec"), 0.0),
+                    ), 3)
+                trade["exit_wait_resumed_at"] = datetime.now().astimezone().isoformat(
+                    timespec="milliseconds"
+                )
                 trade["exit_monitor_state"] = "ACTIVE"
                 trade.pop("exit_monitor_wait_reason", None)
+                trade.pop("exit_wait_started_at", None)
                 if gap_duration is None and self._should_log_paper_exit_status(
                     order_id, "resume", time.monotonic()
                 ):
@@ -3868,11 +4070,53 @@ class BaseExecutionEngine:
                     "paper_trailing_armed_timestamp",
                     "paper_trailing_updated_timestamp",
                     "paper_trailing_favorable_r_at_update",
+                    "paper_trailing_adaptive_gap_distance",
+                    "paper_trailing_adaptation",
+                    "paper_adaptive_initial_stop_distance",
+                    "paper_adaptive_initial_adaptation",
+                    "paper_adaptive_initial_stop_updated_at",
                     "stop_loss_stage",
                 )
             }
+            atr_snapshot: Mapping[str, Any] = {}
+            try:
+                if self.screener is not None:
+                    raw_atr_snapshot = self.screener.minute_bar_patterns.get_atr_snapshot(
+                        ticker, period=14
+                    )
+                    if isinstance(raw_atr_snapshot, Mapping):
+                        atr_snapshot = raw_atr_snapshot
+            except (TypeError, ValueError, AttributeError, OverflowError):
+                atr_snapshot = {}
+            current_atr_value = _finite_or_default(atr_snapshot.get("atr"), 0.0)
+            current_atr_periods = int(_finite_or_default(atr_snapshot.get("periods"), 0.0))
+            if current_atr_periods < 5 or current_atr_value <= 0.0:
+                current_atr_value = _finite_or_default(trade.get("atr_at_entry"), 0.0)
+            current_spread_value = max(
+                0.0,
+                _finite_or_default(bbo.get("ask"), 0.0)
+                - _finite_or_default(bbo.get("bid"), 0.0),
+            )
+            current_exit_top_size = _finite_or_default(
+                bbo.get("bid_size") if side == "BUY" else bbo.get("ask_size"),
+                0.0,
+            )
+            trailing_market_context = {
+                "entry_atr": _finite_or_default(trade.get("atr_at_entry"), 0.0),
+                "current_atr": current_atr_value,
+                "entry_spread": max(
+                    0.0,
+                    _finite_or_default(trade.get("entry_ask"), 0.0)
+                    - _finite_or_default(trade.get("entry_bid"), 0.0),
+                ),
+                "current_spread": current_spread_value,
+                "entry_exit_top_size_raw": _finite_or_default(
+                    trade.get("entry_exit_top_size_raw"), 0.0
+                ),
+                "current_exit_top_size_raw": current_exit_top_size,
+            }
             trailing_stop = self._update_paper_trailing_stop(
-                ticker, trade, executable_exit_price
+                ticker, trade, executable_exit_price, trailing_market_context
             )
             if trailing_stop is not None:
                 try:
@@ -3890,13 +4134,30 @@ class BaseExecutionEngine:
                     )
                 else:
                     stop_loss = trailing_stop
-                    logger.warning(
-                        "🛡️ [PAPER TRAILING STOP] %s %s: high_water=%.6f favorable=%.2fR "
-                        "trailing_SL=%.6f distance=%.2fR.",
-                        ticker, side, high_water_price,
-                        _finite_or_default(trade.get("paper_trailing_favorable_r_at_update"), 0.0),
-                        trailing_stop, self.paper_trailing_distance_r,
-                    )
+                    adaptive_stage = str(trade.get("stop_loss_stage") or "TRAILING")
+                    if adaptive_stage == "ADAPTIVE_INITIAL":
+                        logger.info(
+                            "[PAPER ADAPTIVE INITIAL SL] %s %s stop=%.6f distance=%.6f; "
+                            "risk only tightened; volatility/spread/liquidity diagnostics=%s.",
+                            ticker, side, trailing_stop,
+                            _finite_or_default(trade.get("paper_adaptive_initial_stop_distance"), 0.0),
+                            trade.get("paper_adaptive_initial_adaptation", {}),
+                        )
+                    else:
+                        logger.warning(
+                            "🛡️ [PAPER TRAILING STOP] %s %s: high_water=%.6f favorable=%.2fR "
+                            "trailing_SL=%.6f gap=%.6fR=%.6f ₽ ATR_ratio=%.3f spread_buffer=%.6f "
+                            "liquidity_ratio=%s.",
+                            ticker, side, high_water_price,
+                            _finite_or_default(trade.get("paper_trailing_favorable_r_at_update"), 0.0),
+                            trailing_stop,
+                            _finite_or_default(trade.get("paper_trailing_adaptive_gap_distance"), 0.0)
+                            / max(initial_stop_distance, 1e-12),
+                            _finite_or_default(trade.get("paper_trailing_adaptive_gap_distance"), 0.0),
+                            _finite_or_default(trade.get("paper_trailing_adaptation", {}).get("atr_ratio"), 1.0),
+                            _finite_or_default(trade.get("paper_trailing_adaptation", {}).get("spread_buffer"), 0.0),
+                            trade.get("paper_trailing_adaptation", {}).get("liquidity_ratio"),
+                        )
 
             # Keep the former shadow BE as an independent benchmark for later
             # analysis; its R denominator always remains the initial stop distance.

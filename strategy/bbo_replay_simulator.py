@@ -10,6 +10,8 @@ import math
 from datetime import datetime
 from typing import Any, Iterable, Mapping
 
+from strategy.paper_exit_adaptation import calculate_adaptive_trailing_gap
+
 
 DEFAULT_SCENARIOS: tuple[dict[str, Any], ...] = (
     {"name": "BASELINE_SL_TP", "kind": "baseline"},
@@ -47,6 +49,17 @@ def configured_default_scenarios(settings: object | None = None) -> list[dict[st
                 "kind": "trailing", "arm_r": arm, "gap_r": gap,
                 "production_config_match": True,
             })
+            # Offline threshold grid: compare multiple giveback distances without
+            # allowing the replay to mutate production settings.
+            for adaptive_gap in (0.50, 0.75, 1.00):
+                scenarios.append({
+                    "name": f"ADAPTIVE_TRAILING_ARM_{arm:g}R_GAP_{adaptive_gap:g}R",
+                    "kind": "adaptive_trailing",
+                    "arm_r": arm,
+                    "gap_r": adaptive_gap,
+                    "production_config_match": False,
+                    "research_grid": "TRAILING_GIVEBACK_SENSITIVITY",
+                })
     return scenarios
 
 
@@ -376,6 +389,25 @@ def replay_exit_scenarios(
             ),
         }
 
+    # Hindsight benchmark over the same fresh executable sides and cost model.
+    # It is an upper bound for evaluation, never a live signal.
+    best_net_mfe: dict[str, Any] | None = None
+    for row in bbo_rows:
+        mfe_price, mfe_age, mfe_quality = _fresh_side(row, side, max_age)
+        if mfe_quality != "OK":
+            continue
+        stamp = _observation_epoch(row)
+        if not math.isfinite(stamp):
+            continue
+        mfe_elapsed = max(0.0, stamp - entry_epoch)
+        mfe_exit = _make_exit(
+            "NET_MFE_ORACLE", mfe_price, mfe_price, row, mfe_age, mfe_elapsed
+        )
+        if best_net_mfe is None or _number(mfe_exit.get("net_pnl_rub"), -math.inf) > _number(
+            best_net_mfe.get("net_pnl_rub"), -math.inf
+        ):
+            best_net_mfe = mfe_exit
+
     for spec in strategy_specs:
         name = str(spec.get("name") or spec.get("kind") or "UNNAMED")
         kind = str(spec.get("kind") or "baseline").lower()
@@ -388,6 +420,12 @@ def replay_exit_scenarios(
             "exit_trigger_mode": None,
             "last_fresh_price": None,
             "last_elapsed_sec": 0.0,
+            "entry_exit_top_size_raw": _number(position.get("entry_exit_top_size_raw"), math.nan),
+            "entry_spread": _number(
+                position.get("entry_spread_abs"),
+                _number(position.get("entry_ask"), entry) - _number(position.get("entry_bid"), entry),
+            ),
+            "net_mfe_exit": None,
             "fresh_observations": 0,
             "stale_observations": 0,
             "invalid_observations": 0,
@@ -463,7 +501,7 @@ def replay_exit_scenarios(
                     )) if side == "BUY" else min(stop, _break_even_trigger(
                         entry, side, quantity, entry_fee, commission, slippage
                     ))
-            elif kind == "trailing":
+            elif kind in {"trailing", "adaptive_trailing"}:
                 arm_r = max(0.1, _number(spec.get("arm_r"), 1.0))
                 gap_r = max(0.1, _number(spec.get("gap_r"), 0.75))
                 if side == "BUY":
@@ -473,28 +511,70 @@ def replay_exit_scenarios(
                 if not state["armed"] and favorable_r >= arm_r:
                     state["armed"] = True
                 if state["armed"]:
-                    candidate_stop = (
-                        state["extreme"] - gap_r * risk_per_unit
-                        if side == "BUY"
-                        else state["extreme"] + gap_r * risk_per_unit
-                    )
+                    if kind == "adaptive_trailing":
+                        row_spread = max(
+                            0.0,
+                            _number(row.get("ask"), 0.0) - _number(row.get("bid"), 0.0),
+                        )
+                        row_atr = _number(
+                            row.get("atr_at_event", row.get("atr", row.get("m1_atr"))),
+                            _number(position.get("atr_at_entry"), math.nan),
+                        )
+                        size_key = "bid_size" if side == "BUY" else "ask_size"
+                        row_size = _number(row.get(size_key), math.nan)
+                        if not math.isfinite(row_size):
+                            levels = row.get("bid_levels" if side == "BUY" else "ask_levels")
+                            if isinstance(levels, (list, tuple)) and levels:
+                                level = levels[0]
+                                if isinstance(level, (list, tuple)) and len(level) >= 2:
+                                    row_size = _number(level[1], math.nan)
+                        if not math.isfinite(state["entry_exit_top_size_raw"]) and math.isfinite(row_size) and row_size > 0.0:
+                            state["entry_exit_top_size_raw"] = row_size
+                        adaptive = calculate_adaptive_trailing_gap(
+                            initial_risk_distance=risk_per_unit,
+                            base_gap_r=gap_r,
+                            entry_atr=position.get("atr_at_entry"),
+                            current_atr=row_atr,
+                            entry_spread=state["entry_spread"],
+                            current_spread=row_spread,
+                            entry_exit_top_size_raw=state["entry_exit_top_size_raw"],
+                            current_exit_top_size_raw=row_size,
+                        )
+                        gap_distance = _number(adaptive.get("gap_distance"), gap_r * risk_per_unit)
+                        candidate_stop = (
+                            state["extreme"] - gap_distance
+                            if side == "BUY"
+                            else state["extreme"] + gap_distance
+                        )
+                    else:
+                        candidate_stop = (
+                            state["extreme"] - gap_r * risk_per_unit
+                            if side == "BUY"
+                            else state["extreme"] + gap_r * risk_per_unit
+                        )
                     active_stop = max(stop, candidate_stop) if side == "BUY" else min(stop, candidate_stop)
 
             reason = ""
             trigger = None
             if side == "BUY":
                 if price <= active_stop:
-                    reason, trigger = ("TRAILING_STOP" if state["armed"] and kind == "trailing" else
-                                       "BREAK_EVEN" if state["armed"] and kind == "break_even" and active_stop > stop else
-                                       "STOP_LOSS"), active_stop
-                elif kind != "trailing" and price >= target:
+                    reason, trigger = (
+                        "ADAPTIVE_TRAILING_STOP" if state["armed"] and kind == "adaptive_trailing" else
+                        "TRAILING_STOP" if state["armed"] and kind == "trailing" else
+                        "BREAK_EVEN" if state["armed"] and kind == "break_even" and active_stop > stop else
+                        "STOP_LOSS"
+                    ), active_stop
+                elif kind not in {"trailing", "adaptive_trailing"} and price >= target:
                     reason, trigger = "TAKE_PROFIT", target
             else:
                 if price >= active_stop:
-                    reason, trigger = ("TRAILING_STOP" if state["armed"] and kind == "trailing" else
-                                       "BREAK_EVEN" if state["armed"] and kind == "break_even" and active_stop < stop else
-                                       "STOP_LOSS"), active_stop
-                elif kind != "trailing" and price <= target:
+                    reason, trigger = (
+                        "ADAPTIVE_TRAILING_STOP" if state["armed"] and kind == "adaptive_trailing" else
+                        "TRAILING_STOP" if state["armed"] and kind == "trailing" else
+                        "BREAK_EVEN" if state["armed"] and kind == "break_even" and active_stop < stop else
+                        "STOP_LOSS"
+                    ), active_stop
+                elif kind not in {"trailing", "adaptive_trailing"} and price <= target:
                     reason, trigger = "TAKE_PROFIT", target
 
             if not reason and kind == "time_stop":
@@ -538,6 +618,29 @@ def replay_exit_scenarios(
             "invalid_observations": state["invalid_observations"],
         })
 
+    net_mfe_value = (
+        _number(best_net_mfe.get("net_pnl_rub"), math.nan)
+        if isinstance(best_net_mfe, Mapping) else math.nan
+    )
+    actual_realized_net = math.nan
+    if str(position.get("status") or "").upper() == "CLOSED":
+        actual_realized_net = _number(
+            position.get("realized_net_pnl_rub", position.get("pnl")), math.nan
+        )
+    for scenario_result in outputs:
+        scenario_exit = scenario_result.get("exit")
+        if not isinstance(scenario_exit, dict) or not math.isfinite(net_mfe_value):
+            continue
+        scenario_net = _number(scenario_exit.get("net_pnl_rub"), math.nan)
+        if math.isfinite(scenario_net):
+            scenario_exit["foregone_profit_vs_net_mfe_rub"] = round(
+                max(0.0, net_mfe_value - scenario_net), 4
+            )
+            scenario_exit["capture_of_net_mfe_pct"] = (
+                round(scenario_net / net_mfe_value * 100.0, 4)
+                if net_mfe_value > 0.0 else None
+            )
+
     return {
         "schema_version": 1,
         "engine": "PAPER_EXIT_REPLAY_V1",
@@ -557,6 +660,39 @@ def replay_exit_scenarios(
             "assumptions_explicit": True,
         },
         "coverage": coverage,
+        "profit_timing_model": {
+            "model_type": "BBO_HINDSIGHT_NET_MFE_PLUS_ADAPTIVE_TRAILING_GRID",
+            "selection_policy": "RESEARCH_ONLY_NO_AUTOMATIC_PRODUCTION_SELECTION",
+            "net_mfe_upper_bound": best_net_mfe,
+            "net_mfe_basis": "FRESH_EXECUTABLE_BBO_AFTER_COMMISSION_AND_CONFIGURED_SLIPPAGE",
+            "actual_realized_net_pnl_rub": (
+                round(actual_realized_net, 4) if math.isfinite(actual_realized_net) else None
+            ),
+            "foregone_profit_vs_net_mfe_rub": (
+                round(max(0.0, net_mfe_value - actual_realized_net), 4)
+                if math.isfinite(net_mfe_value) and math.isfinite(actual_realized_net) else None
+            ),
+            "actual_capture_of_net_mfe_pct": (
+                round(actual_realized_net / net_mfe_value * 100.0, 4)
+                if math.isfinite(actual_realized_net) and math.isfinite(net_mfe_value)
+                and net_mfe_value > 0.0 else None
+            ),
+            "adaptive_scenarios": [
+                {
+                    "name": row.get("name"),
+                    "status": row.get("status"),
+                    "exit_net_pnl_rub": (
+                        _number(row.get("exit", {}).get("net_pnl_rub"))
+                        if isinstance(row.get("exit"), Mapping) else None
+                    ),
+                    "foregone_profit_vs_net_mfe_rub": (
+                        _number(row.get("exit", {}).get("foregone_profit_vs_net_mfe_rub"))
+                        if isinstance(row.get("exit"), Mapping) else None
+                    ),
+                }
+                for row in outputs if row.get("kind") == "adaptive_trailing"
+            ],
+        },
         "limitations": [
             "BBO_ONLY_PROXY applies to alternative BBO-threshold scenarios. BASELINE uses journaled production EXIT_TRIGGER events when available; legacy sessions without them fall back to BBO threshold proxy.",
             "Time-stop exits occur on the first fresh executable BBO observation at or after the timeout.",

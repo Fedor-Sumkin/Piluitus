@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import Mock, patch
 
-from execution_layer import BaseExecutionEngine
+from execution_layer import BaseExecutionEngine, _timestamp_age_seconds
 
 
 class PaperExitWatchdogTests(unittest.TestCase):
@@ -100,6 +100,12 @@ class PaperExitWatchdogTests(unittest.TestCase):
             self.assertEqual(engine.monitor_open_paper_positions_once(object()), 0)
             self.assertEqual(engine.monitor_open_paper_positions_once(object()), 0)
 
+        self.assertEqual(
+            engine.paper_positions["SBER"]["exit_watchdog_retry_count"], 2
+        )
+        self.assertIsNotNone(
+            engine.paper_positions["SBER"]["exit_watchdog_last_check_at"]
+        )
         warning.assert_called_once()
         message = warning.call_args.args[0]
         self.assertIn("[PAPER EXIT WATCHDOG WAIT]", message)
@@ -156,3 +162,13 @@ class PaperWatchdogEventSourceTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+def test_persisted_exit_wait_timestamp_survives_monotonic_clock_reset():
+    from datetime import datetime, timedelta, timezone
+
+    current = datetime(2026, 11, 28, 12, 0, 10, tzinfo=timezone.utc)
+    started = (current - timedelta(seconds=12)).isoformat()
+    assert _timestamp_age_seconds(started, now=current) == 12.0
+    assert _timestamp_age_seconds("invalid timestamp", now=current) is None

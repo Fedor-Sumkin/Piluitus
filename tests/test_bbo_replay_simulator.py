@@ -165,7 +165,51 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         result = replay_exit_scenarios(rows, position())
         self.assertEqual(result["coverage"]["fresh_executable_observations"], 1)
         self.assertEqual(result["coverage"]["stale_events"], 1)
-        self.assertEqual(len(result["scenarios"]), 7)
+        self.assertEqual(len(result["scenarios"]), len(configured_default_scenarios()))
+
+    def test_replay_reports_hindsight_net_mfe_and_foregone_profit_separately(self):
+        rows = [
+            event(1, bid=101.8, ask=101.9, epoch=1_800_000_001.0),
+            event(2, bid=101.4, ask=101.5, epoch=1_800_000_002.0),
+            event(3, bid=100.8, ask=100.9, epoch=1_800_000_003.0),
+        ]
+        trade = position(status="CLOSED", pnl=8.0)
+        result = replay_exit_scenarios(
+            rows, trade,
+            scenarios=[{"name": "time", "kind": "time_stop", "time_stop_sec": 2.0}],
+        )
+        timing = result["profit_timing_model"]
+        self.assertGreater(timing["net_mfe_upper_bound"]["net_pnl_rub"], 0.0)
+        self.assertEqual(timing["actual_realized_net_pnl_rub"], 8.0)
+        self.assertIsNotNone(timing["foregone_profit_vs_net_mfe_rub"])
+        self.assertIn("hindsight", timing["model_type"].lower())
+        self.assertIn("foregone_profit_vs_net_mfe_rub", result["scenarios"][0]["exit"])
+
+    def test_adaptive_trailing_replay_uses_atr_spread_and_relative_raw_liquidity(self):
+        rows = [
+            event(1, bid=101.0, ask=101.1, epoch=1_800_000_001.0),
+            event(2, bid=102.0, ask=102.2, epoch=1_800_000_002.0),
+            event(3, bid=100.8, ask=101.0, epoch=1_800_000_003.0),
+        ]
+        rows[0].update({"bid_size": 100.0, "ask_size": 100.0, "atr": 0.5})
+        rows[1].update({"bid_size": 80.0, "ask_size": 100.0, "atr": 0.8})
+        rows[2].update({"bid_size": 40.0, "ask_size": 100.0, "atr": 0.9})
+        trade = position(
+            atr_at_entry=0.5, entry_bid=99.9, entry_ask=100.1,
+            entry_exit_top_size_raw=100.0,
+        )
+        result = replay_exit_scenarios(
+            rows, trade,
+            scenarios=[{
+                "name": "adaptive", "kind": "adaptive_trailing",
+                "arm_r": 1.0, "gap_r": 0.75,
+            }],
+        )
+        self.assertEqual(result["scenarios"][0]["exit"]["reason"], "ADAPTIVE_TRAILING_STOP")
+        self.assertEqual(
+            result["profit_timing_model"]["selection_policy"],
+            "RESEARCH_ONLY_NO_AUTOMATIC_PRODUCTION_SELECTION",
+        )
 
     def test_actual_latched_trigger_fills_at_trigger_bbo_when_fresh(self):
         rows = [

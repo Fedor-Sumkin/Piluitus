@@ -112,28 +112,52 @@ def evaluate_paper_exit_signal(
     queue_aligned = signed_queue is not None and signed_queue >= queue_threshold
     queue_opposing = signed_queue is not None and signed_queue <= -queue_threshold
 
+    # Continuous pressure components avoid making an exit depend on one
+    # discontinuous price/flow threshold. Missing queue/30s momentum contributes
+    # zero rather than being fabricated as adverse evidence.
+    flow_pressure = min(1.0, max(0.0, -signed_flow / flow_threshold))
+    momentum_pressure = min(1.0, max(0.0, -signed_momentum_15 / momentum_threshold))
+    fading_pressure = 0.0
+    if signed_momentum_30 is not None:
+        fading_denominator = max(momentum_threshold, abs(signed_momentum_30))
+        fading_pressure = min(
+            1.0,
+            max(0.0, (signed_momentum_30 - signed_momentum_15) / fading_denominator),
+        )
+    queue_pressure = 1.0 if queue_opposing else 0.0
+    pressure_score = (
+        0.40 * flow_pressure
+        + 0.25 * momentum_pressure
+        + 0.20 * fading_pressure
+        + 0.15 * queue_pressure
+    )
+    pressure_score = min(1.0, max(0.0, pressure_score))
+
     momentum_reversed = (
         signed_momentum_15 <= -momentum_threshold
         and signed_momentum_30 is not None
         and signed_momentum_30 <= 0.0
     )
     flow_opposing = signed_flow <= -flow_threshold
-    hard_reversal = momentum_reversed and flow_opposing and not queue_aligned
+    hard_reversal = bool(
+        momentum_reversed and flow_opposing and not queue_aligned
+        and pressure_score >= 0.65
+    )
     favorable = _finite(favorable_r)
     try:
-        partial_arm = max(0.5, min(5.0, float(partial_profit_arm_r)))
+        configured_partial_arm = max(0.5, min(5.0, float(partial_profit_arm_r)))
     except (TypeError, ValueError, OverflowError):
-        partial_arm = 1.0
-    momentum_fading = (
-        signed_momentum_15 <= momentum_threshold
-        and (signed_momentum_30 is None or signed_momentum_30 <= momentum_threshold)
+        configured_partial_arm = 1.0
+    # Stronger weakening permits earlier scale-out, but never below +0.5R.
+    dynamic_partial_arm = max(
+        0.5, configured_partial_arm * (1.0 - 0.25 * pressure_score)
     )
     partial_weakness = bool(
         partial_profit_enabled
         and not state.get("paper_profit_partial_taken", False)
-        and favorable is not None and favorable >= partial_arm
-        and flow_opposing and momentum_fading and not queue_aligned
-        and not hard_reversal
+        and favorable is not None and favorable >= dynamic_partial_arm
+        and flow_opposing and pressure_score >= 0.50
+        and not queue_aligned and not hard_reversal
     )
 
     last_sample = str(state.get("paper_exit_signal_last_sample_id") or "")
@@ -158,7 +182,7 @@ def evaluate_paper_exit_signal(
         reason = "CONFIRMED_OPPOSITE_MOMENTUM_AND_AGGRESSOR_FLOW"
     elif partial_count >= needed:
         action = "PARTIAL_PROFIT"
-        reason = "PROFITABLE_POSITION_WITH_PERSISTENT_FLOW_WEAKNESS"
+        reason = "PROFITABLE_POSITION_WITH_CONTINUOUS_FLOW_WEAKNESS"
 
     return {
         "action": action,
@@ -175,4 +199,14 @@ def evaluate_paper_exit_signal(
         "queue_opposing": queue_opposing,
         "metrics_age_sec": round(age, 4),
         "favorable_r": round(favorable, 4) if favorable is not None else None,
+        "exit_pressure_score": round(pressure_score, 5),
+        "pressure_components": {
+            "opposing_aggressor_flow": round(flow_pressure, 5),
+            "adverse_short_momentum": round(momentum_pressure, 5),
+            "momentum_fading": round(fading_pressure, 5),
+            "opposing_queue": round(queue_pressure, 5),
+        },
+        "dynamic_partial_arm_r": round(dynamic_partial_arm, 4),
+        "hard_reversal_pressure_floor": 0.65,
+        "partial_profit_pressure_floor": 0.50,
     }

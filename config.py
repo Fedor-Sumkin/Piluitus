@@ -11,6 +11,17 @@ BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR / ".env"
 load_dotenv(dotenv_path=ENV_PATH)   # .env необязателен – если нет, просто читаем системные переменные
 
+def resolve_paper_book_size_unit(requested_unit: object, evidence_source: object) -> str:
+    """Fail closed unless a supported external source accompanies an explicit unit."""
+    requested = str(requested_unit or "unknown").strip().lower()
+    evidence = str(evidence_source or "").strip().upper()
+    if requested in {"shares", "lots"} and evidence in {
+        "FINAM_SUPPORT", "BROKER_EXPORT", "CONTROLLED_RECONCILIATION"
+    }:
+        return requested
+    return "unknown"
+
+
 def _resolve_trade_deposit(
     canonical_raw: str | None,
     legacy_raw: str | None,
@@ -174,9 +185,15 @@ class Settings:
         2.0, max(0.05, float(os.getenv("PILUITUS_MAX_SPREAD_TO_ATR_RATIO", "0.50")))
     )
 
-    # PAPER depth-based partial fills are opt-in. Keep "unknown" until Finam's
-    # ORDER_BOOK buy_size/sell_size unit is confirmed for this data feed.
-    PAPER_BOOK_SIZE_UNIT: str = os.getenv("PILUITUS_PAPER_BOOK_SIZE_UNIT", "unknown").strip().lower()
+    # Finam's public ORDER_BOOK schema omits the buy_size/sell_size unit.
+    # Require explicit provenance; never infer shares/lots from trade_lot_size or order.quantity.
+    PAPER_BOOK_SIZE_UNIT_EVIDENCE: str = os.getenv(
+        "PILUITUS_PAPER_BOOK_SIZE_UNIT_EVIDENCE", ""
+    ).strip().upper()
+    PAPER_BOOK_SIZE_UNIT: str = resolve_paper_book_size_unit(
+        os.getenv("PILUITUS_PAPER_BOOK_SIZE_UNIT", "unknown"),
+        PAPER_BOOK_SIZE_UNIT_EVIDENCE,
+    )
     PAPER_MAX_BOOK_PARTICIPATION_PCT: float = float(
         os.getenv("PILUITUS_PAPER_MAX_BOOK_PARTICIPATION_PCT", "10.0")
     )
@@ -202,6 +219,13 @@ class Settings:
     )
     PAPER_TRAILING_DISTANCE_R: float = min(
         2.0, max(0.25, float(os.getenv("PILUITUS_PAPER_TRAILING_DISTANCE_R", "0.75")))
+    )
+    # Escalated diagnostics for a latched exit waiting for a fresh executable BBO.
+    PAPER_EXIT_STALL_ALERT_SEC: float = min(
+        300.0, max(2.0, float(os.getenv("PILUITUS_PAPER_EXIT_STALL_ALERT_SEC", "10.0")))
+    )
+    PAPER_EXIT_STALL_LOG_INTERVAL_SEC: float = min(
+        300.0, max(5.0, float(os.getenv("PILUITUS_PAPER_EXIT_STALL_LOG_INTERVAL_SEC", "30.0")))
     )
     # Signal exits require fresh aggressor-flow and momentum evidence on distinct trade samples.
     PAPER_SIGNAL_EXIT_ENABLED: bool = os.getenv(

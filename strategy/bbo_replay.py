@@ -241,6 +241,15 @@ class BBOReplayRecorder:
             "ask": ask,
             "bid_size": bid_size,
             "ask_size": ask_size,
+            "order_book_size_unit": "UNSPECIFIED_BY_FINAM_SCHEMA",
+            "atr_at_event": (
+                _finite(book_result.get("atr_at_event"), math.nan)
+                if math.isfinite(_finite(book_result.get("atr_at_event"), math.nan))
+                and _finite(book_result.get("atr_at_event"), math.nan) > 0.0
+                and _finite(book_result.get("atr_periods_at_event"), 0.0) >= 5.0
+                else None
+            ),
+            "atr_periods_at_event": int(_finite(book_result.get("atr_periods_at_event"), 0.0)),
             "bbo_valid": valid,
             "book_valid": bool(book_result.get("order_book_valid", valid)),
             "book_reason": reason[:120],

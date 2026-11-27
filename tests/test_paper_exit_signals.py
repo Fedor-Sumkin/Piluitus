@@ -117,6 +117,27 @@ class PaperExitSignalTests(unittest.TestCase):
         self.assertEqual(first["action"], "NONE")
         self.assertEqual(second["action"], "PARTIAL_PROFIT")
 
+    def test_pressure_score_allows_earlier_partial_profit_when_impulse_fades(self):
+        state = {}
+        weakening = _metrics(
+            price_change_pct=0.01,
+            trade_price_change_30s_pct=0.015,
+            trade_flow_imbalance_30s=-0.3,
+            queue_imbalance_5s=-0.2,
+        )
+        first = evaluate_paper_exit_signal(
+            position_side="BUY", metrics=weakening, sample_id="801",
+            favorable_r=0.90, state=state,
+        )
+        second = evaluate_paper_exit_signal(
+            position_side="BUY", metrics=weakening, sample_id="802",
+            favorable_r=0.90, state=state,
+        )
+        self.assertEqual(first["action"], "NONE")
+        self.assertEqual(second["action"], "PARTIAL_PROFIT")
+        self.assertGreaterEqual(second["exit_pressure_score"], 0.50)
+        self.assertLess(second["dynamic_partial_arm_r"], 1.0)
+
     def test_partial_profit_is_not_repeated_after_scaleout(self):
         state = {"paper_profit_partial_taken": True}
         weakening = _metrics(

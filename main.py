@@ -874,6 +874,17 @@ def _record_paper_bbo_replay(
             and not (bid_value > 0.0 and ask_value > 0.0 and ask_value < bid_value)
         )
         reason = str(quote.get("order_book_last_reason") or "")
+    atr_snapshot: Mapping[str, Any] = {}
+    try:
+        raw_atr_snapshot = screener.minute_bar_patterns.get_atr_snapshot(
+            symbol, period=14
+        )
+        if isinstance(raw_atr_snapshot, Mapping):
+            atr_snapshot = raw_atr_snapshot
+    except (TypeError, ValueError, AttributeError, OverflowError):
+        atr_snapshot = {}
+    atr_value = finite_float(atr_snapshot.get("atr"))
+    atr_periods = finite_float(atr_snapshot.get("periods"))
     snapshot = {
         "updated": True,
         "valid": valid,
@@ -883,6 +894,13 @@ def _record_paper_bbo_replay(
         "ask": quote.get("ask", 0.0),
         "bid_size": quote.get("bid_size", 0.0),
         "ask_size": quote.get("ask_size", 0.0),
+        "atr_at_event": (
+            atr_value
+            if atr_value is not None and atr_value > 0.0
+            and atr_periods is not None and atr_periods >= 5
+            else None
+        ),
+        "atr_periods_at_event": int(atr_periods) if atr_periods is not None else 0,
     }
     event = {
         "source": str(source or "UNKNOWN").upper(),
