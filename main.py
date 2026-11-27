@@ -318,7 +318,6 @@ for _thematic_logger_name in (
     "Piluitus.StrategyShadow",
     "Piluitus.AIEngine",
     "Piluitus.VLLM",
-    "Piluitus.EvolutionThoughts",
     "Piluitus.FinamGateway",
     "Piluitus.Screener",
     "Piluitus.Market",
