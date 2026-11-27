@@ -25,6 +25,31 @@ DEFAULT_SCENARIOS: tuple[dict[str, Any], ...] = (
 )
 
 
+def configured_default_scenarios(settings: object | None = None) -> list[dict[str, Any]]:
+    """Include research baselines and scenarios matching active PAPER exit settings."""
+    if settings is None:
+        from config import Settings as settings
+    scenarios = [dict(item) for item in DEFAULT_SCENARIOS]
+    if bool(getattr(settings, "PAPER_BREAKEVEN_ENABLED", True)):
+        arm = _number(getattr(settings, "PAPER_BREAKEVEN_ARM_R", 1.0), 1.0)
+        if math.isfinite(arm) and arm > 0.0:
+            scenarios.append({
+                "name": f"BREAK_EVEN_CONFIGURED_{arm:g}R",
+                "kind": "break_even", "arm_r": arm,
+                "production_config_match": True,
+            })
+    if bool(getattr(settings, "PAPER_TRAILING_ENABLED", True)):
+        arm = _number(getattr(settings, "PAPER_TRAILING_ARM_R", 1.5), 1.5)
+        gap = _number(getattr(settings, "PAPER_TRAILING_DISTANCE_R", 0.75), 0.75)
+        if math.isfinite(arm) and arm > 0.0 and math.isfinite(gap) and gap > 0.0:
+            scenarios.append({
+                "name": f"TRAILING_CONFIGURED_{arm:g}R_ARM_{gap:g}R_GAP",
+                "kind": "trailing", "arm_r": arm, "gap_r": gap,
+                "production_config_match": True,
+            })
+    return scenarios
+
+
 def _number(value: object, default: float = math.nan) -> float:
     if isinstance(value, bool):
         return default
@@ -315,7 +340,7 @@ def replay_exit_scenarios(
         else:
             coverage["missing_side_events"] += 1
 
-    strategy_specs = list(scenarios) if scenarios is not None else list(DEFAULT_SCENARIOS)
+    strategy_specs = list(scenarios) if scenarios is not None else configured_default_scenarios()
     outputs: list[dict[str, Any]] = []
 
     def _make_exit(
