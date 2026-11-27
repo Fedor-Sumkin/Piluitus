@@ -3833,6 +3833,9 @@ async def lifespan(app: FastAPI):
             # records are present in the shared store.
             try:
                 reset_result = await db_manager.clear_paper_session()
+                session_started_at = datetime.now().astimezone()
+                execution_engine.session_started_at = session_started_at
+                execution_engine.session_id = session_started_at.strftime("%Y%m%d-%H%M%S-%f")
                 paper_performance_tracker.clear()
                 scalping_shadow_tracker.clear()
                 paper_shadow_labels.clear()
@@ -4561,6 +4564,9 @@ async def clear_paper_session(payload: dict[str, object] = Body(...)):
 
         try:
             storage_result = await db_manager.clear_paper_session()
+            session_started_at = datetime.now().astimezone()
+            execution_engine.session_started_at = session_started_at
+            execution_engine.session_id = session_started_at.strftime("%Y%m%d-%H%M%S-%f")
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
