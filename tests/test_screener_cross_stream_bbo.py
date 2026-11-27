@@ -22,7 +22,7 @@ class ScreenerCrossStreamBboTests(unittest.TestCase):
                 bid_present=True, ask_present=True,
                 bid_size_present=True, ask_size_present=True,
                 bid_timestamp=10.0, ask_timestamp=10.0,
-                order_book_timestamp=10.0, received_monotonic=10.0,
+                order_book_timestamp=10.0, received_monotonic=10.3,
             ))
             second = asyncio.run(screener.push_order_book(
                 "TESTBBO", 100.05, 100.15, 11.0, 13.0,
@@ -77,12 +77,12 @@ class ScreenerCrossStreamBboTests(unittest.TestCase):
                 bid_present=True, ask_present=True,
                 bid_size_present=True, ask_size_present=True,
                 bid_timestamp=9.80, ask_timestamp=9.80,
-                order_book_timestamp=9.80, received_monotonic=10.0,
+                order_book_timestamp=9.80, received_monotonic=10.3,
             ))
             stale_quote_result = asyncio.run(screener.push_tick(
                 "TESTBBO", 100.0, 100.0, bid=99.9, ask=100.2,
                 bid_size=10.0, ask_size=12.0,
-                event_timestamp=9.90, received_monotonic=10.1,
+                event_timestamp=9.90, received_monotonic=10.3,
             ))
 
         self.assertEqual(
@@ -121,13 +121,13 @@ class ScreenerCrossStreamBboTests(unittest.TestCase):
                 bid_present=True, ask_present=True,
                 bid_size_present=True, ask_size_present=True,
                 bid_timestamp=10.0, ask_timestamp=10.0,
-                order_book_timestamp=10.0, received_monotonic=10.0,
+                order_book_timestamp=10.0, received_monotonic=10.3,
             ))
             invalid = asyncio.run(screener.push_order_book(
                 "TESTBBO", 0.0, 0.0, 0.0, 0.0,
                 bid_present=True, ask_present=True,
                 bid_size_present=True, ask_size_present=True,
-                order_book_timestamp=10.1, received_monotonic=10.1,
+                order_book_timestamp=10.1, received_monotonic=10.3,
                 book_valid=False, book_reason="EMPTY_SNAPSHOT",
             ))
 
@@ -139,6 +139,58 @@ class ScreenerCrossStreamBboTests(unittest.TestCase):
         self.assertEqual(quote["last_ask_source_received_seen"], 0.0)
         self.assertEqual(quote["last_bid_confirmed_seen"], 0.0)
         self.assertEqual(quote["last_ask_confirmed_seen"], 0.0)
+
+    def test_isolated_order_book_price_jump_is_quarantined_then_confirmed(self):
+        screener = HFTMemoryScreener(top_n=1, min_samples=3)
+        screener.set_universe(["TESTBBO"])
+        with patch("screener_funnel.time.monotonic", return_value=10.3), patch(
+            "screener_funnel._event_timestamp_to_monotonic",
+            side_effect=lambda value, received: float(value) if value is not None else received,
+        ), patch.dict("os.environ", {"PILUITUS_BBO_MAX_JUMP_PCT": "1.0"}):
+            baseline = asyncio.run(screener.push_order_book(
+                "TESTBBO", 100.0, 100.1, 10.0, 12.0,
+                order_book_timestamp=10.0, received_monotonic=10.3,
+            ))
+            outlier = asyncio.run(screener.push_order_book(
+                "TESTBBO", 110.0, 110.1, 10.0, 12.0,
+                order_book_timestamp=10.1, received_monotonic=10.3,
+            ))
+            confirmation = asyncio.run(screener.push_order_book(
+                "TESTBBO", 110.0, 110.1, 10.0, 12.0,
+                order_book_timestamp=10.2, received_monotonic=10.3,
+            ))
+        quote = screener.quotes["TESTBBO"]
+        self.assertTrue(baseline["valid"])
+        self.assertFalse(outlier["valid"])
+        self.assertEqual(outlier["reason"], "BBO_ANOMALY_QUARANTINE")
+        self.assertEqual(outlier["bid"], 100.0)
+        self.assertFalse(quote.get("pending_bbo_anomaly"))
+        self.assertTrue(confirmation["valid"])
+        self.assertEqual(quote["bid"], 110.0)
+        self.assertEqual(quote["ask"], 110.1)
+
+    def test_quotes_outlier_does_not_replace_last_accepted_bbo(self):
+        screener = HFTMemoryScreener(top_n=1, min_samples=3)
+        screener.set_universe(["TESTBBO"])
+        with patch("screener_funnel.time.monotonic", return_value=20.2), patch(
+            "screener_funnel._event_timestamp_to_monotonic",
+            side_effect=lambda value, received: float(value) if value is not None else received,
+        ), patch.dict("os.environ", {"PILUITUS_BBO_MAX_JUMP_PCT": "1.0"}):
+            asyncio.run(screener.push_order_book(
+                "TESTBBO", 100.0, 100.1, 10.0, 12.0,
+                order_book_timestamp=20.0, received_monotonic=20.2,
+            ))
+            result = asyncio.run(screener.push_tick(
+                "TESTBBO", 100.0, 100.0, bid=120.0, ask=120.1,
+                bid_size=10.0, ask_size=12.0, event_timestamp=20.1, received_monotonic=20.2,
+            ))
+        quote = screener.quotes["TESTBBO"]
+        self.assertFalse(result["metrics"].get("order_book_valid"))
+        self.assertEqual(quote["bid"], 100.0)
+        self.assertEqual(quote["ask"], 100.1)
+        self.assertFalse(quote["order_book_valid"])
+        self.assertEqual(quote["order_book_last_reason"], "BBO_ANOMALY_QUARANTINE")
+
 
 if __name__ == "__main__":
     unittest.main()
