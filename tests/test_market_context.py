@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from strategy.market_context import classify_market_regime, estimate_entry_economics, validate_entry_economics
+from strategy.market_context import (classify_market_regime, estimate_entry_economics, estimate_planned_trade_risk_reward, validate_entry_economics)
 
 
 class MarketContextTests(unittest.TestCase):
@@ -173,6 +173,32 @@ class MarketContextTests(unittest.TestCase):
         self.assertTrue(result["available"])
         self.assertFalse(result["eligible"])
         self.assertEqual(result["reason"], "ENTRY_COST_TO_ATR_EXCEEDED")
+
+
+    def test_planned_trade_risk_reward_prices_stop_and_target_after_round_trip_costs(self) -> None:
+        result = estimate_planned_trade_risk_reward(
+            side="BUY", bid=100.0, ask=100.1, atr_value=1.0,
+            commission_pct_per_side=0.0354, slippage_bps_per_side=1.0,
+            atr_multiplier=1.5, min_stop_pct=0.0025, reward_r_multiple=2.0,
+            min_net_reward_to_risk=1.0,
+        )
+        self.assertTrue(result["available"])
+        self.assertTrue(result["eligible"])
+        self.assertAlmostEqual(result["gross_reward_to_risk"], 2.0)
+        self.assertGreater(result["planned_take_profit"], result["reference_price"])
+        self.assertLess(result["planned_stop_loss"], result["reference_price"])
+        self.assertGreater(result["net_reward_to_risk"], 1.0)
+
+    def test_planned_trade_risk_reward_rejects_unreasonable_after_cost_payoff(self) -> None:
+        result = estimate_planned_trade_risk_reward(
+            side="BUY", bid=100.0, ask=101.0, atr_value=0.1,
+            commission_pct_per_side=0.5, slippage_bps_per_side=50.0,
+            atr_multiplier=1.5, min_stop_pct=0.0025, reward_r_multiple=1.0,
+            min_net_reward_to_risk=1.0,
+        )
+        self.assertTrue(result["available"])
+        self.assertFalse(result["eligible"])
+        self.assertLess(result["net_reward_pct"], 0.0)
 
 
 if __name__ == "__main__":
