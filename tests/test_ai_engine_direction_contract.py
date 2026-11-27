@@ -125,7 +125,8 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         )
         self.assertIn("bar_trend_up=0", prompt)
         self.assertIn("bar_trend_down=0", prompt)
-        self.assertIn("M1 NEUTRAL/UNAVAILABLE is not a contradiction", prompt)
+        self.assertIn("HOLD_M1_CONTRADICTION only when m1_evidence_state=OPPOSITE", prompt)
+        self.assertIn("ALIGNED/NEUTRAL/UNAVAILABLE need another reason", prompt)
         self.assertIn("trade_flow_imbalance_30s=0.22", prompt)
 
     def test_neutral_m1_cannot_support_contradiction_reason(self) -> None:
