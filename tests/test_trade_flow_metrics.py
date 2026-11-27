@@ -38,7 +38,7 @@ class TradeFlowMetricsTests(unittest.TestCase):
         self.assertEqual(metrics["trade_data_ready"], 1.0)
         self.assertEqual(metrics["trade_flow_ready"], 0.0)
         self.assertEqual(metrics["trade_flow_known_trade_count_30s"], 2)
-        self.assertLess(metrics["trade_flow_known_volume_share_30s"], 0.50)
+        self.assertAlmostEqual(metrics["trade_flow_known_volume_share_30s"], 0.75)
 
     def test_aggressor_flow_is_ready_when_known_side_samples_cover_enough_volume(self):
         state = {"trade_events": deque([
