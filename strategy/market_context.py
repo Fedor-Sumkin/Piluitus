@@ -298,3 +298,86 @@ def validate_entry_economics(
             "ENTRY_COST_TO_ATR_OK" if eligible else "ENTRY_COST_TO_ATR_EXCEEDED"
         ),
     }
+
+
+def estimate_planned_trade_risk_reward(
+    *,
+    side: str,
+    bid: float,
+    ask: float,
+    atr_value: float,
+    commission_pct_per_side: float,
+    slippage_bps_per_side: float,
+    atr_multiplier: float = 1.5,
+    min_stop_pct: float = 0.0025,
+    reward_r_multiple: float = 2.0,
+    min_net_reward_to_risk: float = 1.0,
+) -> dict[str, Any]:
+    """Mirror PAPER ATR stop/target geometry and price the net reward."""
+    direction = str(side or "").strip().upper()
+    try:
+        bid_value, ask_value, atr = map(float, (bid, ask, atr_value))
+        commission = float(commission_pct_per_side)
+        slippage = float(slippage_bps_per_side)
+        atr_mult = float(atr_multiplier)
+        stop_floor = float(min_stop_pct)
+        reward_multiple = float(reward_r_multiple)
+        minimum_net_rr = float(min_net_reward_to_risk)
+    except (TypeError, ValueError, OverflowError):
+        return {"available": False, "eligible": False, "reason": "INVALID_INPUT"}
+    values = (bid_value, ask_value, atr, commission, slippage, atr_mult, stop_floor, reward_multiple, minimum_net_rr)
+    if (
+        direction not in {"BUY", "SELL"}
+        or not all(math.isfinite(value) for value in values)
+        or bid_value <= 0.0 or ask_value < bid_value or atr <= 0.0
+        or commission < 0.0 or slippage < 0.0 or atr_mult <= 0.0
+        or stop_floor <= 0.0 or reward_multiple <= 0.0 or minimum_net_rr < 0.0
+    ):
+        return {"available": False, "eligible": False, "reason": "INVALID_INPUT"}
+
+    price = (bid_value + ask_value) / 2.0
+    stop_distance = min(
+        max(atr * min(5.0, max(0.5, atr_mult)), (ask_value - bid_value) * 2.0,
+            price * min(0.015, max(0.0001, stop_floor))),
+        price * 0.015,
+    )
+    reward_multiple = min(5.0, max(1.0, reward_multiple))
+    target_distance = stop_distance * reward_multiple
+    economics = estimate_entry_economics(
+        side=direction, bid=bid_value, ask=ask_value,
+        commission_pct_per_side=commission, slippage_bps_per_side=slippage,
+    )
+    if not economics.get("available"):
+        return {"available": False, "eligible": False, "reason": "ENTRY_ECONOMICS_UNAVAILABLE"}
+    stop_pct = stop_distance / price * 100.0
+    target_pct = target_distance / price * 100.0
+    minimum_move_pct = float(economics.get("minimum_favorable_move_pct", math.nan))
+    net_reward_pct = target_pct - minimum_move_pct
+    net_risk_pct = stop_pct + minimum_move_pct
+    net_rr = net_reward_pct / net_risk_pct if net_risk_pct > 0.0 else math.nan
+    stop_price = price - stop_distance if direction == "BUY" else price + stop_distance
+    target_price = price + target_distance if direction == "BUY" else price - target_distance
+    available = math.isfinite(net_rr) and math.isfinite(minimum_move_pct)
+    return {
+        "available": available,
+        "eligible": bool(available and net_reward_pct > 0.0 and net_rr >= minimum_net_rr),
+        "side": direction,
+        "reference_price": price,
+        "planned_stop_loss": stop_price,
+        "planned_take_profit": target_price,
+        "stop_distance_pct": stop_pct,
+        "target_move_pct": target_pct,
+        "gross_reward_to_risk": reward_multiple,
+        "minimum_favorable_move_pct": minimum_move_pct,
+        "net_reward_pct": net_reward_pct,
+        "net_risk_pct": net_risk_pct,
+        "net_reward_to_risk": net_rr if available else None,
+        "minimum_net_reward_to_risk": minimum_net_rr,
+        "cost_to_atr_ratio": economics.get("cost_to_atr_ratio"),
+        "cost_model_status": economics.get("cost_model_status"),
+        "reason": (
+            "NET_REWARD_TO_RISK_BELOW_MINIMUM"
+            if not available or net_reward_pct <= 0.0 or net_rr < minimum_net_rr
+            else "OK"
+        ),
+    }
