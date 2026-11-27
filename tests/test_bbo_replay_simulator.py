@@ -4,6 +4,7 @@ from strategy.bbo_replay_simulator import (
     _portfolio_capacity_simulation,
     replay_exit_batch,
     replay_exit_scenarios,
+    configured_default_scenarios,
 )
 
 
@@ -164,7 +165,7 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         result = replay_exit_scenarios(rows, position())
         self.assertEqual(result["coverage"]["fresh_executable_observations"], 1)
         self.assertEqual(result["coverage"]["stale_events"], 1)
-        self.assertEqual(len(result["scenarios"]), 5)
+        self.assertEqual(len(result["scenarios"]), 7)
 
     def test_actual_latched_trigger_fills_at_trigger_bbo_when_fresh(self):
         rows = [
@@ -640,6 +641,31 @@ class BBOReplaySimulatorTests(unittest.TestCase):
         self.assertEqual(result["closed_positions"], 1)
         self.assertEqual(result["open_positions_at_end"], 0)
         self.assertAlmostEqual(result["realized_net_pnl_rub"], -5.0)
+
+
+def test_configured_default_scenarios_mirror_paper_exit_settings():
+    class Settings:
+        PAPER_BREAKEVEN_ENABLED = True
+        PAPER_BREAKEVEN_ARM_R = 0.8
+        PAPER_TRAILING_ENABLED = True
+        PAPER_TRAILING_ARM_R = 1.75
+        PAPER_TRAILING_DISTANCE_R = 0.6
+
+    scenarios = configured_default_scenarios(Settings)
+    be = next(row for row in scenarios if row.get("production_config_match") and row["kind"] == "break_even")
+    trailing = next(row for row in scenarios if row.get("production_config_match") and row["kind"] == "trailing")
+    assert be["arm_r"] == 0.8
+    assert trailing["arm_r"] == 1.75
+    assert trailing["gap_r"] == 0.6
+
+
+def test_configured_scenarios_skip_disabled_production_exits():
+    class Settings:
+        PAPER_BREAKEVEN_ENABLED = False
+        PAPER_TRAILING_ENABLED = False
+
+    scenarios = configured_default_scenarios(Settings)
+    assert not any(row.get("production_config_match") for row in scenarios)
 
 
 if __name__ == "__main__":
