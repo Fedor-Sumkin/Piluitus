@@ -212,5 +212,29 @@ class ScalpingShadowStrategyTests(unittest.TestCase):
         self.assertIn("trade_flow_unavailable_or_stale", result["hard_blocks"])
 
 
+    def test_regime_specific_shadow_variant_is_separate_from_baseline_score(self) -> None:
+        metrics = strong_buy_metrics()
+        metrics.update({
+            "trade_history_coverage_sec": 60.0, "trade_count_60s": 40,
+            "trade_baseline_bucket_count": 10, "trade_baseline_min_bucket_count": 4,
+            "entry_minimum_favorable_move_pct": 0.05, "entry_target_move_pct": 0.30,
+        })
+        result = evaluate_scalping_candidate("BUY", metrics)
+        self.assertEqual(result["mode"], "SHADOW_ONLY")
+        self.assertEqual(result["market_regime"], "TREND")
+        self.assertEqual(result["strategy_variant"], "TREND_CONTINUATION")
+        self.assertTrue(result["volume_impulse_confirmed"])
+        self.assertTrue(result["economic_edge_available"])
+        self.assertGreater(result["planned_move_cost_coverage_ratio"], 1.0)
+        self.assertIsInstance(result["eligible"], bool)
+
+    def test_regime_research_track_fails_closed_when_cost_or_volume_history_missing(self) -> None:
+        result = evaluate_scalping_candidate("BUY", strong_buy_metrics())
+        self.assertFalse(result["volume_impulse_confirmed"])
+        self.assertFalse(result["economic_edge_available"])
+        self.assertFalse(result["strategy_eligible"])
+        self.assertIn("planned_move_vs_full_cost_unavailable", result["strategy_hard_blocks"])
+
+
 if __name__ == "__main__":
     unittest.main()
