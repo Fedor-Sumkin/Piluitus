@@ -321,6 +321,21 @@ def _configure_run_file_logging() -> tuple[str, dict[str, str]]:
 
 RUN_ID, RUN_LOG_PATHS = _configure_run_file_logging()
 logging.getLogger("Piluitus.Verdicts").setLevel(logging.INFO)
+# Keep subsystem INFO records available to their dedicated file handlers without
+# enabling DEBUG-level market noise.
+for _thematic_logger_name in (
+    "Piluitus.StrategyShadow",
+    "Piluitus.AIEngine",
+    "Piluitus.VLLM",
+    "Piluitus.EvolutionThoughts",
+    "Piluitus.FinamGateway",
+    "Piluitus.Screener",
+    "Piluitus.Market",
+    "FinamCore.MarketLogger",
+    "Piluitus.ExecutionLayer",
+    "Piluitus.RiskManager",
+):
+    logging.getLogger(_thematic_logger_name).setLevel(logging.INFO)
 _LOG_KINDS_FOR_STARTUP = (
     "session", "diagnostic", "errors", "shadow",
     "vllm", "market", "execution", "verdicts",
