@@ -46,7 +46,9 @@ def test_trading_event_log_is_scoped_and_correlated_to_run_candidate_and_verdict
     logger_source = ast.get_source_segment(source, logger_function)
 
     assert "str(RUN_ID or \"unknown\")" in logger_source
-    assert "piluitus_session_{date_str}_{run_id}.txt" in logger_source
+    assert 'logging.getLogger("Piluitus.Verdicts")' in source
+    assert '"verdicts"' in source
+    assert 'RUN_LOG_PATHS.get("verdicts")' in logger_source
     assert "candidate_id={candidate_id or 'NONE'}" in logger_source
     assert "verdict_id={verdict_id or 'NONE'}" in logger_source
     assert "model_confidence" in logger_source
