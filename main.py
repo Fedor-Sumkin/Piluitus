@@ -3916,6 +3916,29 @@ async def lifespan(app: FastAPI):
             # records are present in the shared store.
             try:
                 reset_result = await db_manager.clear_paper_session()
+                # Unresolved OPEN positions are archived by the reset, not discarded.
+                # Restore only complete, directionally valid PAPER journals before the
+                # execution layer reconciles them into its position monitor.
+                restore_result = await db_manager.restore_archived_paper_positions()
+                logger.warning(
+                    "[PAPER POSITION RESTORE] restored_open=%d review_required=%d "
+                    "malformed_archives=%d scanned=%d",
+                    int(restore_result.get("restored_open_positions", 0) or 0),
+                    int(restore_result.get("positions_requiring_review", 0) or 0),
+                    int(restore_result.get("malformed_archives", 0) or 0),
+                    int(restore_result.get("archive_keys_scanned", 0) or 0),
+                )
+                if int(restore_result.get("malformed_archives", 0) or 0) > 0:
+                    execution_engine._maintenance_active = True
+                    execution_engine._maintenance_reason = (
+                        "Архив содержит повреждённые или неидентифицируемые PAPER-позиции. "
+                        "Новые входы заблокированы до ручной сверки журнала."
+                    )
+                    logger.critical(
+                        "[PAPER POSITION RESTORE] malformed archives detected; "
+                        "maintenance lock enabled; unresolved_ids=%s",
+                        restore_result.get("unresolved_position_ids", []),
+                    )
                 session_started_at = datetime.now().astimezone()
                 execution_engine.session_started_at = session_started_at
                 execution_engine.session_id = session_started_at.strftime("%Y%m%d-%H%M%S-%f")
