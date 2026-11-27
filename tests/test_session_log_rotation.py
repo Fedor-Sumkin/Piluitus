@@ -56,7 +56,7 @@ def test_rotation_uses_utf8_byte_size_not_character_count(tmp_path):
     finally:
         _close_logger(logger, handler)
 
-    part_two = tmp_path / "session_unicode_part02.log"
+    part_two = tmp_path / "vllm_unicode_part02.log"
     assert path.read_text(encoding="utf-8") == "абвг\n"
     assert part_two.read_text(encoding="utf-8") == "д\n"
     assert path.stat().st_size == expected_size
