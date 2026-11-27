@@ -24,6 +24,35 @@ class TradeFlowMetricsTests(unittest.TestCase):
         self.assertGreater(metrics["trade_vwap_60s"], 100.0)
         self.assertLess(metrics["trade_vwap_60s"], 105.0)
 
+    def test_aggressor_flow_readiness_requires_known_side_coverage(self):
+        state = {"trade_events": deque([
+            (940.0, 99.0, 10.0, "UNKNOWN"),
+            (950.0, 100.0, 10.0, "UNKNOWN"),
+            (960.0, 101.0, 10.0, "UNKNOWN"),
+            (970.0, 102.0, 10.0, "BUY"),
+            (980.0, 103.0, 10.0, "UNKNOWN"),
+            (990.0, 104.0, 10.0, "UNKNOWN"),
+            (999.0, 105.0, 50.0, "BUY"),
+        ])}
+        metrics = HFTMemoryScreener._trade_metrics_locked(state, 1000.0)
+        self.assertEqual(metrics["trade_data_ready"], 1.0)
+        self.assertEqual(metrics["trade_flow_ready"], 0.0)
+        self.assertEqual(metrics["trade_flow_known_trade_count_30s"], 2)
+        self.assertLess(metrics["trade_flow_known_volume_share_30s"], 0.50)
+
+    def test_aggressor_flow_is_ready_when_known_side_samples_cover_enough_volume(self):
+        state = {"trade_events": deque([
+            (940.0, 99.0, 10.0, "BUY"), (950.0, 100.0, 10.0, "BUY"),
+            (960.0, 101.0, 10.0, "SELL"), (970.0, 102.0, 10.0, "SELL"),
+            (980.0, 103.0, 10.0, "BUY"), (990.0, 104.0, 10.0, "BUY"),
+            (999.0, 105.0, 50.0, "BUY"),
+        ])}
+        metrics = HFTMemoryScreener._trade_metrics_locked(state, 1000.0)
+        self.assertEqual(metrics["trade_data_ready"], 1.0)
+        self.assertEqual(metrics["trade_flow_ready"], 1.0)
+        self.assertGreaterEqual(metrics["trade_flow_known_trade_count_30s"], 3)
+        self.assertGreaterEqual(metrics["trade_flow_known_volume_share_30s"], 0.50)
+
     def test_volume_baseline_uses_median_and_resists_single_bucket_outlier(self):
         state = {"trade_events": deque([
             (940.0, 99.0, 10.0, "BUY"),
