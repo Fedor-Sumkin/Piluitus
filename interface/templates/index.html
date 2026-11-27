@@ -2,6 +2,7 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>PILUITUS v3.0 — Промышленный HFT Терминал</title>
     <style>
         :root {
@@ -13,7 +14,10 @@
             --accent-red: #ef4444;
             --accent-blue: #3b82f6;
         }
+        *, *::before, *::after { box-sizing: border-box; }
+        html { width: 100%; min-width: 320px; }
         body {
+            width: 100%; min-width: 320px;
             background-color: var(--bg-color);
             color: var(--text-color);
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -93,6 +97,11 @@
             font-size: 14px;
         }
         th { color: #94a3b8; }
+        .panel { min-width: 0; }
+        .panel:has(table) { overflow-x: auto; }
+        table { min-width: 720px; }
+        button, a { touch-action: manipulation; }
+        button { min-height: 40px; }
         .verdict-item {
             padding: 10px;
             border-radius: 6px;
@@ -156,6 +165,31 @@
         .trading-status-title { font-weight:800; font-size:15px; line-height:1.4; }
         .trading-status-message { margin-top:4px; color:#cbd5e1; font-size:13px; line-height:1.5; }
         .trading-status-meta { margin-top:7px; color:#94a3b8; font-size:11px; line-height:1.45; }
+        @media (max-width: 900px) {
+            body { padding: 12px; }
+            .grid-container { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+            .balance-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+            .balance-card:last-child { grid-column: 1 / -1; }
+            .panel { padding: 12px; }
+            .panel-title { gap: 8px; align-items: flex-start; font-size: 14px; }
+            th, td { padding: 7px; font-size: 12px; white-space: nowrap; }
+            .trading-status-panel { padding: 12px; margin-bottom: 12px; }
+            .trading-status-title { font-size: 14px; }
+        }
+        @media (max-width: 480px) {
+            body { padding: 8px; }
+            .balance-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+            .balance-card:last-child { grid-column: auto; }
+            .balance-value { font-size: 18px; overflow-wrap: anywhere; }
+            .balance-profit-row { gap: 6px; }
+            .balance-profit-rub { font-size: 13px; }
+            .panel { padding: 10px; border-radius: 7px; }
+            .panel-title { font-size: 12px; }
+            #verdicts-list, #news-feed { max-height: 320px !important; }
+            .trading-status-meta { overflow-wrap: anywhere; }
+            body > div:first-child { justify-content: stretch !important; }
+            body > div:first-child a { width: 100%; text-align: center; }
+        }
     </style>
 </head>
 <body>
