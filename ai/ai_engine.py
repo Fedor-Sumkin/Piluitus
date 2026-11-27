@@ -1480,8 +1480,8 @@ class AIEngine:
                         retry_detail = self._http_error_detail(retry_resp)
                         if self._is_sampling_parameter_error(retry_detail) and "temperature" in retry_body:
                             retry_body.pop("temperature", None)
-                            retry_resp = await self._post_with_retry(
-                                self.api_path, json=retry_body, retries=0, retry_timeouts=False
+                            retry_resp = await _post_candidate(
+                                retry_body, retries=0, retry_timeouts=False, stage="CONTRACT_RETRY"
                             )
                     if retry_resp.status_code >= 400:
                         raise RuntimeError(
