@@ -697,14 +697,6 @@ def validate_paper_market_quality(
             "Для PAPER задайте обоснованное ненулевое значение "
             "PILUITUS_PAPER_SLIPPAGE_BPS; нулевое допущение не считается полной моделью."
         )
-    if not planned_rr.get("available") or not planned_rr.get("eligible"):
-        net_rr = planned_rr.get("net_reward_to_risk")
-        rr_text = f"{float(net_rr):.3f}" if isinstance(net_rr, (int, float)) and math.isfinite(float(net_rr)) else "н/д"
-        return False, (
-            "PAPER-вход заблокирован: ожидаемая цель после всех издержек не покрывает риск; "
-            f"net_RR={rr_text}, минимум={minimum_net_rr:.2f}, причина={planned_rr.get('reason', 'UNAVAILABLE')}."
-        )
-
     if not economics.get("available") or not economics.get("eligible"):
         ratio = economics.get("cost_to_atr_ratio")
         ratio_text = f"{float(ratio):.3f}" if isinstance(ratio, (int, float)) and math.isfinite(float(ratio)) else "н/д"
@@ -713,6 +705,14 @@ def validate_paper_market_quality(
             f"(cost/ATR={ratio_text}, лимит_этапа={evaluation_cost_limit:.2f}, "
             f"лимит_исполнения={execution_cost_limit:.2f}, "
             f"причина={economics.get('reason', 'UNKNOWN')})."
+        )
+
+    if not planned_rr.get("available") or not planned_rr.get("eligible"):
+        net_rr = planned_rr.get("net_reward_to_risk")
+        rr_text = f"{float(net_rr):.3f}" if isinstance(net_rr, (int, float)) and math.isfinite(float(net_rr)) else "н/д"
+        return False, (
+            "PAPER-вход заблокирован: ожидаемая цель после всех издержек не покрывает риск; "
+            f"net_RR={rr_text}, минимум={minimum_net_rr:.2f}, причина={planned_rr.get('reason', 'UNAVAILABLE')}."
         )
 
     stage_message = (
