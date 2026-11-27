@@ -325,6 +325,8 @@ for _thematic_logger_name in (
     "FinamCore.MarketLogger",
     "Piluitus.ExecutionLayer",
     "Piluitus.RiskManager",
+    "Piluitus.RealMarketSim",
+    "Piluitus.NewsParser",
 ):
     logging.getLogger(_thematic_logger_name).setLevel(logging.INFO)
 _LOG_KINDS_FOR_STARTUP = (
@@ -1952,7 +1954,6 @@ screener.set_universe(TICKERS_TO_TRADE)
 #  2️⃣  НЕБЛОКИРУЮЩИЙ ДИСКОВЫЙ БОРТОВОЙ ЖУРНАЛ ТЕСТОВ
 # --------------------------------------------------------------
 _tracked_operation_tasks: set[asyncio.Task] = set()
-_trading_log_file_lock = threading.Lock()
 
 
 def _spawn_tracked_operation(coro, *, name: str) -> asyncio.Task:
