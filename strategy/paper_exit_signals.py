@@ -104,7 +104,7 @@ def evaluate_paper_exit_signal(
     queue_value = _finite(metrics.get("queue_imbalance_5s"))
     queue_fresh = bool(
         queue_available
-        and queue_age is not None and 0.0 <= queue_age <= max_age
+        and queue_age is not None and 0.0 <= queue_age <= min(2.0, max_age)
         and queue_coverage is not None and queue_coverage >= 1.0
         and queue_value is not None
     )
@@ -114,7 +114,8 @@ def evaluate_paper_exit_signal(
 
     momentum_reversed = (
         signed_momentum_15 <= -momentum_threshold
-        and (signed_momentum_30 is None or signed_momentum_30 <= 0.0)
+        and signed_momentum_30 is not None
+        and signed_momentum_30 <= 0.0
     )
     flow_opposing = signed_flow <= -flow_threshold
     hard_reversal = momentum_reversed and flow_opposing and not queue_aligned

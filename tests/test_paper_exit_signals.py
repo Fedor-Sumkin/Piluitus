@@ -61,6 +61,19 @@ class PaperExitSignalTests(unittest.TestCase):
         )
         self.assertEqual(result["action"], "SIGNAL_REVERSAL")
 
+    def test_missing_30s_momentum_cannot_confirm_full_reversal(self):
+        state = {}
+        metrics = _metrics(trade_price_change_30s_pct=None)
+        evaluate_paper_exit_signal(
+            position_side="BUY", metrics=metrics, sample_id="701",
+            favorable_r=0.5, state=state,
+        )
+        result = evaluate_paper_exit_signal(
+            position_side="BUY", metrics=metrics, sample_id="702",
+            favorable_r=0.5, state=state,
+        )
+        self.assertEqual(result["action"], "NONE")
+
     def test_stale_or_unknown_aggressor_flow_never_triggers_exit(self):
         state = {}
         for sample in ("301", "302", "303"):
