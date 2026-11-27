@@ -176,15 +176,6 @@ from monitoring.log_routing import (
 )
 
 
-def _log_fsync_interval_seconds() -> float:
-    raw_value = os.getenv("PILUITUS_LOG_FSYNC_INTERVAL_SECONDS", "1.0").strip()
-    try:
-        value = float(raw_value)
-    except (TypeError, ValueError, OverflowError):
-        return 1.0
-    return value if math.isfinite(value) and value >= 0.0 else 1.0
-
-
 _RUN_LOG_MAX_BYTES = 15 * 1024 * 1024
 _THEMATIC_LOG_KINDS = ("shadow", "vllm", "market", "execution")
 
