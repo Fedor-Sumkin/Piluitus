@@ -40,7 +40,7 @@ _THEMATIC_RULES = {
     },
     "vllm": {
         "prefixes": ("Piluitus.AIEngine", "Piluitus.VLLM",
-                     "Piluitus.EvolutionThoughts", "ai.vllm_client"),
+                     "ai.vllm_client"),
         "markers": (
             "[vLLM", "[AIEngine", "[LLM REQUEST]", "[LLM RESPONSE]",
             "[LLM DECISION]", "[LLM REASON MISMATCH]", "[LLM CONTRACT",
