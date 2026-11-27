@@ -49,7 +49,8 @@ _THEMATIC_RULES = {
     },
     "market": {
         "prefixes": ("Piluitus.FinamGateway", "Piluitus.Screener",
-                     "Piluitus.Market", "FinamCore.MarketLogger"),
+                     "Piluitus.Market", "Piluitus.NewsParser",
+                     "FinamCore.MarketLogger"),
         "markers": (
             "[FINAM", "[ORDER_BOOK", "[TRADE FLOW", "[OPEN POSITION BBO",
             "[MARKET DATA", "[BBO ", "[QUOTE ", "[WS ПОТОК ФИНАМ]",
@@ -57,7 +58,8 @@ _THEMATIC_RULES = {
         ),
     },
     "execution": {
-        "prefixes": ("Piluitus.ExecutionLayer", "Piluitus.RiskManager"),
+        "prefixes": ("Piluitus.ExecutionLayer", "Piluitus.RiskManager",
+                     "Piluitus.RealMarketSim"),
         "markers": (
             "[EXECUTION", "[PAPER", "[POSITION", "[PORTFOLIO",
             "[STOP COOLDOWN", "[ENTRY SESSION GUARD]",
