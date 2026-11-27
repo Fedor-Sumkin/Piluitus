@@ -25,6 +25,7 @@ from strategy.paper_performance import (
 )
 from strategy.paper_entry_diagnostics import build_entry_execution_diagnostics
 from strategy.paper_exit_diagnostics import build_exit_execution_diagnostics
+from strategy.paper_exit_signals import evaluate_paper_exit_signal
 
 logger = logging.getLogger("Piluitus.ExecutionLayer")
 
@@ -69,6 +70,7 @@ class BBOExitQuote(TypedDict):
 
 TradeRecord = dict[str, Any]
 _MOSCOW_TZ = timezone(timedelta(hours=3), name="MSK")
+PAPER_EXIT_TERMINAL_REASONS = frozenset({"STOP_LOSS", "TAKE_PROFIT", "SIGNAL_REVERSAL"})
 
 
 def _parse_schedule_datetime(value: object, session_date) -> datetime | None:
@@ -1342,7 +1344,7 @@ class BaseExecutionEngine:
         if (
             not bool(getattr(self, "paper_breakeven_enabled", False))
             or bool(trade.get("paper_breakeven_armed"))
-            or str(trade.get("pending_exit_reason") or "").upper() in {"STOP_LOSS", "TAKE_PROFIT"}
+            or str(trade.get("pending_exit_reason") or "").upper() in PAPER_EXIT_TERMINAL_REASONS
         ):
             return None
         side = str(trade.get("side") or "").strip().upper()
@@ -1412,7 +1414,7 @@ class BaseExecutionEngine:
         """
         if (
             not bool(getattr(self, "paper_trailing_enabled", False))
-            or str(trade.get("pending_exit_reason") or "").upper() in {"STOP_LOSS", "TAKE_PROFIT"}
+            or str(trade.get("pending_exit_reason") or "").upper() in PAPER_EXIT_TERMINAL_REASONS
         ):
             return None
 
@@ -1703,7 +1705,7 @@ class BaseExecutionEngine:
     ) -> str:
         """Latch the first SL/TP trigger independently from executable BBO availability."""
         existing = str(trade.get("pending_exit_reason") or "").upper()
-        if existing in {"STOP_LOSS", "TAKE_PROFIT"}:
+        if existing in PAPER_EXIT_TERMINAL_REASONS:
             return existing
         side = str(trade.get("side", "BUY")).upper()
         entry = _finite_or_default(trade.get("entry_price"), 0.0)
@@ -2696,6 +2698,55 @@ class BaseExecutionEngine:
             self.paper_max_book_participation_pct,
         )
 
+    def _paper_profit_partial_depth_fill(
+        self,
+        ticker: str,
+        trade: TradeRecord,
+        bbo: BBOExitQuote,
+        fraction: float,
+    ) -> dict[str, Any] | None:
+        """Plan a profit scale-out only against fresh, explicitly-unitized depth."""
+        if self.paper_book_size_unit not in {"shares", "lots"}:
+            return None
+        book_age = _finite_or_default(bbo.get("order_book_age_sec"), math.inf)
+        book_max_age = _finite_or_default(bbo.get("max_age_sec"), 2.0)
+        if (
+            not bool(bbo.get("order_book_valid", False))
+            or not math.isfinite(book_age) or book_age < 0.0 or book_age > book_max_age
+        ):
+            return None
+        side = str(trade.get("side", "")).strip().upper()
+        if side not in {"BUY", "SELL"}:
+            return None
+        lot_size = max(1, int(_finite_or_default(
+            trade.get("lot_size", LOT_SIZES.get(ticker, 1)), 1.0
+        )))
+        share_qty = self._share_quantity(ticker, trade)
+        if share_qty <= 0 or share_qty % lot_size:
+            return None
+        total_lots = share_qty // lot_size
+        try:
+            requested_fraction = min(0.9, max(0.1, float(fraction)))
+        except (TypeError, ValueError, OverflowError):
+            requested_fraction = 0.5
+        target_lots = int(math.floor(total_lots * requested_fraction))
+        # Never turn a scale-out into a full liquidation or an impossible sub-lot fill.
+        if target_lots <= 0 or target_lots >= total_lots:
+            return None
+        levels_key = "bid_levels" if side == "BUY" else "ask_levels"
+        fill = self._simulate_paper_depth_fill(
+            bbo.get(levels_key, []),
+            target_lots,
+            lot_size,
+            self.paper_book_size_unit,
+            self.paper_max_book_participation_pct,
+        )
+        if not isinstance(fill, Mapping) or int(_finite_or_default(fill.get("filled_shares"), 0.0)) <= 0:
+            return None
+        if int(_finite_or_default(fill.get("filled_shares"), 0.0)) >= share_qty:
+            return None
+        return dict(fill)
+
     async def _finalize_paper_partial_close(
         self,
         ticker: str,
@@ -2840,6 +2891,13 @@ class BaseExecutionEngine:
         )
         updated["last_partial_exit_at"] = fill_record["timestamp"]
         updated["last_partial_exit_reason"] = exit_reason
+        if exit_reason == "PROFIT_PROTECTION":
+            updated["paper_profit_partial_taken"] = True
+            updated["paper_profit_partial_taken_at"] = fill_record["timestamp"]
+            updated["paper_profit_partial_taken_shares"] = filled_shares
+            updated["paper_profit_partial_fraction"] = round(
+                filled_shares / max(1, int(updated["original_volume"])), 6
+            )
         remaining_shares = int(updated["volume"])
         remaining_entry_fee = _finite_or_default(updated.get("entry_commission_rub"), 0.0)
         mark_raw_price = _finite_or_default(bbo.get("executable_price"), raw_exit_price)
@@ -2921,7 +2979,7 @@ class BaseExecutionEngine:
                     )
                 logger.warning(
                     "[PAPER EXIT FINAL BBO RECHECK] %s %s: свежий исполнимый BBO исчез до расчёта fill; "
-                    "SL/TP trigger retained, position remains OPEN.",
+                    "Exit trigger retained, position remains OPEN.",
                     ticker, side,
                 )
                 return trade
@@ -3178,8 +3236,12 @@ class BaseExecutionEngine:
                 if trigger_price > 0.0 else None
             ),
             "time_in_trade_sec": round(held_seconds, 3) if held_seconds is not None else None,
-            "final_outcome": "SUCCESSFUL_EXPERIENCE" if exit_reason == "TAKE_PROFIT" else (
-                "MANUAL_CLOSE" if exit_reason == "MANUAL_CLOSE" else "FAILED_MISTAKE"
+            "final_outcome": (
+                "SUCCESSFUL_EXPERIENCE" if exit_reason == "TAKE_PROFIT" else
+                "SIGNAL_EXIT_PROFIT" if exit_reason == "SIGNAL_REVERSAL" and net_pnl > 0.0 else
+                "SIGNAL_EXIT_LOSS" if exit_reason == "SIGNAL_REVERSAL" else
+                "MANUAL_CLOSE" if exit_reason == "MANUAL_CLOSE" else
+                "FAILED_MISTAKE"
             ),
         })
 
@@ -3453,15 +3515,15 @@ class BaseExecutionEngine:
             if bbo is None:
                 self._track_exit_bbo_gap(trade, time.monotonic(), fresh=False)
                 pending_exit = str(trade.get("pending_exit_reason") or "").upper()
-                # Once SL/TP has fired, do not let a calendar REST lookup delay
+                # Once an exit trigger has fired, do not let a calendar REST lookup delay
                 # the trigger audit or persistence; only a fresh executable BBO
                 # can release the pending close.
                 market_state = (
                     {}
-                    if pending_exit in {"STOP_LOSS", "TAKE_PROFIT"}
+                    if pending_exit in PAPER_EXIT_TERMINAL_REASONS
                     else await self._market_session_status(ticker)
                 )
-                if pending_exit in {"STOP_LOSS", "TAKE_PROFIT"}:
+                if pending_exit in PAPER_EXIT_TERMINAL_REASONS:
                     wait_state = "EXIT_TRIGGERED_WAITING_FOR_BBO"
                     wait_reason = f"{pending_exit}: триггер зафиксирован; ожидается свежая исполнимая сторона BBO"
                 elif market_state.get("known") and not market_state.get("is_open"):
@@ -3512,7 +3574,7 @@ class BaseExecutionEngine:
                 )
                 trade["pnl_percent"] = round(trade["pnl"] / entry_notional * 100.0, 4) if entry_notional > 0 else 0.0
                 trade["current_pnl_source"] = "LAST_TRADE_ESTIMATE"
-                if pending_exit in {"STOP_LOSS", "TAKE_PROFIT"}:
+                if pending_exit in PAPER_EXIT_TERMINAL_REASONS:
                     if not bool(trade.get("exit_trigger_wait_logged")):
                         trigger_at = _finite_or_default(trade.get("exit_trigger_monotonic"), 0.0)
                         delay = max(0.0, time.monotonic() - trigger_at) if trigger_at > 0.0 else 0.0
@@ -3824,14 +3886,107 @@ class BaseExecutionEngine:
                             ticker, side, executable_exit_price, shadow_net,
                         )
 
-            if not str(trade.get("pending_exit_reason") or "").upper() in {"STOP_LOSS", "TAKE_PROFIT"}:
+            if str(trade.get("pending_exit_reason") or "").upper() not in PAPER_EXIT_TERMINAL_REASONS:
                 self._capture_paper_exit_trigger(
                     ticker, trade, executable_exit_price,
                     source="EXECUTABLE_BBO", market_timestamp=event_timestamp,
                 )
             exit_reason = str(trade.get("pending_exit_reason") or "").upper()
-            if exit_reason not in {"STOP_LOSS", "TAKE_PROFIT"}:
+            if exit_reason not in PAPER_EXIT_TERMINAL_REASONS:
                 exit_reason = ""
+
+            # Strategy exits are evaluated only after a fresh executable BBO is
+            # available and only after the hard SL/TP trigger has had priority.
+            if (
+                not exit_reason
+                and bool(getattr(Settings, "PAPER_SIGNAL_EXIT_ENABLED", True))
+                and not bool(trade.get("paper_profit_partial_taken"))
+            ):
+                quote_obj = (
+                    self.screener.quotes.get(ticker, {})
+                    if getattr(self, "screener", None) is not None else {}
+                )
+                quote = _as_string_mapping(quote_obj) or {}
+                signal_metrics_obj = quote.get("trade_metrics")
+                if isinstance(signal_metrics_obj, Mapping):
+                    signal = evaluate_paper_exit_signal(
+                        position_side=side,
+                        metrics=signal_metrics_obj,
+                        sample_id=quote.get("last_trade_event_seen"),
+                        favorable_r=favorable_r,
+                        state=trade,
+                        min_momentum_pct=getattr(Settings, "PAPER_SIGNAL_EXIT_MIN_MOMENTUM_PCT", 0.02),
+                        min_flow_imbalance=getattr(Settings, "PAPER_SIGNAL_EXIT_MIN_FLOW_IMBALANCE", 0.15),
+                        min_queue_imbalance=getattr(Settings, "PAPER_SIGNAL_EXIT_MIN_QUEUE_IMBALANCE", 0.10),
+                        confirmations=getattr(Settings, "PAPER_SIGNAL_EXIT_CONFIRMATIONS", 2),
+                        max_metrics_age_sec=getattr(Settings, "PAPER_EXIT_METRICS_MAX_AGE_SEC", 5.0),
+                        partial_profit_arm_r=getattr(Settings, "PAPER_PARTIAL_PROFIT_ARM_R", 1.0),
+                        partial_profit_enabled=getattr(Settings, "PAPER_PARTIAL_PROFIT_ENABLED", True),
+                    )
+                    trade["paper_exit_signal_diagnostics"] = signal
+                    signal_action = str(signal.get("action") or "NONE")
+                    if signal_action == "PARTIAL_PROFIT":
+                        partial_fill = self._paper_profit_partial_depth_fill(
+                            ticker,
+                            trade,
+                            bbo,
+                            getattr(Settings, "PAPER_PARTIAL_PROFIT_FRACTION", 0.50),
+                        )
+                        if partial_fill is not None:
+                            logger.warning(
+                                "[PAPER PROFIT SCALE-OUT] %s %s favorable=%.2fR; "
+                                "confirmed opposing flow; requested partial depth fill=%d shares.",
+                                ticker, side, favorable_r,
+                                int(_finite_or_default(partial_fill.get("requested_shares"), 0.0)),
+                            )
+                            await self._finalize_paper_partial_close(
+                                ticker, trade, db, bbo, partial_fill,
+                                exit_reason="PROFIT_PROTECTION",
+                                trigger_price=executable_exit_price,
+                                observed_last_price=observed_last_price,
+                            )
+                            return
+                        trade["paper_profit_partial_wait_reason"] = (
+                            "BOOK_UNIT_UNCONFIRMED_OR_PARTIAL_DEPTH_UNAVAILABLE"
+                        )
+                        if self._should_log_paper_exit_status(
+                            order_id, "profit_scaleout_wait", time.monotonic()
+                        ):
+                            logger.warning(
+                                "[PAPER PROFIT SCALE-OUT WAIT] %s %s favorable=%.2fR; "
+                                "partial exit not simulated because book size units/depth are unconfirmed. "
+                                "Active net-BE/trailing protection remains in force.",
+                                ticker, side, favorable_r,
+                            )
+                    elif signal_action == "SIGNAL_REVERSAL":
+                        trigger_timestamp = datetime.now().astimezone().isoformat(timespec="milliseconds")
+                        trade.update({
+                            "pending_exit_reason": "SIGNAL_REVERSAL",
+                            "pending_exit_trigger_price": executable_exit_price,
+                            "exit_trigger_source": "CONFIRMED_TRADE_FLOW_REVERSAL",
+                            "exit_trigger_observed_price": executable_exit_price,
+                            "exit_trigger_timestamp": trigger_timestamp,
+                            "exit_trigger_monotonic": time.monotonic(),
+                            "exit_trigger_market_timestamp": (
+                                str(event_timestamp) if event_timestamp not in (None, "") else None
+                            ),
+                            "exit_trigger_wait_logged": False,
+                        })
+                        try:
+                            await db.set_json(f"piluitus:trade:{order_id}", trade)
+                        except Exception as persist_exc:
+                            logger.error(
+                                "[PAPER SIGNAL EXIT PERSIST] %s: reversal exit latched in memory "
+                                "but durable trigger write failed: %s",
+                                ticker, persist_exc, exc_info=True,
+                            )
+                            return
+                        exit_reason = "SIGNAL_REVERSAL"
+                        logger.warning(
+                            "[PAPER SIGNAL EXIT TRIGGER] %s %s: two fresh trade-flow samples "
+                            "confirmed opposite momentum and aggressor flow; executable BBO=%.6f.",
+                            ticker, side, executable_exit_price,
+                        )
 
             exit_transaction_side = "SELL" if side == "BUY" else "BUY"
             estimated_exit_price = self._apply_paper_slippage(executable_exit_price, exit_transaction_side)

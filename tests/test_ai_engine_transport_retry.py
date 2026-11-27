@@ -165,6 +165,24 @@ class AIEngineTransportRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(engine._transport_inflight_count, 0)
         self.assertEqual(engine.client.post.await_count, 2)
 
+    async def test_transport_attempt_emits_info_level_timing_metrics(self) -> None:
+        engine = self._engine([self._response()])
+        with patch("ai.ai_engine.log.info") as info:
+            response = await engine._post_with_retry(
+                engine.api_path,
+                json={"model": "test-model"},
+                retries=0,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(engine._transport_last_metrics["status_code"], 200)
+        self.assertGreaterEqual(engine._transport_last_metrics["queue_wait_ms"], 0.0)
+        self.assertGreaterEqual(engine._transport_last_metrics["elapsed_ms"], 0.0)
+        self.assertTrue(any(
+            call.args and "[vLLM TRANSPORT]" in str(call.args[0])
+            for call in info.call_args_list
+        ))
+
     async def test_transport_semaphore_caps_concurrency(self) -> None:
         engine = self._engine([])
         first_started = asyncio.Event()

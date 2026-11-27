@@ -320,6 +320,40 @@ class PaperExitDepthTests(unittest.TestCase):
         self.engine.paper_book_size_unit = "shares"
         self.engine.paper_max_book_participation_pct = 100.0
 
+    def test_profit_scaleout_uses_only_requested_fraction_of_confirmed_depth(self):
+        trade = {"side": "BUY", "volume": 40, "lots": 4, "lot_size": 10}
+        fill = self.engine._paper_profit_partial_depth_fill(
+            "SBER",
+            trade,
+            {
+                "bid_levels": [[99.9, 20], [99.8, 20]],
+                "ask_levels": [[100.0, 100]],
+                "order_book_valid": True,
+                "order_book_age_sec": 0.1,
+                "max_age_sec": 2.0,
+            },
+            0.5,
+        )
+        self.assertEqual(fill["requested_shares"], 20)
+        self.assertEqual(fill["filled_shares"], 20)
+        self.assertEqual(fill["filled_lots"], 2)
+
+    def test_profit_scaleout_refuses_unknown_book_size_units(self):
+        self.engine.paper_book_size_unit = "unknown"
+        trade = {"side": "BUY", "volume": 40, "lots": 4, "lot_size": 10}
+        fill = self.engine._paper_profit_partial_depth_fill(
+            "SBER",
+            trade,
+            {
+                "bid_levels": [[99.9, 100]],
+                "order_book_valid": True,
+                "order_book_age_sec": 0.1,
+                "max_age_sec": 2.0,
+            },
+            0.5,
+        )
+        self.assertIsNone(fill)
+
     def test_long_exit_consumes_bid_depth_and_uses_share_units(self):
         trade = {
             "side": "BUY", "volume": 20, "lots": 2, "lot_size": 10,

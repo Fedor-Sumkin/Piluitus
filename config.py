@@ -203,6 +203,34 @@ class Settings:
     PAPER_TRAILING_DISTANCE_R: float = min(
         2.0, max(0.25, float(os.getenv("PILUITUS_PAPER_TRAILING_DISTANCE_R", "0.75")))
     )
+    # Signal exits require fresh aggressor-flow and momentum evidence on distinct trade samples.
+    PAPER_SIGNAL_EXIT_ENABLED: bool = os.getenv(
+        "PILUITUS_PAPER_SIGNAL_EXIT_ENABLED", "true"
+    ).strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    PAPER_SIGNAL_EXIT_MIN_MOMENTUM_PCT: float = min(
+        1.0, max(0.001, float(os.getenv("PILUITUS_PAPER_SIGNAL_EXIT_MIN_MOMENTUM_PCT", "0.02")))
+    )
+    PAPER_SIGNAL_EXIT_MIN_FLOW_IMBALANCE: float = min(
+        0.9, max(0.05, float(os.getenv("PILUITUS_PAPER_SIGNAL_EXIT_MIN_FLOW_IMBALANCE", "0.15")))
+    )
+    PAPER_SIGNAL_EXIT_MIN_QUEUE_IMBALANCE: float = min(
+        0.9, max(0.05, float(os.getenv("PILUITUS_PAPER_SIGNAL_EXIT_MIN_QUEUE_IMBALANCE", "0.10")))
+    )
+    PAPER_SIGNAL_EXIT_CONFIRMATIONS: int = min(
+        5, max(2, int(os.getenv("PILUITUS_PAPER_SIGNAL_EXIT_CONFIRMATIONS", "2")))
+    )
+    PAPER_EXIT_METRICS_MAX_AGE_SEC: float = min(
+        15.0, max(1.0, float(os.getenv("PILUITUS_PAPER_EXIT_METRICS_MAX_AGE_SEC", "5.0")))
+    )
+    PAPER_PARTIAL_PROFIT_ENABLED: bool = os.getenv(
+        "PILUITUS_PAPER_PARTIAL_PROFIT_ENABLED", "true"
+    ).strip().lower() not in {"0", "false", "no", "off", "disabled"}
+    PAPER_PARTIAL_PROFIT_ARM_R: float = min(
+        5.0, max(0.5, float(os.getenv("PILUITUS_PAPER_PARTIAL_PROFIT_ARM_R", "1.0")))
+    )
+    PAPER_PARTIAL_PROFIT_FRACTION: float = min(
+        0.9, max(0.1, float(os.getenv("PILUITUS_PAPER_PARTIAL_PROFIT_FRACTION", "0.50")))
+    )
     # Hard Moscow-time cutoff for new entries; open-position exits remain active.
     ENTRY_HARD_CUTOFF_MSK: str = os.getenv("PILUITUS_ENTRY_HARD_CUTOFF_MSK", "22:00").strip()
 

@@ -257,7 +257,18 @@ class AIEngine:
                     )
                 finally:
                     semaphore.release()
-                log.debug(
+                self._transport_last_metrics = {
+                    "status_code": response.status_code if response is not None else None,
+                    "attempt": attempt + 1,
+                    "attempts_allowed": retry_limit + 1,
+                    "queue_wait_ms": round(semaphore_wait_ms, 3),
+                    "elapsed_ms": round(elapsed_ms, 3),
+                    "inflight_after": remaining,
+                    "peak_inflight": int(getattr(self, "_transport_peak_inflight", 0) or 0),
+                    "concurrency_limit": self._effective_max_concurrency(),
+                    "error_type": error_type,
+                }
+                log.info(
                     "[vLLM TRANSPORT] status=%s attempt=%d/%d queue_wait_ms=%.1f elapsed_ms=%.1f "
                     "inflight=%d peak_inflight=%d limit=%d error=%s",
                     response.status_code if response is not None else "-",
@@ -1526,6 +1537,9 @@ class AIEngine:
             model_decision, candidate_direction, metrics_dict
         )
         processed["latency"] = round(inference_latency, 3)
+        transport_snapshot = getattr(self, "_transport_last_metrics", None)
+        if isinstance(transport_snapshot, dict):
+            processed["vllm_transport_metrics"] = dict(transport_snapshot)
         processed.setdefault("contract_retry_attempted", retry_attempted)
         processed.setdefault("contract_retry_recovered", retry_recovered)
         processed.setdefault("contract_retry_failed", retry_failed)
