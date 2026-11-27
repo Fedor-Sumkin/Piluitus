@@ -100,7 +100,14 @@ def classify_market_regime(
         evidence_count += 1
         up_votes += int(up >= 0.5 and down < 0.5)
         down_votes += int(down >= 0.5 and up < 0.5)
-    flow = _finite(metrics, "trade_flow_imbalance_30s") if trade_ready else None
+    flow_sample_ready = (
+        _finite(metrics, "trade_flow_ready") is None
+        or (_finite(metrics, "trade_flow_ready") or 0.0) >= 0.5
+    )
+    flow = (
+        _finite(metrics, "trade_flow_imbalance_30s")
+        if trade_ready and flow_sample_ready else None
+    )
     if flow is not None and abs(flow) >= 0.10:
         evidence_count += 1
         up_votes += int(flow >= 0.10)
