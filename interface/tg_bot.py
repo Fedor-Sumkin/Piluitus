@@ -140,7 +140,7 @@ async def cmd_paper_reconciliation_status(message: types.Message):
 # --- ОБРАБОТЧИК: 📂 Получить Бортовой Лог ---
 @router.message(lambda msg: msg.text in ["📂 Получить Бортовой Лог", "/get_logs"])
 async def cmd_get_logs(message: types.Message):
-    """Находит актуальный текстовый лог текущей торговой сессии и отправляет файлом."""
+    """Находит последний журнал вердиктов и отправляет его файлом."""
     if not message.from_user or str(message.from_user.id) != str(USER_ID): return
     
     log_dir_value = os.getenv("PILUITUS_LOG_DIR", "trading_logs").strip() or "trading_logs"
@@ -166,7 +166,7 @@ async def cmd_get_logs(message: types.Message):
     try:
         # Асинхронная отправка файла через нативный инструмент aiogram
         document = FSInputFile(path=str(target_file), filename=target_file.name)
-        await message.answer_document(document=document, caption=f"📜 Журнал вердиктов: <code>{target_file.name}</code>\n\nПолные тематические журналы доступны в папке trading_logs.", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard())
+        await message.answer_document(document=document, caption=f"📜 Журнал вердиктов: <code>{target_file.name}</code>\n\nОстальные тематические журналы доступны в каталоге логов PILUITUS.", parse_mode=ParseMode.HTML, reply_markup=get_main_keyboard())
     except Exception as e:
         logger.error(f"Ошибка отправки файла логов в Telegram: {e}")
         await message.answer(f"❌ Ошибка выгрузки файла: {e}", reply_markup=get_main_keyboard())
