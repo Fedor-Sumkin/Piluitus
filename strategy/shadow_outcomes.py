@@ -342,6 +342,14 @@ class ShadowForwardTracker:
             "cost_to_atr_ratio": cost_ratio,
             "cost_gate_band": _gate_distance_band(cost_ratio, cost_limit),
             "cost_gate_limit": cost_limit,
+            "cost_to_atr_gate_variants": {
+                f"{threshold:.2f}": bool(
+                    cost_ratio is not None
+                    and math.isfinite(float(cost_ratio))
+                    and float(cost_ratio) <= threshold
+                )
+                for threshold in (0.25, 0.35, 0.50, 0.65, 0.80, 1.00, 1.25)
+            },
             "spread_atr_ratio": spread_ratio if math.isfinite(spread_ratio) else None,
             "spread_gate_band": _gate_distance_band(spread_ratio, spread_limit),
             "spread_gate_limit": spread_limit,
