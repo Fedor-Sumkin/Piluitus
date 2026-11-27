@@ -6,6 +6,7 @@ import math
 import asyncio
 import time
 import os
+from uuid import uuid4
 from httpx import AsyncClient, HTTPStatusError
 from config import Settings
 import httpx
@@ -33,6 +34,7 @@ MODEL_REASON_CODES = {
     "HOLD_WIDE_SPREAD",
     "HOLD_INSUFFICIENT_SUPPORT",
     "HOLD_RISK_REWARD",
+    "HOLD_ENTRY_COST",
     "HOLD_UNCLEAR",
     "NO_LOCAL_CANDIDATE",
 }
@@ -181,8 +183,9 @@ class AIEngine:
         json: dict,
         retries: int = 1,
         retry_timeouts: bool = True,
+        request_context: dict | None = None,
     ) -> httpx.Response:
-        """Retry one transient failure; measure each HTTP attempt and active concurrency."""
+        """Retry one transient failure; attach metrics to this candidate's response."""
         retry_after = await self._transport_circuit_retry_after()
         if retry_after > 0.0:
             raise VLLMCircuitOpenError(retry_after)
@@ -202,6 +205,7 @@ class AIEngine:
             attempt_started = time.perf_counter()
             response = None
             error_type = None
+            last_exception = None
             retry_delay = False
             try:
                 await self._transport_request_started()
@@ -215,6 +219,7 @@ class AIEngine:
                 await self._record_transport_success()
                 return response
             except (httpx.TimeoutException, TimeoutError) as exc:
+                last_exception = exc
                 error_type = type(exc).__name__
                 if attempt >= retry_limit or not retry_timeouts:
                     log.error(
@@ -228,6 +233,7 @@ class AIEngine:
                 )
                 retry_delay = True
             except httpx.TransportError as exc:
+                last_exception = exc
                 error_type = type(exc).__name__
                 if attempt >= retry_limit:
                     if isinstance(exc, httpx.ConnectError):
@@ -257,7 +263,12 @@ class AIEngine:
                     )
                 finally:
                     semaphore.release()
-                self._transport_last_metrics = {
+                context = request_context if isinstance(request_context, dict) else {}
+                transport_metrics = {
+                    "candidate_id": str(context.get("candidate_id") or "UNATTRIBUTED"),
+                    "ticker": str(context.get("ticker") or "UNKNOWN"),
+                    "request_id": str(context.get("request_id") or "UNATTRIBUTED"),
+                    "stage": str(context.get("stage") or "PRIMARY"),
                     "status_code": response.status_code if response is not None else None,
                     "attempt": attempt + 1,
                     "attempts_allowed": retry_limit + 1,
@@ -268,9 +279,20 @@ class AIEngine:
                     "concurrency_limit": self._effective_max_concurrency(),
                     "error_type": error_type,
                 }
+                if response is not None:
+                    response.extensions["piluitus_transport_metrics"] = transport_metrics
+                self._transport_last_metrics = dict(transport_metrics)
+                if response is None and last_exception is not None:
+                    try:
+                        setattr(last_exception, "piluitus_transport_metrics", transport_metrics)
+                    except Exception:
+                        pass
                 log.info(
-                    "[vLLM TRANSPORT] status=%s attempt=%d/%d queue_wait_ms=%.1f elapsed_ms=%.1f "
+                    "[vLLM TRANSPORT] candidate_id=%s request_id=%s ticker=%s stage=%s "
+                    "status=%s attempt=%d/%d queue_wait_ms=%.1f elapsed_ms=%.1f "
                     "inflight=%d peak_inflight=%d limit=%d error=%s",
+                    transport_metrics["candidate_id"], transport_metrics["request_id"],
+                    transport_metrics["ticker"], transport_metrics["stage"],
                     response.status_code if response is not None else "-",
                     attempt + 1, retry_limit + 1, semaphore_wait_ms, elapsed_ms, remaining,
                     int(getattr(self, "_transport_peak_inflight", 0) or 0),
@@ -960,8 +982,11 @@ class AIEngine:
             "queue_imbalance_5s", "queue_imbalance_5s_available",
             "queue_imbalance_5s_coverage_sec", "queue_imbalance_5s_age_sec",
             "ofi_5s", "ofi_5s_available", "ofi_5s_coverage_sec", "ofi_5s_age_sec",
-            "entry_cost_to_atr_ratio", "entry_cost_to_atr_limit",
+            "entry_cost_to_atr_ratio", "entry_cost_to_atr_limit", "entry_cost_evaluation_limit",
             "entry_minimum_favorable_move_pct", "entry_cost_model_status",
+            "entry_risk_reward_available", "entry_planned_reward_to_risk",
+            "entry_net_reward_to_risk", "entry_min_net_reward_to_risk",
+            "entry_stop_distance_pct", "entry_target_move_pct", "entry_net_reward_pct",
             "bar_count", "bar_atr_periods", "bar_atr_age_sec", "m1_evidence_state",
             "bar_trend_up", "bar_trend_down",
             "price_change_pct", "price_vs_vwap_pct", "volume_spike", "volume_spike_raw",
@@ -1023,24 +1048,19 @@ class AIEngine:
         spread_to_atr_limit = cls._max_spread_to_atr_ratio()
         # Compact immutable contract; reserve the remaining budget for live evidence.
         base = (
-            "JSON only, exactly three keys: final_decision=APPROVE|HOLD, confidence_score=0..1, "
-            "reason_code=APPROVED|NO_LOCAL_CANDIDATE|HOLD_WEAK_DIRECTION|HOLD_M1_CONTRADICTION|"
+            "JSON only: required final_decision=APPROVE|HOLD and confidence_score=0..1; "
+            "optional reason_code=APPROVED|NO_LOCAL_CANDIDATE|HOLD_WEAK_DIRECTION|HOLD_M1_CONTRADICTION|"
             "HOLD_STALE_BBO|HOLD_WEAK_VOLUME|HOLD_WIDE_SPREAD|HOLD_INSUFFICIENT_SUPPORT|"
-            "HOLD_RISK_REWARD|HOLD_UNCLEAR; no extras/text. "
-            "Never select, change, invert, or output BUY/SELL. APPROVE authorizes only the exact local candidate side; "
-            "candidate=NONE => HOLD. "
-            f"VWAP inside +/-{vwap_neutral_band_pct:.3f}% is NEUTRAL, not a veto; materially opposite VWAP blocks. "
-            "HOLD_M1_CONTRADICTION only when m1_evidence_state=OPPOSITE; ALIGNED/NEUTRAL/UNAVAILABLE need another reason. "
-            f"Entry requires trade_data_ready=1, trade age<=5s, volume_spike>=1.5, fresh BBO, spread<=0.5%, "
-            f"spread/ATR<={spread_to_atr_limit:.2f}; missing ratio=insufficient; HOLD_WIDE_SPREAD needs measured violation. "
-            f"{quote_depletion_rule} "
-            "Trade volumes are raw provider volume units; do not convert to shares/lots. "
-            "trade_flow_imbalance_30s is aggressor BUY-minus-SELL volume (-1..+1); "
-            "queue_imbalance_5s is time-weighted best Bid-vs-Ask size (-1..+1; positive supports BUY); "
-            "ofi_5s is depth-normalized best-quote order-flow pressure (positive supports BUY, negative SELL). "
-            "Use queue/OFI only when availability=1, coverage>=1s and age<=2s; order_book_valid=1 means coherent book. "
-            "entry_cost_to_atr_ratio includes spread, both commission sides and configured slippage; "
-            "incomplete entry_cost_model_status means a lower-bound estimate. "
+            "HOLD_RISK_REWARD|HOLD_ENTRY_COST|HOLD_UNCLEAR. No extra keys/text. "
+            "Never select, change, invert, or output BUY/SELL: APPROVE authorizes only the exact local side; candidate=NONE => HOLD. "
+            f"BUY needs positive 15s momentum, SELL negative; VWAP inside +/-{vwap_neutral_band_pct:.3f}% is NEUTRAL; materially opposite VWAP blocks. "
+            "HOLD_M1_CONTRADICTION only when m1_evidence_state=OPPOSITE; ALIGNED/NEUTRAL/UNAVAILABLE are not contradictions. "
+            f"Entry evidence: trade_data_ready=1, trade age<=5s, volume_spike>=1.5, fresh BBO, spread<=0.5%, spread/ATR<={spread_to_atr_limit:.2f}. "
+            "APPROVE only if cost_model=CONFIGURED, full cost/ATR is present and <= execution limit "
+            "(evaluation limit allows analysis only), risk_reward_available=1 and net_RR>=minimum. "
+            "Missing/incomplete/failed economics => HOLD. Trade flow is aggressor BUY-minus-SELL; provider volume is raw units, do not assume lots/shares. "
+            "Queue imbalance is time-weighted best Bid-vs-Ask size; OFI is depth-normalized best-quote pressure. "
+            f"Use queue/OFI only when available=1, coverage>=1s, age<=2s. {quote_depletion_rule} RAG is advisory only. "
             f"candidate={direction};ticker={str(ticker)[:10]};price={cls._prompt_value(price, 12)};"
             f"{direction_rules}"
         )
@@ -1111,15 +1131,65 @@ class AIEngine:
             include_rule_text=False,
         )
         return (
-            "Repair the previous response. Return ONLY JSON with exactly three keys: "
-            "final_decision (APPROVE or HOLD), confidence_score (0.0..1.0), "
-            "reason_code (APPROVED, HOLD_WEAK_DIRECTION, HOLD_M1_CONTRADICTION, HOLD_STALE_BBO, "
-            "HOLD_WEAK_VOLUME, HOLD_WIDE_SPREAD, HOLD_INSUFFICIENT_SUPPORT, HOLD_RISK_REWARD, "
-            "HOLD_UNCLEAR, NO_LOCAL_CANDIDATE). No extra keys or text. "
-            "Never output BUY/SELL as a decision. Never select, change, invert, or output BUY/SELL. "
-            "Apply the same candidate-side and evidence rules below; do not introduce stricter checks. "
+            "Repair the previous response. Return JSON only with required fields final_decision "
+            "(APPROVE or HOLD), confidence_score (0.0..1.0), and optional reason_code from the enum "
+            "in the rules below. Do not add fields or text. Do not choose or change BUY/SELL. "
             + shared_rules
         )
+
+
+    @staticmethod
+    def _structured_response_capture(
+        raw: object, *, candidate_id: str, ticker: str, request_id: str, stage: str
+    ) -> dict:
+        """Build a bounded structured response record; never retain model reasoning tags."""
+        source = raw if isinstance(raw, dict) else {}
+        choices = source.get("choices") if isinstance(source.get("choices"), list) else []
+        choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        content = message.get("content", choice.get("text", ""))
+        if isinstance(content, list):
+            content = "\n".join(
+                str(item.get("text", "")) if isinstance(item, dict) else str(item)
+                for item in content
+            )
+        content = re.sub(r"<think>.*?(?:</think>|$)", "[REDACTED_REASONING]", str(content or ""), flags=re.DOTALL | re.IGNORECASE)[:16384]
+        usage = source.get("usage", {})
+        capture = {
+            "event": "vllm_structured_response", "candidate_id": str(candidate_id),
+            "ticker": str(ticker), "request_id": str(request_id), "stage": str(stage),
+            "response_id": source.get("id"), "model": source.get("model"),
+            "created": source.get("created"), "finish_reason": choice.get("finish_reason"),
+            "usage": usage if isinstance(usage, dict) else {}, "content": content,
+        }
+        log.info("[vLLM STRUCTURED RESPONSE] %s", json.dumps(capture, ensure_ascii=False, separators=(",", ":"), default=str))
+        return capture
+
+    @staticmethod
+    def _approval_economics_gate(candidate_direction: str, metrics: object) -> tuple[bool, str, dict]:
+        """Hard code-side approval gate; the model cannot waive incomplete economics."""
+        values = metrics if isinstance(metrics, dict) else {}
+        ratio = AIEngine._metric_number(values, "entry_cost_to_atr_ratio", math.nan)
+        limit = AIEngine._metric_number(values, "entry_cost_to_atr_limit", math.nan)
+        net_rr = AIEngine._metric_number(values, "entry_net_reward_to_risk", math.nan)
+        min_rr = AIEngine._metric_number(values, "entry_min_net_reward_to_risk", math.nan)
+        complete = str(values.get("entry_cost_model_status") or "").strip().upper() == "CONFIGURED"
+        rr_available = AIEngine._metric_number(values, "entry_risk_reward_available", 0.0) >= 0.5
+        details = {
+            "cost_ratio": ratio if math.isfinite(ratio) else None,
+            "execution_limit": limit if math.isfinite(limit) else None,
+            "cost_model_status": str(values.get("entry_cost_model_status") or "UNKNOWN"),
+            "net_reward_to_risk": net_rr if math.isfinite(net_rr) else None,
+            "minimum_net_reward_to_risk": min_rr if math.isfinite(min_rr) else None,
+            "risk_reward_available": rr_available,
+        }
+        if candidate_direction not in {"BUY", "SELL"}:
+            return False, "NO_LOCAL_CANDIDATE", details
+        if not complete or not math.isfinite(ratio) or not math.isfinite(limit) or ratio > limit:
+            return False, "HOLD_ENTRY_COST", details
+        if not rr_available or not math.isfinite(net_rr) or not math.isfinite(min_rr) or net_rr < min_rr:
+            return False, "HOLD_RISK_REWARD", details
+        return True, "APPROVED", details
 
     @staticmethod
     def _normalise_rag_context(value: object) -> str:
@@ -1130,9 +1200,38 @@ class AIEngine:
         if not isinstance(payload, dict):
             payload = {"raw_data": str(payload)}
             
-        ticker = payload.get("ticker", "UNKNOWN")
+        ticker = str(payload.get("ticker", "UNKNOWN"))
         price = payload.get("price", 0.0)
         volume = payload.get("volume", 0)
+        candidate_id = str(payload.get("shadow_candidate_id") or payload.get("candidate_id") or f"UNLINKED-{uuid4().hex}")
+        request_id = uuid4().hex
+        transport_samples: list[dict] = []
+        structured_capture: dict | None = None
+
+        async def _post_candidate(body: dict, *, retries: int = 1, retry_timeouts: bool = True, stage: str = "PRIMARY") -> httpx.Response:
+            context = {"candidate_id": candidate_id, "ticker": ticker, "request_id": request_id, "stage": stage}
+            try:
+                options = {"request_context": context}
+                if retries != 1:
+                    options["retries"] = retries
+                if retry_timeouts is not True:
+                    options["retry_timeouts"] = retry_timeouts
+                response = await self._post_with_retry(self.api_path, json=body, **options)
+            except Exception as exc:
+                sample = getattr(exc, "piluitus_transport_metrics", None)
+                if isinstance(sample, dict):
+                    transport_samples.append(dict(sample))
+                raise
+            sample = response.extensions.get("piluitus_transport_metrics")
+            if isinstance(sample, dict):
+                transport_samples.append(dict(sample))
+            return response
+
+        def _transport_summary() -> dict:
+            return {
+                "candidate_id": candidate_id, "request_id": request_id,
+                "attempt_count": len(transport_samples), "samples": list(transport_samples),
+            }
         candidate_direction = str(payload.get("candidate_direction", "NONE")).upper()
         if candidate_direction not in {"BUY", "SELL"}:
             candidate_direction = "NONE"
@@ -1174,7 +1273,7 @@ class AIEngine:
                     "max_tokens": configured_max_tokens,
                 }
                 active_body = dict(request_body)
-                resp = await self._post_with_retry(self.api_path, json=active_body)
+                resp = await _post_candidate(active_body)
 
                 # Сначала обрабатываем только известные причины отказа API.
                 if resp.status_code in (400, 422):
@@ -1185,7 +1284,7 @@ class AIEngine:
                             error_detail,
                         )
                         active_body.pop("response_format", None)
-                        resp = await self._post_with_retry(self.api_path, json=active_body, retries=0)
+                        resp = await _post_candidate(active_body, retries=0)
 
                 if resp.status_code in (400, 422):
                     error_detail = self._http_error_detail(resp)
@@ -1207,7 +1306,7 @@ class AIEngine:
                             "[vLLM COMPAT] Переполнение контекста; повторяем компактный запрос, max_tokens=%s. Причина: %s",
                             compact_body["max_tokens"], error_detail,
                         )
-                        resp = await self._post_with_retry(self.api_path, json=compact_body, retries=0)
+                        resp = await _post_candidate(compact_body, retries=0)
 
                 if resp.status_code in (400, 422):
                     error_detail = self._http_error_detail(resp)
@@ -1219,7 +1318,7 @@ class AIEngine:
                             "[vLLM COMPAT] Сервер отклонил temperature; повторяем без параметра. Причина: %s",
                             error_detail,
                         )
-                        resp = await self._post_with_retry(self.api_path, json=sampling_body, retries=0)
+                        resp = await _post_candidate(sampling_body, retries=0)
 
                 if resp.status_code >= 400:
                     error_detail = self._http_error_detail(resp)
@@ -1232,6 +1331,9 @@ class AIEngine:
                     )
                     resp.raise_for_status()
                 raw = resp.json()
+                structured_capture = self._structured_response_capture(
+                    raw, candidate_id=candidate_id, ticker=ticker, request_id=request_id, stage="PRIMARY"
+                )
         except (httpx.TimeoutException, TimeoutError) as exc:
             log.exception(
                 "[AIEngine v34] Тайм-аут запроса к vLLM (%s) после ограниченного повтора: %r",
@@ -1251,6 +1353,8 @@ class AIEngine:
                 "tactic_opinion": "vLLM не ответил в отведённое время; вход заблокирован.",
                 "critic_opinion": self._compact_opinion(str(exc), max_chars=165),
                 "latency": round(time.time() - start_inference_time, 3),
+                "vllm_transport_metrics": _transport_summary(),
+                "candidate_id": candidate_id, "request_id": request_id,
             }
         except HTTPStatusError as exc:
             status = exc.response.status_code if exc.response is not None else "?"
@@ -1362,18 +1466,15 @@ class AIEngine:
             retry_started = time.perf_counter()
             try:
                 async with asyncio.timeout(request_timeout + 0.5):
-                    retry_resp = await self._post_with_retry(
-                        self.api_path,
-                        json=retry_body,
-                        retries=0,
-                        retry_timeouts=False,
+                    retry_resp = await _post_candidate(
+                        retry_body, retries=0, retry_timeouts=False, stage="CONTRACT_RETRY"
                     )
                     if retry_resp.status_code in (400, 422):
                         retry_detail = self._http_error_detail(retry_resp)
                         if self._is_response_format_error(retry_detail):
                             retry_body.pop("response_format", None)
-                            retry_resp = await self._post_with_retry(
-                                self.api_path, json=retry_body, retries=0, retry_timeouts=False
+                            retry_resp = await _post_candidate(
+                                retry_body, retries=0, retry_timeouts=False, stage="CONTRACT_RETRY"
                             )
                     if retry_resp.status_code in (400, 422):
                         retry_detail = self._http_error_detail(retry_resp)
@@ -1388,6 +1489,9 @@ class AIEngine:
                             f"{self._http_error_detail(retry_resp)}"
                         )
                     retry_raw = retry_resp.json()
+                    structured_capture = self._structured_response_capture(
+                        retry_raw, candidate_id=candidate_id, ticker=ticker, request_id=request_id, stage="CONTRACT_RETRY"
+                    )
                 retry_processed = await asyncio.to_thread(self._cpu_intensive_processing, retry_raw)
                 retry_latency = time.perf_counter() - retry_started
                 retry_valid = (
@@ -1490,6 +1594,9 @@ class AIEngine:
                 "first_contract_error_type": processed.get("first_contract_error_type"),
                 "first_contract_error": processed.get("first_contract_error"),
                 "contract_retry_error": processed.get("contract_retry_error"),
+                "candidate_id": candidate_id, "request_id": request_id,
+                "vllm_transport_metrics": _transport_summary(),
+                "vllm_response_capture": structured_capture,
             }
         elif processed.get("error_type") == "emergency_fallback":
             res = processed["fallback_data"]
@@ -1497,7 +1604,32 @@ class AIEngine:
             return res
         
         model_decision = str(processed.get("model_decision", processed.get("final_decision", "HOLD"))).upper()
+        processed["model_decision_before_economic_gate"] = model_decision
         processed["model_decision"] = model_decision
+        if model_decision == "APPROVE":
+            economics_ok, economics_reason, economics_details = self._approval_economics_gate(
+                candidate_direction, metrics_dict
+            )
+            processed["model_economic_gate"] = {
+                "passed": economics_ok, "reason": economics_reason, **economics_details
+            }
+            if not economics_ok:
+                log.warning(
+                    "[LLM APPROVAL OVERRIDE] candidate_id=%s ticker=%s reason=%s details=%s",
+                    candidate_id, ticker, economics_reason,
+                    json.dumps(economics_details, ensure_ascii=False, default=str),
+                )
+                processed["model_decision"] = "HOLD"
+                processed["final_decision"] = "HOLD"
+                processed["model_reason_code"] = economics_reason
+                processed["model_reason_code_raw"] = economics_reason
+                processed["confidence_score_before_economic_gate"] = processed.get("confidence_score")
+                processed["confidence_score"] = 0.0
+                processed["confidence_valid"] = True
+                processed["confidence_raw"] = 0.0
+        else:
+            processed["model_economic_gate"] = {"passed": False, "reason": "MODEL_HOLD"}
+        model_decision = str(processed.get("model_decision", "HOLD")).upper()
         raw_reason_code = str(processed.get("model_reason_code") or "NOT_PROVIDED").upper()
         validated_reason_code, reason_validation = self._validate_model_reason_code(
             model_decision, raw_reason_code, candidate_direction, metrics_dict
@@ -1537,9 +1669,10 @@ class AIEngine:
             model_decision, candidate_direction, metrics_dict
         )
         processed["latency"] = round(inference_latency, 3)
-        transport_snapshot = getattr(self, "_transport_last_metrics", None)
-        if isinstance(transport_snapshot, dict):
-            processed["vllm_transport_metrics"] = dict(transport_snapshot)
+        processed["vllm_transport_metrics"] = _transport_summary()
+        processed["candidate_id"] = candidate_id
+        processed["request_id"] = request_id
+        processed["vllm_response_capture"] = structured_capture
         processed.setdefault("contract_retry_attempted", retry_attempted)
         processed.setdefault("contract_retry_recovered", retry_recovered)
         processed.setdefault("contract_retry_failed", retry_failed)
