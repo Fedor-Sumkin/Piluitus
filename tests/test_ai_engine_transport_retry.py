@@ -134,6 +134,36 @@ class AIEngineTransportRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(engine._transport_failure_count, 0)
         self.assertEqual(engine._transport_open_until, 0.0)
 
+    async def test_transport_metrics_are_bound_to_each_candidate_response(self) -> None:
+        first = self._response()
+        second = self._response()
+        engine = self._engine([first, second])
+        first_task, second_task = await asyncio.gather(
+            engine._post_with_retry(
+                engine.api_path, json={"model": "test-model"},
+                request_context={
+                    "candidate_id": "candidate-A", "ticker": "SBER",
+                    "request_id": "request-A", "stage": "PRIMARY",
+                },
+            ),
+            engine._post_with_retry(
+                engine.api_path, json={"model": "test-model"},
+                request_context={
+                    "candidate_id": "candidate-B", "ticker": "GAZP",
+                    "request_id": "request-B", "stage": "CONTRACT_RETRY",
+                },
+            ),
+        )
+        first_metrics = first_task.extensions["piluitus_transport_metrics"]
+        second_metrics = second_task.extensions["piluitus_transport_metrics"]
+        self.assertEqual(first_metrics["candidate_id"], "candidate-A")
+        self.assertEqual(first_metrics["ticker"], "SBER")
+        self.assertEqual(first_metrics["request_id"], "request-A")
+        self.assertEqual(second_metrics["candidate_id"], "candidate-B")
+        self.assertEqual(second_metrics["ticker"], "GAZP")
+        self.assertEqual(second_metrics["request_id"], "request-B")
+        self.assertEqual(second_metrics["stage"], "CONTRACT_RETRY")
+
     async def test_transport_concurrency_is_measured_without_throttling(self) -> None:
         engine = self._engine([])
         both_started = asyncio.Event()
