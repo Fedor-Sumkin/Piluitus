@@ -1731,10 +1731,28 @@ class HFTMemoryScreener:
             for i in range(1, len(recent60)) if recent60[i - 1][1] > 0
         ]
         realized_volatility60 = float(np.std(trade_returns)) if len(trade_returns) >= 2 else 0.0
-        buy30 = sum(item[2] for item in recent30 if item[3] == "BUY")
-        sell30 = sum(item[2] for item in recent30 if item[3] == "SELL")
+        buy_events30 = [item for item in recent30 if item[3] == "BUY"]
+        sell_events30 = [item for item in recent30 if item[3] == "SELL"]
+        known_events30 = buy_events30 + sell_events30
+        buy30 = sum(item[2] for item in buy_events30)
+        sell30 = sum(item[2] for item in sell_events30)
         known30 = buy30 + sell30
+        total30 = sum(max(0.0, float(item[2])) for item in recent30)
+        known_trade_count30 = len(known_events30)
+        unknown_trade_count30 = max(0, len(recent30) - known_trade_count30)
+        known_volume_share30 = known30 / total30 if total30 > 0.0 else 0.0
         imbalance30 = (buy30 - sell30) / known30 if known30 > 0 else 0.0
+        min_known_flow_trades = _env_int(
+            "PILUITUS_TRADE_FLOW_MIN_KNOWN_TRADES_30S", 3, minimum=1
+        )
+        min_known_flow_share = min(
+            1.0, _env_float("PILUITUS_TRADE_FLOW_MIN_KNOWN_VOLUME_SHARE", 0.50)
+        )
+        flow_ready = bool(
+            known_trade_count30 >= min_known_flow_trades
+            and known_volume_share30 >= min_known_flow_share
+            and known30 > 0.0
+        )
         last_age = max(0.0, now - latest[0]) if latest else math.inf
         coverage_sec = max(0.0, now - events[0][0]) if events else 0.0
 
@@ -1764,6 +1782,14 @@ class HFTMemoryScreener:
             "trade_price_change_30s_pct": float(price_change30) if ready and reference30 else 0.0,
             "trade_realized_volatility_60s_pct": float(realized_volatility60) if ready else 0.0,
             "trade_flow_imbalance_30s": float(imbalance30),
+            "trade_flow_ready": float(flow_ready),
+            "trade_flow_known_trade_count_30s": int(known_trade_count30),
+            "trade_flow_unknown_trade_count_30s": int(unknown_trade_count30),
+            "trade_flow_known_volume_share_30s": float(known_volume_share30),
+            "trade_flow_known_volume_30s": float(known30),
+            "trade_flow_total_volume_30s": float(total30),
+            "trade_flow_min_known_trades_30s": int(min_known_flow_trades),
+            "trade_flow_min_known_volume_share": float(min_known_flow_share),
             "trade_buy_volume_30s": float(buy30), "trade_sell_volume_30s": float(sell30),
             "trade_count_60s": int(len(recent60)),
             "trade_history_coverage_sec": float(coverage_sec),
