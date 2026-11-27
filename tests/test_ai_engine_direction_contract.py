@@ -25,7 +25,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
 
     def test_buy_candidate_requests_approval_not_direction_choice(self) -> None:
         prompt = self._prompt("BUY")
-        self.assertIn("exactly three keys: final_decision", prompt)
+        self.assertIn("required final_decision=APPROVE|HOLD and confidence_score=0..1", prompt)
         self.assertIn("Never select, change, invert, or output BUY/SELL", prompt)
         self.assertIn("APPROVE authorizes only the exact local candidate side", prompt)
         self.assertIn("Ask depletion is supporting evidence, not mandatory for BUY", prompt)
@@ -36,7 +36,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
 
     def test_sell_candidate_requests_approval_not_direction_choice(self) -> None:
         prompt = self._prompt("SELL")
-        self.assertIn("exactly three keys: final_decision", prompt)
+        self.assertIn("required final_decision=APPROVE|HOLD and confidence_score=0..1", prompt)
         self.assertIn("Never select, change, invert, or output BUY/SELL", prompt)
         self.assertIn("APPROVE authorizes only the exact local candidate side", prompt)
         self.assertIn("Bid depletion is supporting evidence, not mandatory for SELL", prompt)
@@ -306,7 +306,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
 
     def test_missing_candidate_requires_hold(self) -> None:
         prompt = self._prompt("NONE")
-        self.assertIn("candidate=NONE => HOLD.", prompt)
+        self.assertIn("candidate=NONE => HOLD", prompt)
         self.assertIn("No local direction: MUST HOLD.", prompt)
         self.assertLessEqual(len(prompt), 2100)
 
@@ -583,7 +583,7 @@ class AIEngineDirectionContractTests(unittest.TestCase):
         )
         self.assertIn("exactly three keys", prompt)
         self.assertIn("APPROVE or HOLD", prompt)
-        self.assertIn("Never output BUY/SELL as a decision", prompt)
+        self.assertIn("Never select, change, invert, or output BUY/SELL", prompt)
         self.assertNotIn("Advisory RAG context", prompt)
         self.assertNotIn("RISK_PER_TRADE", prompt)
 
@@ -655,10 +655,42 @@ class AIEngineDirectionContractTests(unittest.TestCase):
             max_chars=2100,
             include_rule_text=False,
         )
-        self.assertIn("candidate=NONE => HOLD.", prompt)
+        self.assertIn("candidate=NONE => HOLD", prompt)
         self.assertIn("No local direction: MUST HOLD.", prompt)
         self.assertLessEqual(len(prompt), 2100)
 
+
+    def test_approval_economics_gate_requires_complete_cost_and_net_rr(self) -> None:
+        good = {
+            "entry_cost_to_atr_ratio": 0.40, "entry_cost_to_atr_limit": 0.50,
+            "entry_cost_model_status": "CONFIGURED", "entry_risk_reward_available": 1,
+            "entry_net_reward_to_risk": 1.25, "entry_min_net_reward_to_risk": 1.0,
+        }
+        self.assertTrue(AIEngine._approval_economics_gate("BUY", good)[0])
+        expensive = {**good, "entry_cost_to_atr_ratio": 0.51}
+        self.assertEqual(AIEngine._approval_economics_gate("BUY", expensive)[1], "HOLD_ENTRY_COST")
+        missing = {**good, "entry_cost_model_status": "INCOMPLETE"}
+        self.assertEqual(AIEngine._approval_economics_gate("BUY", missing)[1], "HOLD_ENTRY_COST")
+        weak_rr = {**good, "entry_net_reward_to_risk": 0.99}
+        self.assertEqual(AIEngine._approval_economics_gate("BUY", weak_rr)[1], "HOLD_RISK_REWARD")
+        self.assertEqual(AIEngine._approval_economics_gate("NONE", good)[1], "NO_LOCAL_CANDIDATE")
+
+    def test_structured_vllm_capture_redacts_think_and_keeps_correlation(self) -> None:
+        raw = {
+            "id": "resp-1", "model": "local-model", "created": 123,
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+            "choices": [{"finish_reason": "stop", "message": {
+                "content": '<think>private reasoning</think>{"final_decision":"HOLD","confidence_score":0.0}'
+            }}],
+        }
+        capture = AIEngine._structured_response_capture(
+            raw, candidate_id="candidate-1", ticker="SBER", request_id="request-1", stage="PRIMARY"
+        )
+        self.assertEqual(capture["candidate_id"], "candidate-1")
+        self.assertEqual(capture["request_id"], "request-1")
+        self.assertNotIn("private reasoning", capture["content"])
+        self.assertIn("[REDACTED_REASONING]", capture["content"])
+        self.assertEqual(capture["usage"]["completion_tokens"], 5)
 
 class AIEngineContractRetryTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
