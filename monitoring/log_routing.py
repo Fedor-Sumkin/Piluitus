@@ -5,26 +5,15 @@ import logging
 
 
 DIAGNOSTIC_MARKERS = (
-    "[TRADE FLOW 60s]", "[ORDER_BOOK 60s]", "[OPEN POSITION BBO 60s]",
-    "[ORDER_BOOK PARSER SAMPLE]", "[ORDER_BOOK UNATTRIBUTED SAMPLE]",
-    "[vLLM RAW LATENCY]", "[PRE-LLM FILTER]", "[PRE-LLM WAIT]",
-    "[LLM DECISION]", "[LLM REASON MISMATCH]", "[LLM CONTRACT RETRY]",
-    "[LLM CONTRACT RESULT]", "[M1 HISTORY WARMUP]",
-    "[ORDER_BOOK POSITION POLICY]", "[ORDER_BOOK POSITION RESYNC]",
-    "[ORDER_BOOK REST CONTROL]", "[PAPER EXIT GUARD]", "[CANDIDATE TTL]",
-    "[POSITION SIZE]", "[SIGNAL GUARD]", "[RISK FINAL GATE]",
-    "[EXECUTION RESULT]", "[EXECUTION OUTCOME]",
-    "[EXECUTION STALE SIGNAL BLOCK]", "[PAPER BBO ENTRY BLOCK]",
-    "[PAPER BBO ENTRY RETRY]", "[PAPER FILL]", "[PAPER PARTIAL ENTRY]",
-    "[PAPER EXIT TRIGGER]", "[PAPER POSITION RESUMED]",
-    "[PAPER BBO GAP RECOVERED]", "[PORTFOLIO GUARD]",
-    "[ENTRY SESSION GUARD]", "[STOP COOLDOWN HYDRATION FAILED]",
-    "[PAPER CLOSE ALL]", "[PAPER JOURNAL]", "[PAPER EXIT TRIGGER WAIT]",
-    "[PAPER STALE POSITION DETAIL]", "[PAPER RECONCILIATION GUARD]",
-    "[STOP COOLDOWN]", "[SHADOW BE ARMED]", "[SHADOW BE TRIGGERED]",
-    "[M1 PATTERN]", "[DIAGNOSTIC LOGGER READY]", "[NUMPY ИМПУЛЬС]",
-    "[WS ПОТОК ФИНАМ]", "Поток Finam активен:",
-    "Finam ORDER_BOOK подписки синхронизированы:",
+    # Strategy quality diagnostics retained in diagnostic_*.log.
+    "[CANDIDATE TTL]",
+    "[POSITION SIZE]",
+    "[SIGNAL GUARD]",
+    "[RISK FINAL GATE]",
+    "[M1 HISTORY WARMUP]",
+    "[M1 PATTERN]",
+    "[NUMPY ИМПУЛЬС]",
+    "[DIAGNOSTIC LOGGER READY]",
 )
 
 
@@ -44,23 +33,35 @@ class DiagnosticLogFilter(logging.Filter):
 _THEMATIC_RULES = {
     "shadow": {
         "prefixes": ("Piluitus.StrategyShadow", "Piluitus.Shadow"),
-        "markers": ("[STRATEGY SHADOW", "[SHADOW OUTCOME", "[SHADOW VALIDATION"),
+        "markers": (
+            "[STRATEGY SHADOW", "[SHADOW OUTCOME", "[SHADOW VALIDATION",
+            "[SHADOW BE ARMED]", "[SHADOW BE TRIGGERED]",
+        ),
     },
     "vllm": {
         "prefixes": ("Piluitus.AIEngine", "Piluitus.VLLM",
                      "Piluitus.EvolutionThoughts", "ai.vllm_client"),
-        "markers": ("[vLLM", "[AIEngine", "[LLM REQUEST]", "[LLM RESPONSE]"),
+        "markers": (
+            "[vLLM", "[AIEngine", "[LLM REQUEST]", "[LLM RESPONSE]",
+            "[LLM DECISION]", "[LLM REASON MISMATCH]", "[LLM CONTRACT",
+            "[PRE-LLM FILTER]", "[PRE-LLM WAIT]",
+        ),
     },
     "market": {
         "prefixes": ("Piluitus.FinamGateway", "Piluitus.Screener",
                      "Piluitus.Market", "FinamCore.MarketLogger"),
-        "markers": ("[FINAM", "[ORDER_BOOK", "[TRADE FLOW",
-                    "[MARKET DATA", "[BBO ", "[QUOTE ", "[WS ПОТОК ФИНАМ]"),
+        "markers": (
+            "[FINAM", "[ORDER_BOOK", "[TRADE FLOW", "[OPEN POSITION BBO",
+            "[MARKET DATA", "[BBO ", "[QUOTE ", "[WS ПОТОК ФИНАМ]",
+            "Поток Finam активен:", "Finam ORDER_BOOK подписки синхронизированы:",
+        ),
     },
     "execution": {
         "prefixes": ("Piluitus.ExecutionLayer", "Piluitus.RiskManager"),
-        "markers": ("[EXECUTION", "[PAPER", "[POSITION", "[PORTFOLIO",
-                    "[STOP COOLDOWN", "[ENTRY SESSION GUARD]"),
+        "markers": (
+            "[EXECUTION", "[PAPER", "[POSITION", "[PORTFOLIO",
+            "[STOP COOLDOWN", "[ENTRY SESSION GUARD]",
+        ),
     },
 }
 
@@ -83,12 +84,18 @@ class ThematicLogFilter(logging.Filter):
             return False
         if self.diagnostic_filter and self.diagnostic_filter.filter(record):
             return False
-        if record.name.startswith(self.prefixes):
-            return True
         try:
             message = record.getMessage()
         except Exception:
             return False
+        # A shadow break-even event may originate in ExecutionLayer, but belongs
+        # exclusively to shadow_*.log rather than execution_*.log.
+        if self.kind == "execution" and (
+            "[SHADOW BE ARMED]" in message or "[SHADOW BE TRIGGERED]" in message
+        ):
+            return False
+        if record.name.startswith(self.prefixes):
+            return True
         return any(marker in message for marker in self.markers)
 
 
