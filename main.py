@@ -320,6 +320,7 @@ def _configure_run_file_logging() -> tuple[str, dict[str, str]]:
 
 
 RUN_ID, RUN_LOG_PATHS = _configure_run_file_logging()
+logging.getLogger("Piluitus.Verdicts").setLevel(logging.INFO)
 _LOG_KINDS_FOR_STARTUP = (
     "session", "diagnostic", "errors", "shadow",
     "vllm", "market", "execution", "verdicts",
