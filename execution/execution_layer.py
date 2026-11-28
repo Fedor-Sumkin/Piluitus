@@ -448,10 +448,11 @@ class BaseExecutionEngine:
 
         logger.info(
             "[PAPER DEPTH MODEL] book_size_unit=%s max_participation=%.1f%% "
-            "depth_partial_exit=%s; unit=unknown keeps the explicitly unverified BBO fallback",
+            "depth_partial_exit=%s; bbo_partial_assumption_opt_in=%s",
             self.paper_book_size_unit,
             self.paper_max_book_participation_pct,
             self.paper_book_size_unit in {"shares", "lots"},
+            self.paper_bbo_partial_exit_assumption_enabled,
         )
         logger.info(
             "[PAPER PROFIT SCALE-OUT MODEL] model=%s; size_unit=%s; bbo_assumption_opt_in=%s.",
@@ -2917,11 +2918,10 @@ class BaseExecutionEngine:
     ) -> dict[str, Any] | None:
         """Plan a lot-aligned profit scale-out without misrepresenting unknown depth.
 
-        Confirmed units use executable multi-level depth. Until Finam documents or
-        the operator independently verifies the ORDER_BOOK size unit, PAPER may
-        use the same explicit top-of-book full-fill assumption as the legacy
-        execution model. Such fills are tagged BBO_TOP_OF_BOOK_PARTIAL_ASSUMED
-        and never contribute fabricated depth-impact measurements.
+        Confirmed units use executable multi-level depth. When units are unknown,
+        the BBO-only approximation is disabled by default and requires an explicit
+        PAPER opt-in; its fills are tagged BBO_TOP_OF_BOOK_PARTIAL_ASSUMED and
+        never contribute fabricated depth-impact measurements.
         """
         if self.paper_book_size_unit not in {"shares", "lots"}:
             if not bool(getattr(self, "paper_bbo_partial_exit_assumption_enabled", False)):
