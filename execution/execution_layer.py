@@ -445,10 +445,20 @@ class BaseExecutionEngine:
 
         logger.info(
             "[PAPER DEPTH MODEL] book_size_unit=%s max_participation=%.1f%% "
-            "partial_exit=%s; unit=unknown keeps the explicitly unverified BBO fallback",
+            "depth_partial_exit=%s; unit=unknown keeps the explicitly unverified BBO fallback",
             self.paper_book_size_unit,
             self.paper_max_book_participation_pct,
             self.paper_book_size_unit in {"shares", "lots"},
+        )
+        logger.info(
+            "[PAPER PROFIT SCALE-OUT MODEL] model=%s; size_unit=%s; "
+            "unknown units use explicitly-assumed fresh BBO fills without depth-capacity claims.",
+            (
+                "DEPTH_LIMITED"
+                if self.paper_book_size_unit in {"shares", "lots"}
+                else "BBO_TOP_OF_BOOK_PARTIAL_ASSUMED"
+            ),
+            self.paper_book_size_unit,
         )
 
         # ОЗУ-структуры PAPER-позиций.
