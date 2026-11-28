@@ -2959,6 +2959,18 @@ class BaseExecutionEngine:
             return None
         return dict(fill)
 
+    def _paper_profit_partial_depth_fill(
+        self,
+        ticker: str,
+        trade: TradeRecord,
+        bbo: BBOExitQuote,
+        fraction: float,
+    ) -> dict[str, Any] | None:
+        """Depth-only compatibility helper; never falls back to assumed BBO fills."""
+        if self.paper_book_size_unit not in {"shares", "lots"}:
+            return None
+        return self._paper_profit_partial_fill(ticker, trade, bbo, fraction)
+
     def _paper_profit_partial_bbo_fill(
         self,
         ticker: str,
