@@ -436,6 +436,9 @@ class BaseExecutionEngine:
         # but does not define shares-vs-lots semantics.
         configured_book_unit = str(getattr(Settings, "PAPER_BOOK_SIZE_UNIT", "unknown")).strip().lower()
         self.paper_book_size_unit = configured_book_unit if configured_book_unit in {"shares", "lots"} else "unknown"
+        self.paper_bbo_partial_exit_assumption_enabled = bool(getattr(
+            Settings, "PAPER_ALLOW_BBO_PARTIAL_EXIT_ASSUMPTION", False
+        ))
         self.paper_max_book_participation_pct = min(
             100.0,
             max(1.0, _finite_or_default(
@@ -451,14 +454,18 @@ class BaseExecutionEngine:
             self.paper_book_size_unit in {"shares", "lots"},
         )
         logger.info(
-            "[PAPER PROFIT SCALE-OUT MODEL] model=%s; size_unit=%s; "
-            "unknown units use explicitly-assumed fresh BBO fills without depth-capacity claims.",
+            "[PAPER PROFIT SCALE-OUT MODEL] model=%s; size_unit=%s; bbo_assumption_opt_in=%s.",
             (
                 "DEPTH_LIMITED"
                 if self.paper_book_size_unit in {"shares", "lots"}
-                else "BBO_TOP_OF_BOOK_PARTIAL_ASSUMED"
+                else (
+                    "BBO_TOP_OF_BOOK_PARTIAL_ASSUMED"
+                    if self.paper_bbo_partial_exit_assumption_enabled
+                    else "DISABLED_UNCONFIRMED_DEPTH"
+                )
             ),
             self.paper_book_size_unit,
+            self.paper_bbo_partial_exit_assumption_enabled,
         )
 
         # ОЗУ-структуры PAPER-позиций.
@@ -2917,6 +2924,8 @@ class BaseExecutionEngine:
         and never contribute fabricated depth-impact measurements.
         """
         if self.paper_book_size_unit not in {"shares", "lots"}:
+            if not bool(getattr(self, "paper_bbo_partial_exit_assumption_enabled", False)):
+                return None
             return self._paper_profit_partial_bbo_fill(
                 ticker, trade, bbo, fraction
             )
