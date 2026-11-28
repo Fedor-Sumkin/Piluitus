@@ -66,10 +66,15 @@ def _bbo(side: str = "BUY", *, age: float = 0.2) -> dict:
     }
 
 
-def _engine(unit: str = "unknown") -> BaseExecutionEngine:
+def _engine(
+    unit: str = "unknown",
+    *,
+    allow_bbo_partial_assumption: bool = False,
+) -> BaseExecutionEngine:
     engine = BaseExecutionEngine.__new__(BaseExecutionEngine)
     engine.paper_mode = True
     engine.paper_book_size_unit = unit
+    engine.paper_bbo_partial_exit_assumption_enabled = allow_bbo_partial_assumption
     engine.paper_max_book_participation_pct = 100.0
     engine.paper_commission_pct = 0.0354
     engine.paper_slippage_bps = 0.0
@@ -110,8 +115,14 @@ class PaperDepthAndPartialExitTests(unittest.TestCase):
         self.assertEqual(result["filled_lots"], 5)
         self.assertEqual(result["levels_used"], 2)
 
-    def test_unknown_unit_uses_explicit_bbo_partial_plan_without_reading_depth_size(self) -> None:
+    def test_unknown_unit_keeps_bbo_partial_assumption_disabled_by_default(self) -> None:
         engine = _engine("unknown")
+        self.assertIsNone(
+            engine._paper_profit_partial_fill("SBER", _trade("BUY"), _bbo("BUY"), 0.5)
+        )
+
+    def test_unknown_unit_uses_explicit_bbo_partial_plan_without_reading_depth_size(self) -> None:
+        engine = _engine("unknown", allow_bbo_partial_assumption=True)
         plan = engine._paper_profit_partial_fill(
             "SBER", _trade("BUY"), _bbo("BUY"), 0.5
         )
