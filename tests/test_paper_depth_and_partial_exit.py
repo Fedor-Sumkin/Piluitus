@@ -135,7 +135,7 @@ class PaperDepthAndPartialExitTests(unittest.TestCase):
         self.assertNotIn("depth_vwap", plan)
 
     def test_bbo_partial_plan_is_mirrored_for_short_positions(self) -> None:
-        engine = _engine("unknown")
+        engine = _engine("unknown", allow_bbo_partial_assumption=True)
         plan = engine._paper_profit_partial_fill(
             "SBER", _trade("SELL"), _bbo("SELL"), 0.5
         )
@@ -144,7 +144,7 @@ class PaperDepthAndPartialExitTests(unittest.TestCase):
         self.assertEqual(plan["execution_model"], "BBO_TOP_OF_BOOK_PARTIAL_ASSUMED")
 
     def test_bbo_partial_plan_rejects_stale_or_wrong_executable_side(self) -> None:
-        engine = _engine("unknown")
+        engine = _engine("unknown", allow_bbo_partial_assumption=True)
         stale = _bbo("BUY", age=2.1)
         wrong_side = _bbo("BUY")
         wrong_side["executable_side"] = "ASK"
@@ -152,7 +152,7 @@ class PaperDepthAndPartialExitTests(unittest.TestCase):
         self.assertIsNone(engine._paper_profit_partial_fill("SBER", _trade(), wrong_side, 0.5))
 
     def test_partial_plan_never_closes_entire_position_or_creates_sub_lot_fill(self) -> None:
-        engine = _engine("unknown")
+        engine = _engine("unknown", allow_bbo_partial_assumption=True)
         self.assertIsNone(engine._paper_profit_partial_fill("SBER", _trade(volume=10), _bbo(), 0.5))
         capped = engine._paper_profit_partial_fill("SBER", _trade(), _bbo(), 1.0)
         self.assertIsNotNone(capped)
@@ -169,7 +169,7 @@ class PaperDepthAndPartialExitTests(unittest.TestCase):
         self.assertNotEqual(plan.get("execution_model"), "BBO_TOP_OF_BOOK_PARTIAL_ASSUMED")
 
     def test_bbo_partial_close_persists_remaining_position_and_does_not_fabricate_depth(self) -> None:
-        engine = _engine("unknown")
+        engine = _engine("unknown", allow_bbo_partial_assumption=True)
         trade = _trade("BUY")
         bbo = _bbo("BUY")
         plan = engine._paper_profit_partial_fill("SBER", trade, bbo, 0.5)
