@@ -2891,16 +2891,25 @@ class BaseExecutionEngine:
             self.paper_max_book_participation_pct,
         )
 
-    def _paper_profit_partial_depth_fill(
+    def _paper_profit_partial_fill(
         self,
         ticker: str,
         trade: TradeRecord,
         bbo: BBOExitQuote,
         fraction: float,
     ) -> dict[str, Any] | None:
-        """Plan a profit scale-out only against fresh, explicitly-unitized depth."""
+        """Plan a lot-aligned profit scale-out without misrepresenting unknown depth.
+
+        Confirmed units use executable multi-level depth. Until Finam documents or
+        the operator independently verifies the ORDER_BOOK size unit, PAPER may
+        use the same explicit top-of-book full-fill assumption as the legacy
+        execution model. Such fills are tagged BBO_TOP_OF_BOOK_PARTIAL_ASSUMED
+        and never contribute fabricated depth-impact measurements.
+        """
         if self.paper_book_size_unit not in {"shares", "lots"}:
-            return None
+            return self._paper_profit_partial_bbo_fill(
+                ticker, trade, bbo, fraction
+            )
         book_age = _finite_or_default(bbo.get("order_book_age_sec"), math.inf)
         book_max_age = _finite_or_default(bbo.get("max_age_sec"), 2.0)
         if (
@@ -2940,6 +2949,76 @@ class BaseExecutionEngine:
             return None
         return dict(fill)
 
+    def _paper_profit_partial_bbo_fill(
+        self,
+        ticker: str,
+        trade: TradeRecord,
+        bbo: BBOExitQuote,
+        fraction: float,
+    ) -> dict[str, Any] | None:
+        """Build a clearly-labelled partial BBO fill when depth units are unknown.
+
+        This deliberately does not read bid_size/ask_size or depth rows: their
+        quantity unit is not specified in Finam's public OrderBook schema.
+        The model is therefore an explicit optimistic PAPER assumption, not a
+        claim that the displayed top level can absorb the requested quantity.
+        """
+        side = str(trade.get("side") or "").strip().upper()
+        if side not in {"BUY", "SELL"}:
+            return None
+
+        expected_side = "BID" if side == "BUY" else "ASK"
+        if str(bbo.get("executable_side") or "").strip().upper() != expected_side:
+            return None
+
+        executable_price = _finite_or_default(bbo.get("executable_price"), 0.0)
+        side_price = _finite_or_default(
+            bbo.get("bid") if side == "BUY" else bbo.get("ask"), 0.0
+        )
+        quote_age = _finite_or_default(
+            bbo.get("bid_age_sec") if side == "BUY" else bbo.get("ask_age_sec"),
+            math.inf,
+        )
+        max_age = _finite_or_default(bbo.get("max_age_sec"), 2.0)
+        if (
+            executable_price <= 0.0 or side_price <= 0.0
+            or not math.isfinite(quote_age) or quote_age < 0.0
+            or not math.isfinite(max_age) or max_age <= 0.0
+            or quote_age > max_age
+            or not math.isclose(executable_price, side_price, rel_tol=1e-8, abs_tol=1e-8)
+        ):
+            return None
+
+        lot_size = max(1, int(_finite_or_default(
+            trade.get("lot_size", LOT_SIZES.get(ticker, 1)), 1.0
+        )))
+        share_qty = self._share_quantity(ticker, trade)
+        if share_qty <= 0 or share_qty % lot_size:
+            return None
+
+        try:
+            requested_fraction = min(0.9, max(0.1, float(fraction)))
+        except (TypeError, ValueError, OverflowError):
+            requested_fraction = 0.5
+        total_lots = share_qty // lot_size
+        target_lots = int(math.floor(total_lots * requested_fraction))
+        # A scale-out must leave at least one full lot open on the position.
+        if target_lots <= 0 or target_lots >= total_lots:
+            return None
+
+        filled_shares = target_lots * lot_size
+        return {
+            "filled_lots": target_lots,
+            "filled_shares": filled_shares,
+            "requested_shares": filled_shares,
+            "average_price": executable_price,
+            "levels_used": 0,
+            "fill_ratio": 1.0,
+            "execution_model": "BBO_TOP_OF_BOOK_PARTIAL_ASSUMED",
+            "size_unit": "UNKNOWN",
+            "fill_assumption": "FULL_FILL_AT_FRESH_EXECUTABLE_BBO_NO_DEPTH_CAPACITY_CHECK",
+        }
+
     async def _finalize_paper_partial_close(
         self,
         ticker: str,
@@ -2952,7 +3031,11 @@ class BaseExecutionEngine:
         trigger_price: float,
         observed_last_price: float,
     ) -> TradeRecord:
-        """Persist a confirmed partial exit while keeping the residual position OPEN."""
+        """Persist a PAPER partial exit and retain the residual position as OPEN.
+
+        The plan may be depth-limited or an explicitly-labelled top-of-book
+        assumption; only the former records depth VWAP/impact/coverage metrics.
+        """
         order_id = str(trade.get("id", ""))
         side = str(trade.get("side", "BUY")).upper()
         entry_price = _finite_or_default(trade.get("entry_price"), 0.0)
@@ -2968,9 +3051,14 @@ class BaseExecutionEngine:
         ):
             raise ValueError("Некорректные параметры частичного PAPER-закрытия.")
 
+        execution_model = str(depth_fill.get("execution_model") or "DEPTH_PARTIAL_FILL").strip().upper()
+        is_depth_fill = execution_model == "DEPTH_PARTIAL_FILL"
+        if is_depth_fill and self.paper_book_size_unit not in {"shares", "lots"}:
+            raise ValueError("Depth partial fill requires a confirmed Finam ORDER_BOOK size unit.")
+        depth_unit = self.paper_book_size_unit if is_depth_fill else "UNKNOWN"
         raw_exit_price = _finite_or_default(depth_fill.get("average_price"), 0.0)
         if raw_exit_price <= 0.0:
-            raise ValueError("PAPER depth fill returned an invalid partial exit price.")
+            raise ValueError("PAPER partial fill returned an invalid exit price.")
         exit_transaction_side = "SELL" if side == "BUY" else "BUY"
         exit_price = self._apply_paper_slippage(raw_exit_price, exit_transaction_side)
         commission_pct = _finite_or_default(
@@ -2991,9 +3079,9 @@ class BaseExecutionEngine:
             bid_age_sec=bbo.get("bid_age_sec"),
             ask_age_sec=bbo.get("ask_age_sec"),
             order_book_age_sec=bbo.get("order_book_age_sec"),
-            depth_vwap=raw_exit_price,
-            depth_fill_ratio=depth_fill.get("fill_ratio"),
-            depth_levels_used=depth_fill.get("levels_used"),
+            depth_vwap=raw_exit_price if is_depth_fill else None,
+            depth_fill_ratio=depth_fill.get("fill_ratio") if is_depth_fill else None,
+            depth_levels_used=depth_fill.get("levels_used") if is_depth_fill else None,
         )
         sign = 1 if side == "BUY" else -1
         now = datetime.now()
@@ -3009,9 +3097,18 @@ class BaseExecutionEngine:
             "net_pnl_rub": round(net_pnl, 4),
             "exit_reason": exit_reason,
             "trigger_price": trigger_price if trigger_price > 0.0 else None,
-            "depth_levels_used": int(depth_fill.get("levels_used", 0)),
-            "depth_fill_ratio": round(_finite_or_default(depth_fill.get("fill_ratio"), 0.0), 6),
-            "depth_unit": self.paper_book_size_unit,
+            "execution_model": execution_model,
+            "depth_levels_used": int(depth_fill.get("levels_used", 0)) if is_depth_fill else None,
+            "depth_fill_ratio": (
+                round(_finite_or_default(depth_fill.get("fill_ratio"), 0.0), 6)
+                if is_depth_fill else None
+            ),
+            "depth_unit": depth_unit,
+            "fill_assumption": depth_fill.get(
+                "fill_assumption",
+                "DEPTH_LIMITED_BY_CONFIRMED_BOOK_LEVELS" if is_depth_fill
+                else "FULL_FILL_AT_FRESH_EXECUTABLE_BBO_NO_DEPTH_CAPACITY_CHECK",
+            ),
             "execution_diagnostics": exit_diagnostics,
         }
         updated = dict(trade)
@@ -3076,12 +3173,16 @@ class BaseExecutionEngine:
             int(_finite_or_default(updated.get("exit_partial_fill_count"), 0.0)) + 1
         )
         updated["exit_partial_fill_enabled"] = True
-        updated["exit_fill_model"] = "DEPTH_PARTIAL_FILL"
-        updated["exit_depth_unit"] = self.paper_book_size_unit
-        updated["exit_depth_levels_used_last"] = int(depth_fill.get("levels_used", 0))
-        updated["exit_depth_fill_ratio_last"] = round(
-            _finite_or_default(depth_fill.get("fill_ratio"), 0.0), 6
+        updated["exit_fill_model"] = execution_model
+        updated["exit_depth_unit"] = depth_unit
+        updated["exit_depth_levels_used_last"] = (
+            int(depth_fill.get("levels_used", 0)) if is_depth_fill else None
         )
+        updated["exit_depth_fill_ratio_last"] = (
+            round(_finite_or_default(depth_fill.get("fill_ratio"), 0.0), 6)
+            if is_depth_fill else None
+        )
+        updated["exit_partial_fill_assumption"] = fill_record["fill_assumption"]
         updated["last_partial_exit_at"] = fill_record["timestamp"]
         updated["last_partial_exit_reason"] = exit_reason
         if exit_reason == "PROFIT_PROTECTION":
@@ -3123,9 +3224,9 @@ class BaseExecutionEngine:
         trade.update(updated)
         logger.warning(
             "[PAPER PARTIAL EXIT] %s %s reason=%s filled=%d shares (%d lots), remaining=%d shares; "
-            "gross=%+.2f₽ net=%+.2f₽ avg=%.6f unit=%s",
+            "gross=%+.2f₽ net=%+.2f₽ avg=%.6f model=%s unit=%s",
             ticker, side, exit_reason, filled_shares, filled_shares // lot_size,
-            updated["volume"], gross_pnl, net_pnl, exit_price, self.paper_book_size_unit,
+            updated["volume"], gross_pnl, net_pnl, exit_price, execution_model, depth_unit,
         )
         return trade
 
@@ -4250,7 +4351,7 @@ class BaseExecutionEngine:
                     trade["paper_exit_signal_diagnostics"] = signal
                     signal_action = str(signal.get("action") or "NONE")
                     if signal_action == "PARTIAL_PROFIT":
-                        partial_fill = self._paper_profit_partial_depth_fill(
+                        partial_fill = self._paper_profit_partial_fill(
                             ticker,
                             trade,
                             bbo,
@@ -4259,9 +4360,10 @@ class BaseExecutionEngine:
                         if partial_fill is not None:
                             logger.warning(
                                 "[PAPER PROFIT SCALE-OUT] %s %s favorable=%.2fR; "
-                                "confirmed opposing flow; requested partial depth fill=%d shares.",
+                                "confirmed opposing flow; requested=%d shares model=%s.",
                                 ticker, side, favorable_r,
                                 int(_finite_or_default(partial_fill.get("requested_shares"), 0.0)),
+                                str(partial_fill.get("execution_model") or "DEPTH_PARTIAL_FILL"),
                             )
                             await self._finalize_paper_partial_close(
                                 ticker, trade, db, bbo, partial_fill,
@@ -4271,15 +4373,18 @@ class BaseExecutionEngine:
                             )
                             return
                         trade["paper_profit_partial_wait_reason"] = (
-                            "BOOK_UNIT_UNCONFIRMED_OR_PARTIAL_DEPTH_UNAVAILABLE"
+                            "DEPTH_UNAVAILABLE_WITH_CONFIRMED_UNIT"
+                            if self.paper_book_size_unit in {"shares", "lots"}
+                            else "FRESH_EXECUTABLE_BBO_OR_MINIMUM_LOT_UNAVAILABLE"
                         )
                         if self._should_log_paper_exit_status(
                             order_id, "profit_scaleout_wait", time.monotonic()
                         ):
                             logger.warning(
                                 "[PAPER PROFIT SCALE-OUT WAIT] %s %s favorable=%.2fR; "
-                                "partial exit not simulated because book size units/depth are unconfirmed. "
+                                "partial exit plan unavailable (reason=%s). "
                                 "Active net-BE/trailing protection remains in force.",
+                                trade["paper_profit_partial_wait_reason"],
                                 ticker, side, favorable_r,
                             )
                     elif signal_action == "SIGNAL_REVERSAL":
