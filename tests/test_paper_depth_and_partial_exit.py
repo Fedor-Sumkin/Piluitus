@@ -143,7 +143,10 @@ class PaperDepthAndPartialExitTests(unittest.TestCase):
     def test_partial_plan_never_closes_entire_position_or_creates_sub_lot_fill(self) -> None:
         engine = _engine("unknown")
         self.assertIsNone(engine._paper_profit_partial_fill("SBER", _trade(volume=10), _bbo(), 0.5))
-        self.assertIsNone(engine._paper_profit_partial_fill("SBER", _trade(), _bbo(), 1.0))
+        capped = engine._paper_profit_partial_fill("SBER", _trade(), _bbo(), 1.0)
+        self.assertIsNotNone(capped)
+        self.assertEqual(capped["filled_shares"], 90)
+        self.assertEqual(_trade()["volume"] - capped["filled_shares"], 10)
 
     def test_confirmed_depth_uses_depth_model_instead_of_bbo_fallback(self) -> None:
         engine = _engine("shares")
