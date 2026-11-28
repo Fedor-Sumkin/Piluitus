@@ -4394,8 +4394,8 @@ class BaseExecutionEngine:
                                 "[PAPER PROFIT SCALE-OUT WAIT] %s %s favorable=%.2fR; "
                                 "partial exit plan unavailable (reason=%s). "
                                 "Active net-BE/trailing protection remains in force.",
-                                trade["paper_profit_partial_wait_reason"],
                                 ticker, side, favorable_r,
+                                trade["paper_profit_partial_wait_reason"],
                             )
                     elif signal_action == "SIGNAL_REVERSAL":
                         trigger_timestamp = datetime.now().astimezone().isoformat(timespec="milliseconds")
