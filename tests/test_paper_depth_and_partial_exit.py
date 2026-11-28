@@ -40,18 +40,20 @@ def _trade(side: str = "BUY", volume: int = 100) -> dict:
 
 def _bbo(side: str = "BUY", *, age: float = 0.2) -> dict:
     if side == "BUY":
-        executable = 99.8
+        bid, ask = 100.8, 101.0
+        executable = bid
         executable_side = "BID"
     else:
-        executable = 100.2
+        bid, ask = 99.0, 99.2
+        executable = ask
         executable_side = "ASK"
     return {
-        "bid": 99.8,
-        "ask": 100.2,
+        "bid": bid,
+        "ask": ask,
         "bid_size": 12345.0,
         "ask_size": 12345.0,
-        "bid_levels": [[99.8, 50.0]],
-        "ask_levels": [[100.2, 50.0]],
+        "bid_levels": [[bid, 50.0]],
+        "ask_levels": [[ask, 50.0]],
         "bid_age_sec": age,
         "ask_age_sec": age,
         "age_sec": age,
@@ -116,7 +118,7 @@ class PaperDepthAndPartialExitTests(unittest.TestCase):
         self.assertIsNotNone(plan)
         self.assertEqual(plan["filled_shares"], 50)
         self.assertEqual(plan["filled_lots"], 5)
-        self.assertEqual(plan["average_price"], 99.8)
+        self.assertEqual(plan["average_price"], 100.8)
         self.assertEqual(plan["execution_model"], "BBO_TOP_OF_BOOK_PARTIAL_ASSUMED")
         self.assertEqual(plan["size_unit"], "UNKNOWN")
         self.assertNotIn("depth_vwap", plan)
@@ -127,7 +129,7 @@ class PaperDepthAndPartialExitTests(unittest.TestCase):
             "SBER", _trade("SELL"), _bbo("SELL"), 0.5
         )
         self.assertIsNotNone(plan)
-        self.assertEqual(plan["average_price"], 100.2)
+        self.assertEqual(plan["average_price"], 99.2)
         self.assertEqual(plan["execution_model"], "BBO_TOP_OF_BOOK_PARTIAL_ASSUMED")
 
     def test_bbo_partial_plan_rejects_stale_or_wrong_executable_side(self) -> None:
