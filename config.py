@@ -197,6 +197,11 @@ class Settings:
     PAPER_MAX_BOOK_PARTICIPATION_PCT: float = float(
         os.getenv("PILUITUS_PAPER_MAX_BOOK_PARTICIPATION_PCT", "10.0")
     )
+    # Optional PAPER-only approximation. Disabled by default because a BBO quote
+    # does not prove that the requested partial quantity is available at that level.
+    PAPER_ALLOW_BBO_PARTIAL_EXIT_ASSUMPTION: bool = os.getenv(
+        "PILUITUS_PAPER_ALLOW_BBO_PARTIAL_EXIT_ASSUMPTION", "false"
+    ).strip().lower() in {"1", "true", "yes", "on", "enabled"}
     # Conservative upper bound supplied by the operator: Finam RF securities tariff.
     # Charged on each side of the PAPER round trip.
     PAPER_COMMISSION_PCT: float = min(
